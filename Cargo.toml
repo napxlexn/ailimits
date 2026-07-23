@@ -1,0 +1,136 @@
+[package]
+name = "ailimits"
+version = "0.5.3"
+edition = "2021"
+# Build-from-source floor. Driven by icu_* (via reqwest → url → idna); Cargo
+# emits a clear error on an older toolchain instead of a deep dependency error.
+rust-version = "1.86"
+description = "AI provider limits floating overlay widget for Windows 11"
+authors = ["napxlexn"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/napxlexn/ailimits"
+# The console window is hidden via #![windows_subsystem = "windows"] in main.rs.
+
+[[bin]]
+name = "ailimits"
+path = "src/main.rs"
+
+[[bin]]
+# Console auth utility — a separate exe so stdout works in a terminal.
+name = "ailimits-auth"
+path = "src/bin/ailimits-auth.rs"
+
+[lib]
+# Library target so integration tests can import the modules.
+name = "ailimits"
+path = "src/lib.rs"
+
+[dependencies]
+# --- Window and UI ---
+# Cross-platform event loop and windows.
+tao = { version = "0.31", features = ["rwh_06"] }
+# Native context menu.
+muda = "0.15"
+# System tray icon (same tauri ecosystem as muda/tao — minimal added weight).
+tray-icon = "0.19"
+# CPU rendering into the window.
+softbuffer = "0.4"
+# 2D vector graphics.
+tiny-skia = "0.11"
+# Text rendering.
+fontdue = "0.9"
+
+# --- Async runtime ---
+# Only the features we actually use, not "full".
+tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "process", "sync", "macros"] }
+
+# --- HTTP ---
+# HTTP client with TLS (rustls, no OpenSSL).
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+# --- Serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# TOML config format.
+toml = "0.8"
+
+# --- Secret storage ---
+# Windows Credential Manager for keys and tokens.
+keyring = { version = "3", features = ["windows-native"] }
+
+# --- Time ---
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- Logging ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- Errors ---
+anyhow = "1"
+
+# --- Traits ---
+# Async methods in traits — needed for the Provider trait.
+async-trait = "0.1"
+
+# --- System paths ---
+# Cross-platform paths: config_dir, home_dir.
+dirs = "5"
+
+# --- Auth CLI ---
+# Hidden key input in the terminal.
+rpassword = "7"
+
+# --- Clipboard ---
+# Reading keys from the clipboard for the context menu.
+# Clipboard: we read TEXT only (paste a PAT / key / usage token), so the
+# default `image` feature — which pulls the heavy `image` crate and raises the
+# MSRV to 1.88 — is turned off.
+arboard = { version = "3", default-features = false }
+
+# --- Windows-specific ---
+[target.'cfg(target_os = "windows")'.dependencies]
+# Low-level blur accent: controllable alpha, independent of the DWM backdrop.
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security_Credentials",
+    "Win32_System_LibraryLoader",
+] }
+# Windows toast notifications via WinRT.
+tauri-winrt-notification = "0.8"
+# Win32 API.
+windows = { version = "0.58", features = [
+    # DWM: DWMWA_WINDOW_CORNER_PREFERENCE for rounded corners.
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    # Named mutex — the single-instance guard.
+    "Win32_System_Threading",
+    # SECURITY_ATTRIBUTES for CreateMutexW.
+    "Win32_Security",
+    # GetLastInputInfo — idle detection for adaptive polling.
+    "Win32_UI_Input_KeyboardAndMouse",
+    # GetTickCount — uptime ms for the idle calculation.
+    "Win32_System_SystemInformation",
+    # NotifyIconSettings IsPromoted — keep tray icons out of the overflow.
+    "Win32_System_Registry",
+    # Monitor info — taskbar auto-hide detection for the overlay panel.
+    "Win32_Graphics_Gdi",
+    # SetWinEventHook — event-driven taskbar tracking (no polling).
+    "Win32_UI_Accessibility",
+] }
+
+[build-dependencies]
+# Embedding Windows resources (the icon).
+winres = "0.1"
+
+[profile.release]
+# Max speed optimization.
+opt-level = 3
+strip = true
+lto = true
+codegen-units = 1
+
+[profile.release-min]
+# The production profile: minimal binary size.
+inherits = "release"
+opt-level = "z"
+panic = "abort"

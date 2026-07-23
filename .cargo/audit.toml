@@ -1,0 +1,52 @@
+# cargo-audit triage for AI Limits.
+#
+# AI Limits ships ONLY as a Windows binary. `cargo audit` scans Cargo.lock,
+# which is the union of dependencies across every platform, so it flags crates
+# that are never compiled into what we ship. Each advisory below was checked
+# against the real Windows build tree
+#   cargo tree --target x86_64-pc-windows-msvc -e no-dev -i <crate>
+# and is ignored with the reason. Anything NOT listed here still fails the
+# audit — that is the point: a new advisory on a crate we actually ship stands
+# out instead of drowning in cross-platform noise.
+#
+# CAVEAT: ignores match by RustSec ID, not by platform. If a dependency update
+# ever pulls a currently-ignored advisory's crate INTO the Windows graph (e.g.
+# quick-xml crossing over from wayland), the audit would stay silent. So this
+# list must be re-derived — not just extended — whenever dependencies change:
+# re-run the `cargo tree --target x86_64-pc-windows-msvc` check per entry.
+#
+# Reviewed 2026-07-23.
+
+[advisories]
+ignore = [
+    # ── Not compiled into the Windows binary (Linux GTK menu/tray backend of
+    #    muda / tao / tray-icon; verified absent from the Windows tree). ──
+    "RUSTSEC-2024-0411", # gdkwayland-sys  unmaintained (GTK3)
+    "RUSTSEC-2024-0412", # gdk             unmaintained (GTK3)
+    "RUSTSEC-2024-0413", # atk             unmaintained (GTK3)
+    "RUSTSEC-2024-0414", # gdkx11-sys      unmaintained (GTK3)
+    "RUSTSEC-2024-0415", # gtk             unmaintained (GTK3)
+    "RUSTSEC-2024-0416", # atk-sys         unmaintained (GTK3)
+    "RUSTSEC-2024-0418", # gdk-sys         unmaintained (GTK3)
+    "RUSTSEC-2024-0419", # gtk3-macros     unmaintained (GTK3)
+    "RUSTSEC-2024-0420", # gtk-sys         unmaintained (GTK3)
+    "RUSTSEC-2024-0429", # glib            unsound VariantStrIter (GTK, Linux)
+
+    # ── Not in the Windows binary: Wayland/softbuffer (Linux) and quinn (an
+    #    HTTP/3 stack we do not enable — reqwest is default-features = false). ──
+    "RUSTSEC-2026-0194", # quick-xml 0.39.4  DoS via XML parsing (wayland-scanner, Linux)
+    "RUSTSEC-2026-0195", # quick-xml 0.39.4  DoS via XML parsing (wayland-scanner, Linux)
+    "RUSTSEC-2026-0185", # quinn-proto       remote memory exhaustion (not in Windows tree)
+    "RUSTSEC-2026-0186", # memmap2           unsound pointer offset (not in Windows tree)
+
+    # ── Build-time only, never in the runtime binary. ──
+    "RUSTSEC-2024-0370", # proc-macro-error  unmaintained (compile-time proc macro)
+
+    # ── In the Windows binary, but not a real risk for us: ──
+    # ttf-parser (via fontdue) only parses the LOCAL system font files we load
+    # for rendering — trusted input, not attacker-controlled. "unmaintained".
+    "RUSTSEC-2026-0192", # ttf-parser
+    # anyhow's unsoundness is in Error::downcast_mut(), which this codebase
+    # never calls (verified: no downcast/downcast_mut usage anywhere).
+    "RUSTSEC-2026-0190", # anyhow
+]

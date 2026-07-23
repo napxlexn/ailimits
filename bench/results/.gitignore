@@ -1,0 +1,6 @@
+# Raw audit artifacts stay local: the energy/SRUM dumps cover the whole
+# machine (every app, user SID), not just ailimits. A sanitized JSON copy of
+# the published run is force-added next to them as the committed proof.
+*
+!.gitignore
+!perf-audit-published-*.json

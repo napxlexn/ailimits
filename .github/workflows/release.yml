@@ -1,0 +1,79 @@
+# Installer auto-build on a v* tag push — the installer is attached
+# to the GitHub Release.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # A tag must never ship a build that fails the project's own gate.
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      # Guard against version drift: the tag, Cargo.toml and the installer
+      # script must all agree, or CI would build AiLimits-Setup-<old>.exe and
+      # attach it to the <new> release (then the winget URL 404s and the About
+      # version is wrong).
+      - name: Verify version matches the tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v',''
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $iss = (Select-String -Path installer/ailimits.iss -Pattern '#define AppVersion "([^"]+)"').Matches[0].Groups[1].Value
+          Write-Host "tag=$tag  Cargo.toml=$cargo  ailimits.iss=$iss"
+          if ($tag -ne $cargo -or $tag -ne $iss) {
+            Write-Error "Version mismatch: tag '$tag', Cargo.toml '$cargo', ailimits.iss '$iss' must all match."
+            exit 1
+          }
+
+      - name: Build (release-min)
+        run: cargo build --profile release-min
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Compile installer
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc "installer\ailimits.iss"
+
+      # Surface the installer's SHA256 so the winget manifest hash can be
+      # filled/verified against the exact published binary without guesswork.
+      - name: Installer SHA256
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem target/installer/*.exe).FullName
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          Write-Host "Installer: $exe"
+          Write-Host "SHA256:    $hash"
+          "### Installer SHA256`n`n``$hash```n`nfor ``$(Split-Path $exe -Leaf)`` — paste into installer/winget/*.installer.yaml" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            (Get-ChildItem target/installer/*.exe).FullName `
+            --title "AI Limits ${{ github.ref_name }}" `
+            --generate-notes

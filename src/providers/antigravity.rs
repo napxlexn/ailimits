@@ -1,0 +1,517 @@
+// providers/antigravity.rs — Antigravity provider (Google's Gemini successor)
+// for Code Assist quota. See docs/en/PROVIDERS.md, section "Antigravity".
+//
+// Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
+
+use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use crate::config::schema::ProviderConfig;
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use tracing::warn;
+
+/// Undocumented Code Assist quota endpoint (multi-source documented).
+const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
+/// Onboarding endpoint that reports the account's Code Assist project id.
+/// The REAL per-account quota buckets are PER-PROJECT: retrieveUserQuota with
+/// an empty body answers a default view where every bucket reads
+/// remainingFraction=1 regardless of actual usage (verified 2026-07-09).
+const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+/// The endpoint Antigravity's own quota manager uses (verified 2026-07-09):
+/// per-model `quotaInfo` with the live remainingFraction/resetTime for the
+/// pools Antigravity actually consumes — retrieveUserQuota does NOT track
+/// those. Needs the project id in the body and an identified client (the
+/// User-Agent / X-Goog-Api-Client headers below), otherwise 403.
+const MODELS_URL: &str =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+/// Antigravity Windows credential target (ціль запису Antigravity у Windows Credential Manager).
+const ANTIGRAVITY_CREDENTIAL_TARGET: &str = "gemini:antigravity";
+
+pub struct AntigravityProvider {
+    config: ProviderConfig,
+    http: reqwest::Client,
+    /// Code Assist project id from loadCodeAssist, cached after the first
+    /// success — it is stable for the account, and quota queries need it.
+    project: std::sync::Mutex<Option<String>>,
+}
+
+impl AntigravityProvider {
+    pub fn new(config: ProviderConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            // Never follow a 3xx — keeps the bearer token from leaking to a
+            // redirected host. The quota endpoint returns 200 directly.
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("Failed to build HTTP client");
+        Self {
+            config,
+            http,
+            project: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// One fetchAvailableModels request; Ok(None) when the shape is unknown.
+    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
+        let resp = self
+            .http
+            .post(MODELS_URL)
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            // The endpoint answers 403 to anonymous clients; identify like
+            // the Antigravity CLI does.
+            .header("User-Agent", "antigravity/1.0")
+            .header("X-Goog-Api-Client", "gl-go antigravity")
+            .body(serde_json::json!({ "project": project }).to_string())
+            .send()
+            .await?;
+        if resp.status().as_u16() != 200 {
+            warn!(
+                "fetchAvailableModels returned HTTP {}",
+                resp.status().as_u16()
+            );
+            return Ok(None);
+        }
+        let body = resp.text().await?;
+        Ok(Some(parse_available_models_quota(&body)?))
+    }
+
+    /// Resolve the Code Assist project id (cached). None on any failure —
+    /// the quota request then falls back to the empty body.
+    async fn resolve_project(&self, token: &str) -> Option<String> {
+        if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
+            return Some(p);
+        }
+        let resp = self
+            .http
+            .post(LOAD_URL)
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .body("{}")
+            .send()
+            .await
+            .ok()?;
+        if resp.status().as_u16() != 200 {
+            warn!("loadCodeAssist returned HTTP {}", resp.status().as_u16());
+            return None;
+        }
+        let body = resp.text().await.ok()?;
+        let project = parse_load_code_assist_project(&body)?;
+        if let Ok(mut guard) = self.project.lock() {
+            *guard = Some(project.clone());
+        }
+        Some(project)
+    }
+
+    fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
+        ProviderData {
+            id: self.id(),
+            status,
+            metrics,
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    async fn fetch_via_subscription(&self) -> Result<ProviderData> {
+        let token = match read_antigravity_token().await {
+            Ok(Some(t)) => t,
+            Ok(None) => return Ok(self.data(ProviderStatus::NotConfigured, vec![])),
+            Err(e) => {
+                warn!("antigravity credential read error: {e}");
+                return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+            }
+        };
+
+        // Primary source: Antigravity's own per-model quota (fetchAvailableModels).
+        let project = self.resolve_project(&token).await;
+        if let Some(ref project) = project {
+            match self.fetch_models_quota(&token, project).await {
+                Ok(Some(metrics)) if !metrics.is_empty() => {
+                    return Ok(self.data(ProviderStatus::Ok, metrics));
+                }
+                Ok(_) => { /* no quotaInfo in the response — fall back */ }
+                Err(e) => warn!("fetchAvailableModels failed, falling back: {e}"),
+            }
+        }
+
+        // Fallback: the Code Assist bucket view. Without the project id the
+        // endpoint serves the misleading default view (every bucket full) —
+        // see LOAD_URL above.
+        let quota_body = match project {
+            Some(project) => serde_json::json!({ "project": project }).to_string(),
+            None => "{}".to_string(),
+        };
+        let resp = match self
+            .http
+            .post(QUOTA_URL)
+            .bearer_auth(&token)
+            .header("Content-Type", "application/json")
+            .body(quota_body)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
+        };
+
+        match resp.status().as_u16() {
+            200 => {
+                let body = resp.text().await?;
+                let metrics = parse_quota_buckets(&body)?;
+                if metrics.is_empty() {
+                    return Ok(self.data(
+                        ProviderStatus::NetworkError("unrecognized quota schema".to_string()),
+                        vec![],
+                    ));
+                }
+                Ok(self.data(ProviderStatus::Ok, metrics))
+            }
+            401 | 403 => Ok(self.data(
+                ProviderStatus::AuthError(
+                    "Antigravity token rejected — run Antigravity CLI once".to_string(),
+                ),
+                vec![],
+            )),
+            other => Ok(self.data(
+                ProviderStatus::NetworkError(format!("HTTP {other}")),
+                vec![],
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for AntigravityProvider {
+    fn id(&self) -> ProviderId {
+        ProviderId::Antigravity
+    }
+
+    async fn fetch(&self) -> Result<ProviderData> {
+        if !self.config.enabled {
+            return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+        }
+        self.fetch_via_subscription().await
+    }
+}
+
+/// Read the Antigravity or legacy Gemini CLI access token; Ok(None) if
+/// missing or expired.
+async fn read_antigravity_token() -> Result<Option<String>> {
+    match read_antigravity_keyring_token() {
+        Ok(Some(token)) => return Ok(Some(token)),
+        Ok(None) => {}
+        Err(e) => warn!("gemini antigravity keyring read error: {e}"),
+    }
+
+    read_legacy_gemini_cli_token().await
+}
+
+/// Read the legacy Gemini CLI access token.
+async fn read_legacy_gemini_cli_token() -> Result<Option<String>> {
+    let path = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".gemini")
+        .join("oauth_creds.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = tokio::fs::read_to_string(&path).await?;
+    let value: serde_json::Value = serde_json::from_str(&content)?;
+
+    let expiry_ms = value
+        .get("expiry_date")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if expiry_ms <= Utc::now().timestamp_millis() {
+        return Ok(None);
+    }
+
+    Ok(value
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string()))
+}
+
+/// Read Antigravity's keyring token if present.
+fn read_antigravity_keyring_token() -> Result<Option<String>> {
+    let Some(secret) = read_antigravity_keyring_secret()? else {
+        return Ok(None);
+    };
+    parse_antigravity_keyring_token(&secret)
+}
+
+/// Read the raw Antigravity keyring JSON.
+#[cfg(target_os = "windows")]
+fn read_antigravity_keyring_secret() -> Result<Option<String>> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::Security::Credentials::{
+        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+    };
+
+    let target: Vec<u16> = ANTIGRAVITY_CREDENTIAL_TARGET
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut credential: *mut CREDENTIALW = null_mut();
+    let ok = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
+    if ok == 0 {
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(1168) {
+            return Ok(None);
+        }
+        return Err(err.into());
+    }
+
+    struct CredentialGuard(*mut CREDENTIALW);
+    impl Drop for CredentialGuard {
+        fn drop(&mut self) {
+            unsafe { CredFree(self.0.cast()) };
+        }
+    }
+    let _guard = CredentialGuard(credential);
+
+    let credential = unsafe { &*credential };
+    if credential.CredentialBlob.is_null() || credential.CredentialBlobSize == 0 {
+        return Ok(None);
+    }
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            credential.CredentialBlob,
+            credential.CredentialBlobSize as usize,
+        )
+    };
+    Ok(Some(String::from_utf8(bytes.to_vec())?))
+}
+
+/// Non-Windows builds have no Antigravity Credential Manager target.
+#[cfg(not(target_os = "windows"))]
+fn read_antigravity_keyring_secret() -> Result<Option<String>> {
+    Ok(None)
+}
+
+/// Whether the Antigravity Credential Manager target holds a usable (unexpired)
+/// access token — for the `ailimits-auth status` diagnostic, which must not
+/// duplicate the platform read.
+pub fn keyring_token_present() -> bool {
+    match read_antigravity_keyring_secret() {
+        Ok(Some(secret)) => matches!(parse_antigravity_keyring_token(&secret), Ok(Some(_))),
+        _ => false,
+    }
+}
+
+/// Parse Antigravity keyring JSON into an access token.
+pub fn parse_antigravity_keyring_token(body: &str) -> Result<Option<String>> {
+    let value: serde_json::Value = serde_json::from_str(body)?;
+    let token = match value.get("token").and_then(|v| v.as_object()) {
+        Some(token) => token,
+        None => return Ok(None),
+    };
+
+    let expires_at = token
+        .get("expiry")
+        .and_then(|v| v.as_str())
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc));
+    match expires_at {
+        Some(expiry) if expiry > Utc::now() => {}
+        _ => return Ok(None),
+    }
+
+    Ok(token
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string()))
+}
+
+/// Parse the quota response. Verified live schema (2026-06-11):
+/// `{"buckets": [{"modelId": "gemini-2.5-pro", "remainingFraction": 1,
+///   "resetTime": "RFC3339", "tokenType": "REQUESTS"}, …]}`.
+/// We still walk the JSON tolerantly (collecting every object with a
+/// `remainingFraction`) so a future shape change degrades to an honest error
+/// rather than wrong data. The Pro model is ordered first (it drives the bar).
+pub fn parse_quota_buckets(body: &str) -> Result<Vec<Metric>> {
+    let value: serde_json::Value = serde_json::from_str(body)?;
+    let mut metrics = Vec::new();
+    collect_quota(&value, &mut metrics);
+    // Pro first (the headline limit), then flash, then flash-lite; within a
+    // class the newest version first — Antigravity drives the 3.x models, so
+    // they are the relevant headline, not the retired 2.5 buckets.
+    metrics.sort_by(|a, b| {
+        model_rank(&a.label)
+            .cmp(&model_rank(&b.label))
+            .then_with(|| {
+                model_version(&b.label)
+                    .partial_cmp(&model_version(&a.label))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    metrics.truncate(4);
+    Ok(metrics)
+}
+
+/// Parse the fetchAvailableModels response. Verified live 2026-07-09:
+/// `{"models": {"gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro",
+///   "quotaInfo": {"remainingFraction": 0.63, "resetTime": "RFC3339"}, …}, …}}`.
+/// Every Gemini model shares one pool today (same fraction + reset), so pools
+/// are deduped; non-Gemini models (Antigravity also fronts Claude / GPT-OSS)
+/// belong to other providers' stories and are skipped.
+pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
+    let value: serde_json::Value = serde_json::from_str(body)?;
+    let Some(models) = value.get("models").and_then(|v| v.as_object()) else {
+        return Ok(Vec::new());
+    };
+
+    // (fraction milli-units, reset string) → best (rank, version, label).
+    let mut pools: std::collections::HashMap<(u64, String), (u8, f64, String, Metric)> =
+        std::collections::HashMap::new();
+    for (model_id, info) in models {
+        if !model_id.starts_with("gemini") {
+            continue;
+        }
+        let Some(quota) = info.get("quotaInfo") else {
+            continue;
+        };
+        let Some(frac) = quota.get("remainingFraction").and_then(|v| v.as_f64()) else {
+            continue;
+        };
+        let reset_str = quota
+            .get("resetTime")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let reset_at = DateTime::parse_from_rfc3339(&reset_str)
+            .ok()
+            .map(|dt| dt.with_timezone(&Utc))
+            .filter(|dt| dt.timestamp() > 0);
+        let label = model_label(model_id);
+        let metric = Metric {
+            label: label.clone(),
+            used: ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at,
+        };
+        let key = ((frac.clamp(0.0, 1.0) * 1000.0).round() as u64, reset_str);
+        let rank = model_rank(&label);
+        let version = model_version(&label);
+        // Represent each pool by its highest-ranked, newest member.
+        match pools.get(&key) {
+            Some((r, v, _, _)) if (*r, -*v) <= (rank, -version) => {}
+            _ => {
+                pools.insert(key, (rank, version, label, metric));
+            }
+        }
+    }
+
+    let mut metrics: Vec<Metric> = pools.into_values().map(|(_, _, _, m)| m).collect();
+    metrics.sort_by(|a, b| {
+        model_rank(&a.label)
+            .cmp(&model_rank(&b.label))
+            .then_with(|| {
+                model_version(&b.label)
+                    .partial_cmp(&model_version(&a.label))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
+    metrics.truncate(4);
+    Ok(metrics)
+}
+
+/// Project id from the loadCodeAssist response, e.g.
+/// `{"cloudaicompanionProject": "sacred-airline-12rdt", …}`.
+pub fn parse_load_code_assist_project(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("cloudaicompanionProject")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Recursively collect `{remainingFraction, resetTime, modelId?}` objects.
+fn collect_quota(value: &serde_json::Value, out: &mut Vec<Metric>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(frac) = map.get("remainingFraction").and_then(|v| v.as_f64()) {
+                let used = ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64;
+                let label = map
+                    .get("modelId")
+                    .or_else(|| map.get("model"))
+                    .and_then(|v| v.as_str())
+                    .map(model_label)
+                    .unwrap_or_else(|| "Antigravity".to_string());
+                let reset_at = map
+                    .get("resetTime")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.with_timezone(&Utc))
+                    // Exhausted/unscheduled buckets carry the epoch
+                    // placeholder ("1970-01-01T00:00:00Z") — not a real reset.
+                    .filter(|dt| dt.timestamp() > 0);
+                out.push(Metric {
+                    label,
+                    used,
+                    limit: Some(100),
+                    unit: MetricUnit::Percent,
+                    reset_at,
+                });
+            }
+            for v in map.values() {
+                collect_quota(v, out);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr {
+                collect_quota(v, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// "gemini-2.5-pro" → "2.5 Pro", "gemini-2.5-flash-lite" → "2.5 Flash-Lite".
+fn model_label(model: &str) -> String {
+    let m = model.strip_prefix("gemini-").unwrap_or(model);
+    match m.split_once('-') {
+        Some((ver, rest)) => {
+            let name = rest.split('-').map(title).collect::<Vec<_>>().join("-");
+            format!("{ver} {name}")
+        }
+        None => title(m),
+    }
+}
+
+fn title(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+/// Leading version number of a label ("3.1 Pro-Preview" → 3.1) for
+/// newest-first ordering inside a class; 0.0 when there is none.
+fn model_version(label: &str) -> f64 {
+    label
+        .split_whitespace()
+        .next()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0.0)
+}
+
+/// Sort key: Pro first, then plain Flash, then Flash-Lite, then others.
+fn model_rank(label: &str) -> u8 {
+    let l = label.to_lowercase();
+    if l.contains("pro") {
+        0
+    } else if l.contains("flash-lite") {
+        2
+    } else if l.contains("flash") {
+        1
+    } else {
+        3
+    }
+}
