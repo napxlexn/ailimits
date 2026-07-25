@@ -172,20 +172,36 @@ fn launch_installer_and_exit(installer: &Path) -> ! {
     // CREATE_NO_WINDOW | DETACHED_PROCESS — no console flash, survives our exit.
     const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
 
+    // The sequence lives in a throwaway batch file rather than an inline
+    // `cmd /C` command: std::process escapes embedded quotes as `\"`, which
+    // cmd.exe does not understand, so a quoted installer path in an inline
+    // command is mangled and never runs. A batch file's contents are immune to
+    // that escaping. The batch closes this app, installs silently, relaunches
+    // the freshly installed exe, then deletes the installer and itself.
     let inst = installer.display();
     let relaunch = std::env::current_exe()
         .ok()
-        .map(|p| format!(" & start \"\" \"{}\"", p.display()))
+        .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
         .unwrap_or_default();
     let script = format!(
-        "taskkill /im ailimits.exe /f >nul 2>&1 & \
-         \"{inst}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART{relaunch} \
-         & del /q \"{inst}\" >nul 2>&1"
+        "@echo off\r\n\
+         taskkill /im ailimits.exe /f >nul 2>&1\r\n\
+         ping -n 2 127.0.0.1 >nul\r\n\
+         \"{inst}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n\
+         {relaunch}\
+         del /q \"{inst}\" >nul 2>&1\r\n\
+         del /q \"%~f0\" >nul 2>&1\r\n"
     );
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", &script])
-        .creation_flags(FLAGS)
-        .spawn();
+
+    let bat = std::env::temp_dir().join("ailimits-update.cmd");
+    if std::fs::write(&bat, script).is_ok() {
+        // raw_arg keeps cmd's own quote handling — it strips the single outer
+        // pair around the (space-free-safe, quoted) batch path and runs it.
+        let _ = std::process::Command::new("cmd")
+            .raw_arg(format!("/C \"{}\"", bat.display()))
+            .creation_flags(FLAGS)
+            .spawn();
+    }
     std::process::exit(0);
 }
 
