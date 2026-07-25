@@ -29,13 +29,14 @@ use crate::{
         tray::Tray,
         window::WindowState,
     },
+    updater,
 };
 use anyhow::{Context as AnyhowContext, Result};
 use chrono::{Duration, Utc};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -635,6 +636,12 @@ pub fn run() -> Result<()> {
         Arc::new(AtomicU64::new(config.general.update_interval_secs));
     let scheduler = Scheduler::new(providers.clone(), update_interval.clone(), cmd_tx.clone());
     runtime.spawn(scheduler.run());
+
+    // 4b. Background auto-updater — polls GitHub Releases and silently installs
+    // newer builds. The enabled flag is shared so the menu toggle takes effect
+    // without a restart.
+    let auto_update_enabled = Arc::new(AtomicBool::new(config.general.auto_update));
+    runtime.spawn(updater::run(auto_update_enabled.clone()));
 
     // 5. Layout, theme, renderer — mut: switched live from the menu.
     // The layout is computed from VISIBLE providers, not all of them.
@@ -1590,6 +1597,14 @@ pub fn run() -> Result<()> {
                         config.general.update_interval_secs = secs;
                         // The scheduler picks the new value up on its next cycle.
                         update_interval.store(secs, Ordering::Relaxed);
+                        menu.sync(&config, win_state.pinned);
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::ToggleAutoUpdate) => {
+                        config.general.auto_update = !config.general.auto_update;
+                        // The updater task reads this before each check.
+                        auto_update_enabled
+                            .store(config.general.auto_update, Ordering::Relaxed);
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }

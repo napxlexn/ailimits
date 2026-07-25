@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## 0.6.0 - 2026-07-25
+
+### Added
+
+- **Automatic updates.** AI Limits now checks GitHub for new releases in the
+  background and installs them silently, then restarts itself — no manual
+  download. Each installer is verified against the release's published SHA-256
+  before it runs; a mismatch is refused. Toggle it any time from the context
+  menu (**Automatic updates**, on by default); the choice is saved to
+  `config.toml` as `auto_update`.
+
+### Fixed
+
+- **Claude: a maxed weekly limit now shows on the bar itself, not only on
+  hover.** When the weekly allowance was exhausted the widget kept the bar on
+  the 5-hour session window — which reads low (or drops out) exactly when the
+  weekly cap has already blocked new sessions — so the overlay looked far from
+  full until you hovered. The bar now surfaces the weekly window whenever it is
+  exhausted, matching how Codex already behaved.
+
 ## 0.5.3 - 2026-07-23
 
 ### Initial public release

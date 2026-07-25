@@ -4,7 +4,7 @@
 ; Binaries are taken from target\release-min (cargo build --profile release-min).
 
 #define AppName "AI Limits"
-#define AppVersion "0.5.3"
+#define AppVersion "0.6.0"
 #define AppExe "ailimits.exe"
 
 [Setup]

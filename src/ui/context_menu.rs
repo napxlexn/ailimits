@@ -30,6 +30,8 @@ pub enum MenuAction {
     SetIndicator(IndicatorKind),
     /// Show/hide the burn-rate forecast.
     ToggleForecast,
+    /// Enable/disable silent background auto-updates.
+    ToggleAutoUpdate,
     /// Pick a color palette — disables monochrome.
     SetPalette(Palette),
     ToggleMonochrome,
@@ -94,6 +96,7 @@ pub struct ContextMenu {
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
     forecast_item: CheckMenuItem,
+    auto_update_item: CheckMenuItem,
     monochrome_item: CheckMenuItem,
     palette_items: Vec<(CheckMenuItem, Palette)>,
     opacity_items: Vec<(CheckMenuItem, u8)>,
@@ -171,6 +174,8 @@ impl ContextMenu {
             indicator_submenu.append(item)?;
         }
         let forecast_item = CheckMenuItem::new("Forecast", true, config.ui.show_forecast, None);
+        let auto_update_item =
+            CheckMenuItem::new("Automatic updates", true, config.general.auto_update, None);
 
         // "Palette" submenu: monochrome + 8 colored palettes.
         let palette_submenu = Submenu::new("Palette", true);
@@ -321,6 +326,7 @@ impl ContextMenu {
         menu.append(&pin_item)?;
         menu.append(&indicator_submenu)?;
         menu.append(&forecast_item)?;
+        menu.append(&auto_update_item)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&palette_submenu)?;
         menu.append(&opacity_submenu)?;
@@ -346,6 +352,7 @@ impl ContextMenu {
             pin_item,
             indicator_items,
             forecast_item,
+            auto_update_item,
             monochrome_item,
             palette_items,
             opacity_items,
@@ -412,6 +419,9 @@ impl ContextMenu {
         }
         if *event_id == self.forecast_item.id() {
             return Some(MenuAction::ToggleForecast);
+        }
+        if *event_id == self.auto_update_item.id() {
+            return Some(MenuAction::ToggleAutoUpdate);
         }
         for (item, id) in &self.provider_toggles {
             if *event_id == item.id() {
@@ -487,6 +497,8 @@ impl ContextMenu {
             item.set_checked(indicator_matches(config.general.indicator, *k));
         }
         self.forecast_item.set_checked(config.ui.show_forecast);
+        self.auto_update_item
+            .set_checked(config.general.auto_update);
         for (item, id) in &self.provider_toggles {
             let enabled = config
                 .providers

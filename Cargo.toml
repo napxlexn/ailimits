@@ -1,6 +1,6 @@
 [package]
 name = "ailimits"
-version = "0.5.3"
+version = "0.6.0"
 edition = "2021"
 # Build-from-source floor. Driven by icu_* (via reqwest → url → idna); Cargo
 # emits a clear error on an older toolchain instead of a deep dependency error.
@@ -47,6 +47,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "process",
 # --- HTTP ---
 # HTTP client with TLS (rustls, no OpenSSL).
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# SHA-256 for the auto-updater's installer integrity check. Already in the tree
+# via rustls (transitively) — a direct dep here adds no new crate, only access.
+ring = "0.17"
 
 # --- Serialization ---
 serde = { version = "1", features = ["derive"] }

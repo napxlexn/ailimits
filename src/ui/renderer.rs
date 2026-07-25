@@ -957,8 +957,15 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, color: Color, alpha: u8) {
     data[idx + 3] = (a + data[idx + 3] as u32 * inv / 255).min(255) as u8;
 }
 
-/// Active metric for the percent/bar: hovering the provider temporarily
-/// switches to the weekly metric.
+/// A window at or above this percentage is exhausted: the account is blocked on
+/// it regardless of any other window's reading.
+const EXHAUSTED_PCT: f32 = 100.0;
+
+/// Active metric for the percent/bar: hovering the provider temporarily switches
+/// to the weekly metric. The weekly metric also takes over the *default* view
+/// once it is exhausted — a maxed weekly limit blocks the account even when the
+/// session window reads low (or is no longer reported), so leaving the session
+/// primary there would hide the real limit until the user happened to hover.
 fn active_progress_metric<'a>(
     data: &'a ProviderData,
     hover_area: &Rect,
@@ -967,10 +974,14 @@ fn active_progress_metric<'a>(
     let primary = primary_progress_metric(data);
     let weekly = weekly_metric(data).filter(|metric| metric.percentage().is_some());
     if cursor.is_some_and(|point| point_in_rect(point, hover_area)) {
-        weekly.or(primary)
-    } else {
-        primary
+        return weekly.or(primary);
     }
+    // Exhausted weekly → show it by default; otherwise the session stays primary,
+    // falling back to the weekly when no session window is present at all.
+    if weekly.is_some_and(|metric| metric.percentage().is_some_and(|pct| pct >= EXHAUSTED_PCT)) {
+        return weekly;
+    }
+    primary.or(weekly)
 }
 
 /// Primary metric for the large percent and bar: weekly limits render separately.
@@ -1109,5 +1120,72 @@ pub fn format_duration(secs: i64) -> String {
         format!("{m}min")
     } else {
         format!("{secs}s")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pct_metric(label: &str, pct: u64) -> Metric {
+        Metric {
+            label: label.into(),
+            used: pct,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: None,
+        }
+    }
+
+    fn data(metrics: Vec<Metric>) -> ProviderData {
+        ProviderData {
+            id: ProviderId::Claude,
+            status: ProviderStatus::Ok,
+            metrics,
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    fn any_rect() -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        }
+    }
+
+    #[test]
+    fn default_view_shows_session_when_weekly_not_exhausted() {
+        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let active = active_progress_metric(&d, &any_rect(), None).unwrap();
+        assert_eq!(active.label, "Session");
+    }
+
+    #[test]
+    fn exhausted_weekly_takes_over_default_view() {
+        // Weekly maxed while the session reads low: the bar must reflect the
+        // blocking weekly limit without needing a hover.
+        let d = data(vec![pct_metric("Session", 20), pct_metric("Weekly", 100)]);
+        let active = active_progress_metric(&d, &any_rect(), None).unwrap();
+        assert_eq!(active.label, "Weekly");
+        assert_eq!(active.percentage(), Some(100.0));
+    }
+
+    #[test]
+    fn exhausted_weekly_shown_when_session_window_absent() {
+        // When the weekly cap is hit the source may stop reporting the session
+        // window entirely; the weekly must still drive the bar.
+        let d = data(vec![pct_metric("Weekly", 100)]);
+        let active = active_progress_metric(&d, &any_rect(), None).unwrap();
+        assert_eq!(active.label, "Weekly");
+    }
+
+    #[test]
+    fn hover_still_reveals_weekly() {
+        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let active = active_progress_metric(&d, &any_rect(), Some((5.0, 5.0))).unwrap();
+        assert_eq!(active.label, "Weekly");
     }
 }

@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ailimits"
-version = "0.5.3"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -30,6 +30,7 @@ dependencies = [
  "keyring",
  "muda",
  "reqwest",
+ "ring",
  "rpassword",
  "serde",
  "serde_json",

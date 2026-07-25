@@ -12,3 +12,4 @@ pub mod notifications;
 pub mod platform;
 pub mod providers;
 pub mod ui;
+pub mod updater;

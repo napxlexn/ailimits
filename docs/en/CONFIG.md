@@ -28,6 +28,11 @@ update_interval_secs = 60
 # tray width event-driven, no polling. "bars" — legacy tray icon;
 # "off" — nothing. Supersedes the legacy show_tray_icon flag (ignored).
 indicator = "tray"
+# Automatic updates (menu: Automatic updates). When true, AI Limits checks
+# GitHub for a newer release in the background (~30s after start, then daily),
+# verifies the installer against the release's published SHA-256, installs it
+# silently and restarts. Set false to disable; missing in old configs → true.
+auto_update = true
 
 [window]
 pos_x = 50

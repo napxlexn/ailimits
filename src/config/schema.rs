@@ -106,6 +106,11 @@ pub struct GeneralConfig {
     /// this defaults to Tray, which matches the old default).
     #[serde(default, deserialize_with = "de_enum_or_default")]
     pub indicator: IndicatorKind,
+    /// Silently install newer releases in the background. On by default; the
+    /// context menu exposes a toggle. Old configs without the field default to
+    /// enabled, matching the shipped behaviour.
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
 }
 
 impl Default for GeneralConfig {
@@ -113,6 +118,7 @@ impl Default for GeneralConfig {
         Self {
             update_interval_secs: default_update_interval(),
             indicator: IndicatorKind::default(),
+            auto_update: default_auto_update(),
         }
     }
 }
@@ -278,6 +284,9 @@ pub enum AuthMethod {
 // ─── Default values ───────────────────────────────────────────────
 fn default_update_interval() -> u64 {
     60
+}
+fn default_auto_update() -> bool {
+    true
 }
 fn default_opacity() -> f32 {
     0.45

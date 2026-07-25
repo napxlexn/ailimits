@@ -164,7 +164,8 @@ Antigravity CLI; віджет читає token Antigravity із Windows Credenti
 (Vertical / Horizontal), `Lock position` і `Always on top` (два незалежні
 перемикачі), Palette (монохром + 8 кольорів), Background opacity, Brightness,
 Saturation, Forecast (burn-rate «~час до ліміту», вимкнений за
-замовчуванням), Update interval (1 / 5 / 15 / 30 хв), Indicator,
+замовчуванням), Update interval (1 / 5 / 15 / 30 хв), `Automatic updates`
+(тихе фонове самооновлення, увімкнено за замовчуванням), Indicator,
 налаштування провайдерів, Quit.
 
 ### Індикатор на панелі завдань
