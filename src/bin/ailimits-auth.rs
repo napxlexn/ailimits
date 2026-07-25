@@ -96,7 +96,7 @@ fn status() -> Result<()> {
         match read_oauth_expiry(&creds_path) {
             Some((expires_at, sub_type)) => {
                 let valid = expires_at > Utc::now();
-                let mark = if valid { "✓" } else { "✗ (expired)" };
+                let mark = if valid { "OK" } else { "no (expired)" };
                 println!("Claude OAuth ({sub_type} subscription): {mark}");
                 println!(
                     "  token valid until {} UTC",
@@ -106,17 +106,17 @@ fn status() -> Result<()> {
                     println!("  → run Claude Code, it refreshes the token automatically");
                 }
             }
-            None => println!("Claude OAuth: ✗ (.credentials.json has no valid token)"),
+            None => println!("Claude OAuth: no (.credentials.json has no valid token)"),
         }
     } else {
-        println!("Claude OAuth: ✗ (no .credentials.json — run Claude Code once)");
+        println!("Claude OAuth: no (.credentials.json missing — run Claude Code once)");
     }
 
     // Claude Code local files.
     let statusline = claude_dir.join("statusline.jsonl").exists();
     let stats = claude_dir.join("stats-cache.json").exists();
-    println!("statusline.jsonl: {}", if statusline { "✓" } else { "✗" });
-    println!("stats-cache.json: {}", if stats { "✓" } else { "✗" });
+    println!("statusline.jsonl: {}", if statusline { "OK" } else { "no" });
+    println!("stats-cache.json: {}", if stats { "OK" } else { "no" });
 
     // Manual usage tokens.
     for (id, label) in USAGE_TOKEN_PROVIDERS {
@@ -125,7 +125,7 @@ fn status() -> Result<()> {
             .is_ok();
         println!(
             "{id} usage token ({label}): {}",
-            if present { "✓ stored" } else { "—" }
+            if present { "stored" } else { "—" }
         );
     }
 
@@ -137,9 +137,9 @@ fn status() -> Result<()> {
     println!(
         "Codex auth.json: {}",
         if codex_auth.exists() {
-            "✓"
+            "OK"
         } else {
-            "✗ (run codex login)"
+            "no (run codex login)"
         }
     );
 
@@ -154,9 +154,9 @@ fn status() -> Result<()> {
     println!(
         "gh CLI token (Copilot): {}",
         if gh_ok {
-            "✓"
+            "OK"
         } else {
-            "✗ (gh auth login, or store a PAT)"
+            "no (gh auth login, or store a PAT)"
         }
     );
 
@@ -165,9 +165,9 @@ fn status() -> Result<()> {
     println!(
         "Antigravity keyring (gemini:antigravity): {}",
         if ailimits::providers::antigravity::keyring_token_present() {
-            "✓"
+            "OK"
         } else {
-            "✗ (run Antigravity once)"
+            "no (run Antigravity once)"
         }
     );
     let gemini_creds = dirs::home_dir()
@@ -176,7 +176,7 @@ fn status() -> Result<()> {
         .join("oauth_creds.json");
     println!(
         "legacy Gemini CLI oauth_creds.json: {}",
-        if gemini_creds.exists() { "✓" } else { "✗" }
+        if gemini_creds.exists() { "OK" } else { "no" }
     );
 
     // Stored keys.
@@ -188,7 +188,7 @@ fn status() -> Result<()> {
             .is_ok();
         println!(
             "{id:<8} ({label}): {}",
-            if present { "✓ stored" } else { "—" }
+            if present { "stored" } else { "—" }
         );
     }
 
@@ -238,7 +238,7 @@ fn set(provider: Option<&str>) -> Result<()> {
     }
     save_config(&config)?;
 
-    println!("✓ Key for '{provider}' stored in Credential Manager (label: {label})");
+    println!("Key for '{provider}' stored in Credential Manager (label: {label})");
     println!("→ Restart the widget to apply");
     Ok(())
 }
@@ -262,7 +262,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
         .set_password(token)
         .context("failed to store the usage token in Credential Manager")?;
 
-    println!("✓ {provider} usage token stored (label: {label})");
+    println!("{provider} usage token stored (label: {label})");
     println!("→ Restart the widget to apply");
     Ok(())
 }
@@ -301,7 +301,7 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
     let label = usage_label_for(provider)?;
 
     match keyring::Entry::new(KEYRING_SERVICE, label).and_then(|e| e.delete_credential()) {
-        Ok(()) => println!("✓ {provider} usage token removed"),
+        Ok(()) => println!("{provider} usage token removed"),
         Err(keyring::Error::NoEntry) => println!("— no {provider} usage token stored"),
         Err(e) => bail!("failed to remove the usage token: {e}"),
     }
@@ -316,7 +316,7 @@ fn remove(provider: Option<&str>) -> Result<()> {
     let label = label_for(provider)?;
 
     match keyring::Entry::new(KEYRING_SERVICE, label).and_then(|e| e.delete_credential()) {
-        Ok(()) => println!("✓ Key '{label}' removed from Credential Manager"),
+        Ok(()) => println!("Key '{label}' removed from Credential Manager"),
         Err(keyring::Error::NoEntry) => println!("— no key '{label}' stored"),
         Err(e) => bail!("failed to remove the key: {e}"),
     }
@@ -326,7 +326,7 @@ fn remove(provider: Option<&str>) -> Result<()> {
         // Without a key everything runs on the subscription method.
         p.credential_label = String::new();
         p.auth_method = AuthMethod::Subscription;
-        println!("✓ '{provider}' switched back to the subscription method");
+        println!("'{provider}' switched back to the subscription method");
     }
     save_config(&config)?;
 
