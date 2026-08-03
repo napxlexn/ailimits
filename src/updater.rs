@@ -75,8 +75,12 @@ async fn check_and_install(client: &reqwest::Client) -> Result<()> {
     );
     let installer = download_and_verify(client, &update).await?;
     info!("update verified; launching installer for a silent upgrade");
-    // Diverges: replaces this process with the installer + a relaunch.
-    launch_installer_and_exit(&installer)
+    // Diverges on success: the installer replaces this process. A failed
+    // handoff must NOT take the app down — stay on the current version.
+    if let Err(e) = launch_installer_and_exit(&installer) {
+        warn!("update handoff failed, staying on the current version: {e:#}");
+    }
+    Ok(())
 }
 
 /// Query the latest release; return Some only when it is strictly newer than the
@@ -167,17 +171,11 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
 /// downloaded installer. We spawn it detached and exit immediately so the
 /// installer never races our own file lock.
 #[cfg(target_os = "windows")]
-fn launch_installer_and_exit(installer: &Path) -> ! {
+fn launch_installer_and_exit(installer: &Path) -> Result<()> {
     use std::os::windows::process::CommandExt;
     // CREATE_NO_WINDOW | DETACHED_PROCESS — no console flash, survives our exit.
     const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
 
-    // The sequence lives in a throwaway batch file rather than an inline
-    // `cmd /C` command: std::process escapes embedded quotes as `\"`, which
-    // cmd.exe does not understand, so a quoted installer path in an inline
-    // command is mangled and never runs. A batch file's contents are immune to
-    // that escaping. The batch closes this app, installs silently, relaunches
-    // the freshly installed exe, then deletes the installer and itself.
     let inst = installer.display();
     let relaunch = std::env::current_exe()
         .ok()
@@ -194,21 +192,25 @@ fn launch_installer_and_exit(installer: &Path) -> ! {
     );
 
     let bat = std::env::temp_dir().join("ailimits-update.cmd");
-    if std::fs::write(&bat, script).is_ok() {
-        // raw_arg keeps cmd's own quote handling — it strips the single outer
-        // pair around the (space-free-safe, quoted) batch path and runs it.
-        let _ = std::process::Command::new("cmd")
-            .raw_arg(format!("/C \"{}\"", bat.display()))
-            .creation_flags(FLAGS)
-            .spawn();
-    }
+    std::fs::write(&bat, script)
+        .with_context(|| format!("write the update script to {}", bat.display()))?;
+
+    // Absolute interpreter: a planted cmd.exe in the working directory must
+    // not be able to hijack the handoff (same rule as hooks.rs).
+    std::process::Command::new(crate::hooks::system_cmd_exe())
+        .raw_arg(format!("/C \"{}\"", bat.display()))
+        .creation_flags(FLAGS)
+        .spawn()
+        .context("spawn the update handoff")?;
+
+    // The handoff is running; leave so the installer can replace our files.
     std::process::exit(0);
 }
 
 #[cfg(not(target_os = "windows"))]
-fn launch_installer_and_exit(_installer: &Path) -> ! {
+fn launch_installer_and_exit(_installer: &Path) -> Result<()> {
     // Non-Windows builds ship no installer; nothing to hand off to.
-    std::process::exit(0);
+    anyhow::bail!("no installer handoff on this platform")
 }
 
 /// Parse "v1.2.3" / "1.2.3" into a comparable tuple; any pre-release/build
