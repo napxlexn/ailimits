@@ -1620,6 +1620,16 @@ pub fn run() -> Result<()> {
                 },
             },
 
+            // tao calls process::exit() right after this event, and that does
+            // not wait for the background saver — persist synchronously here
+            // so a setting changed moments before quitting survives. This one
+            // arm covers every exit path (window close, tray Quit, menu Quit).
+            Event::LoopDestroyed => {
+                if let Err(e) = rt_handle.block_on(storage::save(&config)) {
+                    warn!("final config save failed: {e}");
+                }
+            }
+
             _ => {}
         }
     });
