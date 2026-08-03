@@ -3,3 +3,6 @@
 # measurement script, plus a personal taskbar screenshot used as a 1:1
 # reference. Kept locally, never shipped — not part of the product.
 /design
+
+# Agent worktrees and local session scratch — never part of the product.
+/.claude
