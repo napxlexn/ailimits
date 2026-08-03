@@ -163,6 +163,14 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
     Ok(dest)
 }
 
+/// Where the installer puts the exe: `{localappdata}\AiLimits\ailimits.exe`
+/// (installer/ailimits.iss). The relaunch must use THIS path — relaunching
+/// `current_exe()` would restart an old copy whenever the running binary lives
+/// somewhere else, and the next check would install the same update again.
+fn installed_exe_path() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("AiLimits").join("ailimits.exe"))
+}
+
 /// Hand off to the downloaded installer for a silent, in-place upgrade, then exit.
 ///
 /// The running exe holds a lock on itself, so a detached `cmd` shell (which does
@@ -177,8 +185,8 @@ fn launch_installer_and_exit(installer: &Path) -> Result<()> {
     const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
 
     let inst = installer.display();
-    let relaunch = std::env::current_exe()
-        .ok()
+    let relaunch = installed_exe_path()
+        .or_else(|| std::env::current_exe().ok())
         .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
         .unwrap_or_default();
     let script = format!(
@@ -271,5 +279,13 @@ mod tests {
             hex_lower(d.as_ref()),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn installed_path_targets_the_installer_directory() {
+        // The installer writes to {localappdata}\AiLimits\ailimits.exe; the
+        // relaunch must aim there, not at whatever copy happens to be running.
+        let p = installed_exe_path().expect("local data dir resolves on Windows");
+        assert!(p.ends_with("AiLimits/ailimits.exe") || p.ends_with(r"AiLimits\ailimits.exe"));
     }
 }
