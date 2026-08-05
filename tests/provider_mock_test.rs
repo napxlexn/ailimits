@@ -191,7 +191,8 @@ fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
     assert_eq!(metrics[0].used, 37); // (1 - 0.6300952) * 100, rounded
     assert!(metrics[0].reset_at.is_some());
 
-    // Unknown shape → empty (the provider falls back to the bucket view).
+    // Unknown shape → empty (the provider reports it as Unusable and moves
+    // on; there is no further fallback source).
     assert!(parse_available_models_quota(r#"{"foo": 1}"#)
         .unwrap()
         .is_empty());

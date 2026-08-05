@@ -38,6 +38,29 @@ pub struct AntigravityProvider {
     project: std::sync::Mutex<Option<String>>,
 }
 
+/// Outcome of one quota request (retrieveUserQuotaSummary or
+/// fetchAvailableModels).
+enum QuotaOutcome {
+    /// Usable metrics.
+    Metrics(Vec<Metric>),
+    /// The endpoint answered, but with nothing we can trust (non-200 other
+    /// than 401/403, an unparseable body, or a recognized-but-empty shape).
+    Unusable,
+    /// The token was rejected (401/403). No other source will do better —
+    /// callers must stop the fallback chain and report this directly.
+    TokenRejected,
+}
+
+/// Outcome of resolving the Code Assist project id.
+enum ProjectResolution {
+    /// Resolved project id (from cache or a fresh loadCodeAssist call).
+    Project(String),
+    /// The endpoint answered, but with nothing we can use.
+    Unusable,
+    /// The token was rejected (401/403).
+    TokenRejected,
+}
+
 /// Identify like Antigravity's own client. Google treats anonymous callers
 /// differently on every Code Assist endpoint: `loadCodeAssist` answers 200 but
 /// silently omits `cloudaicompanionProject`, `fetchAvailableModels` and
@@ -63,72 +86,113 @@ impl AntigravityProvider {
         }
     }
 
-    /// One fetchAvailableModels request; Ok(None) when the shape is unknown.
-    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
+    /// One fetchAvailableModels request. 401/403 → TokenRejected; any other
+    /// non-200 or an unparseable/empty body → Unusable.
+    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
         let resp = identified(self.http.post(MODELS_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body(serde_json::json!({ "project": project }).to_string())
             .send()
             .await?;
-        if resp.status().as_u16() != 200 {
-            warn!(
-                "fetchAvailableModels returned HTTP {}",
-                resp.status().as_u16()
-            );
-            return Ok(None);
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
+            other => {
+                warn!("fetchAvailableModels returned HTTP {other}");
+                return Ok(QuotaOutcome::Unusable);
+            }
         }
         let body = resp.text().await?;
-        Ok(Some(parse_available_models_quota(&body)?))
+        let metrics = parse_available_models_quota(&body)?;
+        if metrics.is_empty() {
+            Ok(QuotaOutcome::Unusable)
+        } else {
+            Ok(QuotaOutcome::Metrics(metrics))
+        }
     }
 
-    /// One retrieveUserQuotaSummary request; Ok(None) when the call fails or
-    /// the shape is unknown.
-    async fn fetch_quota_summary(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
+    /// One retrieveUserQuotaSummary request. 401/403 → TokenRejected; any
+    /// other non-200 or an unparseable/empty body → Unusable.
+    async fn fetch_quota_summary(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
         let resp = identified(self.http.post(SUMMARY_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body(serde_json::json!({ "project": project }).to_string())
             .send()
             .await?;
-        if resp.status().as_u16() != 200 {
-            warn!(
-                "retrieveUserQuotaSummary returned HTTP {}",
-                resp.status().as_u16()
-            );
-            return Ok(None);
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
+            other => {
+                warn!("retrieveUserQuotaSummary returned HTTP {other}");
+                return Ok(QuotaOutcome::Unusable);
+            }
         }
         let body = resp.text().await?;
-        Ok(Some(parse_quota_summary(&body)?))
+        let metrics = parse_quota_summary(&body)?;
+        if metrics.is_empty() {
+            Ok(QuotaOutcome::Unusable)
+        } else {
+            Ok(QuotaOutcome::Metrics(metrics))
+        }
     }
 
-    /// Resolve the Code Assist project id (cached). None on any failure —
-    /// callers must treat that as fatal, since every quota endpoint answers
-    /// a misleading "everything full" default view without the project id.
-    async fn resolve_project(&self, token: &str) -> Option<String> {
+    /// Resolve the Code Assist project id (cached). Unusable/TokenRejected on
+    /// failure — callers must treat both as fatal, since every quota endpoint
+    /// answers a misleading "everything full" default view without the
+    /// project id, and a rejected token cannot succeed on any endpoint.
+    async fn resolve_project(&self, token: &str) -> ProjectResolution {
         if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
-            return Some(p);
+            return ProjectResolution::Project(p);
         }
-        let resp = identified(self.http.post(LOAD_URL))
+        let resp = match identified(self.http.post(LOAD_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body("{}")
             .send()
             .await
-            .ok()?;
-        if resp.status().as_u16() != 200 {
-            warn!("loadCodeAssist returned HTTP {}", resp.status().as_u16());
-            return None;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("loadCodeAssist request failed: {e}");
+                return ProjectResolution::Unusable;
+            }
+        };
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return ProjectResolution::TokenRejected,
+            other => {
+                warn!("loadCodeAssist returned HTTP {other}");
+                return ProjectResolution::Unusable;
+            }
         }
-        let body = resp.text().await.ok()?;
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                warn!("loadCodeAssist body read failed: {e}");
+                return ProjectResolution::Unusable;
+            }
+        };
         let Some(project) = parse_load_code_assist_project(&body) else {
             warn!("loadCodeAssist returned no cloudaicompanionProject");
-            return None;
+            return ProjectResolution::Unusable;
         };
         if let Ok(mut guard) = self.project.lock() {
             *guard = Some(project.clone());
         }
-        Some(project)
+        ProjectResolution::Project(project)
+    }
+
+    /// The single message produced when Antigravity rejects the token — used
+    /// at every request site so the wording never drifts.
+    fn token_rejected(&self) -> ProviderData {
+        self.data(
+            ProviderStatus::AuthError(
+                "Antigravity token rejected — run Antigravity CLI once".to_string(),
+            ),
+            vec![],
+        )
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -155,30 +219,38 @@ impl AntigravityProvider {
         // a synthetic "everything full" default view when it is missing, which
         // is indistinguishable from a genuinely unused account — so report an
         // honest error instead of rendering numbers we know may be wrong.
-        let Some(project) = self.resolve_project(&token).await else {
-            return Ok(self.data(
-                ProviderStatus::NetworkError(
-                    "no Code Assist project id — open Antigravity once".to_string(),
-                ),
-                vec![],
-            ));
+        let project = match self.resolve_project(&token).await {
+            ProjectResolution::Project(p) => p,
+            ProjectResolution::TokenRejected => return Ok(self.token_rejected()),
+            ProjectResolution::Unusable => {
+                return Ok(self.data(
+                    ProviderStatus::NetworkError(
+                        "no Code Assist project id — open Antigravity once".to_string(),
+                    ),
+                    vec![],
+                ));
+            }
         };
 
         // Primary: the shared pools Antigravity itself shows.
         match self.fetch_quota_summary(&token, &project).await {
-            Ok(Some(metrics)) if !metrics.is_empty() => {
+            Ok(QuotaOutcome::Metrics(metrics)) => {
                 return Ok(self.data(ProviderStatus::Ok, metrics));
             }
-            Ok(_) => warn!("retrieveUserQuotaSummary returned no usable pools, falling back"),
+            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
+            Ok(QuotaOutcome::Unusable) => {
+                warn!("retrieveUserQuotaSummary returned no usable pools, falling back")
+            }
             Err(e) => warn!("retrieveUserQuotaSummary failed, falling back: {e}"),
         }
 
         // Per-model quota (the pools Antigravity itself meters).
         match self.fetch_models_quota(&token, &project).await {
-            Ok(Some(metrics)) if !metrics.is_empty() => {
+            Ok(QuotaOutcome::Metrics(metrics)) => {
                 return Ok(self.data(ProviderStatus::Ok, metrics));
             }
-            Ok(_) => warn!("fetchAvailableModels returned no usable quota"),
+            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
+            Ok(QuotaOutcome::Unusable) => warn!("fetchAvailableModels returned no usable quota"),
             Err(e) => warn!("fetchAvailableModels failed: {e}"),
         }
 
