@@ -2,6 +2,32 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## 0.6.1 - 2026-08-05
+
+### Fixed
+
+- **Antigravity showed a full quota while the weekly pool was spent.** The
+  widget could not read the account's Code Assist project id, and Google
+  answers project-less quota requests with a default view where every bucket
+  reads full — so an exhausted Gemini allowance rendered as 0% used. AI Limits
+  now identifies itself the way Antigravity's own client does, reads the shared
+  quota pools ("Gemini Models", "Claude and GPT models") that Antigravity
+  meters today, and reports an honest error instead of a quota it cannot
+  verify.
+- **A spent weekly limit now shows everywhere, not just on the widget.** The
+  taskbar panel, the tray icon, both tooltips and the threshold notifications
+  kept reporting the 5-hour session gauge — which reads low precisely when a
+  spent weekly cap has already blocked new sessions. Every surface now shares
+  one rule, and each limit window is classified explicitly, so Claude's Opus
+  and Sonnet weekly pools count as well.
+- **A failed update no longer closes the app.** If the installer handoff could
+  not start, AI Limits exited anyway without updating; it now stays on the
+  current version and logs the reason. The handoff also uses the absolute
+  system command interpreter and relaunches the installed binary, so a copy
+  running from another folder can no longer reinstall the same update forever.
+- **Settings changed immediately before quitting are no longer lost** — the
+  configuration is written synchronously as the window closes.
+
 ## 0.6.0 - 2026-07-25
 
 ### Added

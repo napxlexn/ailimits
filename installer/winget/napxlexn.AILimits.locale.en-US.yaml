@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 PackageIdentifier: napxlexn.AILimits
-PackageVersion: 0.6.0
+PackageVersion: 0.6.1
 PackageLocale: en-US
 Publisher: napxlexn
 PublisherUrl: https://github.com/napxlexn
@@ -8,7 +8,7 @@ PublisherSupportUrl: https://github.com/napxlexn/ailimits/issues
 PackageName: AI Limits
 PackageUrl: https://github.com/napxlexn/ailimits
 License: GPL-3.0-or-later
-LicenseUrl: https://github.com/napxlexn/ailimits/blob/v0.6.0/LICENSE
+LicenseUrl: https://github.com/napxlexn/ailimits/blob/v0.6.1/LICENSE
 Copyright: Copyright (c) 2026 napxlexn
 ShortDescription: A tiny native Windows 11 overlay showing your AI provider usage limits.
 Description: >-
@@ -33,6 +33,6 @@ Tags:
   - widget
   - monitor
   - tray
-ReleaseNotesUrl: https://github.com/napxlexn/ailimits/releases/tag/v0.6.0
+ReleaseNotesUrl: https://github.com/napxlexn/ailimits/releases/tag/v0.6.1
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
