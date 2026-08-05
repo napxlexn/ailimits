@@ -123,8 +123,22 @@ pub struct ConfigSaverHandle {
 impl ConfigSaverHandle {
     /// Queue a config for persistence. Fire-and-forget: a burst coalesces to
     /// the latest value on the one-slot channel.
+    ///
+    /// If a `Final` has already been queued (`shutdown` is under way), this
+    /// is a no-op instead: `send_if_modified` checks-and-sets atomically
+    /// under the channel's own lock, so a `Write` landing concurrently with
+    /// `shutdown`'s `Final` can never overwrite it. Without this, a `Write`
+    /// that slipped into the slot after `Final` but before the writer task
+    /// picked it up would make the task loop back for more instead of
+    /// breaking, and the `JoinHandle` `shutdown` awaits would never resolve.
     pub fn save(&self, config: Config) {
-        let _ = self.tx.send(Some(SaveMsg::Write(config)));
+        self.tx.send_if_modified(|slot| match slot {
+            Some(SaveMsg::Final(_)) => false,
+            _ => {
+                *slot = Some(SaveMsg::Write(config));
+                true
+            }
+        });
     }
 }
 
@@ -143,7 +157,11 @@ impl ConfigSaver {
     /// task already has in flight, and a slower in-flight write of an older
     /// snapshot could rename over the newest config. Handing the task a
     /// `Final` message instead keeps a single writer, and awaiting the task
-    /// proves the newest config reached disk before the process exits.
+    /// to completion proves the newest config reached disk before the
+    /// process exits. That guarantee holds only when the wait succeeds
+    /// within `SHUTDOWN_FLUSH_TIMEOUT`: on timeout the `JoinHandle` is
+    /// simply dropped rather than cancelled, so a wedged write can still
+    /// land on disk after this function has already returned.
     ///
     /// The wait happens on a freshly spawned OS thread rather than via
     /// `rt.block_on` on the calling thread directly: the caller is usually a
@@ -168,8 +186,8 @@ impl ConfigSaver {
         .join();
         match waited {
             Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(_elapsed))) => tracing::warn!("final config save timed out"),
-            Ok(Err(e)) => tracing::warn!("config writer task failed: {e}"),
+            Ok(Ok(Err(e))) => tracing::warn!("config writer task failed: {e}"),
+            Ok(Err(_)) => tracing::warn!("final config save timed out"),
             Err(_) => {
                 tracing::warn!("config writer thread panicked while waiting for the final save")
             }
