@@ -17,8 +17,8 @@ use crate::{
     notifications::toast::ToastNotifier,
     providers::{
         antigravity::AntigravityProvider, claude::ClaudeProvider, codex::CodexProvider,
-        copilot::CopilotProvider, key_label_for, usage_token_label_for, Metric, Provider,
-        ProviderData, ProviderId, ProviderStatus,
+        copilot::CopilotProvider, key_label_for, usage_token_label_for, Metric, MetricWindow,
+        Provider, ProviderData, ProviderId, ProviderStatus,
     },
     ui::{
         context_menu::{ContextMenu, MenuAction},
@@ -178,16 +178,22 @@ fn cacheable_provider_data(data: &ProviderData) -> Option<ProviderData> {
     prune_provider_cache_entry(data)
 }
 
+/// Whether a live metric already occupies the slot a cached metric would fill.
+///
+/// The label is authoritative when both sides have one. Beyond that, only
+/// session-window metrics may collapse onto a shared slot by unit: providers
+/// rename those rows between fetches (Antigravity follows Google's model
+/// rotation), whereas long windows are distinct named pools — Claude reports
+/// Weekly, Opus and Sonnet at once — so two differently-labelled long metrics
+/// are always different slots.
 fn metrics_match_slot(a: &Metric, b: &Metric) -> bool {
-    a.label.eq_ignore_ascii_case(&b.label)
-        || (metric_is_weekly(a) && metric_is_weekly(b))
-        || (!metric_is_weekly(a)
-            && !metric_is_weekly(b)
-            && std::mem::discriminant(&a.unit) == std::mem::discriminant(&b.unit))
-}
-
-fn metric_is_weekly(metric: &Metric) -> bool {
-    metric.label.to_lowercase().contains("week")
+    if a.label.eq_ignore_ascii_case(&b.label) {
+        return true;
+    }
+    if matches!(a.window, MetricWindow::Long) || matches!(b.window, MetricWindow::Long) {
+        return false;
+    }
+    std::mem::discriminant(&a.unit) == std::mem::discriminant(&b.unit)
 }
 
 fn merge_cached_metrics(mut data: ProviderData, cached: Option<&ProviderData>) -> ProviderData {
@@ -1636,4 +1642,92 @@ pub fn run() -> Result<()> {
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::MetricUnit;
+
+    fn pct(label: &str, used: u64, window: MetricWindow) -> Metric {
+        Metric {
+            label: label.to_string(),
+            used,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: None,
+            window,
+        }
+    }
+
+    fn data(metrics: Vec<Metric>) -> ProviderData {
+        ProviderData {
+            id: ProviderId::Claude,
+            status: ProviderStatus::Ok,
+            metrics,
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    #[test]
+    fn a_session_metric_never_covers_a_long_windows_slot() {
+        // The old label guess called neither of these "weekly" and then matched
+        // them on their shared unit, so a cached Opus row was thrown away.
+        let session = pct("Session", 20, MetricWindow::Session);
+        let opus = pct("Opus", 100, MetricWindow::Long);
+        assert!(!metrics_match_slot(&session, &opus));
+    }
+
+    #[test]
+    fn two_different_long_pools_are_different_slots() {
+        // Claude reports Weekly, Opus and Sonnet at the same time; one long
+        // window no longer stands for all of them.
+        let weekly = pct("Weekly", 50, MetricWindow::Long);
+        let opus = pct("Opus", 100, MetricWindow::Long);
+        assert!(!metrics_match_slot(&weekly, &opus));
+    }
+
+    #[test]
+    fn the_same_label_is_always_the_same_slot() {
+        let a = pct("Weekly", 50, MetricWindow::Long);
+        let b = pct("Weekly", 90, MetricWindow::Long);
+        assert!(metrics_match_slot(&a, &b));
+        let c = pct("Session", 10, MetricWindow::Session);
+        let d = pct("session", 80, MetricWindow::Session);
+        assert!(metrics_match_slot(&c, &d));
+    }
+
+    #[test]
+    fn session_metrics_with_different_labels_still_share_a_slot_by_unit() {
+        // Antigravity renames its rows as Google rotates models, so two session
+        // metrics of the same unit must keep collapsing onto one slot.
+        let a = pct("2.5 Pro", 30, MetricWindow::Session);
+        let b = pct("3.6 Flash", 40, MetricWindow::Session);
+        assert!(metrics_match_slot(&a, &b));
+    }
+
+    #[test]
+    fn merging_restores_long_pools_the_api_omitted_this_cycle() {
+        // Claude answers "seven_day_opus": null on some cycles; the cached rows
+        // must come back instead of being swallowed by the Session metric.
+        let live = data(vec![
+            pct("Session", 20, MetricWindow::Session),
+            pct("Weekly", 60, MetricWindow::Long),
+        ]);
+        let cached = data(vec![
+            pct("Session", 15, MetricWindow::Session),
+            pct("Weekly", 55, MetricWindow::Long),
+            pct("Opus", 100, MetricWindow::Long),
+            pct("Sonnet", 40, MetricWindow::Long),
+        ]);
+        let merged = merge_cached_metrics(live, Some(&cached));
+        let labels: Vec<&str> = merged.metrics.iter().map(|m| m.label.as_str()).collect();
+        assert!(labels.contains(&"Opus"), "Opus was dropped: {labels:?}");
+        assert!(labels.contains(&"Sonnet"), "Sonnet was dropped: {labels:?}");
+        // The live values must win for the slots the API did return.
+        let weekly = merged.metrics.iter().find(|m| m.label == "Weekly").unwrap();
+        assert_eq!(weekly.used, 60);
+        assert_eq!(merged.metrics.len(), 4, "no duplicate slots: {labels:?}");
+    }
 }
