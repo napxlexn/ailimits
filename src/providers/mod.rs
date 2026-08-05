@@ -173,6 +173,10 @@ pub const STALE_AFTER_SECS: i64 = 300;
 /// stops a small wall-clock skew from fabricating a reset that never happened.
 pub const RESET_GRACE_SECS: i64 = 60;
 
+/// A window at or above this percentage is spent: the account is blocked on it
+/// regardless of what any other window reads.
+pub const EXHAUSTED_PCT: f32 = 100.0;
+
 /// Provider data for display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderData {
@@ -194,9 +198,25 @@ pub struct ProviderData {
 }
 
 impl ProviderData {
-    /// Primary percentage for display: taken from the first metric.
+    /// The metric that represents this provider right now.
+    ///
+    /// A spent long window outranks the session gauge: once the weekly cap is
+    /// gone no new session can start, so a session reading "20% used" would
+    /// claim headroom the account does not have. Every surface — widget, tray,
+    /// taskbar panel, tooltips, notifications — must agree, so the rule lives
+    /// here rather than inside one renderer.
+    pub fn headline_metric(&self) -> Option<&Metric> {
+        let spent = self.metrics.iter().find(|m| {
+            matches!(m.window, MetricWindow::Long)
+                && m.percentage().is_some_and(|p| p >= EXHAUSTED_PCT)
+        });
+        // Otherwise the long-standing contract: the provider's first metric.
+        spent.or_else(|| self.metrics.first())
+    }
+
+    /// Primary percentage for display: the headline metric's percentage.
     pub fn primary_percentage(&self) -> Option<f32> {
-        self.metrics.first().and_then(|m| m.percentage())
+        self.headline_metric().and_then(|m| m.percentage())
     }
 
     /// Time of the nearest FUTURE metric reset. A reset timestamp already in

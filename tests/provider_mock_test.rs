@@ -413,6 +413,77 @@ fn primary_percentage_uses_first_metric() {
     assert_eq!(data.primary_percentage(), Some(50.0));
 }
 
+// Helper: a percent metric with an explicit window.
+fn window_metric(label: &str, used: u64, window: MetricWindow) -> Metric {
+    Metric {
+        label: label.to_string(),
+        used,
+        limit: Some(100),
+        unit: MetricUnit::Percent,
+        reset_at: None,
+        window,
+    }
+}
+
+#[test]
+fn an_exhausted_long_window_becomes_the_headline_for_every_surface() {
+    // Claude shape: the weekly cap is spent, so no new session can start —
+    // the tray, the taskbar panel and the toast must all read 100%, not 20%.
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 20, MetricWindow::Session),
+            window_metric("Weekly", 100, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Weekly")
+    );
+    assert_eq!(data.primary_percentage(), Some(100.0));
+}
+
+#[test]
+fn an_exhausted_opus_pool_counts_even_though_its_label_never_says_week() {
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 10, MetricWindow::Session),
+            window_metric("Weekly", 50, MetricWindow::Long),
+            window_metric("Opus", 100, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Opus")
+    );
+}
+
+#[test]
+fn a_long_window_with_headroom_leaves_the_session_in_charge() {
+    let data = ProviderData {
+        id: ProviderId::Codex,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 40, MetricWindow::Session),
+            window_metric("Weekly", 60, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Session")
+    );
+    assert_eq!(data.primary_percentage(), Some(40.0));
+}
+
 #[test]
 fn live_data_survives_a_wall_clock_jump() {
     use chrono::Duration;

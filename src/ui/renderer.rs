@@ -8,7 +8,9 @@ use super::{
     theme::{Color, ComputedTheme, UsageLevel},
 };
 use crate::config::schema::DetailLevel;
-use crate::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+use crate::providers::{
+    Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use fontdue::{
@@ -344,14 +346,14 @@ impl Renderer {
                     );
                 }
                 let weekly_active_in_expanded =
-                    expanded && active_metric.is_some_and(is_weekly_metric);
+                    expanded && active_metric.is_some_and(is_long_window_metric);
                 if hovered_reason.is_none() && !weekly_active_in_expanded {
-                    if active_metric.is_some_and(is_weekly_metric) {
+                    if active_metric.is_some_and(is_long_window_metric) {
                         self.draw_weekly_time_only(pixmap, row, theme, active_metric, meta_y);
                     } else {
                         // Meta line: the metric on the left, the reset on the right.
-                        if let Some(m) =
-                            active_metric.filter(|m| !is_percent_metric(m) || is_weekly_metric(m))
+                        if let Some(m) = active_metric
+                            .filter(|m| !is_percent_metric(m) || is_long_window_metric(m))
                         {
                             self.draw_text(
                                 pixmap,
@@ -413,7 +415,7 @@ impl Renderer {
             // Status on the bar line, so it does not overlap the provider name.
             _ => {
                 if matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated)
-                    && weekly_metric(data).is_some()
+                    && long_window_metric(data).is_some()
                 {
                     self.draw_text(
                         pixmap,
@@ -447,7 +449,7 @@ impl Renderer {
         y: f32,
         cursor: Option<(f32, f32)>,
     ) {
-        let Some(metric) = weekly_metric(data) else {
+        let Some(metric) = long_window_metric(data) else {
             return;
         };
         let text = if cursor.is_some_and(|point| point_in_rect(point, row)) {
@@ -957,47 +959,31 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, color: Color, alpha: u8) {
     data[idx + 3] = (a + data[idx + 3] as u32 * inv / 255).min(255) as u8;
 }
 
-/// A window at or above this percentage is exhausted: the account is blocked on
-/// it regardless of any other window's reading.
-const EXHAUSTED_PCT: f32 = 100.0;
-
-/// Active metric for the percent/bar: hovering the provider temporarily switches
-/// to the weekly metric. The weekly metric also takes over the *default* view
-/// once it is exhausted — a maxed weekly limit blocks the account even when the
-/// session window reads low (or is no longer reported), so leaving the session
-/// primary there would hide the real limit until the user happened to hover.
+/// Active metric for the percent/bar. Hovering a row temporarily reveals the
+/// long-window limit; otherwise the row shows whatever `headline_metric`
+/// decides, so the widget can never disagree with the tray or the panel.
 fn active_progress_metric<'a>(
     data: &'a ProviderData,
     hover_area: &Rect,
     cursor: Option<(f32, f32)>,
 ) -> Option<&'a Metric> {
-    let primary = primary_progress_metric(data);
-    let weekly = weekly_metric(data).filter(|metric| metric.percentage().is_some());
     if cursor.is_some_and(|point| point_in_rect(point, hover_area)) {
-        return weekly.or(primary);
+        return long_window_metric(data)
+            .filter(|metric| metric.percentage().is_some())
+            .or_else(|| data.headline_metric());
     }
-    // Exhausted weekly → show it by default; otherwise the session stays primary,
-    // falling back to the weekly when no session window is present at all.
-    if weekly.is_some_and(|metric| metric.percentage().is_some_and(|pct| pct >= EXHAUSTED_PCT)) {
-        return weekly;
-    }
-    primary.or(weekly)
+    data.headline_metric()
 }
 
-/// Primary metric for the large percent and bar: weekly limits render separately.
-fn primary_progress_metric(data: &ProviderData) -> Option<&Metric> {
+/// The long-window (general) metric, if the provider reports one.
+fn long_window_metric(data: &ProviderData) -> Option<&Metric> {
     data.metrics
         .iter()
-        .find(|metric| !is_weekly_metric(metric) && metric.percentage().is_some())
+        .find(|metric| is_long_window_metric(metric))
 }
 
-/// The weekly secondary metric.
-fn weekly_metric(data: &ProviderData) -> Option<&Metric> {
-    data.metrics.iter().find(|metric| is_weekly_metric(metric))
-}
-
-fn is_weekly_metric(metric: &Metric) -> bool {
-    metric.label.to_lowercase().contains("week")
+fn is_long_window_metric(metric: &Metric) -> bool {
+    matches!(metric.window, MetricWindow::Long)
 }
 
 fn point_in_rect(point: (f32, f32), rect: &Rect) -> bool {
@@ -1059,7 +1045,7 @@ fn hovered_hint_text(
             return Some(format!("{}: {}", data.id.display_name(), reason));
         }
 
-        weekly_metric(data).map(|metric| {
+        long_window_metric(data).map(|metric| {
             let prefix = format!("{} {}:", data.id.display_name(), metric.label);
             metric
                 .reset_at
