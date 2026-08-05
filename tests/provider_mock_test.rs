@@ -689,3 +689,18 @@ fn antigravity_quota_summary_ignores_an_unknown_shape() {
     use ailimits::providers::antigravity::parse_quota_summary;
     assert!(parse_quota_summary(r#"{"foo": 1}"#).unwrap().is_empty());
 }
+
+#[test]
+fn antigravity_models_quota_treats_a_missing_fraction_as_exhausted() {
+    use ailimits::providers::antigravity::parse_available_models_quota;
+    // Verified live 2026-08-01: every gemini model reported quotaInfo with a
+    // resetTime and no remainingFraction while the weekly pool was spent.
+    let body = r#"{"models": {
+        "gemini-3.6-flash-high": {"displayName": "Gemini 3.6 Flash",
+            "quotaInfo": {"resetTime": "2026-08-07T18:30:57Z"}},
+        "gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro",
+            "quotaInfo": {"resetTime": "2026-08-07T18:30:57Z"}}}}"#;
+    let metrics = parse_available_models_quota(body).expect("should parse");
+    assert_eq!(metrics.len(), 1, "one shared pool, deduped");
+    assert_eq!(metrics[0].used, 100);
+}

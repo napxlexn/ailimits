@@ -484,14 +484,18 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
         let Some(quota) = info.get("quotaInfo") else {
             continue;
         };
-        let Some(frac) = quota.get("remainingFraction").and_then(|v| v.as_f64()) else {
-            continue;
-        };
         let reset_str = quota
             .get("resetTime")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        // A spent pool drops remainingFraction and keeps only the reset — zero
+        // remaining, not an unknown quota (verified live 2026-08-01).
+        let frac = match quota.get("remainingFraction").and_then(|v| v.as_f64()) {
+            Some(f) => f,
+            None if !reset_str.is_empty() => 0.0,
+            None => continue,
+        };
         let reset_at = DateTime::parse_from_rfc3339(&reset_str)
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
