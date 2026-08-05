@@ -182,9 +182,16 @@ Quota is a chain of sources (all verified live 2026-08-01):
    general limits, so they are recorded as long-window metrics.
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; a spent model omits
    `remainingFraction` and keeps `resetTime`).
-4. Last resort: `retrieveUserQuota` with `{"project": ...}`. It is never called
-   with an empty body — that view reads `remainingFraction: 1` everywhere
-   regardless of usage.
+
+If both `retrieveUserQuotaSummary` and `fetchAvailableModels` fail or return
+nothing usable, the widget reports an honest error instead of quota. There is
+no further fallback to `retrieveUserQuota`: that endpoint answers the Code
+Assist *bucket* view, which does NOT track Antigravity consumption — for an
+account that only uses Antigravity, those buckets read `remainingFraction: 1`
+regardless of actual usage. Both `retrieveUserQuotaSummary` and
+`fetchAvailableModels` live on `daily-cloudcode-pa.googleapis.com`, which is
+flaky (see below), so a single timeout can lose both in one poll cycle — that
+is expected to surface as an error, not as a silently wrong "0% used".
 
 used % = `(1 - remainingFraction) * 100`; the epoch placeholder
 (`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 →

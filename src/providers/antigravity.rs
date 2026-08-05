@@ -10,12 +10,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
-/// Undocumented Code Assist quota endpoint (multi-source documented).
-const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 /// Onboarding endpoint that reports the account's Code Assist project id.
-/// The REAL per-account quota buckets are PER-PROJECT: retrieveUserQuota with
-/// an empty body answers a default view where every bucket reads
-/// remainingFraction=1 regardless of actual usage (verified 2026-07-09).
+/// Quota queries need it — every quota endpoint answers a misleading
+/// "everything full" default view without a project id (verified 2026-07-09).
 const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 /// The endpoint Antigravity's own quota manager uses (verified 2026-07-09):
 /// per-model `quotaInfo` with the live remainingFraction/resetTime for the
@@ -181,48 +178,21 @@ impl AntigravityProvider {
             Ok(Some(metrics)) if !metrics.is_empty() => {
                 return Ok(self.data(ProviderStatus::Ok, metrics));
             }
-            Ok(_) => warn!("fetchAvailableModels returned no usable quota, falling back"),
-            Err(e) => warn!("fetchAvailableModels failed, falling back: {e}"),
+            Ok(_) => warn!("fetchAvailableModels returned no usable quota"),
+            Err(e) => warn!("fetchAvailableModels failed: {e}"),
         }
 
-        // Fallback: the Code Assist bucket view, ALWAYS with the project id.
-        let quota_body = serde_json::json!({ "project": project }).to_string();
-        let resp = match self
-            .http
-            .post(QUOTA_URL)
-            .bearer_auth(&token)
-            .header("Content-Type", "application/json")
-            .body(quota_body)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
-        };
-
-        match resp.status().as_u16() {
-            200 => {
-                let body = resp.text().await?;
-                let metrics = parse_quota_buckets(&body)?;
-                if metrics.is_empty() {
-                    return Ok(self.data(
-                        ProviderStatus::NetworkError("unrecognized quota schema".to_string()),
-                        vec![],
-                    ));
-                }
-                Ok(self.data(ProviderStatus::Ok, metrics))
-            }
-            401 | 403 => Ok(self.data(
-                ProviderStatus::AuthError(
-                    "Antigravity token rejected — run Antigravity CLI once".to_string(),
-                ),
-                vec![],
-            )),
-            other => Ok(self.data(
-                ProviderStatus::NetworkError(format!("HTTP {other}")),
-                vec![],
-            )),
-        }
+        // Both real sources failed or returned nothing usable. There is no
+        // further fallback: retrieveUserQuota answers the Code Assist bucket
+        // view, which does NOT track Antigravity consumption — an
+        // Antigravity-only account reads remainingFraction=1 there
+        // regardless of actual usage. Showing that would be ProviderStatus::Ok
+        // at 0% used while the real pool may be fully spent, which is worse
+        // than showing nothing.
+        Ok(self.data(
+            ProviderStatus::NetworkError("Antigravity quota unavailable".to_string()),
+            vec![],
+        ))
     }
 }
 
@@ -369,32 +339,6 @@ pub fn parse_antigravity_keyring_token(body: &str) -> Result<Option<String>> {
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string()))
-}
-
-/// Parse the quota response. Verified live schema (2026-06-11):
-/// `{"buckets": [{"modelId": "gemini-2.5-pro", "remainingFraction": 1,
-///   "resetTime": "RFC3339", "tokenType": "REQUESTS"}, …]}`.
-/// We still walk the JSON tolerantly (collecting every object with a
-/// `remainingFraction`) so a future shape change degrades to an honest error
-/// rather than wrong data. The Pro model is ordered first (it drives the bar).
-pub fn parse_quota_buckets(body: &str) -> Result<Vec<Metric>> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
-    let mut metrics = Vec::new();
-    collect_quota(&value, &mut metrics);
-    // Pro first (the headline limit), then flash, then flash-lite; within a
-    // class the newest version first — Antigravity drives the 3.x models, so
-    // they are the relevant headline, not the retired 2.5 buckets.
-    metrics.sort_by(|a, b| {
-        model_rank(&a.label)
-            .cmp(&model_rank(&b.label))
-            .then_with(|| {
-                model_version(&b.label)
-                    .partial_cmp(&model_version(&a.label))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    });
-    metrics.truncate(4);
-    Ok(metrics)
 }
 
 /// Parse the retrieveUserQuotaSummary response. Verified live 2026-08-01:
@@ -544,48 +488,6 @@ pub fn parse_load_code_assist_project(body: &str) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-}
-
-/// Recursively collect `{remainingFraction, resetTime, modelId?}` objects.
-fn collect_quota(value: &serde_json::Value, out: &mut Vec<Metric>) {
-    match value {
-        serde_json::Value::Object(map) => {
-            if let Some(frac) = map.get("remainingFraction").and_then(|v| v.as_f64()) {
-                let used = ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64;
-                let label = map
-                    .get("modelId")
-                    .or_else(|| map.get("model"))
-                    .and_then(|v| v.as_str())
-                    .map(model_label)
-                    .unwrap_or_else(|| "Antigravity".to_string());
-                let reset_at = map
-                    .get("resetTime")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    // Exhausted/unscheduled buckets carry the epoch
-                    // placeholder ("1970-01-01T00:00:00Z") — not a real reset.
-                    .filter(|dt| dt.timestamp() > 0);
-                out.push(Metric {
-                    label,
-                    used,
-                    limit: Some(100),
-                    unit: MetricUnit::Percent,
-                    reset_at,
-                    window: MetricWindow::Session,
-                });
-            }
-            for v in map.values() {
-                collect_quota(v, out);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for v in arr {
-                collect_quota(v, out);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// "gemini-2.5-pro" → "2.5 Pro", "gemini-2.5-flash-lite" → "2.5 Flash-Lite".

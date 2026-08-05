@@ -185,9 +185,17 @@ Antigravity CLI; Antigravity зберігає session tokens у OS keyring (си
    Antigravity, тож фіксуються як long-window метрики.
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; витрачена модель
    пропускає `remainingFraction` і лишає `resetTime`).
-4. Останній засіб: `retrieveUserQuota` з `{"project": "..."}`. Він ніколи не
-   викликається з порожнім тілом — той вигляд має `remainingFraction: 1`
-   всюди незалежно від використання.
+
+Якщо і `retrieveUserQuotaSummary`, і `fetchAvailableModels` не спрацювали або
+не дали нічого придатного, віджет показує чесну помилку замість квоти. Далі
+немає fallback на `retrieveUserQuota`: цей endpoint відповідає bucket-виглядом
+Code Assist, який НЕ відстежує використання Antigravity — для акаунту, що
+використовує лише Antigravity, ці buckets показують `remainingFraction: 1`
+незалежно від реального використання. І `retrieveUserQuotaSummary`, і
+`fetchAvailableModels` живуть на `daily-cloudcode-pa.googleapis.com`, який
+нестабільний (див. нижче), тож один таймаут може забрати обидва джерела за
+один цикл опитування — це має проявлятись як помилка, а не як тихо неправильні
+«0% використано».
 
 used % = `(1 - remainingFraction) * 100`; epoch-заглушка (`1970-01-01…`) у
 `resetTime` парситься як «скидання невідоме». 401/403 → "Antigravity token

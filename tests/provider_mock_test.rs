@@ -170,61 +170,6 @@ fn antigravity_keyring_token_skips_expired_token() {
 }
 
 #[test]
-fn antigravity_bucket_quota_parses_real_schema() {
-    use ailimits::providers::antigravity::parse_quota_buckets;
-
-    // Real schema captured live 2026-06-11: a `buckets` array.
-    let body = r#"{"buckets": [
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash", "remainingFraction": 1},
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash-lite", "remainingFraction": 1},
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-pro", "remainingFraction": 0.30}
-    ]}"#;
-    let metrics = parse_quota_buckets(body).expect("should parse");
-    assert_eq!(metrics.len(), 3);
-    // Pro is ordered first (drives the bar) with a clean version label.
-    assert_eq!(metrics[0].label, "2.5 Pro");
-    assert_eq!(metrics[0].used, 70); // (1 - 0.30) * 100
-    assert_eq!(metrics[0].limit, Some(100));
-    assert!(metrics[0].reset_at.is_some());
-    // Flash before Flash-Lite; labels are distinct.
-    assert_eq!(metrics[1].label, "2.5 Flash");
-    assert_eq!(metrics[2].label, "2.5 Flash-Lite");
-
-    // Unknown schema → empty (the provider then reports an honest error).
-    assert!(parse_quota_buckets(r#"{"foo": 1}"#).unwrap().is_empty());
-}
-
-#[test]
-fn antigravity_project_quota_orders_newest_pro_first_and_drops_epoch_resets() {
-    use ailimits::providers::antigravity::parse_quota_buckets;
-
-    // Real per-project schema captured live 2026-07-09 (Antigravity consumer
-    // account): exhausted Pro buckets report remainingFraction 0 with the
-    // epoch placeholder as resetTime.
-    let body = r#"{"buckets": [
-        {"resetTime": "2026-07-10T15:29:07Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash", "remainingFraction": 1},
-        {"resetTime": "1970-01-01T00:00:00Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-pro", "remainingFraction": 0},
-        {"resetTime": "1970-01-01T00:00:00Z", "tokenType": "REQUESTS", "modelId": "gemini-3.1-pro-preview", "remainingFraction": 0},
-        {"resetTime": "2026-07-10T15:29:07Z", "tokenType": "REQUESTS", "modelId": "gemini-3.1-flash-lite", "remainingFraction": 0.6}
-    ]}"#;
-    let metrics = parse_quota_buckets(body).expect("should parse");
-    assert_eq!(metrics.len(), 4);
-    // Newest Pro leads (Antigravity drives 3.x), older Pro after it.
-    assert_eq!(metrics[0].label, "3.1 Pro-Preview");
-    assert_eq!(metrics[0].used, 100); // remainingFraction 0
-    assert_eq!(
-        metrics[0].reset_at, None,
-        "the epoch placeholder must not count as a real reset"
-    );
-    assert_eq!(metrics[1].label, "2.5 Pro");
-    // Flash class after Pro, real reset kept.
-    assert_eq!(metrics[2].label, "2.5 Flash");
-    assert!(metrics[2].reset_at.is_some());
-    assert_eq!(metrics[3].label, "3.1 Flash-Lite");
-    assert_eq!(metrics[3].used, 40);
-}
-
-#[test]
 fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
     use ailimits::providers::antigravity::parse_available_models_quota;
 
