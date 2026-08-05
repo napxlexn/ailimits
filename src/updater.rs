@@ -163,12 +163,30 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
     Ok(dest)
 }
 
-/// Where the installer puts the exe: `{localappdata}\AiLimits\ailimits.exe`
-/// (installer/ailimits.iss). The relaunch must use THIS path — relaunching
-/// `current_exe()` would restart an old copy whenever the running binary lives
-/// somewhere else, and the next check would install the same update again.
+/// Where the STANDARD install puts the exe: `{localappdata}\AiLimits\ailimits.exe`
+/// (installer/ailimits.iss default). This is only a guess, not a guarantee:
+/// the installer is interactive and does not set `DisableDirPage`, so a user
+/// can pick a different directory, and Inno reuses that choice for later
+/// silent upgrades too. Callers must verify the path actually exists before
+/// relying on it — see `relaunch_target`.
 fn installed_exe_path() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("AiLimits").join("ailimits.exe"))
+}
+
+/// Pick where to relaunch after an update: the standard install path if it
+/// actually exists on disk, else the exe that is currently running.
+///
+/// `installed_exe_path()` is only correct for the default install location;
+/// for a custom install directory it names a path nothing ever wrote to, and
+/// relaunching a path that does not exist silently loses the app — the
+/// update installs fine but AI Limits never reappears. Falling back to the
+/// running exe still fixes the reinstall-forever loop from the second update
+/// onward, because once the installer has written to the standard directory
+/// that path exists. Split out as a pure function so this fallback is
+/// testable without touching `dirs::data_local_dir()` or the real installer
+/// directory.
+fn relaunch_target(standard: Option<PathBuf>, current: Option<PathBuf>) -> Option<PathBuf> {
+    standard.filter(|p| p.exists()).or(current)
 }
 
 /// Hand off to the downloaded installer for a silent, in-place upgrade, then exit.
@@ -185,8 +203,7 @@ fn launch_installer_and_exit(installer: &Path) -> Result<()> {
     const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
 
     let inst = installer.display();
-    let relaunch = installed_exe_path()
-        .or_else(|| std::env::current_exe().ok())
+    let relaunch = relaunch_target(installed_exe_path(), std::env::current_exe().ok())
         .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
         .unwrap_or_default();
     let script = format!(
@@ -287,5 +304,46 @@ mod tests {
         // relaunch must aim there, not at whatever copy happens to be running.
         let p = installed_exe_path().expect("local data dir resolves on Windows");
         assert!(p.ends_with("AiLimits/ailimits.exe") || p.ends_with(r"AiLimits\ailimits.exe"));
+    }
+
+    #[test]
+    fn relaunch_prefers_the_standard_path_when_it_exists() {
+        // A real file inside a temp dir stands in for a standard-location
+        // install; nothing outside the temp dir is touched.
+        let dir =
+            std::env::temp_dir().join(format!("ailimits-relaunch-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let standard = dir.join("ailimits.exe");
+        std::fs::write(&standard, b"stub").unwrap();
+        let current = dir.join("current.exe"); // never created — must be ignored
+
+        let target = relaunch_target(Some(standard.clone()), Some(current));
+        assert_eq!(target, Some(standard));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn relaunch_falls_back_to_the_running_exe_when_the_standard_path_is_absent() {
+        // A custom install directory means installed_exe_path() names a
+        // location the installer never wrote to. The path below is never
+        // created, so it must not exist; the running exe must win instead.
+        let dir =
+            std::env::temp_dir().join(format!("ailimits-relaunch-test-{}-b", std::process::id()));
+        let missing_standard = dir.join("ailimits.exe");
+        let current = dir.join("current.exe");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&current, b"stub").unwrap();
+        assert!(!missing_standard.exists());
+
+        let target = relaunch_target(Some(missing_standard), Some(current.clone()));
+        assert_eq!(target, Some(current));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn relaunch_yields_none_when_neither_path_is_available() {
+        assert_eq!(relaunch_target(None, None), None);
     }
 }
