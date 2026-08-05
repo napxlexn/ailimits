@@ -24,6 +24,12 @@ const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeA
 /// User-Agent / X-Goog-Api-Client headers below), otherwise 403.
 const MODELS_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+/// The shared quota pools Antigravity meters today ("Gemini Models",
+/// "Claude and GPT models"), verified live 2026-08-01. Needs the project id in
+/// the body and an identified client; without the project it answers a single
+/// synthetic "All Models" group with everything full.
+const SUMMARY_URL: &str =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 /// Antigravity Windows credential target (ціль запису Antigravity у Windows Credential Manager).
 const ANTIGRAVITY_CREDENTIAL_TARGET: &str = "gemini:antigravity";
 
@@ -62,15 +68,9 @@ impl AntigravityProvider {
 
     /// One fetchAvailableModels request; Ok(None) when the shape is unknown.
     async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
-        let resp = self
-            .http
-            .post(MODELS_URL)
+        let resp = identified(self.http.post(MODELS_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
-            // The endpoint answers 403 to anonymous clients; identify like
-            // the Antigravity CLI does.
-            .header("User-Agent", "antigravity/1.0")
-            .header("X-Goog-Api-Client", "gl-go antigravity")
             .body(serde_json::json!({ "project": project }).to_string())
             .send()
             .await?;
@@ -83,6 +83,26 @@ impl AntigravityProvider {
         }
         let body = resp.text().await?;
         Ok(Some(parse_available_models_quota(&body)?))
+    }
+
+    /// One retrieveUserQuotaSummary request; Ok(None) when the call fails or
+    /// the shape is unknown.
+    async fn fetch_quota_summary(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
+        let resp = identified(self.http.post(SUMMARY_URL))
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .body(serde_json::json!({ "project": project }).to_string())
+            .send()
+            .await?;
+        if resp.status().as_u16() != 200 {
+            warn!(
+                "retrieveUserQuotaSummary returned HTTP {}",
+                resp.status().as_u16()
+            );
+            return Ok(None);
+        }
+        let body = resp.text().await?;
+        Ok(Some(parse_quota_summary(&body)?))
     }
 
     /// Resolve the Code Assist project id (cached). None on any failure —
@@ -146,6 +166,15 @@ impl AntigravityProvider {
                 vec![],
             ));
         };
+
+        // Primary: the shared pools Antigravity itself shows.
+        match self.fetch_quota_summary(&token, &project).await {
+            Ok(Some(metrics)) if !metrics.is_empty() => {
+                return Ok(self.data(ProviderStatus::Ok, metrics));
+            }
+            Ok(_) => warn!("retrieveUserQuotaSummary returned no usable pools, falling back"),
+            Err(e) => warn!("retrieveUserQuotaSummary failed, falling back: {e}"),
+        }
 
         // Per-model quota (the pools Antigravity itself meters).
         match self.fetch_models_quota(&token, &project).await {
@@ -366,6 +395,71 @@ pub fn parse_quota_buckets(body: &str) -> Result<Vec<Metric>> {
     });
     metrics.truncate(4);
     Ok(metrics)
+}
+
+/// Parse the retrieveUserQuotaSummary response. Verified live 2026-08-01:
+/// `{"groups": [{"displayName": "Gemini Models", "buckets": [{"bucketId": "…",
+///   "displayName": "Weekly Limit", "window": "…", "resetTime": "RFC3339",
+///   "remainingFraction": 0}]}, …], "description": "…"}`.
+pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
+    let value: serde_json::Value = serde_json::from_str(body)?;
+    let Some(groups) = value.get("groups").and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
+
+    let mut metrics = Vec::new();
+    for group in groups {
+        let name = group
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // The project-less default view: one catch-all group, everything full.
+        // Treat it as no data rather than as a full quota.
+        if name.eq_ignore_ascii_case("All Models") {
+            return Ok(Vec::new());
+        }
+        let Some(buckets) = group.get("buckets").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for bucket in buckets {
+            let reset_at = bucket
+                .get("resetTime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .filter(|dt| dt.timestamp() > 0);
+            // A spent pool drops remainingFraction and keeps only the reset —
+            // that is zero remaining, not an unknown quota.
+            let frac = match bucket.get("remainingFraction").and_then(|v| v.as_f64()) {
+                Some(f) => f,
+                None if reset_at.is_some() => 0.0,
+                None => continue,
+            };
+            metrics.push(Metric {
+                label: short_pool_label(name),
+                used: ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at,
+                // These pools ARE Antigravity's general limits; it has no
+                // session window, so a spent pool must drive every surface.
+                window: MetricWindow::Long,
+            });
+        }
+    }
+    Ok(metrics)
+}
+
+/// Compact pool name for the widget's narrow rows.
+fn short_pool_label(display_name: &str) -> String {
+    let lower = display_name.to_ascii_lowercase();
+    if lower.contains("gemini") {
+        "Gemini".to_string()
+    } else if lower.contains("claude") || lower.contains("gpt") {
+        "Claude/GPT".to_string()
+    } else {
+        display_name.to_string()
+    }
 }
 
 /// Parse the fetchAvailableModels response. Verified live 2026-07-09:

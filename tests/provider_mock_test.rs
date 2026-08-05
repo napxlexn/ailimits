@@ -641,3 +641,51 @@ fn codex_marks_the_secondary_window_as_long() {
     assert_eq!(metrics[0].window, MetricWindow::Session);
     assert_eq!(metrics[1].window, MetricWindow::Long);
 }
+
+#[test]
+fn antigravity_quota_summary_parses_shared_pools() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    use ailimits::providers::MetricWindow;
+    // Verified live 2026-08-01 (field names and group names are real).
+    let body = r#"{"groups": [
+        {"displayName": "Gemini Models", "buckets": [
+            {"bucketId": "gemini", "displayName": "Weekly Limit", "window": "WEEKLY",
+             "resetTime": "2026-08-07T18:30:57Z", "remainingFraction": 0}]},
+        {"displayName": "Claude and GPT models", "buckets": [
+            {"bucketId": "claude_gpt", "displayName": "Weekly Limit", "window": "WEEKLY",
+             "resetTime": "2026-08-07T19:41:22Z", "remainingFraction": 0.873262}]}]}"#;
+    let metrics = parse_quota_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[0].label, "Gemini");
+    assert_eq!(metrics[0].used, 100, "a spent pool must read 100% used");
+    assert_eq!(metrics[0].window, MetricWindow::Long);
+    assert_eq!(metrics[1].label, "Claude/GPT");
+    assert_eq!(metrics[1].used, 13);
+}
+
+#[test]
+fn antigravity_quota_summary_refuses_the_project_less_default_view() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    // Without a project id Google answers one synthetic "All Models" group
+    // with everything full. Rendering it would claim a full quota that may be
+    // entirely spent, so the parser must yield nothing.
+    let body = r#"{"groups": [{"displayName": "All Models", "buckets": [
+        {"remainingFraction": 1}, {"remainingFraction": 1}]}]}"#;
+    assert!(parse_quota_summary(body).unwrap().is_empty());
+}
+
+#[test]
+fn antigravity_quota_summary_treats_a_missing_fraction_with_a_reset_as_exhausted() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    let body = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [
+        {"resetTime": "2026-08-07T18:30:57Z"}]}]}"#;
+    let metrics = parse_quota_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].used, 100);
+}
+
+#[test]
+fn antigravity_quota_summary_ignores_an_unknown_shape() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    assert!(parse_quota_summary(r#"{"foo": 1}"#).unwrap().is_empty());
+}
