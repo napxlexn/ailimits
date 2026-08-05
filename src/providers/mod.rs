@@ -232,6 +232,20 @@ impl ProviderData {
             .min()
     }
 
+    /// The reset that belongs to the headline metric — the one whose
+    /// percentage every surface is showing. `next_reset()` answers the nearest
+    /// reset across ALL windows, which is the wrong one to quote once a spent
+    /// long window has taken over the headline: the session window resets far
+    /// sooner and quoting it tells the user they are unblocked when they are
+    /// not. Falls back to the nearest future reset when the headline has none.
+    pub fn headline_reset(&self) -> Option<DateTime<Utc>> {
+        let now = Utc::now();
+        self.headline_metric()
+            .and_then(|m| m.reset_at)
+            .filter(|t| *t > now)
+            .or_else(|| self.next_reset())
+    }
+
     /// Data age in seconds, if stale. The staleness DECISION is monotonic for
     /// live data (immune to wall-clock jumps); data with no monotonic anchor
     /// (a statusline snapshot or a disk-cache entry, `received_at == None`)

@@ -1091,7 +1091,7 @@ pub fn run() -> Result<()> {
                             if pct >= threshold && cooled {
                                 last_toast.insert(data.id.clone(), std::time::Instant::now());
                                 if config.notifications.enabled {
-                                    let body = match data.next_reset() {
+                                    let body = match data.headline_reset() {
                                         Some(t) => {
                                             let secs = t
                                                 .signed_duration_since(Utc::now())
@@ -1116,7 +1116,7 @@ pub fn run() -> Result<()> {
                                     hooks::HookEvent::Threshold,
                                     data.id.clone(),
                                     Some(pct),
-                                    data.next_reset(),
+                                    data.headline_reset(),
                                 );
                             }
 
@@ -1133,7 +1133,7 @@ pub fn run() -> Result<()> {
                                         hooks::HookEvent::Reset,
                                         data.id.clone(),
                                         Some(pct),
-                                        data.next_reset(),
+                                        data.headline_reset(),
                                     );
                                 }
                             }
@@ -1144,7 +1144,7 @@ pub fn run() -> Result<()> {
                             // resets before the projected hit).
                             let trend = trends.entry(data.id.clone()).or_default();
                             trend.push(Utc::now(), pct);
-                            match trend.forecast(data.next_reset()) {
+                            match trend.forecast(data.headline_reset()) {
                                 Some(f) if f.hit_at > Utc::now() => {
                                     forecasts.insert(data.id.clone(), f.hit_at);
                                 }
@@ -1163,7 +1163,7 @@ pub fn run() -> Result<()> {
                                 hooks::HookEvent::Startup,
                                 data.id.clone(),
                                 data.primary_percentage(),
-                                data.next_reset(),
+                                data.headline_reset(),
                             );
                         }
 

@@ -430,6 +430,83 @@ fn a_long_window_with_headroom_leaves_the_session_in_charge() {
 }
 
 #[test]
+fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
+    use chrono::Duration;
+    // Claude shape: the Session window resets in an hour but the spent Weekly
+    // window (the headline, since it's exhausted) resets in five days. The
+    // notification must quote the Weekly reset — quoting the Session reset
+    // would tell a blocked user they are unblocked in an hour when they are
+    // not.
+    let now = Utc::now();
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            Metric {
+                label: "Session".to_string(),
+                used: 20,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::hours(1)),
+                window: MetricWindow::Session,
+            },
+            Metric {
+                label: "Weekly".to_string(),
+                used: 100,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::days(5)),
+                window: MetricWindow::Long,
+            },
+        ],
+        updated_at: now,
+        received_at: Some(std::time::Instant::now()),
+    };
+    let long_reset = data.metrics[1].reset_at.unwrap();
+    let session_reset = data.metrics[0].reset_at.unwrap();
+    assert_eq!(data.headline_reset(), Some(long_reset));
+    assert_ne!(data.headline_reset(), Some(session_reset));
+    // next_reset() itself would have picked the sooner Session reset — this
+    // is exactly the reset headline_reset() must NOT quote here.
+    assert_eq!(data.next_reset(), Some(session_reset));
+}
+
+#[test]
+fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
+    use chrono::Duration;
+    // No spent long window, so the headline is the Session metric itself —
+    // headline_reset() must agree with next_reset() (the nearest future
+    // reset), same as before this fix.
+    let now = Utc::now();
+    let data = ProviderData {
+        id: ProviderId::Codex,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            Metric {
+                label: "Session".to_string(),
+                used: 40,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::hours(1)),
+                window: MetricWindow::Session,
+            },
+            Metric {
+                label: "Weekly".to_string(),
+                used: 60,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::days(5)),
+                window: MetricWindow::Long,
+            },
+        ],
+        updated_at: now,
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(data.headline_reset(), data.next_reset());
+    assert_eq!(data.headline_reset(), data.metrics[0].reset_at);
+}
+
+#[test]
 fn live_data_survives_a_wall_clock_jump() {
     use chrono::Duration;
     // Models an NTP / VM-resume forward jump: data RECEIVED live just now (fresh
