@@ -1610,8 +1610,7 @@ pub fn run() -> Result<()> {
                     Some(MenuAction::ToggleAutoUpdate) => {
                         config.general.auto_update = !config.general.auto_update;
                         // The updater task reads this before each check.
-                        auto_update_enabled
-                            .store(config.general.auto_update, Ordering::Relaxed);
+                        auto_update_enabled.store(config.general.auto_update, Ordering::Relaxed);
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }
