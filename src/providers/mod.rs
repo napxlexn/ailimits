@@ -77,6 +77,19 @@ pub enum MetricUnit {
     Percent,
 }
 
+/// Which limit window a metric measures. Serialised into the provider cache,
+/// so it must default: entries written before this field existed read back as
+/// `Session`, which is what every pre-existing first metric was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MetricWindow {
+    /// A short rolling window (the Claude / Codex 5-hour session).
+    #[default]
+    Session,
+    /// A long window that gates the short one — a spent long limit blocks new
+    /// sessions no matter what the session gauge reads.
+    Long,
+}
+
 /// A single provider metric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
@@ -89,6 +102,10 @@ pub struct Metric {
     pub unit: MetricUnit,
     /// Reset time, when known.
     pub reset_at: Option<DateTime<Utc>>,
+    /// Which limit window this measures. Providers classify their own windows;
+    /// never infer it from the label.
+    #[serde(default)]
+    pub window: MetricWindow,
 }
 
 impl Metric {

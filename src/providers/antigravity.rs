@@ -3,7 +3,7 @@
 //
 // Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
 
-use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -393,6 +393,7 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at,
+            window: MetricWindow::Session,
         };
         let key = ((frac.clamp(0.0, 1.0) * 1000.0).round() as u64, reset_str);
         let rank = model_rank(&label);
@@ -457,6 +458,7 @@ fn collect_quota(value: &serde_json::Value, out: &mut Vec<Metric>) {
                     limit: Some(100),
                     unit: MetricUnit::Percent,
                     reset_at,
+                    window: MetricWindow::Session,
                 });
             }
             for v in map.values() {

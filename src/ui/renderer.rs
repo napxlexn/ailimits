@@ -1126,14 +1126,16 @@ pub fn format_duration(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::MetricWindow;
 
-    fn pct_metric(label: &str, pct: u64) -> Metric {
+    fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
             label: label.into(),
             used: pct,
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: None,
+            window,
         }
     }
 
@@ -1158,7 +1160,10 @@ mod tests {
 
     #[test]
     fn default_view_shows_session_when_weekly_not_exhausted() {
-        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let d = data(vec![
+            pct_metric("Session", 30, MetricWindow::Session),
+            pct_metric("Weekly", 60, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Session");
     }
@@ -1167,7 +1172,10 @@ mod tests {
     fn exhausted_weekly_takes_over_default_view() {
         // Weekly maxed while the session reads low: the bar must reflect the
         // blocking weekly limit without needing a hover.
-        let d = data(vec![pct_metric("Session", 20), pct_metric("Weekly", 100)]);
+        let d = data(vec![
+            pct_metric("Session", 20, MetricWindow::Session),
+            pct_metric("Weekly", 100, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Weekly");
         assert_eq!(active.percentage(), Some(100.0));
@@ -1177,14 +1185,17 @@ mod tests {
     fn exhausted_weekly_shown_when_session_window_absent() {
         // When the weekly cap is hit the source may stop reporting the session
         // window entirely; the weekly must still drive the bar.
-        let d = data(vec![pct_metric("Weekly", 100)]);
+        let d = data(vec![pct_metric("Weekly", 100, MetricWindow::Long)]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Weekly");
     }
 
     #[test]
     fn hover_still_reveals_weekly() {
-        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let d = data(vec![
+            pct_metric("Session", 30, MetricWindow::Session),
+            pct_metric("Weekly", 60, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), Some((5.0, 5.0))).unwrap();
         assert_eq!(active.label, "Weekly");
     }

@@ -626,7 +626,7 @@ fn demultiply(pm: &Pixmap) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{Metric, MetricUnit, ProviderData, ProviderId};
+    use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderId};
     use chrono::Utc;
 
     fn data(id: ProviderId, pct: u64) -> ProviderData {
@@ -639,6 +639,7 @@ mod tests {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: None,
+                window: MetricWindow::Session,
             }],
             updated_at: Utc::now(),
             received_at: Some(std::time::Instant::now()),

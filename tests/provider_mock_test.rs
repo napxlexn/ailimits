@@ -1,6 +1,8 @@
 // tests/provider_mock_test.rs — provider logic tests, no network involved.
 
-use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+use ailimits::providers::{
+    Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+};
 use chrono::Utc;
 
 // Helper: a metric with used/limit.
@@ -11,6 +13,7 @@ fn metric(used: u64, limit: Option<u64>) -> Metric {
         limit,
         unit: MetricUnit::Requests,
         reset_at: None,
+        window: MetricWindow::Session,
     }
 }
 
@@ -33,6 +36,7 @@ fn token_display_text_uses_short_format() {
         limit: Some(1_000_000),
         unit: MetricUnit::Tokens,
         reset_at: None,
+        window: MetricWindow::Session,
     };
     // 112000 → "112k", 1000000 → "1.0M".
     assert_eq!(m.display_text(), "112k / 1.0M");
@@ -250,7 +254,9 @@ fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
 
 #[test]
 fn hover_reason_explains_stale_rows_only() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use ailimits::ui::renderer::hover_reason;
     use chrono::{Duration, Utc};
     use std::collections::HashMap;
@@ -264,6 +270,7 @@ fn hover_reason_explains_stale_rows_only() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::hours(10),
         received_at: None, // wall-age staleness (10 h)
@@ -323,7 +330,9 @@ fn antigravity_load_code_assist_project_parses() {
 
 #[test]
 fn stale_data_with_passed_reset_extrapolates_to_zero() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use chrono::{Duration, Utc};
 
     // Data from 10 minutes ago; the session reset 5 minutes ago,
@@ -338,6 +347,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
+                window: MetricWindow::Session,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -345,6 +355,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() + Duration::days(3)),
+                window: MetricWindow::Session,
             },
         ],
         updated_at: Utc::now() - Duration::minutes(10),
@@ -363,7 +374,9 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
 
 #[test]
 fn fresh_data_is_not_extrapolated() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use chrono::{Duration, Utc};
 
     // Fresh data (30s old) is left intact even with a reset in the past:
@@ -377,6 +390,7 @@ fn fresh_data_is_not_extrapolated() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(10)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::seconds(30),
         received_at: Some(std::time::Instant::now()),
@@ -415,6 +429,7 @@ fn live_data_survives_a_wall_clock_jump() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::hours(1),
         received_at: Some(std::time::Instant::now()),
@@ -457,6 +472,7 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(30)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::minutes(10),
         received_at: None,
@@ -488,6 +504,7 @@ fn next_reset_skips_past_timestamps() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
+                window: MetricWindow::Session,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -495,6 +512,7 @@ fn next_reset_skips_past_timestamps() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(future),
+                window: MetricWindow::Session,
             },
         ],
         updated_at: Utc::now(),
@@ -509,8 +527,46 @@ fn next_reset_skips_past_timestamps() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::minutes(5)),
+            window: MetricWindow::Session,
         }],
         ..data
     };
     assert_eq!(all_past.next_reset(), None);
+}
+
+#[test]
+fn claude_marks_every_seven_day_window_as_long() {
+    use ailimits::providers::claude::parse_oauth_usage;
+    use ailimits::providers::MetricWindow;
+    let body = r#"{"five_hour": {"utilization": 20.0, "resets_at": "2026-08-02T10:00:00Z"},
+        "seven_day": {"utilization": 100.0, "resets_at": "2026-08-07T10:00:00Z"},
+        "seven_day_opus": {"utilization": 100.0, "resets_at": "2026-08-07T10:00:00Z"},
+        "seven_day_sonnet": {"utilization": 40.0, "resets_at": "2026-08-07T10:00:00Z"}}"#;
+    let metrics = parse_oauth_usage(body).expect("should parse");
+    assert_eq!(metrics.len(), 4);
+    assert_eq!(metrics[0].label, "Session");
+    assert_eq!(metrics[0].window, MetricWindow::Session);
+    // Opus and Sonnet are seven-day pools too; their labels never say "week",
+    // which is exactly what the old label-sniffing rule missed.
+    for m in &metrics[1..] {
+        assert_eq!(
+            m.window,
+            MetricWindow::Long,
+            "{} must be a long window",
+            m.label
+        );
+    }
+}
+
+#[test]
+fn codex_marks_the_secondary_window_as_long() {
+    use ailimits::providers::codex::parse_wham_usage;
+    use ailimits::providers::MetricWindow;
+    let body = r#"{"rate_limit": {
+        "primary_window": {"used_percent": 30, "reset_at": 1786000000},
+        "secondary_window": {"used_percent": 100, "reset_at": 1786600000}}}"#;
+    let metrics = parse_wham_usage(body).expect("should parse");
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[0].window, MetricWindow::Session);
+    assert_eq!(metrics[1].window, MetricWindow::Long);
 }
