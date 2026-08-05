@@ -67,6 +67,41 @@ does not exist until CI has built the release. So the order is:
    the PR. The manifests here are the source of truth to keep in sync with what
    lands in `winget-pkgs`.
 
+## Manifest text: avoid the automated policy triggers
+
+`winget-pkgs` runs automated **content-policy label checks** on the manifest
+text before any human looks at the PR. They are plain substring matches, not
+content review — a label means a word in your text matched a list, nothing
+more. Arguing the false positive in PR comments does not clear the label; only
+editing the text does.
+
+**Confirmed the hard way (PR #407754, v0.6.0):** the `Policy-Test-2.7` label
+(adult content) fired on the word **`explicitly`** in `Description`, because it
+contains the substring `explicit`. Two reasoned comments over ten days changed
+nothing; rewording `credentials explicitly added by the user` →
+`credentials added manually by the user` was the whole fix. Contributor
+@DandelionSprout pointed this out on the PR.
+
+**Rule: before every submission, grep the three manifests for trigger
+substrings and reword any hit — the meaning never needs them.**
+
+```powershell
+Select-String -Path .\installer\winget\*.yaml `
+  -Pattern 'explicit|adult|xxx|porn|nude|sex|erotic|gambl|casino|drug|weapon|hack|crack|keygen|torrent|pirat'
+```
+
+Preferred replacements: `explicitly` → `manually` / `directly`;
+`hack` → `troubleshoot`; `crack` → `fix`. Keep the substitution in
+`installer/winget/` and in whatever lands in `winget-pkgs` identical.
+
+Other manifest-hygiene items the reviewers have flagged:
+
+- **No `DisplayVersion` in `AppsAndFeaturesEntries`** when it would duplicate
+  `PackageVersion` — maintainer @stephengillie asked for its removal on the
+  same PR. `ProductCode` alone is enough for correlation.
+- **Comments in the YAML are English-only**, like the rest of the codebase.
+  These files are read by outside reviewers.
+
 ## Notes
 
 - **License:** AI Limits is distributed under `GPL-3.0-or-later`. Keep the
