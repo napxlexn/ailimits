@@ -35,6 +35,15 @@ pub struct AntigravityProvider {
     project: std::sync::Mutex<Option<String>>,
 }
 
+/// Identify like Antigravity's own client. Google treats anonymous callers
+/// differently on every Code Assist endpoint: `loadCodeAssist` answers 200 but
+/// silently omits `cloudaicompanionProject`, `fetchAvailableModels` and
+/// `retrieveUserQuotaSummary` answer 403 (verified live 2026-08-01).
+fn identified(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    req.header("User-Agent", "antigravity/1.0")
+        .header("X-Goog-Api-Client", "gl-go antigravity")
+}
+
 impl AntigravityProvider {
     pub fn new(config: ProviderConfig) -> Self {
         let http = reqwest::Client::builder()
@@ -77,14 +86,13 @@ impl AntigravityProvider {
     }
 
     /// Resolve the Code Assist project id (cached). None on any failure —
-    /// the quota request then falls back to the empty body.
+    /// callers must treat that as fatal, since every quota endpoint answers
+    /// a misleading "everything full" default view without the project id.
     async fn resolve_project(&self, token: &str) -> Option<String> {
         if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
             return Some(p);
         }
-        let resp = self
-            .http
-            .post(LOAD_URL)
+        let resp = identified(self.http.post(LOAD_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body("{}")
@@ -96,7 +104,10 @@ impl AntigravityProvider {
             return None;
         }
         let body = resp.text().await.ok()?;
-        let project = parse_load_code_assist_project(&body)?;
+        let Some(project) = parse_load_code_assist_project(&body) else {
+            warn!("loadCodeAssist returned no cloudaicompanionProject");
+            return None;
+        };
         if let Ok(mut guard) = self.project.lock() {
             *guard = Some(project.clone());
         }
@@ -123,25 +134,30 @@ impl AntigravityProvider {
             }
         };
 
-        // Primary source: Antigravity's own per-model quota (fetchAvailableModels).
-        let project = self.resolve_project(&token).await;
-        if let Some(ref project) = project {
-            match self.fetch_models_quota(&token, project).await {
-                Ok(Some(metrics)) if !metrics.is_empty() => {
-                    return Ok(self.data(ProviderStatus::Ok, metrics));
-                }
-                Ok(_) => { /* no quotaInfo in the response — fall back */ }
-                Err(e) => warn!("fetchAvailableModels failed, falling back: {e}"),
+        // The project id is REQUIRED. Every Code Assist quota endpoint answers
+        // a synthetic "everything full" default view when it is missing, which
+        // is indistinguishable from a genuinely unused account — so report an
+        // honest error instead of rendering numbers we know may be wrong.
+        let Some(project) = self.resolve_project(&token).await else {
+            return Ok(self.data(
+                ProviderStatus::NetworkError(
+                    "no Code Assist project id — open Antigravity once".to_string(),
+                ),
+                vec![],
+            ));
+        };
+
+        // Per-model quota (the pools Antigravity itself meters).
+        match self.fetch_models_quota(&token, &project).await {
+            Ok(Some(metrics)) if !metrics.is_empty() => {
+                return Ok(self.data(ProviderStatus::Ok, metrics));
             }
+            Ok(_) => warn!("fetchAvailableModels returned no usable quota, falling back"),
+            Err(e) => warn!("fetchAvailableModels failed, falling back: {e}"),
         }
 
-        // Fallback: the Code Assist bucket view. Without the project id the
-        // endpoint serves the misleading default view (every bucket full) —
-        // see LOAD_URL above.
-        let quota_body = match project {
-            Some(project) => serde_json::json!({ "project": project }).to_string(),
-            None => "{}".to_string(),
-        };
+        // Fallback: the Code Assist bucket view, ALWAYS with the project id.
+        let quota_body = serde_json::json!({ "project": project }).to_string();
         let resp = match self
             .http
             .post(QUOTA_URL)
