@@ -94,29 +94,118 @@ pub async fn save_to(config: &Config, path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Spawn the single background config-saver task; return its sender. Sending a
-/// config overwrites a one-slot `watch` channel, so a burst of changes
-/// coalesces to the LATEST (the newest setting always wins) AND the queue is
-/// bounded to one entry — a slow/stalled disk cannot grow it. This also
-/// serialises writes, closing the earlier race where two independently-spawned
-/// saves could atomic-rename out of order and drop the newest config. Send
-/// `Some(cfg)` to persist; the initial `None` seed is ignored.
-pub fn spawn_saver(
-    handle: &tokio::runtime::Handle,
-    path: PathBuf,
-) -> tokio::sync::watch::Sender<Option<Config>> {
-    let (tx, mut rx) = tokio::sync::watch::channel::<Option<Config>>(None);
-    handle.spawn(async move {
+/// How long shutdown waits for the writer to finish its final save. A wedged
+/// disk must delay exit, not prevent it.
+const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// A message for the config writer task.
+#[derive(Clone)]
+pub enum SaveMsg {
+    /// Persist this config and keep running.
+    Write(Config),
+    /// Persist this config, then stop. Always the writer's last action.
+    Final(Config),
+}
+
+/// The single background config writer. Every write goes through one task, so
+/// two writes can never interleave or land out of order.
+pub struct ConfigSaver {
+    tx: std::sync::Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// A cheap clone of the writer's sending end, for the app's hot paths.
+#[derive(Clone)]
+pub struct ConfigSaverHandle {
+    tx: std::sync::Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
+}
+
+impl ConfigSaverHandle {
+    /// Queue a config for persistence. Fire-and-forget: a burst coalesces to
+    /// the latest value on the one-slot channel.
+    pub fn save(&self, config: Config) {
+        let _ = self.tx.send(Some(SaveMsg::Write(config)));
+    }
+}
+
+impl ConfigSaver {
+    /// A sending handle for the app's save call sites.
+    pub fn handle(&self) -> ConfigSaverHandle {
+        ConfigSaverHandle {
+            tx: self.tx.clone(),
+        }
+    }
+
+    /// Persist `config` and BLOCK until the writer has finished and stopped.
+    ///
+    /// This is the shutdown path. It deliberately does not write the file
+    /// itself: a direct write would be a second writer racing whatever the
+    /// task already has in flight, and a slower in-flight write of an older
+    /// snapshot could rename over the newest config. Handing the task a
+    /// `Final` message instead keeps a single writer, and awaiting the task
+    /// proves the newest config reached disk before the process exits.
+    ///
+    /// The wait happens on a freshly spawned OS thread rather than via
+    /// `rt.block_on` on the calling thread directly: the caller is usually a
+    /// plain thread with no Tokio context (the app's event loop), where
+    /// `block_on` is fine, but it can also already be running inside that
+    /// same runtime (as in tests that call `shutdown` from `rt.block_on`),
+    /// where a direct `block_on` would panic with "Cannot start a runtime
+    /// from within a runtime". A fresh thread never carries that context, so
+    /// entering the runtime there is always sound; joining it back is a
+    /// plain OS-level wait that works from either kind of caller.
+    pub fn shutdown(self, config: Config, rt: &tokio::runtime::Handle) {
+        let ConfigSaver { tx, task } = self;
+        let _ = tx.send(Some(SaveMsg::Final(config)));
+        let rt = rt.clone();
+        let waited = std::thread::spawn(move || {
+            // `tokio::time::timeout` must be constructed AFTER the runtime is
+            // entered (it looks up the time driver on creation), so it lives
+            // inside the async block that `block_on` drives rather than as a
+            // pre-built future passed into `block_on`.
+            rt.block_on(async move { tokio::time::timeout(SHUTDOWN_FLUSH_TIMEOUT, task).await })
+        })
+        .join();
+        match waited {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(_elapsed))) => tracing::warn!("final config save timed out"),
+            Ok(Err(e)) => tracing::warn!("config writer task failed: {e}"),
+            Err(_) => {
+                tracing::warn!("config writer thread panicked while waiting for the final save")
+            }
+        }
+    }
+}
+
+/// Spawn the single background config-saver task. Sending a config overwrites a
+/// one-slot `watch` channel, so a burst of changes coalesces to the LATEST (the
+/// newest setting always wins) AND the queue is bounded to one entry — a
+/// slow/stalled disk cannot grow it. This also serialises writes, closing the
+/// race where two independently-spawned saves could atomic-rename out of order
+/// and drop the newest config.
+pub fn spawn_saver(handle: &tokio::runtime::Handle, path: PathBuf) -> ConfigSaver {
+    let (tx, mut rx) = tokio::sync::watch::channel::<Option<SaveMsg>>(None);
+    let task = handle.spawn(async move {
         while rx.changed().await.is_ok() {
-            let cfg = rx.borrow_and_update().clone();
-            if let Some(cfg) = cfg {
-                if let Err(e) = save_to(&cfg, &path).await {
-                    tracing::warn!("config save failed: {e}");
-                }
+            let msg = rx.borrow_and_update().clone();
+            let (cfg, last) = match msg {
+                Some(SaveMsg::Write(cfg)) => (cfg, false),
+                Some(SaveMsg::Final(cfg)) => (cfg, true),
+                // The initial `None` seed carries no config.
+                None => continue,
+            };
+            if let Err(e) = save_to(&cfg, &path).await {
+                tracing::warn!("config save failed: {e}");
+            }
+            if last {
+                break;
             }
         }
     });
-    tx
+    ConfigSaver {
+        tx: std::sync::Arc::new(tx),
+        task,
+    }
 }
 
 /// Write bytes to `path` atomically: write a uniquely-named sibling temp

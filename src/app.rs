@@ -817,13 +817,14 @@ pub fn run() -> Result<()> {
     // Save the config in the background through a single serialised writer
     // (storage::spawn_saver): a burst coalesces to the latest config on a
     // one-slot channel, so the newest setting always wins and a slow disk
-    // cannot grow the queue.
+    // cannot grow the queue. The saver itself is kept for the shutdown
+    // handshake so the final write cannot race an in-flight background one.
+    let saver = storage::spawn_saver(&rt_handle, storage::config_path());
     let save_config = {
-        let tx = storage::spawn_saver(&rt_handle, storage::config_path());
-        move |cfg: Config| {
-            let _ = tx.send(Some(cfg));
-        }
+        let handle = saver.handle();
+        move |cfg: Config| handle.save(cfg)
     };
+    let mut saver_at_exit = Some(saver);
 
     info!("AI Limits Widget ready");
 
@@ -1621,12 +1622,14 @@ pub fn run() -> Result<()> {
             },
 
             // tao calls process::exit() right after this event, and that does
-            // not wait for the background saver — persist synchronously here
-            // so a setting changed moments before quitting survives. This one
-            // arm covers every exit path (window close, tray Quit, menu Quit).
+            // not wait for the background writer. Hand the writer the final
+            // config and wait for it to finish, so a setting changed moments
+            // before quitting survives — and no in-flight background write can
+            // land after it. This one arm covers every exit path (window
+            // close, tray Quit, menu Quit).
             Event::LoopDestroyed => {
-                if let Err(e) = rt_handle.block_on(storage::save(&config)) {
-                    warn!("final config save failed: {e}");
+                if let Some(saver) = saver_at_exit.take() {
+                    saver.shutdown(config.clone(), &rt_handle);
                 }
             }
 
