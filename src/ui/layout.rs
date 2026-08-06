@@ -65,10 +65,14 @@ const HINT_HEIGHT: f32 = 20.0 * Dimensions::DENSITY_SCALE;
 const TOP_PADDING: f32 = 4.0;
 /// Below this a bar carries no information worth the pixels.
 const MIN_BAR: f32 = 24.0;
-/// Space between provider columns. Stacked, without it one provider's name
-/// sits directly against the next one's percentage and the eye cannot tell
-/// where a provider ends.
-const COLUMN_GAP: f32 = 10.0 * Dimensions::DENSITY_SCALE;
+/// Space between provider columns, per arrangement and the same at every
+/// detail level. Side by side a column is already fenced off by its own
+/// width — the bar sits centred with the name beneath it — so it needs only
+/// enough air to read as separate. Stacked, one provider's name would
+/// otherwise sit directly against the next one's percentage, which reads as
+/// one run-on block, so that direction gets more.
+const ROW_FLOW_GAP: f32 = 5.0 * Dimensions::DENSITY_SCALE;
+const STACK_FLOW_GAP: f32 = 10.0 * Dimensions::DENSITY_SCALE;
 
 /// Pick the row presentation from the space a row actually has, not from
 /// which width step produced it. Keyed on pixels so a changed constant needs
@@ -205,7 +209,12 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
         DetailLevel::Expanded => 88.0,
     });
     let stacked = *flow == ColumnFlow::Column;
-    let gaps = COLUMN_GAP * n.saturating_sub(1) as f32;
+    let gap = if stacked {
+        STACK_FLOW_GAP
+    } else {
+        ROW_FLOW_GAP
+    };
+    let gaps = gap * n.saturating_sub(1) as f32;
     let (width, height) = if stacked {
         (
             pad_h * 2.0 + col_w,
@@ -221,9 +230,9 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
     let mut cols = Vec::with_capacity(n);
     for i in 0..n {
         let (x, y) = if stacked {
-            (pad_h, TOP_PADDING + (body_h + COLUMN_GAP) * i as f32)
+            (pad_h, TOP_PADDING + (body_h + gap) * i as f32)
         } else {
-            (pad_h + (col_w + COLUMN_GAP) * i as f32, TOP_PADDING)
+            (pad_h + (col_w + gap) * i as f32, TOP_PADDING)
         };
         cols.push(Rect {
             x,
@@ -354,9 +363,35 @@ mod tests {
         );
     }
 
-    /// Providers must not touch. Stacked, one provider's name would otherwise
-    /// sit directly against the next one's percentage with nothing between
-    /// them to say where one ends.
+    /// Side by side, a column is already fenced off by its own width: the bar
+    /// sits centred with the name under it, so a small gap is enough. Stacked,
+    /// one provider's name would otherwise sit directly against the next one's
+    /// percentage, so that direction needs a wider one.
+    #[test]
+    fn stacking_is_spaced_more_generously_than_a_row() {
+        let row = arrangement_gap(&ColumnFlow::Row);
+        let column = arrangement_gap(&ColumnFlow::Column);
+
+        assert!(
+            row < column,
+            "a row needs less air than a stack: row {row}, column {column}"
+        );
+        assert!(row >= 4.0, "a row still needs a visible gap, got {row}");
+    }
+
+    fn arrangement_gap(flow: &ColumnFlow) -> f32 {
+        let layout = compute_columns(&DetailLevel::Medium, flow, 3);
+        let BodyLayout::Horizontal { cols } = &layout.body else {
+            panic!("columns body");
+        };
+        let (a, b) = (cols[0], cols[1]);
+        match flow {
+            ColumnFlow::Row => b.x - (a.x + a.w),
+            ColumnFlow::Column => b.y - (a.y + a.h),
+        }
+    }
+
+    /// Providers must not touch in either arrangement.
     #[test]
     fn providers_are_separated_by_a_gap_in_both_arrangements() {
         for flow in [ColumnFlow::Row, ColumnFlow::Column] {
@@ -372,7 +407,7 @@ mod tests {
                     ColumnFlow::Column => b.y - (a.y + a.h),
                 };
                 assert!(
-                    gap >= 8.0,
+                    gap >= 4.0,
                     "{flow:?}: providers are {gap} px apart, too close to tell apart"
                 );
             }

@@ -1294,6 +1294,7 @@ mod tests {
             for (dname, detail) in [
                 ("compact", DetailLevel::Compact),
                 ("medium", DetailLevel::Medium),
+                ("expanded", DetailLevel::Expanded),
             ] {
                 let win = layout::compute(
                     &Layout::Horizontal,
