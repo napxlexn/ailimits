@@ -578,6 +578,26 @@ fn apply_ui_change(
         *pixmap = pm;
     }
     win_state.size = (win_layout.width as f64, win_layout.height as f64);
+
+    // Resizing keeps the top-left corner, so a widget parked against the right
+    // or bottom edge would grow straight off the screen. Pull it back into the
+    // work area of the monitor it sits on.
+    if let Ok(wp) = window.outer_position() {
+        let pos = (wp.x as f64, wp.y as f64);
+        let centre = (
+            (pos.0 + win_state.size.0 / 2.0) as i32,
+            (pos.1 + win_state.size.1 / 2.0) as i32,
+        );
+        if let Some((l, t, r, b)) = crate::platform::work_area_at(centre.0, centre.1) {
+            let work = (l as f64, t as f64, r as f64, b as f64);
+            let (nx, ny) = crate::ui::window::clamp_to_work_area(pos, win_state.size, work);
+            if (nx, ny) != pos {
+                window.set_outer_position(PhysicalPosition::new(nx as i32, ny as i32));
+                win_state.pos = (nx, ny);
+            }
+        }
+    }
+
     menu.sync(config, win_state.pinned);
     window.request_redraw();
 }

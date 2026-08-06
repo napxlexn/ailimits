@@ -1261,6 +1261,67 @@ mod tests {
         }
     }
 
+    /// Design preview for the column arrangement, same purpose as
+    /// `preview_width_steps`. Run: `cargo test preview_arrangement -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_arrangement() {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let providers = vec![
+            {
+                let mut d = data(vec![pct_metric("session", 18, MetricWindow::Session)]);
+                d.id = ProviderId::Claude;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 100, MetricWindow::Long)]);
+                d.id = ProviderId::Codex;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("session", 44, MetricWindow::Session)]);
+                d.id = ProviderId::Copilot;
+                d
+            },
+        ];
+
+        let dir = std::env::temp_dir();
+        for (fname, flow) in [("row", ColumnFlow::Row), ("column", ColumnFlow::Column)] {
+            for (dname, detail) in [
+                ("compact", DetailLevel::Compact),
+                ("medium", DetailLevel::Medium),
+            ] {
+                let win = layout::compute(
+                    &Layout::Horizontal,
+                    &detail,
+                    &WidthScale::Full,
+                    &flow,
+                    providers.len(),
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_flow_{fname}_{dname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} {}x{}", path.display(), win.width, win.height);
+            }
+        }
+    }
+
     fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
             label: label.into(),

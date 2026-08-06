@@ -114,9 +114,74 @@ pub fn magnet_snap(
     )
 }
 
+/// Keep a window inside a monitor's work area after its size changed.
+///
+/// A layout change (width step, arrangement, detail level) resizes the window
+/// around its top-left corner, so a widget parked against the right or bottom
+/// edge grows straight off the screen. This pulls it back by the overhang.
+///
+/// The near edge wins when the window is larger than the work area: clamping
+/// the far edge first would push the origin off-screen, hiding the first
+/// provider instead of the last one.
+pub fn clamp_to_work_area(
+    pos: (f64, f64),
+    size: (f64, f64),
+    work: (f64, f64, f64, f64),
+) -> (f64, f64) {
+    let axis = |p: f64, len: f64, near: f64, far: f64| (p.min(far - len)).max(near);
+    (
+        axis(pos.0, size.0, work.0, work.2),
+        axis(pos.1, size.1, work.1, work.3),
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::magnet_snap;
+    use super::{clamp_to_work_area, magnet_snap};
+
+    const AREA: (f64, f64, f64, f64) = (0.0, 0.0, 1000.0, 800.0);
+
+    #[test]
+    fn a_window_that_fits_is_left_where_it_is() {
+        assert_eq!(
+            clamp_to_work_area((300.0, 200.0), (200.0, 100.0), AREA),
+            (300.0, 200.0)
+        );
+    }
+
+    #[test]
+    fn growing_past_the_right_edge_pulls_the_window_back_in() {
+        // Anchored near the right edge, then made wider by a layout change.
+        let (x, y) = clamp_to_work_area((900.0, 200.0), (300.0, 100.0), AREA);
+        assert_eq!(x, 700.0, "the right edge must land on the work area edge");
+        assert_eq!(y, 200.0, "the vertical position was already fine");
+    }
+
+    #[test]
+    fn growing_past_the_bottom_edge_pulls_the_window_up() {
+        let (_, y) = clamp_to_work_area((300.0, 750.0), (200.0, 300.0), AREA);
+        assert_eq!(y, 500.0);
+    }
+
+    #[test]
+    fn a_window_larger_than_the_screen_keeps_its_top_left_visible() {
+        // Clamping the far edge first would push the origin off-screen, which
+        // is worse: the corner that carries the first provider must stay put.
+        assert_eq!(
+            clamp_to_work_area((300.0, 200.0), (1200.0, 900.0), AREA),
+            (0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_work_area_that_does_not_start_at_zero_is_respected() {
+        // Second monitor to the left of the primary, taskbar on top.
+        let area = (-1920.0, 40.0, -20.0, 1080.0);
+        assert_eq!(
+            clamp_to_work_area((-100.0, 20.0), (200.0, 100.0), area),
+            (-220.0, 40.0)
+        );
+    }
 
     const WORK: (f64, f64, f64, f64) = (0.0, 0.0, 1000.0, 800.0);
     const SIZE: (f64, f64) = (200.0, 100.0);

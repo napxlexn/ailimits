@@ -65,6 +65,10 @@ const HINT_HEIGHT: f32 = 20.0 * Dimensions::DENSITY_SCALE;
 const TOP_PADDING: f32 = 4.0;
 /// Below this a bar carries no information worth the pixels.
 const MIN_BAR: f32 = 24.0;
+/// Space between provider columns. Stacked, without it one provider's name
+/// sits directly against the next one's percentage and the eye cannot tell
+/// where a provider ends.
+const COLUMN_GAP: f32 = 10.0 * Dimensions::DENSITY_SCALE;
 
 /// Pick the row presentation from the space a row actually has, not from
 /// which width step produced it. Keyed on pixels so a changed constant needs
@@ -157,7 +161,11 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
         y += row_h;
     }
 
-    let show_hint = *detail == DetailLevel::Compact;
+    // The hint is written for the natural width and the renderer drops it once
+    // the rows lose their names, so its height must go with it — otherwise a
+    // narrowed widget keeps a band of empty background under the last row.
+    let tier = row_tier(detail, width - pad_h * 2.0);
+    let show_hint = *detail == DetailLevel::Compact && tier == RowTier::Full;
     let hint_h = if show_hint { HINT_HEIGHT } else { 0.0 };
     let hint = Rect {
         x: pad_h,
@@ -171,7 +179,7 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
         width,
         height,
         body: BodyLayout::Vertical { rows, hint },
-        row_tier: row_tier(detail, width - pad_h * 2.0),
+        row_tier: tier,
     }
 }
 
@@ -197,18 +205,25 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
         DetailLevel::Expanded => 88.0,
     });
     let stacked = *flow == ColumnFlow::Column;
+    let gaps = COLUMN_GAP * n.saturating_sub(1) as f32;
     let (width, height) = if stacked {
-        (pad_h * 2.0 + col_w, TOP_PADDING + body_h * n as f32 + 6.0)
+        (
+            pad_h * 2.0 + col_w,
+            TOP_PADDING + body_h * n as f32 + gaps + 6.0,
+        )
     } else {
-        (pad_h * 2.0 + col_w * n as f32, TOP_PADDING + body_h + 6.0)
+        (
+            pad_h * 2.0 + col_w * n as f32 + gaps,
+            TOP_PADDING + body_h + 6.0,
+        )
     };
 
     let mut cols = Vec::with_capacity(n);
     for i in 0..n {
         let (x, y) = if stacked {
-            (pad_h, TOP_PADDING + body_h * i as f32)
+            (pad_h, TOP_PADDING + (body_h + COLUMN_GAP) * i as f32)
         } else {
-            (pad_h + col_w * i as f32, TOP_PADDING)
+            (pad_h + (col_w + COLUMN_GAP) * i as f32, TOP_PADDING)
         };
         cols.push(Rect {
             x,
@@ -307,6 +322,61 @@ mod tests {
             stacked.height,
             side_by_side.height
         );
+    }
+
+    /// A hint that is not drawn must not reserve its height, or a narrowed
+    /// Compact widget carries a band of empty background along its bottom.
+    #[test]
+    fn a_hidden_hint_leaves_no_empty_band_behind() {
+        let narrow = compute(
+            &Layout::Vertical,
+            &DetailLevel::Compact,
+            &WidthScale::Half,
+            &ColumnFlow::Row,
+            2,
+        );
+        assert_ne!(
+            narrow.row_tier,
+            RowTier::Full,
+            "this case exists to cover a hidden hint"
+        );
+
+        let BodyLayout::Vertical { rows, hint } = &narrow.body else {
+            panic!("rows body");
+        };
+        assert_eq!(hint.h, 0.0, "a hidden hint has no height");
+
+        let rows_bottom = rows.last().map(|r| r.y + r.h).unwrap();
+        assert!(
+            narrow.height - rows_bottom < 8.0,
+            "only padding may follow the last row, found {} px",
+            narrow.height - rows_bottom
+        );
+    }
+
+    /// Providers must not touch. Stacked, one provider's name would otherwise
+    /// sit directly against the next one's percentage with nothing between
+    /// them to say where one ends.
+    #[test]
+    fn providers_are_separated_by_a_gap_in_both_arrangements() {
+        for flow in [ColumnFlow::Row, ColumnFlow::Column] {
+            let layout = compute_columns(&DetailLevel::Medium, &flow, 3);
+            let BodyLayout::Horizontal { cols } = &layout.body else {
+                panic!("columns body");
+            };
+
+            for pair in cols.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let gap = match flow {
+                    ColumnFlow::Row => b.x - (a.x + a.w),
+                    ColumnFlow::Column => b.y - (a.y + a.h),
+                };
+                assert!(
+                    gap >= 8.0,
+                    "{flow:?}: providers are {gap} px apart, too close to tell apart"
+                );
+            }
+        }
     }
 
     fn compute_columns(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
