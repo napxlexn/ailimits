@@ -310,7 +310,7 @@ fn draw_pie_icon(providers: &[ProviderData], theme: &ComputedTheme, light: bool)
         // provider setups see no change at all.
         (Some(only), None) => {
             fill_circle(&mut pm, cx, cy, r, tray_ink(light, 64));
-            fill_pie(&mut pm, cx, cy, r, only as f32, ink(only as f32));
+            fill_level(&mut pm, cx, cy, r, only as f32, ink(only as f32));
         }
         // No percentage data yet (loading / binary / error).
         _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(light, 200)),
@@ -332,15 +332,53 @@ enum Half {
 /// providers rather than one.
 const HALF_SPLIT: f32 = 2.5;
 
-/// The faint track behind one half.
-fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tiny_skia::Color) {
-    half_sector(pm, cx, cy, r, half, 1.0, c);
+/// A full circle filled to a level, for the single-provider case. Same
+/// waterline as the halves so the icon does not change meaning when a second
+/// provider starts reporting.
+fn fill_level(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, pct: f32, c: tiny_skia::Color) {
+    let frac = (pct / 100.0).clamp(0.0, 1.0);
+    if frac <= 0.0 {
+        return;
+    }
+    let bottom = cy + r;
+    let level = bottom - 2.0 * r * frac;
+
+    let mut pb = PathBuilder::new();
+    let steps = 40;
+    // Down the left side of the waterline to the bottom...
+    for i in 0..=steps {
+        let y = level + (bottom - level) * (i as f32 / steps as f32);
+        let dy = y - cy;
+        let dx = (r * r - dy * dy).max(0.0).sqrt();
+        let x = cx - dx;
+        if i == 0 {
+            pb.move_to(x, y);
+        } else {
+            pb.line_to(x, y);
+        }
+    }
+    // ...and back up the right side.
+    for i in (0..=steps).rev() {
+        let y = level + (bottom - level) * (i as f32 / steps as f32);
+        let dy = y - cy;
+        let dx = (r * r - dy * dy).max(0.0).sqrt();
+        pb.line_to(cx + dx, y);
+    }
+    pb.close();
+    fill_path(pm, pb, c);
 }
 
-/// One half's usage sector. A gauge fills like a glass — from the bottom up —
-/// so both halves rise from the foot of the dividing line, the left one
-/// sweeping out to the left and the right one to the right. Equal usage gives
-/// a symmetric shape that can be read at a glance.
+/// The faint track behind one half.
+fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tiny_skia::Color) {
+    fill_half_pie(pm, cx, cy, r, half, 100.0, c);
+}
+
+/// One half's usage, drawn as a LEVEL rather than a sector: the paint rises
+/// flat from the bottom of the half, the way liquid sits in a glass.
+///
+/// A sector hinged on the centre reads as a slice taken out of a disc, which
+/// is not what a usage gauge means — and it only looks the same as a level at
+/// exactly 50%, diverging everywhere else.
 fn fill_half_pie(
     pm: &mut Pixmap,
     cx: f32,
@@ -354,39 +392,27 @@ fn fill_half_pie(
     if frac <= 0.0 {
         return;
     }
-    half_sector(pm, cx, cy, r, half, frac, c);
-}
-
-/// Paint `frac` of a half-disc, hinged on the vertical centre line.
-fn half_sector(
-    pm: &mut Pixmap,
-    cx: f32,
-    cy: f32,
-    r: f32,
-    half: Half,
-    frac: f32,
-    c: tiny_skia::Color,
-) {
-    use std::f32::consts::PI;
+    // Each half is its own circle, nudged off centre so the two never touch.
     let inset = HALF_SPLIT / 2.0;
-    // Sweeping up from the foot of the line: the left half must curve out to
-    // the left (increasing angle in screen coords), the right half mirrors it.
-    let (hinge, dir) = match half {
-        Half::Left => (cx - inset, 1.0),
-        Half::Right => (cx + inset, -1.0),
+    let (hinge, sign) = match half {
+        Half::Left => (cx - inset, -1.0),
+        Half::Right => (cx + inset, 1.0),
     };
+    let bottom = cy + r;
+    let level = bottom - 2.0 * r * frac;
 
+    // Walk the waterline down to the bottom of the arc, then close along the
+    // dividing line. Sampling by y keeps the flat top flat at any radius.
     let mut pb = PathBuilder::new();
-    pb.move_to(hinge, cy);
-    // Start at the FOOT of the dividing line and sweep upwards, half a turn
-    // at most: a full half ends back at the top of the same line.
-    pb.line_to(hinge, cy + r);
-    let steps = ((frac * 48.0).ceil() as usize).max(1);
+    pb.move_to(hinge, level);
+    let steps = 40;
     for i in 0..=steps {
-        let f = (i as f32 / steps as f32) * frac;
-        let ang = PI / 2.0 + dir * f * PI;
-        pb.line_to(hinge + r * ang.cos(), cy + r * ang.sin());
+        let y = level + (bottom - level) * (i as f32 / steps as f32);
+        let dy = y - cy;
+        let dx = (r * r - dy * dy).max(0.0).sqrt();
+        pb.line_to(hinge + sign * dx, y);
     }
+    pb.line_to(hinge, bottom);
     pb.close();
     fill_path(pm, pb, c);
 }
@@ -693,26 +719,6 @@ pub(crate) fn fill_round_rect(
     fill_path(pm, pb, c);
 }
 
-/// A pie sector from 12 o'clock, clockwise, covering `pct`% of the circle.
-fn fill_pie(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, pct: f32, c: tiny_skia::Color) {
-    use std::f32::consts::PI;
-    let frac = (pct / 100.0).clamp(0.0, 1.0);
-    if frac <= 0.0 {
-        return;
-    }
-    let mut pb = PathBuilder::new();
-    pb.move_to(cx, cy);
-    let steps = ((frac * 64.0).ceil() as usize).max(1);
-    for i in 0..=steps {
-        let f = (i as f32 / steps as f32) * frac;
-        // Start at -90° (top); increasing angle in screen coords goes clockwise.
-        let ang = -PI / 2.0 + f * 2.0 * PI;
-        pb.line_to(cx + r * ang.cos(), cy + r * ang.sin());
-    }
-    pb.close();
-    fill_path(pm, pb, c);
-}
-
 fn fill_path(pm: &mut Pixmap, pb: PathBuilder, c: tiny_skia::Color) {
     if let Some(path) = pb.finish() {
         let mut paint = Paint::default();
@@ -787,6 +793,52 @@ mod tests {
         assert!(
             !painted(12, 6),
             "15% must leave the top of the left half empty"
+        );
+    }
+
+    /// A quarter full must be a flat band across the bottom of the half, not a
+    /// wedge hinged on the centre. The two shapes coincide at exactly 50%, so
+    /// the difference has to be measured somewhere else: at 25% the outer
+    /// bottom corner is under water for a level and outside the wedge for a
+    /// sector.
+    #[test]
+    fn a_quarter_full_is_a_flat_band_not_a_wedge() {
+        let (cx, cy, r) = (16.0, 16.0, 14.0);
+        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
+        pm.fill(tiny_skia::Color::TRANSPARENT);
+        fill_half_pie(&mut pm, cx, cy, r, Half::Left, 25.0, color(255, 0, 0, 255));
+
+        let painted =
+            |x: i32, y: i32| pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize].alpha() > 0;
+
+        assert!(
+            painted(4, 24),
+            "the outer bottom of the half must be under the waterline"
+        );
+        assert!(painted(13, 26), "so must the bottom near the divider");
+        assert!(
+            !painted(4, 18),
+            "and the level must stop well below the centre"
+        );
+    }
+
+    /// The one-provider circle must fill the same way the halves do, or the
+    /// icon changes meaning the moment a second provider reports in.
+    #[test]
+    fn the_single_provider_circle_fills_from_the_bottom_too() {
+        let (cx, cy, r) = (16.0, 16.0, 14.0);
+        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
+        pm.fill(tiny_skia::Color::TRANSPARENT);
+        fill_level(&mut pm, cx, cy, r, 25.0, color(255, 0, 0, 255));
+
+        let painted =
+            |x: i32, y: i32| pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize].alpha() > 0;
+
+        assert!(painted(16, 26), "the bottom must be under water");
+        assert!(painted(6, 24), "and so must the outer bottom, flat across");
+        assert!(
+            !painted(16, 14),
+            "the centre must stay dry at a quarter full"
         );
     }
 
@@ -891,7 +943,7 @@ mod tests {
                 }
                 (Some(a), None) => {
                     fill_circle(&mut pm, cx, cy, r, tray_ink(false, 64));
-                    fill_pie(&mut pm, cx, cy, r, a as f32, ink(a as f32));
+                    fill_level(&mut pm, cx, cy, r, a as f32, ink(a as f32));
                 }
                 _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(false, 200)),
             }
