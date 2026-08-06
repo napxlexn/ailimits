@@ -27,6 +27,16 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 </p>
 
 <p align="center">
+  <img src="docs/images/widget-providers.gif" width="380" alt="The widget growing from a single provider row to four and back">
+  <br><sub>The card is sized from what you actually configured — one provider or four, it is never padded out to a fixed shape.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/widget-opacity.gif" width="380" alt="The widget background going from almost fully transparent to almost solid while the text stays readable">
+  <br><sub>Background opacity runs from almost clear to almost solid. Only the background alpha moves — the text and bars keep their contrast at every step.</sub>
+</p>
+
+<p align="center">
   <img src="docs/images/palette.gif" width="340" alt="The widget cycling through random readable looks — the monochrome and eight color palettes with the brightness, saturation and background-opacity sliders all varied">
   <br><sub>The look is yours: the monochrome and eight color palettes, plus the Brightness, Saturation and Background-opacity sliders — cycling through random readable presets, rendered exactly as the app draws them.</sub>
 </p>
