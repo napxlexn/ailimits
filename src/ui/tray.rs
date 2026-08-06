@@ -86,8 +86,8 @@ impl Tray {
         // A Start-fallback icon renders the busiest-% pie, exactly like Tray.
         let pie = self.fallback || matches!(self.mode, IndicatorKind::Tray);
         let state: Vec<Option<u8>> = if pie {
-            // One pie of the highest %.
-            vec![max_pct(providers).map(|p| p.round() as u8)]
+            // Both halves of the pie — see pie_cache_state.
+            pie_cache_state(providers)
         } else if matches!(self.mode, IndicatorKind::Bars) {
             // One bar row per provider.
             providers
@@ -204,12 +204,28 @@ pub(crate) fn provider_pct(data: &ProviderData) -> Option<f32> {
         .flatten()
 }
 
-/// Highest usage % among providers that actually have a percentage.
-pub(crate) fn max_pct(providers: &[ProviderData]) -> Option<f32> {
-    providers
+/// The two busiest providers, highest first, as rounded percentages.
+///
+/// Providers without a usable percentage are never candidates. Ties keep the
+/// order the widget shows them in, so two providers sitting at the same number
+/// do not trade halves from one refresh to the next.
+pub(crate) fn two_busiest(providers: &[ProviderData]) -> (Option<u8>, Option<u8>) {
+    let mut pcts: Vec<u8> = providers
         .iter()
         .filter_map(provider_pct)
-        .fold(None, |acc, p| Some(acc.map_or(p, |a: f32| a.max(p))))
+        .map(|p| p.round() as u8)
+        .collect();
+    // A stable sort keeps equal percentages in widget order.
+    pcts.sort_by(|a, b| b.cmp(a));
+    let mut it = pcts.into_iter();
+    (it.next(), it.next())
+}
+
+/// What the pie repaint cache must hold: BOTH halves. Caching only the busiest
+/// would freeze the icon whenever the second-place provider moved.
+pub(crate) fn pie_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
+    let (first, second) = two_busiest(providers);
+    vec![first, second]
 }
 
 pub(crate) fn tooltip(providers: &[ProviderData]) -> String {
@@ -251,25 +267,121 @@ fn draw_pie_icon(providers: &[ProviderData], theme: &ComputedTheme, light: bool)
     pm.fill(tiny_skia::Color::TRANSPARENT);
     let (cx, cy, r) = (16.0, 16.0, 14.0);
 
-    if let Some(pct) = max_pct(providers) {
-        // Faint full-circle track, then an opaque pie sector for the usage.
-        fill_circle(&mut pm, cx, cy, r, tray_ink(light, 64));
-        let lvl = theme.level(UsageLevel::from_percentage(pct));
-        // Monochrome greys are tuned for the dark widget and vanish on a light
-        // taskbar — use the system-theme ink instead; colored palettes already
-        // contrast on either taskbar, so keep their hue.
-        let fill = if theme.monochrome {
+    // Usage colour for a percentage, honouring the monochrome palette.
+    // Monochrome greys are tuned for the dark widget and vanish on a light
+    // taskbar — use the system-theme ink instead; coloured palettes already
+    // contrast on either taskbar, so keep their hue.
+    let ink = |pct: f32| {
+        if theme.monochrome {
             tray_ink(light, 255)
         } else {
+            let lvl = theme.level(UsageLevel::from_percentage(pct));
             color(lvl.bar.r, lvl.bar.g, lvl.bar.b, 255)
-        };
-        fill_pie(&mut pm, cx, cy, r, pct, fill);
-    } else {
+        }
+    };
+
+    match two_busiest(providers) {
+        // Two or more providers with data: split the circle down the middle,
+        // busiest on the left. Which half is which is answered by the tooltip,
+        // which already lists every provider with its percentage.
+        (Some(first), Some(second)) => {
+            fill_half_track(&mut pm, cx, cy, r, Half::Left, tray_ink(light, 64));
+            fill_half_track(&mut pm, cx, cy, r, Half::Right, tray_ink(light, 64));
+            fill_half_pie(
+                &mut pm,
+                cx,
+                cy,
+                r,
+                Half::Left,
+                first as f32,
+                ink(first as f32),
+            );
+            fill_half_pie(
+                &mut pm,
+                cx,
+                cy,
+                r,
+                Half::Right,
+                second as f32,
+                ink(second as f32),
+            );
+        }
+        // Exactly one: the full circle, pixel-identical to before. Single
+        // provider setups see no change at all.
+        (Some(only), None) => {
+            fill_circle(&mut pm, cx, cy, r, tray_ink(light, 64));
+            fill_pie(&mut pm, cx, cy, r, only as f32, ink(only as f32));
+        }
         // No percentage data yet (loading / binary / error).
-        fill_circle(&mut pm, cx, cy, 5.0, tray_ink(light, 200));
+        _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(light, 200)),
     }
 
     to_icon(&pm)
+}
+
+/// Which half of the split pie a sector belongs to.
+#[derive(Clone, Copy, PartialEq)]
+enum Half {
+    Left,
+    Right,
+}
+
+/// A vertical hairline keeps the two halves from reading as one circle.
+const HALF_SPLIT: f32 = 1.0;
+
+/// The faint track behind one half.
+fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tiny_skia::Color) {
+    half_sector(pm, cx, cy, r, half, 1.0, c);
+}
+
+/// One half's usage sector, filling from the top towards the bottom: the left
+/// half anticlockwise, the right half clockwise, so both grow away from the
+/// dividing line and can be compared at a glance.
+fn fill_half_pie(
+    pm: &mut Pixmap,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    half: Half,
+    pct: f32,
+    c: tiny_skia::Color,
+) {
+    let frac = (pct / 100.0).clamp(0.0, 1.0);
+    if frac <= 0.0 {
+        return;
+    }
+    half_sector(pm, cx, cy, r, half, frac, c);
+}
+
+/// Paint `frac` of a half-disc, hinged on the vertical centre line.
+fn half_sector(
+    pm: &mut Pixmap,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    half: Half,
+    frac: f32,
+    c: tiny_skia::Color,
+) {
+    use std::f32::consts::PI;
+    let inset = HALF_SPLIT / 2.0;
+    let (hinge, dir) = match half {
+        Half::Left => (cx - inset, -1.0),
+        Half::Right => (cx + inset, 1.0),
+    };
+
+    let mut pb = PathBuilder::new();
+    pb.move_to(hinge, cy);
+    // Start at the top of the dividing line and sweep half a turn at most.
+    pb.line_to(hinge, cy - r);
+    let steps = ((frac * 48.0).ceil() as usize).max(1);
+    for i in 0..=steps {
+        let f = (i as f32 / steps as f32) * frac;
+        let ang = -PI / 2.0 + dir * f * PI;
+        pb.line_to(hinge + r * ang.cos(), cy + r * ang.sin());
+    }
+    pb.close();
+    fill_path(pm, pb, c);
 }
 
 /// Horizontal progress bars stacked one above the other — one row per
@@ -643,6 +755,117 @@ mod tests {
             }],
             updated_at: Utc::now(),
             received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    #[test]
+    fn the_two_busiest_providers_are_returned_highest_first() {
+        let providers = vec![
+            data(ProviderId::Claude, 40),
+            data(ProviderId::Codex, 93),
+            data(ProviderId::Copilot, 71),
+        ];
+
+        let (first, second) = two_busiest(&providers);
+
+        assert_eq!(first, Some(93), "the busiest goes to the left half");
+        assert_eq!(second, Some(71));
+    }
+
+    #[test]
+    fn a_provider_without_a_percentage_is_never_a_candidate() {
+        let mut blank = data(ProviderId::Copilot, 0);
+        blank.metrics.clear();
+        let providers = vec![data(ProviderId::Claude, 55), blank];
+
+        assert_eq!(two_busiest(&providers), (Some(55), None));
+    }
+
+    #[test]
+    fn equal_percentages_keep_the_widget_order_so_the_halves_do_not_swap() {
+        // Both at 80: without a stable tie-break the halves would trade places
+        // between refreshes and the icon would flicker for no reason.
+        let providers = vec![data(ProviderId::Claude, 80), data(ProviderId::Codex, 80)];
+
+        assert_eq!(two_busiest(&providers), (Some(80), Some(80)));
+        assert_eq!(
+            two_busiest(&providers),
+            two_busiest(&providers),
+            "the same input must give the same halves"
+        );
+    }
+
+    #[test]
+    fn the_repaint_cache_tracks_both_halves() {
+        // Caching only the busiest would freeze the icon whenever the
+        // second-place provider moved - it compiles, looks right, and stops
+        // updating minutes later in normal use.
+        let before = vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 30)];
+        let after = vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 55)];
+
+        assert_ne!(
+            pie_cache_state(&before),
+            pie_cache_state(&after),
+            "a change in the second half must invalidate the cache"
+        );
+    }
+
+    /// Design preview for the split pie: the tray square is far too small to
+    /// judge live, so write the variants out at several percentage pairs.
+    /// Run: `cargo test preview_split_pie -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_split_pie() {
+        let theme = ComputedTheme::compute(&crate::config::schema::UIConfig::default());
+        let dir = std::env::temp_dir();
+        for (name, providers) in [
+            ("pie_none.png", vec![]),
+            ("pie_one.png", vec![data(ProviderId::Claude, 93)]),
+            (
+                "pie_two.png",
+                vec![data(ProviderId::Claude, 93), data(ProviderId::Codex, 18)],
+            ),
+            (
+                "pie_even.png",
+                vec![data(ProviderId::Claude, 50), data(ProviderId::Codex, 50)],
+            ),
+            (
+                "pie_full.png",
+                vec![data(ProviderId::Claude, 100), data(ProviderId::Codex, 100)],
+            ),
+            (
+                "pie_four.png",
+                vec![
+                    data(ProviderId::Claude, 71),
+                    data(ProviderId::Codex, 100),
+                    data(ProviderId::Copilot, 40),
+                    data(ProviderId::Antigravity, 7),
+                ],
+            ),
+        ] {
+            let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
+            pm.fill(tiny_skia::Color::TRANSPARENT);
+            let (cx, cy, r) = (16.0, 16.0, 14.0);
+            let ink = |pct: f32| {
+                let lvl = theme.level(UsageLevel::from_percentage(pct));
+                color(lvl.bar.r, lvl.bar.g, lvl.bar.b, 255)
+            };
+            match two_busiest(&providers) {
+                (Some(a), Some(b)) => {
+                    fill_half_track(&mut pm, cx, cy, r, Half::Left, tray_ink(false, 64));
+                    fill_half_track(&mut pm, cx, cy, r, Half::Right, tray_ink(false, 64));
+                    fill_half_pie(&mut pm, cx, cy, r, Half::Left, a as f32, ink(a as f32));
+                    fill_half_pie(&mut pm, cx, cy, r, Half::Right, b as f32, ink(b as f32));
+                }
+                (Some(a), None) => {
+                    fill_circle(&mut pm, cx, cy, r, tray_ink(false, 64));
+                    fill_pie(&mut pm, cx, cy, r, a as f32, ink(a as f32));
+                }
+                _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(false, 200)),
+            }
+            let path = dir.join(format!("ailimits_{name}"));
+            std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+            println!("{}", path.display());
         }
     }
 
