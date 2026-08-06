@@ -562,6 +562,7 @@ fn apply_ui_change(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
+        &config.ui.column_flow,
         provider_count,
     );
     *theme = ComputedTheme::compute(&config.ui);
@@ -661,6 +662,7 @@ pub fn run() -> Result<()> {
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
+        &config.ui.column_flow,
         visible_count,
     );
     let mut theme = ComputedTheme::compute(&config.ui);
@@ -1536,6 +1538,21 @@ pub fn run() -> Result<()> {
                     }
                     Some(MenuAction::SetWidthScale(w)) => {
                         config.ui.width_scale = w;
+                        apply_ui_change(
+                            &config,
+                            &mut win_layout,
+                            &mut theme,
+                            &mut pixmap,
+                            &mut surface,
+                            &window,
+                            &mut win_state,
+                            &menu,
+                            visible_count,
+                        );
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::SetColumnFlow(f)) => {
+                        config.ui.column_flow = f;
                         apply_ui_change(
                             &config,
                             &mut win_layout,

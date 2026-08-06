@@ -1233,9 +1233,14 @@ mod tests {
                 ("100", WidthScale::Full),
                 ("075", WidthScale::ThreeQuarters),
                 ("050", WidthScale::Half),
-                ("025", WidthScale::Quarter),
             ] {
-                let win = layout::compute(&Layout::Vertical, &detail, &scale, providers.len());
+                let win = layout::compute(
+                    &Layout::Vertical,
+                    &detail,
+                    &scale,
+                    &crate::config::schema::ColumnFlow::Row,
+                    providers.len(),
+                );
                 let mut pm =
                     Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
                 renderer.draw(

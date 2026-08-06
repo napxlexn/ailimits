@@ -5,7 +5,7 @@
 
 use super::renderer::{NAME_WIDTH, PCT_WIDTH, ROW_GAP};
 use super::theme::Dimensions;
-use crate::config::schema::{DetailLevel, Layout, WidthScale};
+use crate::config::schema::{ColumnFlow, DetailLevel, Layout, WidthScale};
 
 /// Rectangle in window coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -116,6 +116,7 @@ pub fn compute(
     layout: &Layout,
     detail: &DetailLevel,
     width_scale: &WidthScale,
+    column_flow: &ColumnFlow,
     provider_count: usize,
 ) -> WindowLayout {
     // No visible providers (all unconfigured / disabled): the renderer draws a
@@ -128,7 +129,7 @@ pub fn compute(
     let n = provider_count.max(1);
     match layout {
         Layout::Vertical => vertical(detail, width_scale, n),
-        Layout::Horizontal => horizontal(detail, n),
+        Layout::Horizontal => horizontal(detail, column_flow, n),
         // Legacy config value: the 2x2 mode was removed from the UI.
         Layout::Grid => vertical(detail, width_scale, n),
     }
@@ -174,8 +175,11 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
     }
 }
 
-/// Horizontal layout: vertical bars with names below.
-fn horizontal(detail: &DetailLevel, n: usize) -> WindowLayout {
+/// Horizontal layout: vertical bars with names below, arranged either side by
+/// side or stacked downwards. Only the geometry differs between the two — the
+/// column body and the renderer's per-column drawing are shared, because a
+/// column is drawn relative to its own rectangle wherever that sits.
+fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
     // Compact is tighter horizontally as well.
     let pad_h = match detail {
         DetailLevel::Compact => Dimensions::scale(6.0),
@@ -192,14 +196,23 @@ fn horizontal(detail: &DetailLevel, n: usize) -> WindowLayout {
         DetailLevel::Medium => 68.0,
         DetailLevel::Expanded => 88.0,
     });
-    let width = pad_h * 2.0 + col_w * n as f32;
-    let height = TOP_PADDING + body_h + 6.0;
+    let stacked = *flow == ColumnFlow::Column;
+    let (width, height) = if stacked {
+        (pad_h * 2.0 + col_w, TOP_PADDING + body_h * n as f32 + 6.0)
+    } else {
+        (pad_h * 2.0 + col_w * n as f32, TOP_PADDING + body_h + 6.0)
+    };
 
     let mut cols = Vec::with_capacity(n);
     for i in 0..n {
+        let (x, y) = if stacked {
+            (pad_h, TOP_PADDING + body_h * i as f32)
+        } else {
+            (pad_h + col_w * i as f32, TOP_PADDING)
+        };
         cols.push(Rect {
-            x: pad_h + col_w * i as f32,
-            y: TOP_PADDING,
+            x,
+            y,
             w: col_w,
             h: body_h,
         });
@@ -220,7 +233,14 @@ mod tests {
 
     /// The natural width of the rows layout, unchanged from before width steps.
     fn full_width(detail: &DetailLevel) -> f32 {
-        compute(&Layout::Vertical, detail, &WidthScale::Full, 2).width
+        compute(
+            &Layout::Vertical,
+            detail,
+            &WidthScale::Full,
+            &ColumnFlow::Row,
+            2,
+        )
+        .width
     }
 
     /// Every width step at every detail level, pinned. The thresholds derive
@@ -234,27 +254,63 @@ mod tests {
             (Compact, WidthScale::Full, RowTier::Full),
             (Compact, WidthScale::ThreeQuarters, RowTier::Full),
             (Compact, WidthScale::Half, RowTier::Nameless),
-            (Compact, WidthScale::Quarter, RowTier::PercentOnly),
             (Medium, WidthScale::Full, RowTier::Full),
             (Medium, WidthScale::ThreeQuarters, RowTier::Full),
             (Medium, WidthScale::Half, RowTier::Full),
-            // Medium and Expanded give the bar its own line, so a narrow row
-            // costs the name, not the bar. Only Compact packs name, bar and
-            // percent onto one line and can run out of bar entirely.
-            (Medium, WidthScale::Quarter, RowTier::Nameless),
             (Expanded, WidthScale::Full, RowTier::Full),
             (Expanded, WidthScale::ThreeQuarters, RowTier::Full),
             (Expanded, WidthScale::Half, RowTier::Full),
-            (Expanded, WidthScale::Quarter, RowTier::Nameless),
         ];
 
         for (detail, scale, want) in cases {
-            let got = compute(&Layout::Vertical, &detail, &scale, 2).row_tier;
+            let got = compute(&Layout::Vertical, &detail, &scale, &ColumnFlow::Row, 2).row_tier;
             assert_eq!(
                 got, want,
                 "{detail:?} at {scale:?}: expected {want:?}, got {got:?}"
             );
         }
+    }
+
+    /// Stacking turns the columns layout on its side: one column wide, n tall.
+    #[test]
+    fn stacked_columns_share_one_column_and_grow_downwards() {
+        let side_by_side = compute_columns(&DetailLevel::Medium, &ColumnFlow::Row, 3);
+        let stacked = compute_columns(&DetailLevel::Medium, &ColumnFlow::Column, 3);
+
+        let BodyLayout::Horizontal { cols } = &stacked.body else {
+            panic!("stacking keeps the columns body");
+        };
+
+        let first = cols[0];
+        for (i, col) in cols.iter().enumerate() {
+            assert_eq!(col.x, first.x, "column {i} must share the left edge");
+            assert_eq!(col.w, first.w, "column {i} must share the width");
+        }
+        for pair in cols.windows(2) {
+            assert!(
+                pair[1].y > pair[0].y,
+                "columns must advance downwards: {} then {}",
+                pair[0].y,
+                pair[1].y
+            );
+        }
+
+        assert!(
+            stacked.width < side_by_side.width,
+            "stacked is one column wide: {} vs {}",
+            stacked.width,
+            side_by_side.width
+        );
+        assert!(
+            stacked.height > side_by_side.height,
+            "stacked is n columns tall: {} vs {}",
+            stacked.height,
+            side_by_side.height
+        );
+    }
+
+    fn compute_columns(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
+        compute(&Layout::Horizontal, detail, &WidthScale::Full, flow, n)
     }
 
     #[test]
@@ -264,6 +320,7 @@ mod tests {
             &Layout::Vertical,
             &DetailLevel::Compact,
             &WidthScale::ThreeQuarters,
+            &ColumnFlow::Row,
             2,
         )
         .width;
