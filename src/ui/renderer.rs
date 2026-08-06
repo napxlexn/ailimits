@@ -1287,6 +1287,11 @@ mod tests {
                 d.id = ProviderId::Copilot;
                 d
             },
+            {
+                let mut d = data(vec![pct_metric("session", 61, MetricWindow::Session)]);
+                d.id = ProviderId::Antigravity;
+                d
+            },
         ];
 
         let dir = std::env::temp_dir();

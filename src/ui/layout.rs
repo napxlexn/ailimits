@@ -71,7 +71,7 @@ const MIN_BAR: f32 = 24.0;
 /// enough air to read as separate. Stacked, one provider's name would
 /// otherwise sit directly against the next one's percentage, which reads as
 /// one run-on block, so that direction gets more.
-const ROW_FLOW_GAP: f32 = 5.0 * Dimensions::DENSITY_SCALE;
+const ROW_FLOW_GAP: f32 = 2.5 * Dimensions::DENSITY_SCALE;
 const STACK_FLOW_GAP: f32 = 10.0 * Dimensions::DENSITY_SCALE;
 
 /// Pick the row presentation from the space a row actually has, not from
@@ -376,7 +376,7 @@ mod tests {
             row < column,
             "a row needs less air than a stack: row {row}, column {column}"
         );
-        assert!(row >= 4.0, "a row still needs a visible gap, got {row}");
+        assert!(row >= 2.0, "a row still needs a visible gap, got {row}");
     }
 
     fn arrangement_gap(flow: &ColumnFlow) -> f32 {
@@ -407,7 +407,7 @@ mod tests {
                     ColumnFlow::Column => b.y - (a.y + a.h),
                 };
                 assert!(
-                    gap >= 4.0,
+                    gap >= 2.0,
                     "{flow:?}: providers are {gap} px apart, too close to tell apart"
                 );
             }
