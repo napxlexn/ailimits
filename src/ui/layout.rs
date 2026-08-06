@@ -192,16 +192,17 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
 /// column body and the renderer's per-column drawing are shared, because a
 /// column is drawn relative to its own rectangle wherever that sits.
 fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
-    // Compact is tighter horizontally as well.
-    let pad_h = match detail {
-        DetailLevel::Compact => Dimensions::scale(6.0),
-        _ => Dimensions::PADDING_H,
-    };
-    // Compact has no percent text — narrower columns, bars sit closer together.
+    // Nothing is drawn in the side margins, so they stay small and identical
+    // at every detail level: a bigger detail level buys bigger bars and text,
+    // not more empty background around them.
+    let pad_h = Dimensions::scale(6.0);
+    // Wide enough for the provider name underneath the bar, and no wider —
+    // the leftover width reads as distance between providers. Antigravity is
+    // the longest name and sets the floor here.
     let col_w = Dimensions::scale(match detail {
         DetailLevel::Compact => 46.0,
-        DetailLevel::Medium => 66.0,
-        DetailLevel::Expanded => 82.0,
+        DetailLevel::Medium => 54.0,
+        DetailLevel::Expanded => 62.0,
     });
     let body_h = Dimensions::scale(match detail {
         DetailLevel::Compact => 42.0,
@@ -388,6 +389,37 @@ mod tests {
         match flow {
             ColumnFlow::Row => b.x - (a.x + a.w),
             ColumnFlow::Column => b.y - (a.y + a.h),
+        }
+    }
+
+    /// The columns layout draws nothing in its side margins, so they carry the
+    /// same small padding at every detail level. A bigger detail level means
+    /// bigger bars and text, not more empty background around them.
+    #[test]
+    fn side_margins_do_not_grow_with_the_detail_level() {
+        let margin = |detail| {
+            let layout = compute_columns(detail, &ColumnFlow::Row, 3);
+            let BodyLayout::Horizontal { cols } = &layout.body else {
+                panic!("columns body");
+            };
+            let left = cols[0].x;
+            let right = layout.width - (cols.last().unwrap().x + cols.last().unwrap().w);
+            (left, right)
+        };
+
+        let compact = margin(&DetailLevel::Compact);
+        for detail in [&DetailLevel::Medium, &DetailLevel::Expanded] {
+            let (left, right) = margin(detail);
+            assert!(
+                (left - compact.0).abs() < 0.01,
+                "{detail:?} left margin {left} differs from Compact's {}",
+                compact.0
+            );
+            assert!(
+                (right - compact.1).abs() < 0.01,
+                "{detail:?} right margin {right} differs from Compact's {}",
+                compact.1
+            );
         }
     }
 
