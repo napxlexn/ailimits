@@ -4,7 +4,9 @@
 // lives in the "Providers" submenu: keys and tokens are pasted FROM THE
 // CLIPBOARD (a native menu has no text input).
 
-use crate::config::schema::{AuthMethod, Config, DetailLevel, IndicatorKind, Layout, Palette};
+use crate::config::schema::{
+    AuthMethod, Config, DetailLevel, IndicatorKind, Layout, Palette, WidthScale,
+};
 use anyhow::Result;
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
@@ -22,6 +24,8 @@ const INTERVAL_STEPS: &[u64] = &[60, 300, 900, 1800];
 pub enum MenuAction {
     SetDetail(DetailLevel),
     SetLayout(Layout),
+    /// Pick the widget width step (rows layout only).
+    SetWidthScale(WidthScale),
     /// Lock the widget position (disables dragging).
     ToggleLock,
     /// Always on top.
@@ -92,6 +96,7 @@ pub struct ContextMenu {
     pub menu: Menu,
     detail_items: Vec<(CheckMenuItem, DetailLevel)>,
     layout_items: Vec<(CheckMenuItem, Layout)>,
+    width_items: Vec<(CheckMenuItem, WidthScale)>,
     lock_item: CheckMenuItem,
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
@@ -141,6 +146,28 @@ impl ContextMenu {
         .into_iter()
         .map(|(label, l)| (CheckMenuItem::new(label, true, ui.layout == l, None), l))
         .collect();
+
+        // Width steps. Only the rows layout can be narrowed: the columns
+        // layouts size themselves from the provider count, so their items are
+        // greyed rather than hidden - a missing menu entry reads as a bug.
+        let width_submenu = Submenu::new("Width", true);
+        let width_items: Vec<(CheckMenuItem, WidthScale)> = [
+            ("100%", WidthScale::Full),
+            ("75%", WidthScale::ThreeQuarters),
+            ("50%", WidthScale::Half),
+            ("25%", WidthScale::Quarter),
+        ]
+        .into_iter()
+        .map(|(label, w)| {
+            (
+                CheckMenuItem::new(label, true, ui.width_scale == w, None),
+                w,
+            )
+        })
+        .collect();
+        for (item, _) in &width_items {
+            width_submenu.append(item)?;
+        }
 
         // Two INDEPENDENT options: position lock and always-on-top.
         let lock_item = CheckMenuItem::new("Lock position", true, config.window.locked, None);
@@ -321,6 +348,7 @@ impl ContextMenu {
         for (item, _) in &layout_items {
             menu.append(item)?;
         }
+        menu.append(&width_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&lock_item)?;
         menu.append(&pin_item)?;
@@ -348,6 +376,7 @@ impl ContextMenu {
             menu,
             detail_items,
             layout_items,
+            width_items,
             lock_item,
             pin_item,
             indicator_items,
@@ -379,6 +408,11 @@ impl ContextMenu {
         for (item, l) in &self.layout_items {
             if *event_id == item.id() {
                 return Some(MenuAction::SetLayout(l.clone()));
+            }
+        }
+        for (item, w) in &self.width_items {
+            if *event_id == item.id() {
+                return Some(MenuAction::SetWidthScale(*w));
             }
         }
         for (item, p) in &self.palette_items {
@@ -470,6 +504,11 @@ impl ContextMenu {
         }
         for (item, l) in &self.layout_items {
             item.set_checked(ui.layout == *l);
+        }
+        let rows_layout = matches!(ui.layout, Layout::Vertical | Layout::Grid);
+        for (item, w) in &self.width_items {
+            item.set_checked(ui.width_scale == *w);
+            item.set_enabled(rows_layout);
         }
         self.monochrome_item.set_checked(ui.monochrome);
         for (item, p) in &self.palette_items {

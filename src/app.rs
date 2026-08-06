@@ -558,7 +558,12 @@ fn apply_ui_change(
     menu: &ContextMenu,
     provider_count: usize,
 ) {
-    *win_layout = layout::compute(&config.ui.layout, &config.ui.detail, provider_count);
+    *win_layout = layout::compute(
+        &config.ui.layout,
+        &config.ui.detail,
+        &config.ui.width_scale,
+        provider_count,
+    );
     *theme = ComputedTheme::compute(&config.ui);
 
     let (w, h) = (win_layout.width as u32, win_layout.height as u32);
@@ -652,7 +657,12 @@ pub fn run() -> Result<()> {
     // 5. Layout, theme, renderer — mut: switched live from the menu.
     // The layout is computed from VISIBLE providers, not all of them.
     let mut visible_count = visible_data(&config, &display).len();
-    let mut win_layout = layout::compute(&config.ui.layout, &config.ui.detail, visible_count);
+    let mut win_layout = layout::compute(
+        &config.ui.layout,
+        &config.ui.detail,
+        &config.ui.width_scale,
+        visible_count,
+    );
     let mut theme = ComputedTheme::compute(&config.ui);
     let renderer = Renderer::new()?;
 
@@ -1511,6 +1521,21 @@ pub fn run() -> Result<()> {
                     }
                     Some(MenuAction::SetLayout(l)) => {
                         config.ui.layout = l;
+                        apply_ui_change(
+                            &config,
+                            &mut win_layout,
+                            &mut theme,
+                            &mut pixmap,
+                            &mut surface,
+                            &window,
+                            &mut win_state,
+                            &menu,
+                            visible_count,
+                        );
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::SetWidthScale(w)) => {
+                        config.ui.width_scale = w;
                         apply_ui_change(
                             &config,
                             &mut win_layout,

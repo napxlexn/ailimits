@@ -166,6 +166,9 @@ pub struct UIConfig {
     pub layout: Layout,
     #[serde(default, deserialize_with = "de_enum_or_default")]
     pub detail: DetailLevel,
+    /// Width step for the rows layout; the columns layouts ignore it.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub width_scale: WidthScale,
     /// Show a burn-rate forecast ("~Xh to limit") when usage is climbing.
     /// It never replaces the reset countdown — it only fills the slot when no
     /// future reset is known. Off by default: the reset time is the fact
@@ -183,6 +186,7 @@ impl Default for UIConfig {
             monochrome: false,
             layout: Layout::Vertical,
             detail: DetailLevel::Compact,
+            width_scale: WidthScale::Full,
             show_forecast: false,
         }
     }
@@ -245,6 +249,29 @@ pub enum Layout {
     Horizontal,
     /// Legacy value kept for old configs; renders as Vertical.
     Grid,
+}
+
+/// Widget width as a fraction of its natural width, for the rows layout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WidthScale {
+    #[default]
+    Full,
+    ThreeQuarters,
+    Half,
+    Quarter,
+}
+
+impl WidthScale {
+    /// The fraction of the natural width this step keeps.
+    pub fn fraction(&self) -> f32 {
+        match self {
+            Self::Full => 1.0,
+            Self::ThreeQuarters => 0.75,
+            Self::Half => 0.5,
+            Self::Quarter => 0.25,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

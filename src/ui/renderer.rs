@@ -4,7 +4,7 @@
 // zones from ui/layout.rs.
 
 use super::{
-    layout::{BodyLayout, Rect, WindowLayout},
+    layout::{BodyLayout, Rect, RowTier, WindowLayout},
     theme::{Color, ComputedTheme, UsageLevel},
 };
 use crate::config::schema::DetailLevel;
@@ -46,11 +46,11 @@ pub(crate) fn load_ui_font() -> Option<Font> {
 }
 
 /// Name column width in vertical compact.
-const NAME_WIDTH: f32 = 48.0;
+pub(super) const NAME_WIDTH: f32 = 48.0;
 /// Percent column width.
-const PCT_WIDTH: f32 = 30.0;
+pub(super) const PCT_WIDTH: f32 = 30.0;
 /// Gap between row elements.
-const ROW_GAP: f32 = 7.0;
+pub(super) const ROW_GAP: f32 = 7.0;
 
 /// Bar and text colors, accounting for staleness and estimation —
 /// both render grey.
@@ -171,12 +171,18 @@ impl Renderer {
                         theme,
                         data,
                         detail,
+                        layout.row_tier,
                         cursor,
                         fc.as_deref(),
                         reason.as_deref(),
                     );
                 }
-                if *detail == DetailLevel::Compact && hint.h > 0.0 {
+                // The hint is written for the natural width; a narrowed window
+                // would paint it past its own edge, so it goes with the names.
+                if *detail == DetailLevel::Compact
+                    && hint.h > 0.0
+                    && layout.row_tier == RowTier::Full
+                {
                     let hover_hint = hovered_hint_text(rows, providers, cursor, errors);
                     self.draw_hint(pixmap, hint, theme, providers, hover_hint.as_deref());
                 }
@@ -210,46 +216,70 @@ impl Renderer {
         theme: &ComputedTheme,
         data: &ProviderData,
         detail: &DetailLevel,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
     ) {
         match detail {
             // Compact has no per-row reset slot; the reason shows in the hint line.
-            DetailLevel::Compact => self.vertical_compact(pixmap, row, theme, data, cursor),
-            DetailLevel::Medium => {
-                self.vertical_medium(pixmap, row, theme, data, false, cursor, forecast, reason)
-            }
-            DetailLevel::Expanded => {
-                self.vertical_medium(pixmap, row, theme, data, true, cursor, forecast, reason)
-            }
+            DetailLevel::Compact => self.vertical_compact(pixmap, row, theme, data, tier, cursor),
+            DetailLevel::Medium => self.vertical_medium(
+                pixmap, row, theme, data, false, tier, cursor, forecast, reason,
+            ),
+            DetailLevel::Expanded => self.vertical_medium(
+                pixmap, row, theme, data, true, tier, cursor, forecast, reason,
+            ),
         }
     }
 
-    /// Compact: name | bar | pct in one line.
+    /// Compact: name | bar | pct in one line, minus whatever the width cannot
+    /// carry (see `layout::row_tier`).
     fn vertical_compact(
         &self,
         pixmap: &mut Pixmap,
         row: &Rect,
         theme: &ComputedTheme,
         data: &ProviderData,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
     ) {
         let text_y = row.y + (row.h - 13.0) / 2.0;
-        self.draw_text(
-            pixmap,
-            data.id.display_name(),
-            row.x,
-            text_y,
-            11.0,
-            theme.provider_name,
-            Align::Left,
-            NAME_WIDTH,
-        );
-
-        let bar = vertical_compact_bar_rect(row);
+        if tier == RowTier::Full {
+            self.draw_text(
+                pixmap,
+                data.id.display_name(),
+                row.x,
+                text_y,
+                11.0,
+                theme.provider_name,
+                Align::Left,
+                NAME_WIDTH,
+            );
+        }
 
         let active_metric = active_progress_metric(data, row, cursor);
+        let Some(bar) = vertical_compact_bar_rect(row, tier) else {
+            // Too narrow for a bar: the percent alone, centred on the row.
+            // Providers are told apart by position, as in the taskbar panel.
+            if let (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) =
+                (&data.status, active_metric.and_then(Metric::percentage))
+            {
+                let (_, text_color) = row_colors(theme, data, pct);
+                self.draw_text(
+                    pixmap,
+                    &pct_text(data, pct),
+                    row.x,
+                    text_y,
+                    11.0,
+                    text_color,
+                    Align::Center,
+                    row.w,
+                );
+            }
+            return;
+        };
+
         match (&data.status, active_metric.and_then(Metric::percentage)) {
             (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => {
                 let (bar_color, text_color) = row_colors(theme, data, pct);
@@ -285,6 +315,7 @@ impl Renderer {
         theme: &ComputedTheme,
         data: &ProviderData,
         expanded: bool,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
@@ -294,16 +325,20 @@ impl Renderer {
         let hovered_reason =
             reason.filter(|_| cursor.is_some_and(|point| point_in_rect(point, row)));
         let name_size = if expanded { 13.0 } else { 12.0 };
-        self.draw_text(
-            pixmap,
-            data.id.display_name(),
-            row.x,
-            row.y + 3.0,
-            name_size,
-            theme.provider_name,
-            Align::Left,
-            row.w,
-        );
+        // Name and percent share this line with no clipping between them, so a
+        // row too narrow for both drops the name rather than overlapping it.
+        if tier == RowTier::Full {
+            self.draw_text(
+                pixmap,
+                data.id.display_name(),
+                row.x,
+                row.y + 3.0,
+                name_size,
+                theme.provider_name,
+                Align::Left,
+                row.w,
+            );
+        }
 
         let bar_h = if expanded { 5.0 } else { 4.0 };
         let bar_y = row.y + if expanded { 26.0 } else { 20.0 };
@@ -993,13 +1028,25 @@ fn point_in_rect(point: (f32, f32), rect: &Rect) -> bool {
         && point.1 <= rect.y + rect.h
 }
 
-fn vertical_compact_bar_rect(row: &Rect) -> Rect {
-    Rect {
-        x: row.x + NAME_WIDTH + ROW_GAP,
+/// The bar rectangle for a compact row, or None when the row is too narrow
+/// to carry one. Never returns a negative width: the tier decides before any
+/// arithmetic that could go below zero.
+fn vertical_compact_bar_rect(row: &Rect, tier: RowTier) -> Option<Rect> {
+    let (x, w) = match tier {
+        RowTier::Full => (
+            row.x + NAME_WIDTH + ROW_GAP,
+            row.w - NAME_WIDTH - PCT_WIDTH - ROW_GAP * 2.0,
+        ),
+        // The name column is reclaimed whole; the percent keeps its slot.
+        RowTier::Nameless => (row.x, row.w - PCT_WIDTH - ROW_GAP),
+        RowTier::PercentOnly => return None,
+    };
+    Some(Rect {
+        x,
         y: row.y + (row.h - 3.0) / 2.0,
-        w: row.w - NAME_WIDTH - PCT_WIDTH - ROW_GAP * 2.0,
+        w,
         h: 3.0,
-    }
+    })
 }
 
 /// Hover explanation for a greyed/estimated row: the last stored fetch
@@ -1113,6 +1160,101 @@ pub fn format_duration(secs: i64) -> String {
 mod tests {
     use super::*;
     use crate::providers::MetricWindow;
+
+    fn row(w: f32) -> Rect {
+        Rect {
+            x: 11.1,
+            y: 4.0,
+            w,
+            h: 22.0,
+        }
+    }
+
+    #[test]
+    fn a_nameless_row_gives_the_name_column_to_the_bar() {
+        let r = row(96.0);
+
+        let full = vertical_compact_bar_rect(&r, RowTier::Full).expect("Full keeps a bar");
+        let nameless =
+            vertical_compact_bar_rect(&r, RowTier::Nameless).expect("Nameless keeps a bar");
+
+        assert_eq!(
+            nameless.x, r.x,
+            "without a name the bar starts at the row's left edge"
+        );
+        assert!(
+            nameless.w > full.w,
+            "the reclaimed name column must widen the bar: full {} vs nameless {}",
+            full.w,
+            nameless.w
+        );
+    }
+
+    #[test]
+    fn a_percent_only_row_builds_no_bar_at_all() {
+        assert!(
+            vertical_compact_bar_rect(&row(60.0), RowTier::PercentOnly).is_none(),
+            "PercentOnly must not produce a rectangle - a negative width would be drawn"
+        );
+    }
+
+    /// Design preview: renders every width step at every detail level to
+    /// %TEMP% so the degradation ladder can be judged by eye — the drawing
+    /// itself is not unit tested. Run explicitly:
+    /// `cargo test preview_width_steps -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_width_steps() {
+        use crate::config::schema::{Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let providers = vec![
+            {
+                let mut d = data(vec![pct_metric("session", 18, MetricWindow::Session)]);
+                d.id = ProviderId::Claude;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 100, MetricWindow::Long)]);
+                d.id = ProviderId::Codex;
+                d
+            },
+        ];
+
+        let dir = std::env::temp_dir();
+        for (dname, detail) in [
+            ("compact", DetailLevel::Compact),
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
+            for (wname, scale) in [
+                ("100", WidthScale::Full),
+                ("075", WidthScale::ThreeQuarters),
+                ("050", WidthScale::Half),
+                ("025", WidthScale::Quarter),
+            ] {
+                let win = layout::compute(&Layout::Vertical, &detail, &scale, providers.len());
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_width_{dname}_{wname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} -> {:?}", path.display(), win.row_tier);
+            }
+        }
+    }
 
     fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
