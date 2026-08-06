@@ -334,9 +334,10 @@ fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tin
     half_sector(pm, cx, cy, r, half, 1.0, c);
 }
 
-/// One half's usage sector, filling from the top towards the bottom: the left
-/// half anticlockwise, the right half clockwise, so both grow away from the
-/// dividing line and can be compared at a glance.
+/// One half's usage sector. A gauge fills like a glass — from the bottom up —
+/// so both halves rise from the foot of the dividing line, the left one
+/// sweeping out to the left and the right one to the right. Equal usage gives
+/// a symmetric shape that can be read at a glance.
 fn fill_half_pie(
     pm: &mut Pixmap,
     cx: f32,
@@ -365,19 +366,22 @@ fn half_sector(
 ) {
     use std::f32::consts::PI;
     let inset = HALF_SPLIT / 2.0;
+    // Sweeping up from the foot of the line: the left half must curve out to
+    // the left (increasing angle in screen coords), the right half mirrors it.
     let (hinge, dir) = match half {
-        Half::Left => (cx - inset, -1.0),
-        Half::Right => (cx + inset, 1.0),
+        Half::Left => (cx - inset, 1.0),
+        Half::Right => (cx + inset, -1.0),
     };
 
     let mut pb = PathBuilder::new();
     pb.move_to(hinge, cy);
-    // Start at the top of the dividing line and sweep half a turn at most.
-    pb.line_to(hinge, cy - r);
+    // Start at the FOOT of the dividing line and sweep upwards, half a turn
+    // at most: a full half ends back at the top of the same line.
+    pb.line_to(hinge, cy + r);
     let steps = ((frac * 48.0).ceil() as usize).max(1);
     for i in 0..=steps {
         let f = (i as f32 / steps as f32) * frac;
-        let ang = -PI / 2.0 + dir * f * PI;
+        let ang = PI / 2.0 + dir * f * PI;
         pb.line_to(hinge + r * ang.cos(), cy + r * ang.sin());
     }
     pb.close();
@@ -756,6 +760,31 @@ mod tests {
             updated_at: Utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
+    }
+
+    /// A gauge fills like a glass: from the bottom up. At a low percentage the
+    /// paint must sit under the centre line, not over it.
+    #[test]
+    fn a_half_fills_from_the_bottom_upwards() {
+        let (cx, cy, r) = (16.0, 16.0, 14.0);
+        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
+        pm.fill(tiny_skia::Color::TRANSPARENT);
+        let paint = color(255, 0, 0, 255);
+        fill_half_pie(&mut pm, cx, cy, r, Half::Left, 15.0, paint);
+
+        let painted = |x: i32, y: i32| {
+            let px = pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize];
+            px.alpha() > 0
+        };
+
+        assert!(
+            painted(12, 26),
+            "15% must paint the bottom of the left half"
+        );
+        assert!(
+            !painted(12, 6),
+            "15% must leave the top of the left half empty"
+        );
     }
 
     #[test]
