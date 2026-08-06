@@ -17,13 +17,23 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 </p>
 
 <p align="center">
+  <img src="docs/images/widget-width.gif" width="380" alt="The widget narrowing through its width steps; at the narrowest the provider names drop out and the bars take their place">
+  <br><sub>Three width steps for the horizontal-bar layout. As it narrows, provider names are dropped whole rather than squeezed — the bar takes the freed column, so nothing is ever painted over anything else.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/widget-arrangement.gif" width="300" alt="The vertical-bar layout switching between providers side by side and providers stacked into a tall narrow column">
+  <br><sub>With vertical bars the providers sit side by side or stack into a column — the widget itself turns from wide and short to narrow and tall.</sub>
+</p>
+
+<p align="center">
   <img src="docs/images/palette.gif" width="340" alt="The widget cycling through random readable looks — the monochrome and eight color palettes with the brightness, saturation and background-opacity sliders all varied">
   <br><sub>The look is yours: the monochrome and eight color palettes, plus the Brightness, Saturation and Background-opacity sliders — cycling through random readable presets, rendered exactly as the app draws them.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray pie, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The cursor reveals the hover tooltip over both the panel and the tray pie, and every mode follows the dark / light Windows theme.</sub>
+  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the split tray pie, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
+  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The tray pie splits down the middle to carry the two busiest providers at once, each half filling from the bottom up. The cursor reveals the hover tooltip over both the panel and the pie, and every mode follows the dark / light Windows theme.</sub>
 </p>
 
 ## Why this widget

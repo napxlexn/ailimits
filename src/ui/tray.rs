@@ -326,8 +326,11 @@ enum Half {
     Right,
 }
 
-/// A vertical hairline keeps the two halves from reading as one circle.
-const HALF_SPLIT: f32 = 1.0;
+/// The gap between the halves. The shell renders the 32px icon at 16px, so a
+/// hairline here disappears entirely — and with a monochrome palette, where
+/// both halves share one ink, the gap is the ONLY thing saying there are two
+/// providers rather than one.
+const HALF_SPLIT: f32 = 2.5;
 
 /// The faint track behind one half.
 fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tiny_skia::Color) {
