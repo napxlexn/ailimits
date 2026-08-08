@@ -97,8 +97,11 @@ pub struct TaskbarPanel {
     #[cfg(target_os = "windows")]
     tip_shown: bool,
     /// Last UpdateLayeredWindow error code, so a failing present is logged
-    /// once per distinct cause instead of on every provider tick.
-    last_present_error: u32,
+    /// once per distinct cause instead of on every provider tick. `None`
+    /// means the last present succeeded (or none has run yet) — distinct
+    /// from `Some(0)`, which is itself a legitimate cause (the early
+    /// size/buffer guard in `present_layered` returns `Err(0)`).
+    last_present_error: Option<u32>,
 }
 
 impl TaskbarPanel {
@@ -134,7 +137,7 @@ impl TaskbarPanel {
             tip_hwnd: crate::platform::create_tooltip_window(),
             #[cfg(target_os = "windows")]
             tip_shown: false,
-            last_present_error: 0,
+            last_present_error: None,
         })
     }
 
@@ -419,15 +422,15 @@ impl TaskbarPanel {
         #[cfg(target_os = "windows")]
         match crate::platform::present_layered(self.hwnd(), &bgra, x, y, w as i32, h as i32) {
             Ok(()) => {
-                if self.last_present_error != 0 {
+                if self.last_present_error.is_some() {
                     tracing::info!("taskbar panel present recovered");
-                    self.last_present_error = 0;
+                    self.last_present_error = None;
                 }
             }
             Err(code) => {
-                if code != self.last_present_error {
+                if self.last_present_error != Some(code) {
                     tracing::warn!("taskbar panel present failed, error {code}");
-                    self.last_present_error = code;
+                    self.last_present_error = Some(code);
                 }
             }
         }
