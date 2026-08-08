@@ -338,7 +338,14 @@ impl TaskbarPanel {
                 return;
             }
             let (w, h) = self.desired_size(slot.height);
-            let x = slot.tray_left - w as i32 - TRAY_MARGIN;
+            // An estimated tray edge is a guess at where the clock starts, so
+            // keep a little more air than when the edge was measured.
+            let margin = if slot.tray_found {
+                TRAY_MARGIN
+            } else {
+                TRAY_MARGIN * 2
+            };
+            let x = slot.tray_left - w as i32 - margin;
             let y = slot.top + (slot.height - h as i32) / 2;
             if self.size != (w, h) {
                 self.resize_pixmap(w, h);

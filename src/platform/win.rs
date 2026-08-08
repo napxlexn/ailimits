@@ -19,6 +19,9 @@ pub struct TaskbarSlot {
     pub height: i32,
     /// False while the auto-hidden taskbar is slid off-screen.
     pub visible: bool,
+    /// False when `TrayNotifyWnd` could not be found and `tray_left` is an
+    /// estimate. Secondary Win11 taskbars have no notification area window.
+    pub tray_found: bool,
 }
 
 /// Locate the primary taskbar and its notification area (screen coords).
@@ -51,22 +54,36 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
         } else {
             true
         };
-        let tray_left = match FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
-            Ok(tray) => {
-                let mut r = RECT::default();
-                if GetWindowRect(tray, &mut r).is_ok() {
-                    r.left
-                } else {
-                    bar.right
+        let (tray_left, tray_found) =
+            match FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
+                Ok(tray) => {
+                    let mut r = RECT::default();
+                    if GetWindowRect(tray, &mut r).is_ok() {
+                        (r.left, true)
+                    } else {
+                        (
+                            crate::platform::taskbar_geom::estimated_tray_left(
+                                bar.right,
+                                bar.bottom - bar.top,
+                            ),
+                            false,
+                        )
+                    }
                 }
-            }
-            Err(_) => bar.right,
-        };
+                Err(_) => (
+                    crate::platform::taskbar_geom::estimated_tray_left(
+                        bar.right,
+                        bar.bottom - bar.top,
+                    ),
+                    false,
+                ),
+            };
         Some(TaskbarSlot {
             tray_left,
             top: bar.top,
             height: bar.bottom - bar.top,
             visible,
+            tray_found,
         })
     }
 }
