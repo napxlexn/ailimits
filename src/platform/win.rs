@@ -24,8 +24,11 @@ pub struct TaskbarSlot {
     pub tray_found: bool,
 }
 
-/// Locate the primary taskbar and its notification area (screen coords).
-pub fn taskbar_slot() -> Option<TaskbarSlot> {
+/// Locate the target taskbar and its notification area (screen coords).
+/// `PanelDisplay::Secondary` falls back to the primary taskbar when the
+/// requested display does not exist (see `secondary_taskbars`).
+pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<TaskbarSlot> {
+    use crate::config::schema::PanelDisplay;
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
@@ -34,8 +37,24 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, GetWindowRect};
 
     unsafe {
-        let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
-            return None;
+        let taskbar = match target {
+            PanelDisplay::Primary => match FindWindowW(w!("Shell_TrayWnd"), None) {
+                Ok(h) => h,
+                Err(_) => return None,
+            },
+            PanelDisplay::Secondary(i) => {
+                // A missing secondary display is expected, not exceptional:
+                // the monitor may be unplugged or the shell set to keep the
+                // taskbar on one screen. Falling back to the primary keeps the
+                // indicator visible; hiding it would look like a crash.
+                match secondary_taskbars().get(i as usize) {
+                    Some(&h) => HWND(h as _),
+                    None => match FindWindowW(w!("Shell_TrayWnd"), None) {
+                        Ok(h) => h,
+                        Err(_) => return None,
+                    },
+                }
+            }
         };
         let mut bar = RECT::default();
         if GetWindowRect(taskbar, &mut bar).is_err() {
@@ -92,10 +111,6 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
 /// Windows creates one per display when "show my taskbar on all displays" is
 /// on; there are none when it is off, which is why callers must tolerate an
 /// empty result rather than treating it as an error.
-///
-/// Not wired up yet — a follow-up task selects a display via
-/// `PanelDisplay` and calls this. Allowed to be unused until then.
-#[allow(dead_code)]
 pub fn secondary_taskbars() -> Vec<isize> {
     use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows::Win32::Graphics::Gdi::{

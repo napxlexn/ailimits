@@ -104,6 +104,8 @@ pub struct TaskbarPanel {
     last_present_error: Option<u32>,
     /// Manual position nudge from the config, already clamped.
     offset: (i32, i32),
+    /// Which taskbar the panel attaches to.
+    display: crate::config::schema::PanelDisplay,
 }
 
 impl TaskbarPanel {
@@ -141,6 +143,7 @@ impl TaskbarPanel {
             tip_shown: false,
             last_present_error: None,
             offset: (0, 0),
+            display: crate::config::schema::PanelDisplay::Primary,
         })
     }
 
@@ -149,6 +152,11 @@ impl TaskbarPanel {
     pub fn set_offset(&mut self, x: i32, y: i32) {
         use crate::platform::taskbar_geom::clamp_offset;
         self.offset = (clamp_offset(x), clamp_offset(y));
+    }
+
+    /// Point the panel at a taskbar. The caller re-positions afterwards.
+    pub fn set_display(&mut self, target: crate::config::schema::PanelDisplay) {
+        self.display = target;
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -329,7 +337,7 @@ impl TaskbarPanel {
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            let Some(slot) = crate::platform::taskbar_slot() else {
+            let Some(slot) = crate::platform::taskbar_slot(self.display) else {
                 self.hide();
                 return;
             };
