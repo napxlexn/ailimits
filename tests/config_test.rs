@@ -137,10 +137,24 @@ fn valid_enum_values_still_parse() {
 
 #[test]
 fn panel_display_parses_primary_and_data_carrying_secondary_and_falls_back_on_nonsense() {
-    // `Primary` is a plain string variant.
-    let config: Config =
-        toml::from_str("[general]\npanel_display = \"primary\"").expect("parse primary");
-    assert_eq!(config.general.panel_display, PanelDisplay::Primary);
+    // `Primary` is a plain string variant. `PanelDisplay::Primary` is also
+    // what `de_enum_or_default` falls back to on ANY parse failure, so
+    // asserting the parse of `"primary"` equals `Primary` alone would pass
+    // even if `#[serde(rename_all = "snake_case")]` were dropped from
+    // `PanelDisplay` (the token would then be `"Primary"`, parsing would
+    // fail, and fallback would coincidentally produce the same value).
+    // Round-trip through serialization instead: this proves the lowercase
+    // token is what the type actually produces and accepts, not just what
+    // the fallback happens to produce.
+    let mut config = Config::default();
+    config.general.panel_display = PanelDisplay::Primary;
+    let serialized = toml::to_string_pretty(&config).expect("serialize primary");
+    assert!(
+        serialized.contains("panel_display = \"primary\""),
+        "Primary must serialize to the lowercase token, not a coincidental fallback:\n{serialized}"
+    );
+    let reparsed: Config = toml::from_str(&serialized).expect("reparse primary");
+    assert_eq!(reparsed.general.panel_display, PanelDisplay::Primary);
 
     // `Secondary(u8)` is data-carrying — its TOML form is an inline table
     // with the variant name as the key.
