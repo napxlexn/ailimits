@@ -3,6 +3,9 @@
 #[cfg(target_os = "windows")]
 mod win;
 
+#[cfg(target_os = "windows")]
+pub mod taskbar_geom;
+
 // Taskbar embedding for the mini panel (Windows-only by nature; the
 // callers in ui/taskbar_panel.rs are cfg-gated accordingly).
 #[cfg(target_os = "windows")]
