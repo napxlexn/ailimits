@@ -3,8 +3,10 @@
 // NOT a window with a background: a per-pixel-alpha layered overlay whose
 // transparent pixels let the taskbar show through, so only the painted digits
 // and bars are visible — exactly like a native tray glyph, with no pasted
-// rectangle. (A true SetParent child of `Shell_TrayWnd` is invisible on Win11;
-// XMeters/TrafficMonitor float an overlay above instead — the approach here.)
+// rectangle. (TrafficMonitor takes the other route — a real SetParent child of
+// Shell_TrayWnd, guarded by a fallback flag for when the insert fails. We stay
+// a free-floating overlay: no dependency on the shell accepting a foreign
+// child window, and nothing to unwind when it does not.)
 // Content is presented with UpdateLayeredWindow, not softbuffer.
 //
 // Design goal: look like a continuation of the taskbar. So it is MONOCHROME
@@ -94,6 +96,9 @@ pub struct TaskbarPanel {
     tip_hwnd: isize,
     #[cfg(target_os = "windows")]
     tip_shown: bool,
+    /// Last UpdateLayeredWindow error code, so a failing present is logged
+    /// once per distinct cause instead of on every provider tick.
+    last_present_error: u32,
 }
 
 impl TaskbarPanel {
@@ -129,6 +134,7 @@ impl TaskbarPanel {
             tip_hwnd: crate::platform::create_tooltip_window(),
             #[cfg(target_os = "windows")]
             tip_shown: false,
+            last_present_error: 0,
         })
     }
 
@@ -197,7 +203,7 @@ impl TaskbarPanel {
             let tx = px + (pw as i32 - w) / 2;
             let ty = py - h - 4;
             let bgra = pixmap_to_bgra(&pm);
-            crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
+            let _ = crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
             self.tip_shown = true;
         }
         #[cfg(not(target_os = "windows"))]
@@ -411,7 +417,20 @@ impl TaskbarPanel {
             d[3] = s[3];
         }
         #[cfg(target_os = "windows")]
-        crate::platform::present_layered(self.hwnd(), &bgra, x, y, w as i32, h as i32);
+        match crate::platform::present_layered(self.hwnd(), &bgra, x, y, w as i32, h as i32) {
+            Ok(()) => {
+                if self.last_present_error != 0 {
+                    tracing::info!("taskbar panel present recovered");
+                    self.last_present_error = 0;
+                }
+            }
+            Err(code) => {
+                if code != self.last_present_error {
+                    tracing::warn!("taskbar panel present failed, error {code}");
+                    self.last_present_error = code;
+                }
+            }
+        }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = (&bgra, x, y);

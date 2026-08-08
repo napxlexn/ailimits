@@ -77,7 +77,14 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
 /// only the painted digits/bars appear — there is no opaque panel window/box,
 /// which is what made the old softbuffer panel look like a pasted rectangle.
 /// `bgra` must be premultiplied BGRA, top-down, w*h*4 bytes.
-pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32) {
+pub fn present_layered(
+    hwnd: isize,
+    bgra: &[u8],
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<(), u32> {
     use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
@@ -90,7 +97,7 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
         WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
     if w <= 0 || h <= 0 || bgra.len() < (w * h * 4) as usize {
-        return;
+        return Err(0);
     }
     unsafe {
         let hwnd = HWND(hwnd as _);
@@ -119,7 +126,9 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
             ..Default::default()
         };
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        if let Ok(dib) = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+        let result = if let Ok(dib) =
+            CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+        {
             if !bits.is_null() {
                 std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, (w * h * 4) as usize);
             }
@@ -133,7 +142,7 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
                 SourceConstantAlpha: 255,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
-            let _ = UpdateLayeredWindow(
+            let ok = UpdateLayeredWindow(
                 hwnd,
                 screen_dc,
                 Some(&dst),
@@ -144,9 +153,17 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
                 Some(&blend),
                 ULW_ALPHA,
             );
+            let update_result = if ok.is_ok() {
+                Ok(())
+            } else {
+                Err(windows::Win32::Foundation::GetLastError().0)
+            };
             SelectObject(mem_dc, old);
             let _ = DeleteObject(HGDIOBJ(dib.0));
-        }
+            update_result
+        } else {
+            Err(windows::Win32::Foundation::GetLastError().0)
+        };
         let _ = DeleteDC(mem_dc);
         ReleaseDC(None, screen_dc);
 
@@ -160,6 +177,8 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
+
+        result
     }
 }
 
