@@ -102,6 +102,8 @@ pub struct TaskbarPanel {
     /// from `Some(0)`, which is itself a legitimate cause (the early
     /// size/buffer guard in `present_layered` returns `Err(0)`).
     last_present_error: Option<u32>,
+    /// Manual position nudge from the config, already clamped.
+    offset: (i32, i32),
 }
 
 impl TaskbarPanel {
@@ -138,7 +140,15 @@ impl TaskbarPanel {
             #[cfg(target_os = "windows")]
             tip_shown: false,
             last_present_error: None,
+            offset: (0, 0),
         })
+    }
+
+    /// Apply the configured manual offset. Clamped here, so no caller can
+    /// push the panel off the desktop by editing config.toml.
+    pub fn set_offset(&mut self, x: i32, y: i32) {
+        use crate::platform::taskbar_geom::clamp_offset;
+        self.offset = (clamp_offset(x), clamp_offset(y));
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -355,6 +365,8 @@ impl TaskbarPanel {
             if self.rect.is_none() {
                 self.last.clear();
             }
+            let x = x + self.offset.0;
+            let y = y + self.offset.1;
             self.rect = Some((x, y, w, h));
         }
     }

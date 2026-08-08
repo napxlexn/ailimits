@@ -111,6 +111,13 @@ pub struct GeneralConfig {
     /// enabled, matching the shipped behaviour.
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
+    /// Manual nudge for the taskbar panel, in pixels, applied after the
+    /// computed position. Config-only: a repair tool for shell replacements
+    /// and unusual taskbars, not a preference. Clamped to +/-200.
+    #[serde(default)]
+    pub panel_offset_x: i32,
+    #[serde(default)]
+    pub panel_offset_y: i32,
 }
 
 impl Default for GeneralConfig {
@@ -119,6 +126,8 @@ impl Default for GeneralConfig {
             update_interval_secs: default_update_interval(),
             indicator: IndicatorKind::default(),
             auto_update: default_auto_update(),
+            panel_offset_x: 0,
+            panel_offset_y: 0,
         }
     }
 }

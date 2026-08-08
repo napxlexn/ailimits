@@ -807,6 +807,7 @@ pub fn run() -> Result<()> {
     // 9c. The taskbar mini panel (the readable indicator) + the event-driven
     // watcher that keeps it glued to the (auto-hiding) taskbar.
     let mut panel = TaskbarPanel::new(&event_loop)?;
+    panel.set_offset(config.general.panel_offset_x, config.general.panel_offset_y);
     #[cfg(target_os = "windows")]
     crate::platform::install_taskbar_watch(proxy.clone());
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
