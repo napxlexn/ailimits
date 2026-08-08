@@ -118,6 +118,10 @@ pub struct GeneralConfig {
     pub panel_offset_x: i32,
     #[serde(default)]
     pub panel_offset_y: i32,
+    /// Taskbar the panel indicator attaches to. Falls back to the primary
+    /// when the chosen display is gone.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub panel_display: PanelDisplay,
 }
 
 impl Default for GeneralConfig {
@@ -128,6 +132,7 @@ impl Default for GeneralConfig {
             auto_update: default_auto_update(),
             panel_offset_x: 0,
             panel_offset_y: 0,
+            panel_display: PanelDisplay::Primary,
         }
     }
 }
@@ -322,6 +327,16 @@ pub enum IndicatorKind {
     PanelRows,
     PanelGrid,
     Off,
+}
+
+/// Which taskbar the mini panel attaches to. Secondary bars are numbered
+/// left to right, starting at 0, across the taskbars that actually exist.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelDisplay {
+    #[default]
+    Primary,
+    Secondary(u8),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

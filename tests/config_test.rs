@@ -1,6 +1,6 @@
 // tests/config_test.rs — configuration tests.
 
-use ailimits::config::schema::{Config, DetailLevel, IndicatorKind, Layout, Palette};
+use ailimits::config::schema::{Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay};
 
 #[test]
 fn default_config_has_expected_providers() {
@@ -133,6 +133,26 @@ fn valid_enum_values_still_parse() {
     assert_eq!(config.ui.palette, Palette::Ocean);
     assert_eq!(config.ui.layout, Layout::Horizontal);
     assert_eq!(config.ui.detail, DetailLevel::Expanded);
+}
+
+#[test]
+fn panel_display_parses_primary_and_data_carrying_secondary_and_falls_back_on_nonsense() {
+    // `Primary` is a plain string variant.
+    let config: Config =
+        toml::from_str("[general]\npanel_display = \"primary\"").expect("parse primary");
+    assert_eq!(config.general.panel_display, PanelDisplay::Primary);
+
+    // `Secondary(u8)` is data-carrying — its TOML form is an inline table
+    // with the variant name as the key.
+    let config: Config =
+        toml::from_str("[general]\npanel_display = { secondary = 0 }").expect("parse secondary");
+    assert_eq!(config.general.panel_display, PanelDisplay::Secondary(0));
+
+    // A nonsense value must fall back to the default (Primary) instead of
+    // failing the whole document, exactly like every other enum field here.
+    let config: Config =
+        toml::from_str("[general]\npanel_display = \"banana\"").expect("bad value must not fail");
+    assert_eq!(config.general.panel_display, PanelDisplay::Primary);
 }
 
 #[test]

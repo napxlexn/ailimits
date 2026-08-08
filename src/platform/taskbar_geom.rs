@@ -34,6 +34,14 @@ pub fn clamp_offset(v: i32) -> i32 {
     v.clamp(-MAX_OFFSET, MAX_OFFSET)
 }
 
+/// Put taskbars in a stable, human-meaningful order: left to right by the
+/// monitor they sit on. The shell hands them over in whatever order it
+/// happens to enumerate, which would make a saved display index point
+/// somewhere else after a reboot.
+pub fn order_bars(bars: &mut [(isize, i32)]) {
+    bars.sort_by_key(|&(hwnd, left)| (left, hwnd));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +72,18 @@ mod tests {
         assert_eq!(clamp_offset(50), 50);
         assert_eq!(clamp_offset(9999), MAX_OFFSET);
         assert_eq!(clamp_offset(-9999), -MAX_OFFSET);
+    }
+
+    /// Index-addressed displays are only meaningful if the order is stable.
+    /// Enumeration order from the shell is arbitrary, so sort by geometry.
+    #[test]
+    fn bars_are_ordered_left_to_right_and_ties_are_broken() {
+        let mut bars = vec![(0xBB, 3440), (0xAA, 0), (0xCC, 3440)];
+        order_bars(&mut bars);
+        assert_eq!(
+            bars,
+            vec![(0xAA, 0), (0xBB, 3440), (0xCC, 3440)],
+            "left edge first, handle as the tie-break"
+        );
     }
 }

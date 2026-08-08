@@ -88,6 +88,51 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
     }
 }
 
+/// Every `Shell_SecondaryTrayWnd`, ordered left to right by monitor.
+/// Windows creates one per display when "show my taskbar on all displays" is
+/// on; there are none when it is off, which is why callers must tolerate an
+/// empty result rather than treating it as an error.
+///
+/// Not wired up yet — a follow-up task selects a display via
+/// `PanelDisplay` and calls this. Allowed to be unused until then.
+#[allow(dead_code)]
+pub fn secondary_taskbars() -> Vec<isize> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowRect};
+
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = &mut *(lparam.0 as *mut Vec<(isize, i32)>);
+        let mut cls = [0u16; 32];
+        let n = GetClassNameW(hwnd, &mut cls);
+        if n > 0 && String::from_utf16_lossy(&cls[..n as usize]) == "Shell_SecondaryTrayWnd" {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let left = if GetMonitorInfoW(monitor, &mut mi).as_bool() {
+                mi.rcMonitor.left
+            } else {
+                let mut r = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut r);
+                r.left
+            };
+            out.push((hwnd.0 as isize, left));
+        }
+        BOOL(1)
+    }
+
+    let mut found: Vec<(isize, i32)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut found as *mut _ as isize));
+    }
+    crate::platform::taskbar_geom::order_bars(&mut found);
+    found.into_iter().map(|(hwnd, _)| hwnd).collect()
+}
+
 /// Present a premultiplied-BGRA image as the ENTIRE content of a per-pixel
 /// alpha layered overlay at the given screen rect, topmost, shown without
 /// stealing focus. Fully transparent pixels let the taskbar show through, so
