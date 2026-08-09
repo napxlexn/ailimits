@@ -33,6 +33,25 @@ indicator = "tray"
 # verifies the installer against the release's published SHA-256, installs it
 # silently and restarts. Set false to disable; missing in old configs → true.
 auto_update = true
+# Manual nudge for the panel's position, in pixels, applied after the
+# computed placement. Both default to 0, meaning no adjustment. Clamped to
+# -200..200 — a typo cannot push the panel off the desktop. A repair tool
+# for machines where the automatic placement misses: replaced shells such
+# as StartAllBack or ExplorerPatcher, unusual taskbar layouts, touch-device
+# layouts. Deliberately config-only, no menu entry.
+panel_offset_x = 0
+panel_offset_y = 0
+# Which taskbar the mini panel attaches to (menu: Indicator -> Display;
+# that submenu only appears when a secondary taskbar exists, and it's built
+# at startup, so plugging in a monitor later needs a restart before the
+# entry shows up). "primary" (default), or { secondary = N } where N counts
+# secondary taskbars from 0, left to right by monitor position — e.g.
+# { secondary = 0 } for the first (leftmost) secondary taskbar. Secondary
+# taskbars only exist when Windows is set to show the taskbar on all
+# displays. Falls back to "primary" if the chosen display is gone (monitor
+# unplugged, or that Windows setting turned off), or if the value is
+# unrecognised, rather than breaking the whole config file.
+panel_display = "primary"
 
 [window]
 pos_x = 50
