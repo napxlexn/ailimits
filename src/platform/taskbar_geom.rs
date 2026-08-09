@@ -42,6 +42,16 @@ pub fn order_bars(bars: &mut [(isize, i32)]) {
     bars.sort_by_key(|&(hwnd, left)| (left, hwnd));
 }
 
+/// Whether the Panel indicator must hand over to the tray icon.
+///
+/// Every input is evaluated against the monitor the panel actually occupies.
+/// That scoping is the whole point: a Start menu or a fullscreen game on
+/// ANOTHER display must not blank a panel that is plainly visible, and a
+/// fullscreen game on the panel's own display must not be missed.
+pub fn should_fall_back(scrim_here: bool, covered: bool, fullscreen_here: bool) -> bool {
+    scrim_here || covered || fullscreen_here
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +95,20 @@ mod tests {
             vec![(0xAA, 0), (0xBB, 3440), (0xCC, 3440)],
             "left edge first, handle as the tie-break"
         );
+    }
+
+    /// The panel degrades to a tray icon whenever it cannot be seen. Each
+    /// input is already scoped to the panel's own monitor by the caller;
+    /// this is the rule that combines them.
+    #[test]
+    fn any_single_obstruction_forces_the_tray_icon() {
+        assert!(should_fall_back(true, false, false), "start menu scrim");
+        assert!(should_fall_back(false, true, false), "something covers it");
+        assert!(should_fall_back(false, false, true), "fullscreen app");
+    }
+
+    #[test]
+    fn an_unobstructed_panel_keeps_the_overlay() {
+        assert!(!should_fall_back(false, false, false));
     }
 }

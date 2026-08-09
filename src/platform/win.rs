@@ -404,8 +404,9 @@ pub fn bring_to_front(hwnd: isize) {
 /// tray icon, which the shell keeps visible, while this is true. Matched by the
 /// foreground window's host process (Start/Search are served by these on
 /// Win11; the exact host varies by build, so several are accepted).
-pub fn foreground_scrim_active() -> bool {
+pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> bool {
     use windows::Win32::Foundation::{CloseHandle, FALSE};
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
@@ -439,14 +440,30 @@ pub fn foreground_scrim_active() -> bool {
         }
         let path = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
         let name = path.rsplit(['\\', '/']).next().unwrap_or(path.as_str());
-        matches!(
+        if !matches!(
             name,
             "searchhost.exe"
                 | "startmenuexperiencehost.exe"
                 | "searchapp.exe"
                 | "shellexperiencehost.exe"
-        )
+        ) {
+            return false;
+        }
+        // Same shell process, different screen: the panel is not obstructed.
+        let Some(slot) = taskbar_slot(target) else {
+            return true;
+        };
+        let panel_monitor = monitor_at(slot.tray_left - 1, slot.top + slot.height / 2);
+        let scrim_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST).0 as isize;
+        panel_monitor == scrim_monitor
     }
+}
+
+/// The monitor handle containing a screen point, as an isize for comparison.
+fn monitor_at(x: i32, y: i32) -> isize {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST).0 as isize }
 }
 
 /// True while a fullscreen app (a game, a video, an F11 browser) owns the
@@ -456,7 +473,7 @@ pub fn foreground_scrim_active() -> bool {
 /// over the game (and the foreground-raise would even re-assert it there).
 /// While true the indicator hides the panel, exactly like the taskbar; the
 /// next foreground change (alt-tab back to the desktop) restores it.
-pub fn fullscreen_foreground_active() -> bool {
+pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay) -> bool {
     // Deliberately NOT SHQueryUserNotificationState: that reports a
     // machine-wide state which stays "busy" for as long as a fullscreen game
     // is RUNNING, even while the user is back on the desktop with another
@@ -465,7 +482,7 @@ pub fn fullscreen_foreground_active() -> bool {
     // in the foreground). What matters is whether a fullscreen window is in
     // FRONT of the taskbar right now, which the geometric check answers
     // precisely, with no shell-update latency.
-    foreground_covers_taskbar_monitor()
+    foreground_covers_taskbar_monitor(target)
 }
 
 /// Whether the current foreground window covers the ENTIRE monitor that hosts
@@ -476,15 +493,12 @@ pub fn fullscreen_foreground_active() -> bool {
 /// an ordinary window the bar slides over, not a fullscreen app. Real games
 /// run as popup windows without WS_MAXIMIZE; F11 browser fullscreen is caught
 /// by the shell state either way.
-fn foreground_covers_taskbar_monitor() -> bool {
-    use windows::core::w;
+fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay) -> bool {
     use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+        GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowThreadProcessId, GWL_STYLE, WS_MAXIMIZE,
     };
     unsafe {
@@ -510,10 +524,16 @@ fn foreground_covers_taskbar_monitor() -> bool {
                 return false;
             }
         }
-        let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
+        // The panel's display, not the primary one. A game fullscreen on the
+        // secondary must hide a panel that lives there; a game on the primary
+        // must not.
+        let Some(slot) = taskbar_slot(target) else {
             return false;
         };
-        let bar_monitor = MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST);
+        let bar_monitor = windows::Win32::Graphics::Gdi::HMONITOR(monitor_at(
+            slot.tray_left - 1,
+            slot.top + slot.height / 2,
+        ) as _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()

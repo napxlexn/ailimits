@@ -94,6 +94,7 @@ pub enum TrayKind {
 /// a non-fullscreen fallback clears, a redraw re-presents the still-positioned
 /// panel. No-op outside the Panel modes (every panel method guards on the mode).
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 fn eval_indicator_fallback(
     panel: &mut TaskbarPanel,
     tray: &mut Tray,
@@ -102,13 +103,14 @@ fn eval_indicator_fallback(
     theme: &ComputedTheme,
     fallback_was_active: &mut bool,
     fullscreen_was_active: &mut bool,
+    target: crate::config::schema::PanelDisplay,
 ) {
-    let scrim = crate::platform::foreground_scrim_active();
-    let fullscreen = crate::platform::fullscreen_foreground_active();
+    let scrim = crate::platform::foreground_scrim_active(target);
+    let fullscreen = crate::platform::fullscreen_foreground_active(target);
     // While hidden for fullscreen the rect is None, so is_covered reads false —
     // ordering matters: check coverage before this pass may hide the panel.
     let covered = panel.is_covered();
-    let fallback = scrim || covered || fullscreen;
+    let fallback = crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen);
     tray.set_scrim_fallback(fallback, menu, providers, theme);
     if fullscreen {
         // Idempotent — also re-hides the panel if anything re-presented it
@@ -901,6 +903,7 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            config.general.panel_display,
                         );
                     }
                 }
@@ -1325,6 +1328,7 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            config.general.panel_display,
                         );
                         recheck_at =
                             Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
