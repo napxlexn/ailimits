@@ -812,7 +812,7 @@ pub fn run() -> Result<()> {
     panel.set_offset(config.general.panel_offset_x, config.general.panel_offset_y);
     panel.set_display(config.general.panel_display);
     #[cfg(target_os = "windows")]
-    crate::platform::install_taskbar_watch(proxy.clone());
+    crate::platform::install_taskbar_watch(proxy.clone(), config.general.panel_display);
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
     let mut window_visible = true;
     // The indicator falls back to a tray icon while a Panel overlay cannot be

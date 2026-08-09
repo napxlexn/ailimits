@@ -614,27 +614,64 @@ pub fn hide_window(hwnd: isize) {
     }
 }
 
+// Handles the taskbar watch hook compares incoming WinEvents against. Module
+// scope because both the hook callback (inside `install_taskbar_watch`) and
+// `watch_taskbar` (called at startup and whenever the target display
+// changes) need to read/write them.
+static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Point the existing hook at a taskbar. The hook itself is process-wide and
+/// installed once; only the handles it compares against change. Without this,
+/// moving the panel to another display would silently stop auto-hide tracking:
+/// the hook would still be watching the primary bar.
+pub fn watch_taskbar(target: crate::config::schema::PanelDisplay) {
+    use crate::config::schema::PanelDisplay;
+    use windows::core::w;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW};
+    unsafe {
+        let taskbar = match target {
+            PanelDisplay::Primary => FindWindowW(w!("Shell_TrayWnd"), None).ok(),
+            PanelDisplay::Secondary(i) => secondary_taskbars()
+                .get(i as usize)
+                .map(|&h| HWND(h as _))
+                .or_else(|| FindWindowW(w!("Shell_TrayWnd"), None).ok()),
+        };
+        let Some(taskbar) = taskbar else { return };
+        TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
+        TRAY.store(
+            FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None)
+                .map(|t| t.0 as isize)
+                .unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
 /// Watch the taskbar for moves/slides (auto-hide) and the notification area
 /// for width changes (icons pinned/unpinned), event-driven via
 /// `SetWinEventHook` — no polling, keeps the 0% idle CPU budget. The callback
 /// fires on THIS thread's message loop and forwards a `TaskbarMoved` user
-/// event so the panel can reposition.
-pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>) {
+/// event so the panel can reposition. Installs the process-wide hook exactly
+/// once, then points it at `target` (see `watch_taskbar`).
+pub fn install_taskbar_watch(
+    proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>,
+    target: crate::config::schema::PanelDisplay,
+) {
     use std::sync::Mutex;
     use std::sync::OnceLock;
     use windows::core::w;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, GetDesktopWindow, GetWindowThreadProcessId,
-        EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW,
-        WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+        FindWindowW, GetDesktopWindow, GetWindowThreadProcessId, EVENT_OBJECT_LOCATIONCHANGE,
+        EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+        WINEVENT_SKIPOWNPROCESS,
     };
 
     static PROXY: OnceLock<Mutex<tao::event_loop::EventLoopProxy<crate::app::UserEvent>>> =
         OnceLock::new();
-    static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-    static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     unsafe extern "system" fn on_event(
         _hook: HWINEVENTHOOK,
@@ -691,17 +728,14 @@ pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::
     }
 
     unsafe {
+        // Any taskbar window works here: the pid is Explorer-process-wide (all
+        // taskbars, primary and secondary, live in the same explorer.exe), so
+        // scoping the hook via the primary bar is enough regardless of which
+        // bar the panel is actually attached to. `watch_taskbar` below is what
+        // points the callback's comparison handles at the right one.
         let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
             return;
         };
-        TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        // The notification-area child: its LOCATIONCHANGE is how we learn that
-        // icons were pinned/unpinned (the bar itself does not move then).
-        // Resolved once, like the bar — an Explorer restart invalidates both
-        // hwnds and the pid-scoped hook alike.
-        if let Ok(tray) = FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
-            TRAY.store(tray.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        }
         let mut pid = 0u32;
         GetWindowThreadProcessId(taskbar, Some(&mut pid));
         let _ = PROXY.set(Mutex::new(proxy));
@@ -755,6 +789,7 @@ pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::
             );
         }
     }
+    watch_taskbar(target);
 }
 
 /// Promote this exe's notification icons onto the always-visible taskbar
