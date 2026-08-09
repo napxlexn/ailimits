@@ -1368,6 +1368,14 @@ pub fn run() -> Result<()> {
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }
+                    Some(MenuAction::SetPanelDisplay(target)) => {
+                        config.general.panel_display = target;
+                        panel.set_display(target);
+                        crate::platform::watch_taskbar(target);
+                        panel.on_taskbar_moved(&visible_data(&config, &display));
+                        menu.sync(&config, win_state.pinned);
+                        save_config(config.clone());
+                    }
                     Some(MenuAction::ToggleForecast) => {
                         config.ui.show_forecast = !config.ui.show_forecast;
                         menu.sync(&config, win_state.pinned);

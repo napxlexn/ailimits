@@ -5,7 +5,8 @@
 // CLIPBOARD (a native menu has no text input).
 
 use crate::config::schema::{
-    AuthMethod, ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, WidthScale,
+    AuthMethod, ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay,
+    WidthScale,
 };
 use anyhow::Result;
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -34,6 +35,8 @@ pub enum MenuAction {
     TogglePin,
     /// Pick the secondary indicator: tray icon / taskbar bar / off.
     SetIndicator(IndicatorKind),
+    /// Move the panel indicator to another taskbar.
+    SetPanelDisplay(PanelDisplay),
     /// Show/hide the burn-rate forecast.
     ToggleForecast,
     /// Enable/disable silent background auto-updates.
@@ -103,6 +106,9 @@ pub struct ContextMenu {
     lock_item: CheckMenuItem,
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
+    /// Which taskbar the mini panel attaches to. Empty on a single-display
+    /// machine — see the "Only worth showing..." comment where it's built.
+    display_items: Vec<(CheckMenuItem, PanelDisplay)>,
     forecast_item: CheckMenuItem,
     auto_update_item: CheckMenuItem,
     monochrome_item: CheckMenuItem,
@@ -222,6 +228,30 @@ impl ContextMenu {
         for (item, _) in &indicator_items {
             indicator_submenu.append(item)?;
         }
+
+        // "Display" submenu — which taskbar the mini panel attaches to.
+        // Only worth showing when there IS another taskbar: a one-entry
+        // "Display" submenu on a single-monitor machine is pure noise.
+        let ui_display = config.general.panel_display;
+        let bars = crate::platform::secondary_taskbars();
+        let mut display_items: Vec<(CheckMenuItem, PanelDisplay)> = Vec::new();
+        if !bars.is_empty() {
+            let display_submenu = Submenu::new("Display", true);
+            let mut entries = vec![("Primary".to_string(), PanelDisplay::Primary)];
+            for i in 0..bars.len() {
+                entries.push((
+                    format!("Display {}", i + 2),
+                    PanelDisplay::Secondary(i as u8),
+                ));
+            }
+            for (label, target) in entries {
+                let item = CheckMenuItem::new(label, true, ui_display == target, None);
+                display_submenu.append(&item)?;
+                display_items.push((item, target));
+            }
+            indicator_submenu.append(&display_submenu)?;
+        }
+
         let forecast_item = CheckMenuItem::new("Forecast", true, config.ui.show_forecast, None);
         let auto_update_item =
             CheckMenuItem::new("Automatic updates", true, config.general.auto_update, None);
@@ -404,6 +434,7 @@ impl ContextMenu {
             lock_item,
             pin_item,
             indicator_items,
+            display_items,
             forecast_item,
             auto_update_item,
             monochrome_item,
@@ -478,6 +509,11 @@ impl ContextMenu {
         for (item, k) in &self.indicator_items {
             if *event_id == item.id() {
                 return Some(MenuAction::SetIndicator(*k));
+            }
+        }
+        for (item, target) in &self.display_items {
+            if *event_id == item.id() {
+                return Some(MenuAction::SetPanelDisplay(*target));
             }
         }
         if *event_id == self.forecast_item.id() {
@@ -570,6 +606,9 @@ impl ContextMenu {
         self.lock_item.set_checked(config.window.locked);
         for (item, k) in &self.indicator_items {
             item.set_checked(indicator_matches(config.general.indicator, *k));
+        }
+        for (item, target) in &self.display_items {
+            item.set_checked(config.general.panel_display == *target);
         }
         self.forecast_item.set_checked(config.ui.show_forecast);
         self.auto_update_item
