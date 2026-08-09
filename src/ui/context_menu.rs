@@ -233,7 +233,11 @@ impl ContextMenu {
         // Only worth showing when there IS another taskbar: a one-entry
         // "Display" submenu on a single-monitor machine is pure noise.
         let ui_display = config.general.panel_display;
+        #[cfg(target_os = "windows")]
         let bars = crate::platform::secondary_taskbars();
+        // No secondary taskbars to offer on other platforms.
+        #[cfg(not(target_os = "windows"))]
+        let bars: Vec<isize> = Vec::new();
         let mut display_items: Vec<(CheckMenuItem, PanelDisplay)> = Vec::new();
         if !bars.is_empty() {
             let display_submenu = Submenu::new("Display", true);
