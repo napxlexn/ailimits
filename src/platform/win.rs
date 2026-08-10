@@ -527,6 +527,13 @@ fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay
         // The panel's display, not the primary one. A game fullscreen on the
         // secondary must hide a panel that lives there; a game on the primary
         // must not.
+        //
+        // No taskbar slot to compare against: assume NOT fullscreen. `false`
+        // is the less destructive answer here — unlike the scrim check above,
+        // where an unresolved slot assumes obstruction, `true` would gate
+        // every presentation path (suppress_for_fullscreen) until an explicit
+        // restore, hiding the panel indefinitely on a spurious query failure
+        // rather than just skipping one obstruction check.
         let Some(slot) = taskbar_slot(target) else {
             return false;
         };

@@ -2,6 +2,28 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## Unreleased
+
+### Added
+
+- **The taskbar panel can now follow a display other than the primary one.**
+  On a multi-monitor setup where Windows shows the taskbar on more than one
+  display, **Indicator → Display** picks which taskbar the panel attaches to.
+  It falls back to the primary taskbar if the chosen display is later
+  disconnected.
+- **`panel_offset_x` / `panel_offset_y`** are new config-only settings that
+  nudge the taskbar panel's position in pixels — a repair tool for unusual
+  taskbar layouts, not exposed in the menu.
+
+### Fixed
+
+- **The taskbar panel no longer overlaps the clock on taskbars that expose no
+  notification area.** Some secondary Windows 11 taskbars have no
+  `TrayNotifyWnd` to measure, so the panel now reserves a fixed width for the
+  clock on those bars instead of assuming it can use the full edge.
+- **A failed taskbar panel present is now logged instead of vanishing
+  silently**, so a stuck or missing overlay leaves a diagnosable trace.
+
 ## 0.6.1 - 2026-08-05
 
 ### Fixed

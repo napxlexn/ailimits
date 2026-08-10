@@ -93,6 +93,12 @@ pub enum TrayKind {
 /// foreground event) re-presents it, exactly like the taskbar reappears. When
 /// a non-fullscreen fallback clears, a redraw re-presents the still-positioned
 /// panel. No-op outside the Panel modes (every panel method guards on the mode).
+///
+/// `target` is the display the panel is currently attached to: the scrim and
+/// fullscreen signals are queried against that display specifically (a scrim
+/// or a fullscreen app on some OTHER display must not blank a panel that is
+/// plainly visible here), while the third signal, coverage, is read straight
+/// from the panel's own on-screen rect and needs no display of its own.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn eval_indicator_fallback(
@@ -1374,6 +1380,16 @@ pub fn run() -> Result<()> {
                         #[cfg(target_os = "windows")]
                         crate::platform::watch_taskbar(target);
                         panel.on_taskbar_moved(&visible_data(&config, &display));
+                        // The new display may be owned by a fullscreen app; the
+                        // reposition above cannot see that, so arm the same
+                        // deferred re-check TaskbarMoved uses to catch it a beat
+                        // later instead of painting straight over the game.
+                        #[cfg(target_os = "windows")]
+                        {
+                            recheck_at = Some(
+                                std::time::Instant::now() + std::time::Duration::from_millis(150),
+                            );
+                        }
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }

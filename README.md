@@ -204,6 +204,11 @@ readout stays visible. Right-click → **Indicator**:
   returns the moment you alt-tab back to the desktop.
 - **Off** — no indicator.
 
+If Windows shows the taskbar on more than one display, **Indicator → Display**
+picks which taskbar the panel attaches to. The submenu only appears when a
+second taskbar exists; if the chosen display is later disconnected, the panel
+falls back to the primary taskbar.
+
 Left-clicking the tray icon or the panel brings the widget to the front (or
 hides it if it is already there, on top); right-clicking **anywhere on the
 panel** opens this same menu.
