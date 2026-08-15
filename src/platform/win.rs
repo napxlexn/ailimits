@@ -28,34 +28,24 @@ pub struct TaskbarSlot {
 /// `PanelDisplay::Secondary` falls back to the primary taskbar when the
 /// requested display does not exist (see `secondary_taskbars`).
 pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<TaskbarSlot> {
-    use crate::config::schema::PanelDisplay;
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, GetWindowRect};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowRect};
 
     unsafe {
-        let taskbar = match target {
-            PanelDisplay::Primary => match FindWindowW(w!("Shell_TrayWnd"), None) {
-                Ok(h) => h,
-                Err(_) => return None,
-            },
-            PanelDisplay::Secondary(i) => {
-                // A missing secondary display is expected, not exceptional:
-                // the monitor may be unplugged or the shell set to keep the
-                // taskbar on one screen. Falling back to the primary keeps the
-                // indicator visible; hiding it would look like a crash.
-                match secondary_taskbars().get(i as usize) {
-                    Some(&h) => HWND(h as _),
-                    None => match FindWindowW(w!("Shell_TrayWnd"), None) {
-                        Ok(h) => h,
-                        Err(_) => return None,
-                    },
-                }
-            }
-        };
+        // Resolved fresh every call — see `resolve_taskbar`. A missing secondary
+        // display is expected, not exceptional: it falls back to the primary
+        // bar there, because an indicator on the wrong screen is recoverable
+        // and a vanished one looks like a crash.
+        let taskbar = resolve_taskbar(target)?;
+        // Explorer recreates the bars on restart, so the handle we just found
+        // may differ from the one the move/auto-hide hook is comparing events
+        // against. Re-point it here rather than waiting for the user to switch
+        // displays: this is the only code path that runs regularly.
+        rearm_if_stale(taskbar);
         let mut bar = RECT::default();
         if GetWindowRect(taskbar, &mut bar).is_err() {
             return None;
@@ -628,24 +618,38 @@ pub fn hide_window(hwnd: isize) {
 static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
-/// Point the existing hook at a taskbar. The hook itself is process-wide and
-/// installed once; only the handles it compares against change. Without this,
-/// moving the panel to another display would silently stop auto-hide tracking:
-/// the hook would still be watching the primary bar.
-pub fn watch_taskbar(target: crate::config::schema::PanelDisplay) {
+/// Resolve the taskbar a target refers to, right now.
+///
+/// Deliberately re-queried on every call rather than cached: `Shell_TrayWnd`
+/// and `Shell_SecondaryTrayWnd` are DESTROYED AND RECREATED whenever Explorer
+/// restarts — which happens on its own, days into a session, with no event the
+/// app subscribes to. A handle captured at startup is a handle to a window
+/// that no longer exists.
+fn resolve_taskbar(
+    target: crate::config::schema::PanelDisplay,
+) -> Option<windows::Win32::Foundation::HWND> {
     use crate::config::schema::PanelDisplay;
     use windows::core::w;
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW};
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
     unsafe {
-        let taskbar = match target {
+        match target {
             PanelDisplay::Primary => FindWindowW(w!("Shell_TrayWnd"), None).ok(),
+            // A missing secondary display is expected, not exceptional.
             PanelDisplay::Secondary(i) => secondary_taskbars()
                 .get(i as usize)
                 .map(|&h| HWND(h as _))
                 .or_else(|| FindWindowW(w!("Shell_TrayWnd"), None).ok()),
-        };
-        let Some(taskbar) = taskbar else { return };
+        }
+    }
+}
+
+/// Store the handles the hook compares against.
+fn arm_watch(taskbar: windows::Win32::Foundation::HWND) {
+    use windows::core::w;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    unsafe {
         TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
         TRAY.store(
             FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None)
@@ -654,6 +658,32 @@ pub fn watch_taskbar(target: crate::config::schema::PanelDisplay) {
             std::sync::atomic::Ordering::Relaxed,
         );
     }
+}
+
+/// Re-point the hook if the taskbar it watches is no longer the taskbar we
+/// resolve. Cheap: one integer compare on the common path.
+///
+/// **Why this is not optional.** The hook is armed once at startup and again
+/// on an explicit display switch. Explorer restarting between those two
+/// moments leaves the hook comparing events against a destroyed window: every
+/// auto-hide slide stops being reported, and the panel survives only on the
+/// 60-second provider tick — it stops following the bar and looks like it
+/// vanished. Measured in the field: after five days of uptime BOTH bar handles
+/// had changed.
+fn rearm_if_stale(taskbar: windows::Win32::Foundation::HWND) {
+    if TASKBAR.load(std::sync::atomic::Ordering::Relaxed) != taskbar.0 as isize {
+        tracing::debug!("taskbar handle changed, re-arming the watch");
+        arm_watch(taskbar);
+    }
+}
+
+/// Point the existing hook at a taskbar. The hook itself is process-wide and
+/// installed once; only the handles it compares against change.
+pub fn watch_taskbar(target: crate::config::schema::PanelDisplay) {
+    let Some(taskbar) = resolve_taskbar(target) else {
+        return;
+    };
+    arm_watch(taskbar);
 }
 
 /// Watch the taskbar for moves/slides (auto-hide) and the notification area
