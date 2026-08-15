@@ -618,6 +618,17 @@ pub fn hide_window(hwnd: isize) {
 static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+/// Last secondary bar we successfully enumerated, and the index it answered.
+///
+/// Windows drops `Shell_SecondaryTrayWnd` out of `EnumWindows` for as long as
+/// the Start menu is up — measured, not assumed. Without this cache the
+/// enumeration comes back empty for those few hundred milliseconds, the
+/// primary-bar fallback fires, and the panel JUMPS TO THE OTHER DISPLAY every
+/// time the user presses the Windows key. It then looks like the panel
+/// "disappeared" from the display it was configured for.
+static LAST_SECONDARY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static LAST_SECONDARY_IDX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
 /// Resolve the taskbar a target refers to, right now.
 ///
 /// Deliberately re-queried on every call rather than cached: `Shell_TrayWnd`
@@ -635,11 +646,32 @@ fn resolve_taskbar(
     unsafe {
         match target {
             PanelDisplay::Primary => FindWindowW(w!("Shell_TrayWnd"), None).ok(),
-            // A missing secondary display is expected, not exceptional.
-            PanelDisplay::Secondary(i) => secondary_taskbars()
-                .get(i as usize)
-                .map(|&h| HWND(h as _))
-                .or_else(|| FindWindowW(w!("Shell_TrayWnd"), None).ok()),
+            PanelDisplay::Secondary(i) => {
+                use std::sync::atomic::Ordering::Relaxed;
+                use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+                if let Some(&h) = secondary_taskbars().get(i as usize) {
+                    LAST_SECONDARY.store(h, Relaxed);
+                    LAST_SECONDARY_IDX.store(i as i32, Relaxed);
+                    return Some(HWND(h as _));
+                }
+                // Enumeration came back without it. Two very different causes,
+                // and telling them apart is the whole point: the Start menu
+                // hides the bar from enumeration while leaving the window
+                // alive, whereas an unplugged monitor destroys it. Trust a
+                // handle that is still a window; only a dead one means the
+                // display is really gone.
+                let cached = LAST_SECONDARY.load(Relaxed);
+                if cached != 0
+                    && LAST_SECONDARY_IDX.load(Relaxed) == i as i32
+                    && IsWindow(HWND(cached as _)).as_bool()
+                {
+                    return Some(HWND(cached as _));
+                }
+                // Genuinely gone: fall back to the primary bar rather than
+                // hiding, because a visible indicator on the wrong display is
+                // recoverable and a vanished one looks like a crash.
+                FindWindowW(w!("Shell_TrayWnd"), None).ok()
+            }
         }
     }
 }

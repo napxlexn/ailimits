@@ -907,6 +907,18 @@ pub fn run() -> Result<()> {
                 if let Some(t) = recheck_at {
                     if now >= t {
                         recheck_at = None;
+                        // **Re-place before re-judging.** The taskbar SLIDES in
+                        // and out over ~200ms, and the move events arrive
+                        // during that slide: acting on the first one pins the
+                        // panel to a mid-animation position — measured at bar
+                        // top 1410 and 1413 while the settled bar is at 1392 —
+                        // which leaves it hanging below the bar, partly off the
+                        // screen edge, looking like it never appeared. Nothing
+                        // else re-runs placement afterwards: the fallback
+                        // evaluation only redraws into the rectangle it is
+                        // given, so the stale position survived until the next
+                        // slide or the 60-second provider tick.
+                        panel.on_taskbar_moved(&visible_data(&config, &display));
                         eval_indicator_fallback(
                             &mut panel,
                             &mut tray,

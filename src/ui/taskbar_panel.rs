@@ -381,10 +381,14 @@ impl TaskbarPanel {
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
+            let before = self.rect;
             let Some(slot) = crate::platform::taskbar_slot(self.display) else {
                 // No taskbar at all: the panel has nowhere to live, and the tray
                 // has nowhere either — but say so, so the indicator can degrade
                 // instead of silently showing nothing.
+                if before.is_some() {
+                    tracing::debug!("panel hidden: no taskbar resolved for {:?}", self.display);
+                }
                 self.unavailable = true;
                 self.hide();
                 return;
@@ -394,6 +398,13 @@ impl TaskbarPanel {
                 // sits in that same bar and is hidden with it, so substituting
                 // one for the other would gain nothing and flicker on every
                 // slide.
+                if before.is_some() {
+                    tracing::debug!(
+                        "panel hidden: bar auto-hidden (top {}, height {})",
+                        slot.top,
+                        slot.height
+                    );
+                }
                 self.unavailable = false;
                 self.hide();
                 return;
@@ -407,6 +418,9 @@ impl TaskbarPanel {
             if slot.height > MAX_BAR_HEIGHT {
                 // A vertical taskbar: we refuse to draw on it. The tray icon
                 // still works there, so this IS a case for the substitute.
+                if before.is_some() {
+                    tracing::debug!("panel hidden: bar height {} looks vertical", slot.height);
+                }
                 self.unavailable = true;
                 self.hide();
                 return;
@@ -432,6 +446,15 @@ impl TaskbarPanel {
             }
             let x = x + self.offset.0;
             let y = y + self.offset.1;
+            if before.map(|(bx, _, _, _)| bx) != Some(x) {
+                tracing::debug!(
+                    "panel placed at {x},{y} (target {:?}, bar top {}, tray_left {}, measured {})",
+                    self.display,
+                    slot.top,
+                    slot.tray_left,
+                    slot.tray_found
+                );
+            }
             self.rect = Some((x, y, w, h));
         }
     }
