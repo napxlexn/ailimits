@@ -116,7 +116,13 @@ fn eval_indicator_fallback(
     // While hidden for fullscreen the rect is None, so is_covered reads false —
     // ordering matters: check coverage before this pass may hide the panel.
     let covered = panel.is_covered();
-    let fallback = crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen);
+    // A panel that could not place itself at all (no taskbar resolved, or a
+    // vertical bar we refuse to draw on) reads as "not covered" — an absent
+    // rectangle cannot be obstructed. Without this the user is left with no
+    // indicator whatsoever and no hint why.
+    let unavailable = panel.is_unavailable();
+    let fallback =
+        crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen, unavailable);
     tray.set_scrim_fallback(fallback, menu, providers, theme);
     if fullscreen {
         // Idempotent — also re-hides the panel if anything re-presented it
@@ -1379,7 +1385,11 @@ pub fn run() -> Result<()> {
                         panel.set_display(target);
                         #[cfg(target_os = "windows")]
                         crate::platform::watch_taskbar(target);
-                        panel.on_taskbar_moved(&visible_data(&config, &display));
+                        // A full restart, not a reposition: `on_taskbar_moved`
+                        // returns early while the panel is suppressed, so a
+                        // panel parked by a fullscreen app could not be brought
+                        // back by switching displays at all.
+                        panel.restart(&visible_data(&config, &display));
                         // The new display may be owned by a fullscreen app; the
                         // reposition above cannot see that, so arm the same
                         // deferred re-check TaskbarMoved uses to catch it a beat

@@ -89,6 +89,11 @@ pub struct TaskbarPanel {
     /// (update ticks, taskbar moves, raises) is gated on this, so nothing can
     /// resurrect the overlay over a game between fallback evaluations.
     suppressed: bool,
+    /// The panel could not place itself: no taskbar resolved, or the bar is a
+    /// shape we refuse to draw on. Distinct from "the bar is auto-hidden",
+    /// which is normal and needs no substitute — the tray icon lives in that
+    /// same bar and would be hidden with it.
+    unavailable: bool,
     /// Our own hover-tooltip window (a raw layered top-level window we paint),
     /// and whether it is currently shown. Painted dark/rounded/borderless to
     /// match the shell's tooltips, which a native control cannot.
@@ -137,6 +142,7 @@ impl TaskbarPanel {
             size: (INIT_W, INIT_H),
             rect: None,
             suppressed: false,
+            unavailable: false,
             #[cfg(target_os = "windows")]
             tip_hwnd: crate::platform::create_tooltip_window(),
             #[cfg(target_os = "windows")]
@@ -178,7 +184,11 @@ impl TaskbarPanel {
         self.mode = mode;
         // A mode change is an explicit user action — start unsuppressed; the
         // next fallback evaluation re-hides if a fullscreen app is still up.
+        // The placement verdict is cleared too: it belongs to the mode that
+        // just ended, and keeping it would hand the tray a stale reason to
+        // stay up after the user turned the panel back on.
         self.suppressed = false;
+        self.unavailable = false;
         if Self::is_panel_mode(mode) {
             self.last.clear();
             self.reposition();
@@ -262,6 +272,17 @@ impl TaskbarPanel {
     /// a floating overlay cannot beat. Read from what the compositor actually
     /// shows at the panel's center (WindowFromPoint); drives the tray fallback.
     #[cfg(target_os = "windows")]
+    /// The panel cannot place itself at all — as opposed to being hidden with
+    /// an auto-hidden bar, which is normal.
+    ///
+    /// `is_covered` cannot answer this: with no rectangle it reads `false`,
+    /// i.e. "not obstructed", so a panel that never made it onto the screen
+    /// looked exactly like a healthy one and the tray substitute stayed hidden.
+    /// The user was left with no indicator at all and no way to tell why.
+    pub fn is_unavailable(&self) -> bool {
+        Self::is_panel_mode(self.mode) && self.unavailable
+    }
+
     pub fn is_covered(&self) -> bool {
         if !Self::is_panel_mode(self.mode) {
             return false;
@@ -271,6 +292,29 @@ impl TaskbarPanel {
         };
         let owner = crate::platform::point_owner(x + w as i32 / 2, y + h as i32 / 2);
         owner != 0 && owner != self.hwnd()
+    }
+
+    /// Restart the panel: forget every cached judgement and place it again.
+    ///
+    /// **Why switching displays was not enough.** `set_display` changed the
+    /// target but left `suppressed` alone, and `on_taskbar_moved` returns early
+    /// while suppressed — so a panel parked by a fullscreen app could not be
+    /// revived by moving it, toggling it, or anything else short of restarting
+    /// the whole application. That is what the user hit.
+    ///
+    /// Clearing `last` matters too: it is the "what did I draw" cache, and a
+    /// stale entry means the redraw is skipped as a no-op precisely when the
+    /// panel needs re-presenting.
+    pub fn restart(&mut self, providers: &[ProviderData]) {
+        self.suppressed = false;
+        self.unavailable = false;
+        self.last.clear();
+        if !Self::is_panel_mode(self.mode) {
+            self.hide();
+            return;
+        }
+        self.reposition();
+        self.redraw(providers);
     }
 
     /// The taskbar moved (auto-hide slide / resolution change) or the tray
@@ -338,10 +382,19 @@ impl TaskbarPanel {
         #[cfg(target_os = "windows")]
         {
             let Some(slot) = crate::platform::taskbar_slot(self.display) else {
+                // No taskbar at all: the panel has nowhere to live, and the tray
+                // has nowhere either — but say so, so the indicator can degrade
+                // instead of silently showing nothing.
+                self.unavailable = true;
                 self.hide();
                 return;
             };
             if !slot.visible {
+                // The bar slid away (auto-hide). NOT unavailable: the tray icon
+                // sits in that same bar and is hidden with it, so substituting
+                // one for the other would gain nothing and flicker on every
+                // slide.
+                self.unavailable = false;
                 self.hide();
                 return;
             }
@@ -352,9 +405,13 @@ impl TaskbarPanel {
             // bar is ~96px, so anything taller than this is not a bottom bar.
             const MAX_BAR_HEIGHT: i32 = 200;
             if slot.height > MAX_BAR_HEIGHT {
+                // A vertical taskbar: we refuse to draw on it. The tray icon
+                // still works there, so this IS a case for the substitute.
+                self.unavailable = true;
                 self.hide();
                 return;
             }
+            self.unavailable = false;
             let (w, h) = self.desired_size(slot.height);
             // An estimated tray edge is a guess at where the clock starts, so
             // keep a little more air than when the edge was measured.

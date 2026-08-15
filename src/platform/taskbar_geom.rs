@@ -48,8 +48,13 @@ pub fn order_bars(bars: &mut [(isize, i32)]) {
 /// That scoping is the whole point: a Start menu or a fullscreen game on
 /// ANOTHER display must not blank a panel that is plainly visible, and a
 /// fullscreen game on the panel's own display must not be missed.
-pub fn should_fall_back(scrim_here: bool, covered: bool, fullscreen_here: bool) -> bool {
-    scrim_here || covered || fullscreen_here
+pub fn should_fall_back(
+    scrim_here: bool,
+    covered: bool,
+    fullscreen_here: bool,
+    unavailable: bool,
+) -> bool {
+    scrim_here || covered || fullscreen_here || unavailable
 }
 
 #[cfg(test)]
@@ -102,13 +107,30 @@ mod tests {
     /// this is the rule that combines them.
     #[test]
     fn any_single_obstruction_forces_the_tray_icon() {
-        assert!(should_fall_back(true, false, false), "start menu scrim");
-        assert!(should_fall_back(false, true, false), "something covers it");
-        assert!(should_fall_back(false, false, true), "fullscreen app");
+        assert!(
+            should_fall_back(true, false, false, false),
+            "start menu scrim"
+        );
+        assert!(
+            should_fall_back(false, true, false, false),
+            "something covers it"
+        );
+        assert!(
+            should_fall_back(false, false, true, false),
+            "fullscreen app"
+        );
     }
 
     #[test]
     fn an_unobstructed_panel_keeps_the_overlay() {
-        assert!(!should_fall_back(false, false, false));
+        assert!(!should_fall_back(false, false, false, false));
+    }
+
+    /// A panel that never made it onto the screen is not "fine" — it is the
+    /// case most in need of a substitute, and the one that used to read as
+    /// healthy because an absent rectangle cannot be covered by anything.
+    #[test]
+    fn a_panel_that_cannot_place_itself_hands_over_to_the_tray() {
+        assert!(should_fall_back(false, false, false, true));
     }
 }
