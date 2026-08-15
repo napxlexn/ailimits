@@ -239,6 +239,11 @@ impl ContextMenu {
         #[cfg(not(target_os = "windows"))]
         let bars: Vec<isize> = Vec::new();
         let mut display_items: Vec<(CheckMenuItem, PanelDisplay)> = Vec::new();
+        tracing::debug!(
+            "menu: {} secondary taskbar(s) found, Display submenu {}",
+            bars.len(),
+            if bars.is_empty() { "OMITTED" } else { "shown" }
+        );
         if !bars.is_empty() {
             let display_submenu = Submenu::new("Display", true);
             let mut entries = vec![("Primary".to_string(), PanelDisplay::Primary)];
