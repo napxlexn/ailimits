@@ -602,6 +602,71 @@ pub fn create_tooltip_window() -> isize {
     }
 }
 
+/// Ask DWM to blur whatever shows through `hwnd`, the way the shell blurs its
+/// own tooltips and flyouts. `tint` is the colour laid over the blur, alpha
+/// included — a low alpha reads as glass, a high one as frosted paint.
+///
+/// Best-effort: `SetWindowCompositionAttribute` is undocumented (it has shipped
+/// since Win10 but is not contract), so a missing export just means no blur.
+///
+/// BLURBEHIND (3), not ACRYLICBLURBEHIND (4), for the same reason the widget
+/// uses 3: acrylic drops to a flat matte tint on monitor changes.
+///
+/// The window still needs semi-transparent pixels for any of this to show —
+/// blur happens BEHIND the window, so opaque content hides it completely.
+pub fn apply_blur_behind(hwnd: isize, tint: (u8, u8, u8, u8)) -> bool {
+    use std::ffi::c_void;
+    use windows::core::s;
+    use windows::Win32::Foundation::{BOOL, HWND};
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+
+    #[repr(C)]
+    struct AccentPolicy {
+        accent_state: u32,
+        accent_flags: u32,
+        gradient_color: u32,
+        animation_id: u32,
+    }
+    #[repr(C)]
+    struct WindowCompositionAttribData {
+        attrib: u32,
+        data: *mut c_void,
+        size: usize,
+    }
+    type SetWindowCompositionAttribute =
+        unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> BOOL;
+
+    const WCA_ACCENT_POLICY: u32 = 0x13;
+    const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
+
+    unsafe {
+        let Ok(user32) = LoadLibraryA(s!("user32.dll")) else {
+            return false;
+        };
+        let Some(proc) = GetProcAddress(user32, s!("SetWindowCompositionAttribute")) else {
+            return false;
+        };
+        let set_attr: SetWindowCompositionAttribute = std::mem::transmute(proc);
+        let (r, g, b, a) = tint;
+        let mut accent = AccentPolicy {
+            accent_state: ACCENT_ENABLE_BLURBEHIND,
+            accent_flags: 0,
+            // AABBGGRR, as the undocumented struct expects.
+            gradient_color: (r as u32)
+                | ((g as u32) << 8)
+                | ((b as u32) << 16)
+                | ((a as u32) << 24),
+            animation_id: 0,
+        };
+        let mut data = WindowCompositionAttribData {
+            attrib: WCA_ACCENT_POLICY,
+            data: &mut accent as *mut _ as _,
+            size: std::mem::size_of_val(&accent),
+        };
+        set_attr(HWND(hwnd as _), &mut data as *mut _).as_bool()
+    }
+}
+
 /// Hide the panel window (indicator switched away / taskbar slid away).
 pub fn hide_window(hwnd: isize) {
     use windows::Win32::Foundation::HWND;

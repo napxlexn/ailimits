@@ -599,56 +599,74 @@ pub(crate) fn draw_digits_fit(
     }
 }
 
+/// Shell tooltip metrics at 100% scaling, in pixels. Windows draws its own
+/// tooltips with Segoe UI at 9pt (12px at 96 DPI), a tight box around the text,
+/// and a small corner radius — not a pill.
+///
+/// EXPERIMENTAL: the previous numbers derived everything from the taskbar
+/// height (font `bar_h * 0.30`, padding `0.85`/`0.55` of the font, radius a
+/// third of the box), which on a stock 48px bar produced a 14.4px font in a
+/// fully rounded pill — noticeably larger and rounder than anything the shell
+/// shows. These match the shell instead.
+const TIP_FONT_PX: f32 = 12.0;
+const TIP_PAD_X: f32 = 8.0;
+const TIP_PAD_Y: f32 = 5.0;
+/// Barely rounded — the shell's tooltip corners are a soft cut, not a pill.
+const TIP_RADIUS: f32 = 3.0;
+/// The fill alpha. Not opaque on purpose: DWM blurs what shows through this
+/// window (see `platform::apply_blur_behind`), and blur happens BEHIND the
+/// window — opaque paint hides it completely. This is what makes the tooltip
+/// read as acrylic rather than as a flat card.
+const TIP_FILL_ALPHA: u8 = 218;
+/// The bar height that means 100% scaling; the bar is our only DPI signal here.
+const TIP_BASE_BAR_H: f32 = 48.0;
+
 /// Render the hover tooltip pixmap for the taskbar panel: the provider summary
-/// as a fully rounded pill drawn by us (not a native control) so it matches the
-/// shell's own tooltip. It follows the system theme like the real Win11 tooltip:
-/// a borderless dark pill in dark mode, a near-white pill with a hairline border
-/// in light mode. Sized to the text; `bar_h` scales the font to the bar.
+/// drawn by us (not a native control) so it matches the shell's own tooltip. It
+/// follows the system theme like the real Win11 tooltip: a borderless dark box
+/// in dark mode, a near-white box with a hairline border in light mode. Sized to
+/// the text; `bar_h` carries the display scaling.
 pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
-    let size = (bar_h * 0.30).clamp(11.0, 24.0);
+    // Scale by the bar, but from the shell's own metrics rather than from a
+    // fraction of the bar. Clamped so an odd bar height cannot make the
+    // tooltip unreadable or enormous.
+    let scale = (bar_h / TIP_BASE_BAR_H).clamp(0.85, 3.0);
+    let size = TIP_FONT_PX * scale;
     let (tw, th) = text_extent(text, size);
-    let pad_x = (size * 0.85).round();
-    let pad_y = (size * 0.55).round();
+    let pad_x = (TIP_PAD_X * scale).round();
+    let pad_y = (TIP_PAD_Y * scale).round();
     let w = (tw + pad_x * 2.0).ceil().max(8.0) as u32;
     let h = (th + pad_y * 2.0).ceil().max(8.0) as u32;
     let mut pm = Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
     pm.fill(tiny_skia::Color::TRANSPARENT);
-    let radius = (h as f32 * 0.34).min(12.0);
-    if light {
-        // Win11 light tooltip: near-white pill + dark text, with a hairline border
-        // (drawn as a 1px under-fill) so it reads on a light background.
-        fill_round_rect(
-            &mut pm,
-            0.0,
-            0.0,
-            w as f32,
-            h as f32,
-            radius,
-            color(0, 0, 0, 38),
-        );
-        fill_round_rect(
-            &mut pm,
-            1.0,
-            1.0,
-            w as f32 - 2.0,
-            h as f32 - 2.0,
-            radius - 1.0,
-            color(249, 249, 249, 255),
-        );
-        draw_text_at(&mut pm, text, pad_x, pad_y, size, color(26, 26, 26, 255));
+    let radius = (TIP_RADIUS * scale).min(h as f32 / 2.0);
+    // Both themes get the same construction the shell uses: a 1px border drawn
+    // as an under-fill, the tinted body inset into it, then the text. The
+    // border is what stops the blurred body dissolving into a busy background.
+    let (border, body, text_ink) = if light {
+        (
+            color(0, 0, 0, 36),
+            color(249, 249, 249, TIP_FILL_ALPHA),
+            color(26, 26, 26, 255),
+        )
     } else {
-        // Dark pill; transparent corners give true rounded edges (no border).
-        fill_round_rect(
-            &mut pm,
-            0.0,
-            0.0,
-            w as f32,
-            h as f32,
-            radius,
-            color(44, 44, 44, 255),
-        );
-        draw_text_at(&mut pm, text, pad_x, pad_y, size, color(236, 236, 236, 255));
-    }
+        (
+            color(255, 255, 255, 26),
+            color(44, 44, 44, TIP_FILL_ALPHA),
+            color(236, 236, 236, 255),
+        )
+    };
+    fill_round_rect(&mut pm, 0.0, 0.0, w as f32, h as f32, radius, border);
+    fill_round_rect(
+        &mut pm,
+        1.0,
+        1.0,
+        w as f32 - 2.0,
+        h as f32 - 2.0,
+        (radius - 1.0).max(0.0),
+        body,
+    );
+    draw_text_at(&mut pm, text, pad_x, pad_y, size, text_ink);
     pm
 }
 

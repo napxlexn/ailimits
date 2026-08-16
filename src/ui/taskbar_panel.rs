@@ -144,7 +144,16 @@ impl TaskbarPanel {
             suppressed: false,
             unavailable: false,
             #[cfg(target_os = "windows")]
-            tip_hwnd: crate::platform::create_tooltip_window(),
+            tip_hwnd: {
+                let hwnd = crate::platform::create_tooltip_window();
+                // Blur what shows through it, like the shell's own tooltips.
+                // The tint is neutral and nearly clear: render_tooltip paints
+                // the actual body colour, this only softens the backdrop.
+                if hwnd != 0 && !crate::platform::apply_blur_behind(hwnd, (0, 0, 0, 12)) {
+                    tracing::debug!("tooltip blur unavailable; falling back to a flat tooltip");
+                }
+                hwnd
+            },
             #[cfg(target_os = "windows")]
             tip_shown: false,
             last_present_error: None,
