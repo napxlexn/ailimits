@@ -19,8 +19,9 @@ Expanded sparkline) and, when `AILIMITS_LOG` or `RUST_LOG` is set,
 # Claude's endpoint is also rate-limited server-side, so its refresh can
 # occasionally take 2–3 minutes regardless of this setting.
 update_interval_secs = 60
-# Taskbar indicator (menu: Indicator): "tray" — a 16px tray pie of the
-# highest %; "panel_rows" / "panel_grid" (legacy alias) — a transparent
+# Taskbar indicator (menu: Indicator): "tray" — a 16px tray icon, two
+# concentric rings carrying the two busiest providers, monochrome in the
+# system taskbar theme; "panel_rows" / "panel_grid" (legacy alias) — a transparent
 # overlay left of the tray: a per-pixel-alpha layered window, only digits
 # and bars are painted. Shows the first two providers in the widget's order
 # (percent + bar, clock-sized), monochrome, following the SYSTEM light/dark

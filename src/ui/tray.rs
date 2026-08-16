@@ -1,7 +1,11 @@
 // ui/tray.rs — tray-area usage indicators.
 //
 // Two modes (config `general.indicator`), both a SINGLE tray icon:
-//   Tray — a pie gauge of the highest-usage provider's %.
+//   Tray — two concentric rings, the busiest provider outside and the
+//          runner-up inside, each sweeping clockwise from 12 o'clock.
+//          Deliberately monochrome: it inks itself in the system taskbar
+//          theme rather than the widget palette, so it stays readable on a
+//          light or a dark bar and the shape alone carries the reading.
 //   Bars — horizontal progress bars stacked one above the other, one row
 //          per visible provider (the meter style competitors use); with a
 //          single provider the row gains its percent number on top.
@@ -14,7 +18,7 @@ use crate::config::schema::IndicatorKind;
 use crate::providers::{ProviderData, ProviderStatus};
 use crate::ui::theme::{ComputedTheme, UsageLevel};
 use anyhow::{Context, Result};
-use tiny_skia::{Paint, PathBuilder, Pixmap, Transform};
+use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// Source render size; Windows scales it down to the tray's DPI size.
@@ -31,7 +35,7 @@ pub struct Tray {
     promote_pending: bool,
     /// The current icon is a transient Start-menu fallback (shown while a Panel
     /// indicator is occluded by the Start/Search scrim), not a configured tray
-    /// mode. It renders the busiest-provider pie, like Tray mode.
+    /// mode. It renders the busiest-provider rings, like Tray mode.
     fallback: bool,
 }
 
@@ -83,11 +87,11 @@ impl Tray {
         let Some(icon) = self.icon.as_ref() else {
             return;
         };
-        // A Start-fallback icon renders the busiest-% pie, exactly like Tray.
-        let pie = self.fallback || matches!(self.mode, IndicatorKind::Tray);
-        let state: Vec<Option<u8>> = if pie {
-            // Both halves of the pie — see pie_cache_state.
-            pie_cache_state(providers)
+        // A Start-fallback icon renders the rings, exactly like Tray mode.
+        let rings = self.fallback || matches!(self.mode, IndicatorKind::Tray);
+        let state: Vec<Option<u8>> = if rings {
+            // Both rings — see ring_cache_state.
+            ring_cache_state(providers)
         } else if matches!(self.mode, IndicatorKind::Bars) {
             // One bar row per provider.
             providers
@@ -103,8 +107,9 @@ impl Tray {
             // light/dark theme independent of the widget — render its ink to
             // match so it stays readable on a light taskbar.
             let light = crate::platform::system_uses_light_theme();
-            let img = if pie {
-                draw_pie_icon(providers, theme, light)
+            let img = if rings {
+                // The ring icon is monochrome by design — it takes no theme.
+                draw_ring_icon(providers, light)
             } else {
                 draw_stacked_icon(providers, theme, light)
             };
@@ -208,7 +213,7 @@ pub(crate) fn provider_pct(data: &ProviderData) -> Option<f32> {
 ///
 /// Providers without a usable percentage are never candidates. Ties keep the
 /// order the widget shows them in, so two providers sitting at the same number
-/// do not trade halves from one refresh to the next.
+/// do not trade rings from one refresh to the next.
 pub(crate) fn two_busiest(providers: &[ProviderData]) -> (Option<u8>, Option<u8>) {
     let mut pcts: Vec<u8> = providers
         .iter()
@@ -221,9 +226,9 @@ pub(crate) fn two_busiest(providers: &[ProviderData]) -> (Option<u8>, Option<u8>
     (it.next(), it.next())
 }
 
-/// What the pie repaint cache must hold: BOTH halves. Caching only the busiest
+/// What the repaint cache must hold: BOTH rings. Caching only the busiest
 /// would freeze the icon whenever the second-place provider moved.
-pub(crate) fn pie_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
+pub(crate) fn ring_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
     let (first, second) = two_busiest(providers);
     vec![first, second]
 }
@@ -258,163 +263,162 @@ fn tray_ink(light: bool, a: u8) -> tiny_skia::Color {
 fn neutral_icon(light: bool) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
     pm.fill(tiny_skia::Color::TRANSPARENT);
-    fill_circle(&mut pm, 16.0, 16.0, 5.0, tray_ink(light, 200));
+    fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(light, 200));
     to_icon(&pm)
 }
 
-fn draw_pie_icon(providers: &[ProviderData], theme: &ComputedTheme, light: bool) -> Result<Icon> {
+/// Ring geometry, in the 32px icon space. `RING_STEP` is the drop in outer
+/// radius from one ring to the next; with a 4px stroke it leaves 1.5px of bare
+/// space between them, which survives the shell's downscale to 16px as the
+/// hairline that says "two rings, not one thick one".
+const RING_W: f32 = 4.0;
+/// The icon square's centre — every ring is concentric on it.
+const CENTER: f32 = ICON_SIZE as f32 / 2.0;
+const RING_OUTER: f32 = 14.0;
+const RING_STEP: f32 = 5.5;
+
+fn draw_ring_icon(providers: &[ProviderData], light: bool) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
     pm.fill(tiny_skia::Color::TRANSPARENT);
-    let (cx, cy, r) = (16.0, 16.0, 14.0);
-
-    // Usage colour for a percentage, honouring the monochrome palette.
-    // Monochrome greys are tuned for the dark widget and vanish on a light
-    // taskbar — use the system-theme ink instead; coloured palettes already
-    // contrast on either taskbar, so keep their hue.
-    let ink = |pct: f32| {
-        if theme.monochrome {
-            tray_ink(light, 255)
-        } else {
-            let lvl = theme.level(UsageLevel::from_percentage(pct));
-            color(lvl.bar.r, lvl.bar.g, lvl.bar.b, 255)
-        }
-    };
+    // One ink for everything. The tray sits on the system taskbar, whose theme
+    // is independent of the widget's palette, and at 16px a hue difference is
+    // far weaker than the arc length — so the shape does the talking.
+    let ink = tray_ink(light, 255);
+    let track = tray_ink(light, 64);
 
     match two_busiest(providers) {
-        // Two or more providers with data: split the circle down the middle,
-        // busiest on the left. Which half is which is answered by the tooltip,
-        // which already lists every provider with its percentage.
+        // Two or more providers with data: the busiest takes the outer ring,
+        // the runner-up the inner one. Which is which is answered by the
+        // tooltip, which lists every provider with its percentage.
         (Some(first), Some(second)) => {
-            fill_half_track(&mut pm, cx, cy, r, Half::Left, tray_ink(light, 64));
-            fill_half_track(&mut pm, cx, cy, r, Half::Right, tray_ink(light, 64));
-            fill_half_pie(
-                &mut pm,
-                cx,
-                cy,
-                r,
-                Half::Left,
-                first as f32,
-                ink(first as f32),
-            );
-            fill_half_pie(
-                &mut pm,
-                cx,
-                cy,
-                r,
-                Half::Right,
-                second as f32,
-                ink(second as f32),
-            );
+            draw_ring(&mut pm, RING_OUTER, first as f32, ink, track);
+            draw_ring(&mut pm, RING_OUTER - RING_STEP, second as f32, ink, track);
         }
-        // Exactly one: the full circle, pixel-identical to before. Single
-        // provider setups see no change at all.
+        // Exactly one: the outer ring alone, so the icon keeps its meaning
+        // when a second provider starts reporting — nothing moves, a ring
+        // simply appears inside.
         (Some(only), None) => {
-            fill_circle(&mut pm, cx, cy, r, tray_ink(light, 64));
-            fill_level(&mut pm, cx, cy, r, only as f32, ink(only as f32));
+            draw_ring(&mut pm, RING_OUTER, only as f32, ink, track);
         }
         // No percentage data yet (loading / binary / error).
-        _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(light, 200)),
+        _ => fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(light, 200)),
     }
 
     to_icon(&pm)
 }
 
-/// Which half of the split pie a sector belongs to.
-#[derive(Clone, Copy, PartialEq)]
-enum Half {
-    Left,
-    Right,
+/// 12 o'clock, where every ring starts.
+const RING_TOP: f32 = -std::f32::consts::FRAC_PI_2;
+
+/// What a percentage should actually paint on a ring.
+///
+/// The subtlety this type exists for: a ROUND cap bulges half a stroke width
+/// past each end of the arc. On the inner ring that overhang is nearly a tenth
+/// of the circumference at both ends together, so an uncompensated 90% painted
+/// as a closed circle — indistinguishable from 100%. `Arc` therefore carries
+/// the angles to *sweep*, already pulled in by one cap at each end, so that the
+/// visible ink spans exactly the percentage and no more.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RingFill {
+    /// Nothing to paint.
+    Empty,
+    /// Shorter than the two caps it would grow — a single cap-sized dot at the
+    /// top, so a small non-zero value never reads as zero.
+    Dot,
+    /// Sweep from `start` to `end` radians.
+    Arc { start: f32, end: f32 },
+    /// A closed ring. Only a true 100% earns this.
+    Full,
 }
 
-/// The gap between the halves. The shell renders the 32px icon at 16px, so a
-/// hairline here disappears entirely — and with a monochrome palette, where
-/// both halves share one ink, the gap is the ONLY thing saying there are two
-/// providers rather than one.
-const HALF_SPLIT: f32 = 2.5;
+/// The angular overhang a round cap adds beyond each end of an arc.
+fn cap_angle(w: f32, r_mid: f32) -> f32 {
+    (w / 2.0) / r_mid
+}
 
-/// A full circle filled to a level, for the single-provider case. Same
-/// waterline as the halves so the icon does not change meaning when a second
-/// provider starts reporting.
-fn fill_level(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, pct: f32, c: tiny_skia::Color) {
+/// Decide what `pct` paints on a ring of stroke `w` centred on radius `r_mid`.
+fn ring_fill(pct: f32, r_mid: f32, w: f32) -> RingFill {
     let frac = (pct / 100.0).clamp(0.0, 1.0);
     if frac <= 0.0 {
-        return;
+        return RingFill::Empty;
     }
-    let bottom = cy + r;
-    let level = bottom - 2.0 * r * frac;
+    if frac >= 1.0 {
+        return RingFill::Full;
+    }
+    let sweep = frac * std::f32::consts::TAU;
+    let cap = cap_angle(w, r_mid);
+    if sweep <= 2.0 * cap {
+        return RingFill::Dot;
+    }
+    RingFill::Arc {
+        start: RING_TOP + cap,
+        end: RING_TOP + sweep - cap,
+    }
+}
 
+/// One ring: the faint full-circle track, then the used arc over it.
+fn draw_ring(
+    pm: &mut Pixmap,
+    outer: f32,
+    pct: f32,
+    ink: tiny_skia::Color,
+    track: tiny_skia::Color,
+) {
+    let r_mid = outer - RING_W / 2.0;
+    let full = std::f32::consts::TAU;
+    stroke_arc(pm, r_mid, 0.0, full, track, LineCap::Butt);
+    match ring_fill(pct, r_mid, RING_W) {
+        RingFill::Empty => {}
+        RingFill::Dot => fill_circle(
+            pm,
+            CENTER + r_mid * RING_TOP.cos(),
+            CENTER + r_mid * RING_TOP.sin(),
+            RING_W / 2.0,
+            ink,
+        ),
+        RingFill::Arc { start, end } => stroke_arc(pm, r_mid, start, end, ink, LineCap::Round),
+        RingFill::Full => stroke_arc(pm, r_mid, 0.0, full, ink, LineCap::Butt),
+    }
+}
+
+/// Stroke an arc as a polyline. tiny-skia's PathBuilder has no arc primitive;
+/// sampling finely enough that each segment is well under a pixel makes the
+/// difference invisible once the shell scales the icon down.
+fn stroke_arc(
+    pm: &mut Pixmap,
+    r_mid: f32,
+    start: f32,
+    end: f32,
+    c: tiny_skia::Color,
+    cap: LineCap,
+) {
+    let span = end - start;
+    // ~0.5px per segment, never fewer than a handful for very short arcs.
+    let steps = (((span.abs() * r_mid) / 0.5).ceil() as usize).clamp(6, 512);
     let mut pb = PathBuilder::new();
-    let steps = 40;
-    // Down the left side of the waterline to the bottom...
     for i in 0..=steps {
-        let y = level + (bottom - level) * (i as f32 / steps as f32);
-        let dy = y - cy;
-        let dx = (r * r - dy * dy).max(0.0).sqrt();
-        let x = cx - dx;
+        let a = start + span * (i as f32 / steps as f32);
+        let (x, y) = (CENTER + r_mid * a.cos(), CENTER + r_mid * a.sin());
         if i == 0 {
             pb.move_to(x, y);
         } else {
             pb.line_to(x, y);
         }
     }
-    // ...and back up the right side.
-    for i in (0..=steps).rev() {
-        let y = level + (bottom - level) * (i as f32 / steps as f32);
-        let dy = y - cy;
-        let dx = (r * r - dy * dy).max(0.0).sqrt();
-        pb.line_to(cx + dx, y);
-    }
-    pb.close();
-    fill_path(pm, pb, c);
-}
-
-/// The faint track behind one half.
-fn fill_half_track(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, half: Half, c: tiny_skia::Color) {
-    fill_half_pie(pm, cx, cy, r, half, 100.0, c);
-}
-
-/// One half's usage, drawn as a LEVEL rather than a sector: the paint rises
-/// flat from the bottom of the half, the way liquid sits in a glass.
-///
-/// A sector hinged on the centre reads as a slice taken out of a disc, which
-/// is not what a usage gauge means — and it only looks the same as a level at
-/// exactly 50%, diverging everywhere else.
-fn fill_half_pie(
-    pm: &mut Pixmap,
-    cx: f32,
-    cy: f32,
-    r: f32,
-    half: Half,
-    pct: f32,
-    c: tiny_skia::Color,
-) {
-    let frac = (pct / 100.0).clamp(0.0, 1.0);
-    if frac <= 0.0 {
+    let Some(path) = pb.finish() else {
         return;
-    }
-    // Each half is its own circle, nudged off centre so the two never touch.
-    let inset = HALF_SPLIT / 2.0;
-    let (hinge, sign) = match half {
-        Half::Left => (cx - inset, -1.0),
-        Half::Right => (cx + inset, 1.0),
     };
-    let bottom = cy + r;
-    let level = bottom - 2.0 * r * frac;
-
-    // Walk the waterline down to the bottom of the arc, then close along the
-    // dividing line. Sampling by y keeps the flat top flat at any radius.
-    let mut pb = PathBuilder::new();
-    pb.move_to(hinge, level);
-    let steps = 40;
-    for i in 0..=steps {
-        let y = level + (bottom - level) * (i as f32 / steps as f32);
-        let dy = y - cy;
-        let dx = (r * r - dy * dy).max(0.0).sqrt();
-        pb.line_to(hinge + sign * dx, y);
-    }
-    pb.line_to(hinge, bottom);
-    pb.close();
-    fill_path(pm, pb, c);
+    let mut paint = Paint::default();
+    paint.set_color(c);
+    paint.anti_alias = true;
+    let stroke = Stroke {
+        width: RING_W,
+        line_cap: cap,
+        // Round joins keep the sampled polyline from showing facets.
+        line_join: LineJoin::Round,
+        ..Stroke::default()
+    };
+    pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
 }
 
 /// Horizontal progress bars stacked one above the other — one row per
@@ -771,75 +775,97 @@ mod tests {
         }
     }
 
-    /// A gauge fills like a glass: from the bottom up. At a low percentage the
-    /// paint must sit under the centre line, not over it.
-    #[test]
-    fn a_half_fills_from_the_bottom_upwards() {
-        let (cx, cy, r) = (16.0, 16.0, 14.0);
-        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
-        pm.fill(tiny_skia::Color::TRANSPARENT);
-        let paint = color(255, 0, 0, 255);
-        fill_half_pie(&mut pm, cx, cy, r, Half::Left, 15.0, paint);
+    /// Mid-line radius of each ring, as draw_ring computes it.
+    fn outer_mid() -> f32 {
+        RING_OUTER - RING_W / 2.0
+    }
+    fn inner_mid() -> f32 {
+        RING_OUTER - RING_STEP - RING_W / 2.0
+    }
 
-        let painted = |x: i32, y: i32| {
-            let px = pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize];
-            px.alpha() > 0
+    /// The total angle the ink actually covers, caps included — which is what
+    /// the eye sees, and what `ring_fill` has to make come out right.
+    fn painted_span(pct: f32, r_mid: f32) -> f32 {
+        match ring_fill(pct, r_mid, RING_W) {
+            RingFill::Empty => 0.0,
+            RingFill::Dot => 2.0 * cap_angle(RING_W, r_mid),
+            // A round cap adds one cap-angle beyond each endpoint.
+            RingFill::Arc { start, end } => (end - start) + 2.0 * cap_angle(RING_W, r_mid),
+            RingFill::Full => std::f32::consts::TAU,
+        }
+    }
+
+    /// The bug this design exists to fix: round caps used to add their overhang
+    /// on top of the swept angle, so on the inner ring — where the same 2px
+    /// overhang is a much larger slice of a much smaller circle — 90% already
+    /// painted a closed circle. The visible ink must match the percentage.
+    #[test]
+    fn round_caps_do_not_inflate_the_visible_arc() {
+        for (name, r_mid) in [("outer", outer_mid()), ("inner", inner_mid())] {
+            for pct in [10.0_f32, 25.0, 50.0, 75.0, 90.0, 99.0] {
+                let want = (pct / 100.0) * std::f32::consts::TAU;
+                let got = painted_span(pct, r_mid);
+                assert!(
+                    (got - want).abs() < 1e-4,
+                    "{name} ring at {pct}%: painted {got} rad, expected {want}"
+                );
+            }
+        }
+    }
+
+    /// Ninety is not a hundred. The gap left at 90% must stay wide enough to
+    /// see after the shell scales the 32px icon down to 16 — the inner ring is
+    /// the hard case, since its circumference is roughly half the outer's.
+    #[test]
+    fn ninety_percent_still_reads_as_an_open_ring() {
+        for (name, r_mid) in [("outer", outer_mid()), ("inner", inner_mid())] {
+            let gap = std::f32::consts::TAU - painted_span(90.0, r_mid);
+            // Arc length of the gap at tray size: the icon is authored at 32
+            // and displayed at 16, so lengths halve.
+            let px_at_16 = gap * r_mid / 2.0;
+            assert!(
+                px_at_16 >= 1.5,
+                "{name} ring at 90%: only {px_at_16}px of gap survives the downscale"
+            );
+        }
+    }
+
+    /// Only a real 100% closes the ring; anything below keeps a break in it.
+    #[test]
+    fn only_a_hundred_closes_the_ring() {
+        assert_eq!(ring_fill(100.0, outer_mid(), RING_W), RingFill::Full);
+        assert_eq!(ring_fill(140.0, outer_mid(), RING_W), RingFill::Full);
+        assert!(
+            !matches!(ring_fill(99.0, outer_mid(), RING_W), RingFill::Full),
+            "99% must leave the ring visibly open"
+        );
+    }
+
+    /// A small non-zero value must show SOMETHING. Below two cap-widths there
+    /// is no room for an arc, so it degrades to a dot rather than vanishing —
+    /// an empty ring has to mean zero and nothing else.
+    #[test]
+    fn a_sliver_of_usage_never_renders_as_empty() {
+        assert_eq!(ring_fill(0.0, inner_mid(), RING_W), RingFill::Empty);
+        for pct in [1.0_f32, 3.0, 8.0] {
+            assert_ne!(
+                ring_fill(pct, inner_mid(), RING_W),
+                RingFill::Empty,
+                "{pct}% must paint something on the inner ring"
+            );
+        }
+    }
+
+    /// Every ring starts at 12 o'clock and grows clockwise.
+    #[test]
+    fn arcs_start_at_twelve_o_clock() {
+        let r = outer_mid();
+        let RingFill::Arc { start, end } = ring_fill(50.0, r, RING_W) else {
+            panic!("50% should be an arc");
         };
-
-        assert!(
-            painted(12, 26),
-            "15% must paint the bottom of the left half"
-        );
-        assert!(
-            !painted(12, 6),
-            "15% must leave the top of the left half empty"
-        );
-    }
-
-    /// A quarter full must be a flat band across the bottom of the half, not a
-    /// wedge hinged on the centre. The two shapes coincide at exactly 50%, so
-    /// the difference has to be measured somewhere else: at 25% the outer
-    /// bottom corner is under water for a level and outside the wedge for a
-    /// sector.
-    #[test]
-    fn a_quarter_full_is_a_flat_band_not_a_wedge() {
-        let (cx, cy, r) = (16.0, 16.0, 14.0);
-        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
-        pm.fill(tiny_skia::Color::TRANSPARENT);
-        fill_half_pie(&mut pm, cx, cy, r, Half::Left, 25.0, color(255, 0, 0, 255));
-
-        let painted =
-            |x: i32, y: i32| pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize].alpha() > 0;
-
-        assert!(
-            painted(4, 24),
-            "the outer bottom of the half must be under the waterline"
-        );
-        assert!(painted(13, 26), "so must the bottom near the divider");
-        assert!(
-            !painted(4, 18),
-            "and the level must stop well below the centre"
-        );
-    }
-
-    /// The one-provider circle must fill the same way the halves do, or the
-    /// icon changes meaning the moment a second provider reports in.
-    #[test]
-    fn the_single_provider_circle_fills_from_the_bottom_too() {
-        let (cx, cy, r) = (16.0, 16.0, 14.0);
-        let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
-        pm.fill(tiny_skia::Color::TRANSPARENT);
-        fill_level(&mut pm, cx, cy, r, 25.0, color(255, 0, 0, 255));
-
-        let painted =
-            |x: i32, y: i32| pm.pixels()[(y as u32 * ICON_SIZE + x as u32) as usize].alpha() > 0;
-
-        assert!(painted(16, 26), "the bottom must be under water");
-        assert!(painted(6, 24), "and so must the outer bottom, flat across");
-        assert!(
-            !painted(16, 14),
-            "the centre must stay dry at a quarter full"
-        );
+        let cap = cap_angle(RING_W, r);
+        assert!((start - cap - RING_TOP).abs() < 1e-4, "arc must open at 12");
+        assert!(end > start, "and sweep clockwise from there");
     }
 
     #[test]
@@ -852,7 +878,7 @@ mod tests {
 
         let (first, second) = two_busiest(&providers);
 
-        assert_eq!(first, Some(93), "the busiest goes to the left half");
+        assert_eq!(first, Some(93), "the busiest goes to the outer ring");
         assert_eq!(second, Some(71));
     }
 
@@ -866,8 +892,8 @@ mod tests {
     }
 
     #[test]
-    fn equal_percentages_keep_the_widget_order_so_the_halves_do_not_swap() {
-        // Both at 80: without a stable tie-break the halves would trade places
+    fn equal_percentages_keep_the_widget_order_so_the_rings_do_not_swap() {
+        // Both at 80: without a stable tie-break the rings would trade places
         // between refreshes and the icon would flicker for no reason.
         let providers = vec![data(ProviderId::Claude, 80), data(ProviderId::Codex, 80)];
 
@@ -875,12 +901,12 @@ mod tests {
         assert_eq!(
             two_busiest(&providers),
             two_busiest(&providers),
-            "the same input must give the same halves"
+            "the same input must give the same rings"
         );
     }
 
     #[test]
-    fn the_repaint_cache_tracks_both_halves() {
+    fn the_repaint_cache_tracks_both_rings() {
         // Caching only the busiest would freeze the icon whenever the
         // second-place provider moved - it compiles, looks right, and stops
         // updating minutes later in normal use.
@@ -888,64 +914,54 @@ mod tests {
         let after = vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 55)];
 
         assert_ne!(
-            pie_cache_state(&before),
-            pie_cache_state(&after),
-            "a change in the second half must invalidate the cache"
+            ring_cache_state(&before),
+            ring_cache_state(&after),
+            "a change in the second ring must invalidate the cache"
         );
     }
 
-    /// Design preview for the split pie: the tray square is far too small to
-    /// judge live, so write the variants out at several percentage pairs.
-    /// Run: `cargo test preview_split_pie -- --ignored`.
+    /// Design preview for the ring icon: the tray square is far too small to
+    /// judge live, so write the states out to %TEMP% at 32px. The top of the
+    /// scale (90/95/99/100) is the pair worth staring at.
+    /// Run: `cargo test preview_rings -- --ignored`.
     #[test]
     #[ignore]
-    fn preview_split_pie() {
-        let theme = ComputedTheme::compute(&crate::config::schema::UIConfig::default());
+    fn preview_rings() {
         let dir = std::env::temp_dir();
         for (name, providers) in [
-            ("pie_none.png", vec![]),
-            ("pie_one.png", vec![data(ProviderId::Claude, 93)]),
+            ("rings_none.png", vec![]),
+            ("rings_one.png", vec![data(ProviderId::Claude, 93)]),
             (
-                "pie_two.png",
+                "rings_two.png",
                 vec![data(ProviderId::Claude, 93), data(ProviderId::Codex, 18)],
             ),
             (
-                "pie_even.png",
-                vec![data(ProviderId::Claude, 50), data(ProviderId::Codex, 50)],
+                "rings_sliver.png",
+                vec![data(ProviderId::Claude, 40), data(ProviderId::Codex, 2)],
             ),
             (
-                "pie_full.png",
+                "rings_90.png",
+                vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 90)],
+            ),
+            (
+                "rings_99.png",
+                vec![data(ProviderId::Claude, 99), data(ProviderId::Codex, 99)],
+            ),
+            (
+                "rings_full.png",
                 vec![data(ProviderId::Claude, 100), data(ProviderId::Codex, 100)],
-            ),
-            (
-                "pie_four.png",
-                vec![
-                    data(ProviderId::Claude, 71),
-                    data(ProviderId::Codex, 100),
-                    data(ProviderId::Copilot, 40),
-                    data(ProviderId::Antigravity, 7),
-                ],
             ),
         ] {
             let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
             pm.fill(tiny_skia::Color::TRANSPARENT);
-            let (cx, cy, r) = (16.0, 16.0, 14.0);
-            let ink = |pct: f32| {
-                let lvl = theme.level(UsageLevel::from_percentage(pct));
-                color(lvl.bar.r, lvl.bar.g, lvl.bar.b, 255)
-            };
+            let (ink, track) = (tray_ink(false, 255), tray_ink(false, 64));
             match two_busiest(&providers) {
                 (Some(a), Some(b)) => {
-                    fill_half_track(&mut pm, cx, cy, r, Half::Left, tray_ink(false, 64));
-                    fill_half_track(&mut pm, cx, cy, r, Half::Right, tray_ink(false, 64));
-                    fill_half_pie(&mut pm, cx, cy, r, Half::Left, a as f32, ink(a as f32));
-                    fill_half_pie(&mut pm, cx, cy, r, Half::Right, b as f32, ink(b as f32));
+                    draw_ring(&mut pm, RING_OUTER, a as f32, ink, track);
+                    draw_ring(&mut pm, RING_OUTER - RING_STEP, b as f32, ink, track);
                 }
-                (Some(a), None) => {
-                    fill_circle(&mut pm, cx, cy, r, tray_ink(false, 64));
-                    fill_level(&mut pm, cx, cy, r, a as f32, ink(a as f32));
-                }
-                _ => fill_circle(&mut pm, cx, cy, 5.0, tray_ink(false, 200)),
+                (Some(a), None) => draw_ring(&mut pm, RING_OUTER, a as f32, ink, track),
+                _ => fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(false, 200)),
             }
             let path = dir.join(format!("ailimits_{name}"));
             std::fs::write(&path, pm.encode_png().unwrap()).unwrap();

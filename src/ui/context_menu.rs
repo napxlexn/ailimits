@@ -208,7 +208,7 @@ impl ContextMenu {
         // was superseded by the top-2 design), so panel_grid in an old config
         // is just an alias that checks this same item.
         let indicator_items: Vec<(CheckMenuItem, IndicatorKind)> = [
-            ("Tray pie icon", IndicatorKind::Tray),
+            ("Tray icon", IndicatorKind::Tray),
             ("Taskbar panel", IndicatorKind::PanelRows),
             ("Off", IndicatorKind::Off),
         ]

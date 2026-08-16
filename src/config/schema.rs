@@ -312,7 +312,7 @@ pub enum DetailLevel {
     Expanded,
 }
 
-/// The taskbar usage indicator: a tray pie icon, a 16px tray icon with
+/// The taskbar usage indicator: a tray ring icon, a 16px tray icon with
 /// stacked bars (legacy, config-only), a transparent overlay painted over
 /// the taskbar next to the tray (monochrome, system-theme-following; the
 /// two busiest providers as clock-sized "percent + bar" rows), or none.

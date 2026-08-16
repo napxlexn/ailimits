@@ -42,8 +42,8 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 </p>
 
 <p align="center">
-  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the split tray pie, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The tray pie splits down the middle to carry the two busiest providers at once, each half filling from the bottom up. The cursor reveals the hover tooltip over both the panel and the pie, and every mode follows the dark / light Windows theme.</sub>
+  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
+  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The tray icon carries the two busiest providers as two concentric rings. The cursor reveals the hover tooltip over both the panel and the icon, and every mode follows the dark / light Windows theme.</sub>
 </p>
 
 ## Why this widget
@@ -192,14 +192,16 @@ self-update, on by default), Indicator, per-provider settings, Quit.
 Even with the overlay hidden or covered by a fullscreen app, a compact usage
 readout stays visible. Right-click → **Indicator**:
 
-- **Tray icon** — a single 16px system-tray pie of the highest current %.
+- **Tray icon** — a single 16px system-tray icon: two concentric rings, the
+  busiest provider outside and the runner-up inside, each sweeping clockwise
+  from 12 o’clock. Monochrome, inked in the system taskbar theme.
 - **Panel (rows / grid)** — a transparent overlay next to the clock: no
   window or box, just clock-sized digits and bars over the taskbar.
   Monochrome, follows the system light/dark theme, shows the first two
   providers in the widget's order, and tracks the taskbar live (auto-hide,
   resolution, tray width). **Hover** it for a shell-style tooltip with every
   provider. When **Start / Search** or the auto-hide bar covers it, it falls
-  back to a tray pie and returns on its own; when a **fullscreen app** (a
+  back to the tray rings and returns on its own; when a **fullscreen app** (a
   game, an F11 browser) takes the screen, it hides with the taskbar and
   returns the moment you alt-tab back to the desktop.
 - **Off** — no indicator.
