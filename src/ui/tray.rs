@@ -1096,6 +1096,35 @@ mod tests {
         );
     }
 
+    /// Render the tooltip with a GIVEN string, composited over mid grey, so it
+    /// can be compared pixel-for-pixel with a capture of the shell's own
+    /// tooltip showing the same text. Comparing different strings is not a
+    /// comparison: letter mix changes the mean ink and descenders change the
+    /// measured text height, which is exactly how an earlier pass concluded our
+    /// text was dimmer when the stems were in fact identical.
+    /// Run: `cargo test preview_tooltip -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_tooltip() {
+        let text = std::env::var("TIP_TEXT")
+            .unwrap_or_else(|_| "Realtek Digital Output (Realtek USB Audio): 12%".to_string());
+        let pm = render_tooltip(&text, 48.0, false);
+        // Composite over grey 128, the backdrop the shell was measured against.
+        let mut out = Pixmap::new(pm.width(), pm.height()).unwrap();
+        out.fill(color(128, 128, 128, 255));
+        out.draw_pixmap(
+            0,
+            0,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+        let path = std::env::temp_dir().join("ailimits_tooltip_on_grey.png");
+        std::fs::write(&path, out.encode_png().unwrap()).unwrap();
+        println!("{}", path.display());
+    }
+
     /// Design preview for the ring icon: the tray square is far too small to
     /// judge live, so write the states out to %TEMP% at 32px. The top of the
     /// scale (90/95/99/100) is the pair worth staring at.
