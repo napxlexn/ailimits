@@ -267,15 +267,29 @@ fn neutral_icon(light: bool) -> Result<Icon> {
     to_icon(&pm)
 }
 
-/// Ring geometry, in the 32px icon space. `RING_STEP` is the drop in outer
-/// radius from one ring to the next; with a 4px stroke it leaves 1.5px of bare
-/// space between them, which survives the shell's downscale to 16px as the
-/// hairline that says "two rings, not one thick one".
-const RING_W: f32 = 4.0;
+/// Ring geometry, in the 32px icon space.
+///
+/// Rings read smaller than the filled disc they replaced even at an identical
+/// outer radius, because a thin outline carries far less ink. These numbers buy
+/// that presence back: the outer edge sits 1px from the canvas edge (as close
+/// as the antialiased stroke can go), the strokes are heavy, and the hole in the
+/// middle is small.
+///
+/// `RING_STEP` is the drop in outer radius from one ring to the next. It is NOT
+/// free to raise the stroke width alone: `RING_STEP - RING_W` is the bare space
+/// between the two rings, and the shell halves it when it scales the icon to
+/// 16px. At 2.0 here that is a whole pixel of separation — below roughly 1.5 the
+/// rings start merging into one thick band, which in a monochrome icon destroys
+/// the only cue that there are two providers.
+///
+/// The other cost of a thicker stroke lands on the inner ring: a round cap
+/// spans `RING_W/2` of a circumference that shrinks with every step inward, so
+/// values under ~15% no longer fit as an arc there and degrade to a dot.
+const RING_W: f32 = 5.0;
 /// The icon square's centre — every ring is concentric on it.
 const CENTER: f32 = ICON_SIZE as f32 / 2.0;
-const RING_OUTER: f32 = 14.0;
-const RING_STEP: f32 = 5.5;
+const RING_OUTER: f32 = 15.0;
+const RING_STEP: f32 = 7.0;
 
 fn draw_ring_icon(providers: &[ProviderData], light: bool) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
@@ -802,13 +816,46 @@ mod tests {
     #[test]
     fn round_caps_do_not_inflate_the_visible_arc() {
         for (name, r_mid) in [("outer", outer_mid()), ("inner", inner_mid())] {
-            for pct in [10.0_f32, 25.0, 50.0, 75.0, 90.0, 99.0] {
+            for pct in [20.0_f32, 25.0, 50.0, 75.0, 90.0, 99.0] {
                 let want = (pct / 100.0) * std::f32::consts::TAU;
                 let got = painted_span(pct, r_mid);
                 assert!(
                     (got - want).abs() < 1e-4,
                     "{name} ring at {pct}%: painted {got} rad, expected {want}"
                 );
+            }
+        }
+    }
+
+    /// The one place the icon knowingly overstates a value: below two cap
+    /// widths there is no room for an arc, so a dot stands in — and a dot is
+    /// two cap widths wide whatever the value. It cannot be drawn smaller
+    /// without vanishing, and vanishing would read as zero, which is a worse
+    /// lie than "a little". This test pins how far that overstatement can go:
+    /// only under the arc threshold, and never wider than the dot itself.
+    #[test]
+    fn only_values_too_small_to_draw_are_overstated() {
+        for (name, r_mid) in [("outer", outer_mid()), ("inner", inner_mid())] {
+            let cap = cap_angle(RING_W, r_mid);
+            let threshold = (2.0 * cap) / std::f32::consts::TAU * 100.0;
+            assert!(
+                threshold < 20.0,
+                "{name} ring: a dot would stand in for everything under {threshold}%, \
+                 which is too much of the scale"
+            );
+            // Just above the threshold it is an arc, and therefore exact.
+            let just_over = threshold + 1.0;
+            let want = (just_over / 100.0) * std::f32::consts::TAU;
+            assert!(
+                (painted_span(just_over, r_mid) - want).abs() < 1e-4,
+                "{name} ring at {just_over}% should already be an exact arc"
+            );
+            // Below it, the dot never grows beyond its own minimum size.
+            for pct in [0.5_f32, 2.0, 5.0] {
+                if pct < threshold {
+                    assert_eq!(ring_fill(pct, r_mid, RING_W), RingFill::Dot);
+                    assert!(painted_span(pct, r_mid) <= 2.0 * cap + 1e-6);
+                }
             }
         }
     }
@@ -854,6 +901,35 @@ mod tests {
                 "{pct}% must paint something on the inner ring"
             );
         }
+    }
+
+    /// The stroke width and the step between rings are coupled, and nothing in
+    /// the type system says so: raise RING_W alone and the two rings merge into
+    /// a single band. In a monochrome icon that band is indistinguishable from
+    /// one thick ring, so the icon would quietly stop showing two providers.
+    #[test]
+    fn the_rings_stay_separated_and_inside_the_canvas() {
+        // black_box keeps these out of const-evaluation, so the assertions
+        // report the offending number instead of failing to compile.
+        let (w, step, outer, centre) = (
+            std::hint::black_box(RING_W),
+            std::hint::black_box(RING_STEP),
+            std::hint::black_box(RING_OUTER),
+            std::hint::black_box(CENTER),
+        );
+        let bare = (step - w) / 2.0;
+        assert!(
+            bare >= 0.75,
+            "only {bare}px of bare space between the rings survives the downscale"
+        );
+        assert!(
+            outer <= centre - 1.0,
+            "the outer stroke would clip the edge of the icon square"
+        );
+        assert!(
+            outer - step - w > 0.0,
+            "the inner ring must not swallow its own centre"
+        );
     }
 
     /// Every ring starts at 12 o'clock and grows clockwise.
