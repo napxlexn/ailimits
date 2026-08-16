@@ -144,16 +144,14 @@ impl TaskbarPanel {
             suppressed: false,
             unavailable: false,
             #[cfg(target_os = "windows")]
-            tip_hwnd: {
-                let hwnd = crate::platform::create_tooltip_window();
-                // Blur what shows through it, like the shell's own tooltips.
-                // The tint is neutral and nearly clear: render_tooltip paints
-                // the actual body colour, this only softens the backdrop.
-                if hwnd != 0 && !crate::platform::apply_blur_behind(hwnd, (0, 0, 0, 12)) {
-                    tracing::debug!("tooltip blur unavailable; falling back to a flat tooltip");
-                }
-                hwnd
-            },
+            // No DWM blur here, deliberately. It tints and blurs the whole
+            // WINDOW rectangle, not the rounded box we paint inside it, so once
+            // the pixmap grew a margin for the drop shadow the blur showed up
+            // as a hard-edged grey rectangle around the tooltip. Measurement
+            // says we do not want it anyway: the shell's tooltip is alpha ~244,
+            // i.e. all but opaque, and what separates it from the background is
+            // the shadow.
+            tip_hwnd: crate::platform::create_tooltip_window(),
             #[cfg(target_os = "windows")]
             tip_shown: false,
             last_present_error: None,
@@ -240,8 +238,12 @@ impl TaskbarPanel {
             let light = crate::platform::system_uses_light_theme();
             let pm = crate::ui::tray::render_tooltip(&text, self.size.1 as f32, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
+            // The pixmap carries the drop shadow around the box, so the box's
+            // own bottom edge sits `shadow` above the pixmap's — add it back or
+            // the gap to the bar comes out short by that much.
+            let shadow = crate::ui::tray::tip_shadow_inset(self.size.1 as f32);
             let tx = px + (pw as i32 - w) / 2;
-            let ty = py - h - 4;
+            let ty = py - crate::ui::tray::TIP_GAP - h + shadow;
             let bgra = pixmap_to_bgra(&pm);
             let _ = crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
             self.tip_shown = true;

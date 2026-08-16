@@ -609,17 +609,40 @@ pub(crate) fn draw_digits_fit(
 /// fully rounded pill — noticeably larger and rounder than anything the shell
 /// shows. These match the shell instead.
 const TIP_FONT_PX: f32 = 12.0;
-const TIP_PAD_X: f32 = 8.0;
-const TIP_PAD_Y: f32 = 5.0;
-/// Barely rounded — the shell's tooltip corners are a soft cut, not a pill.
-const TIP_RADIUS: f32 = 3.0;
-/// The fill alpha. Not opaque on purpose: DWM blurs what shows through this
-/// window (see `platform::apply_blur_behind`), and blur happens BEHIND the
-/// window — opaque paint hides it completely. This is what makes the tooltip
-/// read as acrylic rather than as a flat card.
-const TIP_FILL_ALPHA: u8 = 218;
+const TIP_PAD_X: f32 = 10.0;
+/// Vertically asymmetric, as the shell's is: 10 above the text, 8 below.
+const TIP_PAD_TOP: f32 = 10.0;
+const TIP_PAD_BOTTOM: f32 = 8.0;
+/// The text band the padding is measured against. Fixing it (rather than using
+/// the ink height of whatever string we happen to show) is what keeps the box
+/// 30px tall for "Claude 68%" and for a string with descenders alike — the
+/// shell's box does not breathe with its text either.
+const TIP_LINE_H: f32 = 12.0;
+/// Fitted, not guessed. Sub-pixel coverage of the shell's top-left corner gives
+/// insets of 1.71, 0.60, 0.03, -0.14 px over the first four rows; least squares
+/// over radii 2.0..5.0 puts the minimum squarely at 4.0 (error 0.018, an order
+/// of magnitude better than 3.5).
+const TIP_RADIUS: f32 = 4.0;
+/// Room reserved around the box for the drop shadow: one more than the
+/// outermost ring steps out, so it is not clipped. The shell's shadow reaches
+/// about 5px to the side (peaking at 8% darkening) and barely 2px above.
+const TIP_SHADOW: f32 = 6.0;
+/// Gap between the tooltip and the top of the taskbar. Measured at 12px; ours
+/// sat at 4 and read as glued to the bar.
+pub(crate) const TIP_GAP: i32 = 12;
+/// Very nearly opaque. Measured, not chosen: the shell's tooltip body reads
+/// grey 44 over black and grey 54 over white, so only 10/255 of the backdrop
+/// comes through — alpha 244 over a true colour of grey 46. The earlier 218
+/// was visibly more transparent than the real thing.
+const TIP_FILL_ALPHA: u8 = 244;
 /// The bar height that means 100% scaling; the bar is our only DPI signal here.
 const TIP_BASE_BAR_H: f32 = 48.0;
+
+/// How far the drawn box sits inside the returned pixmap, for `bar_h`. The
+/// caller needs it to place the box (not the shadow) against the taskbar.
+pub(crate) fn tip_shadow_inset(bar_h: f32) -> i32 {
+    ((bar_h / TIP_BASE_BAR_H).clamp(0.85, 3.0) * TIP_SHADOW).round() as i32
+}
 
 /// Render the hover tooltip pixmap for the taskbar panel: the provider summary
 /// drawn by us (not a native control) so it matches the shell's own tooltip. It
@@ -634,39 +657,81 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     let size = TIP_FONT_PX * scale;
     let (tw, th) = text_extent(text, size);
     let pad_x = (TIP_PAD_X * scale).round();
-    let pad_y = (TIP_PAD_Y * scale).round();
-    let w = (tw + pad_x * 2.0).ceil().max(8.0) as u32;
-    let h = (th + pad_y * 2.0).ceil().max(8.0) as u32;
+    let pad_top = (TIP_PAD_TOP * scale).round();
+    let pad_bottom = (TIP_PAD_BOTTOM * scale).round();
+    let line_h = (TIP_LINE_H * scale).round();
+    let box_w = (tw + pad_x * 2.0).ceil().max(8.0);
+    let box_h = (line_h + pad_top + pad_bottom).ceil().max(8.0);
+    // The pixmap is bigger than the box: the shadow needs room around it.
+    // `TIP_SHADOW` is also the box's offset inside the pixmap, which the caller
+    // subtracts when positioning — see TaskbarPanel::show_tooltip.
+    let inset = tip_shadow_inset(bar_h) as f32;
+    let w = (box_w + inset * 2.0) as u32;
+    let h = (box_h + inset * 2.0) as u32;
+    // Centre the actual ink inside the fixed line band, so a string with no
+    // descenders does not float high in the box.
+    let text_y = inset + pad_top + (line_h - th) / 2.0;
     let mut pm = Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
     pm.fill(tiny_skia::Color::TRANSPARENT);
-    let radius = (TIP_RADIUS * scale).min(h as f32 / 2.0);
-    // Both themes get the same construction the shell uses: a 1px border drawn
-    // as an under-fill, the tinted body inset into it, then the text. The
-    // border is what stops the blurred body dissolving into a busy background.
-    let (border, body, text_ink) = if light {
-        (
-            color(0, 0, 0, 36),
-            color(249, 249, 249, TIP_FILL_ALPHA),
-            color(26, 26, 26, 255),
-        )
+    let radius = (TIP_RADIUS * scale).min(box_h / 2.0);
+
+    // Drop shadow: concentric rounded rects stepping outward, each barely
+    // visible, which approximates the shell's falloff without a blur pass.
+    // Measured over mid grey: -3,-4,-7,-10 luma at 1..4px out, nothing beyond.
+    // The alphas COMPOUND: each ring is painted over the previous one, so the
+    // cumulative darkening at distance d is 1-prod(1-a). Picked to land on the
+    // measured falloff (-3,-4,-7,-10 luma at 5..2px out over grey 128) rather
+    // than by eye; a first pass at 6/8/10/14 compounded to -15..-31, three
+    // times too heavy.
+    for (step, alpha) in [(5.0, 4u8), (4.0, 4), (3.0, 5), (2.0, 6), (1.0, 8)] {
+        let s = step * scale;
+        fill_round_rect(
+            &mut pm,
+            inset - s,
+            inset - s + 1.0,
+            box_w + s * 2.0,
+            box_h + s * 2.0 - 1.0,
+            radius + s,
+            color(0, 0, 0, alpha),
+        );
+    }
+    // DARK: no border at all. Scanning inward from the edge of the measured
+    // tooltip over black gives 45,44,45,45 — flat body from the first pixel.
+    // What separates it from the background is an outer shadow, which is the
+    // shell's to draw, not a lighter outline. We drew one and it was wrong.
+    //
+    // LIGHT: a hairline IS present there — a near-white body needs it — so it
+    // stays, as a 1px under-fill with the body inset into it.
+    let (body, text_ink) = if light {
+        (color(249, 249, 249, TIP_FILL_ALPHA), color(26, 26, 26, 255))
     } else {
-        (
-            color(255, 255, 255, 26),
-            color(44, 44, 44, TIP_FILL_ALPHA),
-            color(236, 236, 236, 255),
-        )
+        // Grey 46 is the body's true colour behind alpha 244; the measured 44
+        // over black is what that composites to.
+        (color(46, 46, 46, TIP_FILL_ALPHA), color(255, 255, 255, 255))
     };
-    fill_round_rect(&mut pm, 0.0, 0.0, w as f32, h as f32, radius, border);
-    fill_round_rect(
-        &mut pm,
-        1.0,
-        1.0,
-        w as f32 - 2.0,
-        h as f32 - 2.0,
-        (radius - 1.0).max(0.0),
-        body,
-    );
-    draw_text_at(&mut pm, text, pad_x, pad_y, size, text_ink);
+    if light {
+        fill_round_rect(
+            &mut pm,
+            inset,
+            inset,
+            box_w,
+            box_h,
+            radius,
+            color(0, 0, 0, 36),
+        );
+        fill_round_rect(
+            &mut pm,
+            inset + 1.0,
+            inset + 1.0,
+            box_w - 2.0,
+            box_h - 2.0,
+            (radius - 1.0).max(0.0),
+            body,
+        );
+    } else {
+        fill_round_rect(&mut pm, inset, inset, box_w, box_h, radius, body);
+    }
+    draw_text_at(&mut pm, text, inset + pad_x, text_y, size, text_ink);
     pm
 }
 
@@ -680,6 +745,18 @@ fn text_extent(text: &str, size: f32) -> (f32, f32) {
         None => (0.0, 0.0),
     }
 }
+
+/// Coverage -> alpha, gamma-corrected, built once. The exponent was fitted
+/// against the measured shell tooltip: 1/1.45 only moved the mean lit luma
+/// from 169 to 175 against DirectWrite's 197, so it goes further.
+static TEXT_GAMMA_LUT: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
+    let mut lut = [0u8; 256];
+    for (i, slot) in lut.iter_mut().enumerate() {
+        let c = i as f32 / 255.0;
+        *slot = (c.powf(1.0 / 2.8) * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    lut
+});
 
 /// Draw `text` at `size` px with its ink top-left at (x, y) — like
 /// draw_digits_fit but with no auto-shrink and top-left (not centered) anchor.
@@ -711,7 +788,12 @@ fn draw_text_at(pm: &mut Pixmap, text: &str, x: f32, y: f32, size: f32, c: tiny_
                 continue;
             }
             let idx = ((py * w + px) * 4) as usize;
-            let a = cov as u32;
+            // Gamma-correct the coverage. Blending it linearly makes our text
+            // measurably thinner than the shell's: over the same string the
+            // mean lit luma came out 169 against DirectWrite's 197, with both
+            // peaking at 255 — the colour was right, the antialiasing was not.
+            // DirectWrite gamma-corrects; matching it is what closes the gap.
+            let a = TEXT_GAMMA_LUT[cov as usize] as u32;
             let inv = 255 - a;
             data[idx] = ((cr * a) / 255 + data[idx] as u32 * inv / 255) as u8;
             data[idx + 1] = ((cg * a) / 255 + data[idx + 1] as u32 * inv / 255) as u8;
