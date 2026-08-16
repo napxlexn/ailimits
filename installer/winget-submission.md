@@ -82,13 +82,28 @@ nothing; rewording `credentials explicitly added by the user` →
 `credentials added manually by the user` was the whole fix. Contributor
 @DandelionSprout pointed this out on the PR.
 
-**Rule: before every submission, grep the three manifests for trigger
-substrings and reword any hit — the meaning never needs them.**
+**Rule: before every submission, run the gate. It is not advisory — a
+non-zero exit means do not submit.**
 
 ```powershell
-Select-String -Path .\installer\winget\*.yaml `
-  -Pattern 'explicit|adult|xxx|porn|nude|sex|erotic|gambl|casino|drug|weapon|hack|crack|keygen|torrent|pirat'
+pwsh installer\check-manifests.ps1
 ```
+
+It checks the five things that have gone wrong or nearly gone wrong:
+
+1. **policy trigger substrings** (the rule above — the matcher is a substring
+   match, so `explicitly` hits on `explicit`);
+2. **the InstallerSha256 is real** — 64 hex digits, not the all-zero
+   placeholder that sits in the manifests between a version bump and the
+   release build;
+3. **one PackageVersion** across all three manifests;
+4. **Cargo.toml agrees** with that version;
+5. **the InstallerUrl points at the matching release tag.**
+
+The placeholder check is the reason this is a script and not a habit: the
+zeroes are deliberate for the whole window between bumping the version and
+publishing the build, so nothing but attention stood between them and a
+submission.
 
 Preferred replacements: `explicitly` → `manually` / `directly`;
 `hack` → `troubleshoot`; `crack` → `fix`. Keep the substitution in
