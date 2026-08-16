@@ -116,6 +116,25 @@ fn eval_indicator_fallback(
     // While hidden for fullscreen the rect is None, so is_covered reads false —
     // ordering matters: check coverage before this pass may hide the panel.
     let covered = panel.is_covered();
+    // `covered` can latch the fallback on forever. Closing the Start menu is the
+    // repro: the scrim clears, but the panel has meanwhile lost the z-fight to
+    // the taskbar, so `is_covered` still reads true, the fallback stays on, and
+    // nothing ever lifts the panel again — it keeps its rectangle (so it is not
+    // "hidden") while the bar owns its pixels. Verified live: after Start closed
+    // the log read `scrim false, covered true` on every evaluation and the panel
+    // never came back.
+    //
+    // So when nothing explains the obstruction, try lifting the panel once and
+    // ask again. This cannot weaken the guarantees that matter: a scrim or a
+    // fullscreen app on this display is judged separately above, and during the
+    // cursor-edge "rude topmost" peek the compositor keeps the bar on top
+    // regardless, so the panel stays covered and the fallback still engages.
+    let covered = if covered && !scrim && !fullscreen {
+        panel.raise();
+        panel.is_covered()
+    } else {
+        covered
+    };
     // A panel that could not place itself at all (no taskbar resolved, or a
     // vertical bar we refuse to draw on) reads as "not covered" — an absent
     // rectangle cannot be obstructed. Without this the user is left with no
@@ -123,6 +142,29 @@ fn eval_indicator_fallback(
     let unavailable = panel.is_unavailable();
     let fallback =
         crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen, unavailable);
+    // Which of the four inputs decided it. Without this a stuck fallback is
+    // indistinguishable from a correct one: the panel is simply absent and the
+    // tray icon is simply present, with nothing saying why. Logged on every
+    // change of verdict, and at trace level on every evaluation.
+    if fallback != *fallback_was_active {
+        tracing::debug!(
+            "indicator fallback {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
+            if fallback { "ON" } else { "off" },
+            scrim,
+            covered,
+            fullscreen,
+            unavailable
+        );
+    } else {
+        tracing::trace!(
+            "indicator fallback unchanged: {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
+            fallback,
+            scrim,
+            covered,
+            fullscreen,
+            unavailable
+        );
+    }
     tray.set_scrim_fallback(fallback, menu, providers, theme);
     if fullscreen {
         // Idempotent — also re-hides the panel if anything re-presented it
