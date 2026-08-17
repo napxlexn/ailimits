@@ -113,6 +113,17 @@ pub struct TaskbarPanel {
     display: crate::config::schema::PanelDisplay,
 }
 
+/// The tooltip window is ours, created with CreateWindowExW; nothing else owns
+/// it. Harmless to leak while exactly one panel lives for the whole process,
+/// but `restart()` already exists as the "rebuild the panel" path, and the day
+/// that becomes "make a new TaskbarPanel" the old window would outlive it.
+impl Drop for TaskbarPanel {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        crate::platform::destroy_window(self.tip_hwnd);
+    }
+}
+
 impl TaskbarPanel {
     /// Create the (hidden) overlay window up front; it is shown and embedded
     /// only when the indicator switches to a Panel mode.

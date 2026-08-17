@@ -602,6 +602,21 @@ pub fn create_tooltip_window() -> isize {
     }
 }
 
+/// Destroy a window we created ourselves (the tooltip). The OS reclaims it at
+/// process exit anyway, so this matters only if the owner is ever recreated
+/// rather than mutated — at which point the old window would linger, invisible
+/// and unowned, for the rest of the session.
+pub fn destroy_window(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        let _ = DestroyWindow(HWND(hwnd as _));
+    }
+}
+
 /// Hide the panel window (indicator switched away / taskbar slid away).
 pub fn hide_window(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
