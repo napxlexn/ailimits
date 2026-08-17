@@ -797,12 +797,27 @@ pub fn install_taskbar_watch(
     }
 
     unsafe {
+        // Install the hooks ONCE per process. Nothing unhooks them, and the
+        // PROXY OnceLock below only makes the proxy idempotent, not the hooks:
+        // a second call would add three more global hooks while the first three
+        // keep firing, so every taskbar event would arrive twice. Re-pointing
+        // the watch at a different bar is `watch_taskbar`, which touches only
+        // the comparison handles and is safe to call as often as needed.
+        static HOOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if HOOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::debug!("taskbar watch already installed; re-pointing only");
+            watch_taskbar(target);
+            return;
+        }
+
         // Any taskbar window works here: the pid is Explorer-process-wide (all
         // taskbars, primary and secondary, live in the same explorer.exe), so
         // scoping the hook via the primary bar is enough regardless of which
         // bar the panel is actually attached to. `watch_taskbar` below is what
         // points the callback's comparison handles at the right one.
         let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
+            // Nothing was hooked - let a later call try again.
+            HOOKED.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
         let mut pid = 0u32;
