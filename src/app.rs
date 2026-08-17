@@ -502,14 +502,30 @@ fn apply_windows_glass(window: &tao::window::Window) {
     // Glass tint — the single dark theme.
     let (tint_r, tint_g, tint_b, tint_a): (u32, u32, u32, u32) = (18, 18, 18, 28);
 
+    // Resolved ONCE. This function runs on every focus change, every scale
+    // change and every drag that ends on another monitor; calling LoadLibraryA
+    // each time bumps user32's reference count with no matching FreeLibrary and
+    // re-resolves an export that cannot move. `None` caches the failure too, so
+    // a machine without the export does not retry on every focus.
+    static COMPOSITION_PROC: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
     unsafe {
         let hwnd = window.hwnd() as HWND;
-        let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
-        if user32.is_null() {
-            warn!("acrylic accent unavailable: failed to load user32.dll");
-        } else if let Some(proc) =
-            GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast())
-        {
+        let proc = *COMPOSITION_PROC.get_or_init(|| {
+            let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
+            if user32.is_null() {
+                warn!("acrylic accent unavailable: failed to load user32.dll");
+                return None;
+            }
+            match GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast()) {
+                Some(p) => Some(p as usize),
+                None => {
+                    warn!("acrylic accent unavailable: SetWindowCompositionAttribute missing");
+                    None
+                }
+            }
+        });
+        if let Some(proc) = proc {
             let set_window_composition_attribute: SetWindowCompositionAttribute =
                 std::mem::transmute(proc);
             let apply_state = |state: u32, color: u32| {
@@ -533,8 +549,6 @@ fn apply_windows_glass(window: &tao::window::Window) {
                 ACCENT_ENABLE_BLURBEHIND,
                 tint_r | (tint_g << 8) | (tint_b << 16) | (tint_a << 24),
             );
-        } else {
-            warn!("acrylic accent unavailable: SetWindowCompositionAttribute missing");
         }
 
         // Native Win11 rounded corners: DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2.
