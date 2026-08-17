@@ -117,6 +117,12 @@ pub struct TaskbarPanel {
 /// it. Harmless to leak while exactly one panel lives for the whole process,
 /// but `restart()` already exists as the "rebuild the panel" path, and the day
 /// that becomes "make a new TaskbarPanel" the old window would outlive it.
+///
+/// **This does not run on a normal exit.** `tao::EventLoop::run` is `-> !` and
+/// terminates the process from inside, so the closure holding the panel is
+/// never dropped. The window is reclaimed by the OS instead. This impl exists
+/// for the case above — a panel dropped while the process keeps running — and
+/// is deliberately a no-op today rather than a fix for a live leak.
 impl Drop for TaskbarPanel {
     fn drop(&mut self) {
         #[cfg(target_os = "windows")]
