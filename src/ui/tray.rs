@@ -631,10 +631,14 @@ const TIP_SHADOW: f32 = 6.0;
 /// sat at 4 and read as glued to the bar.
 pub(crate) const TIP_GAP: i32 = 12;
 /// Very nearly opaque. Measured, not chosen: the shell's tooltip body reads
-/// grey 44 over black and grey 54 over white, so only 10/255 of the backdrop
-/// comes through — alpha 244 over a true colour of grey 46. The earlier 218
-/// was visibly more transparent than the real thing.
-const TIP_FILL_ALPHA: u8 = 244;
+/// grey 44 over black and grey 54 over white, so only ~10/255 of the backdrop
+/// comes through, over a true colour of grey 46. The earlier 218 was visibly
+/// more transparent than the real thing.
+///
+/// 246, not 244: 244 was fitted while the shadow still showed through the body
+/// and darkened it. With the box punched out of the shadow the body stands
+/// alone, and needs the extra two counts to land on the same measured value.
+const TIP_FILL_ALPHA: u8 = 246;
 /// The bar height that means 100% scaling; the bar is our only DPI signal here.
 const TIP_BASE_BAR_H: f32 = 48.0;
 
@@ -695,6 +699,12 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
             color(0, 0, 0, alpha),
         );
     }
+    // Punch the box out of the shadow before painting the body. Without this
+    // the shadow rings lie UNDER the box as well, and a body at alpha 244 lets
+    // ~4% of them through - so the body's final colour depended on the shadow's
+    // alphas, and tuning either one silently moved the other.
+    clear_round_rect(&mut pm, inset, inset, box_w, box_h, radius);
+
     // DARK: no border at all. Scanning inward from the edge of the measured
     // tooltip over black gives 45,44,45,45 — flat body from the first pixel.
     // What separates it from the background is an outer shadow, which is the
@@ -811,6 +821,38 @@ fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, c: tiny_skia::Color) {
     let mut pb = PathBuilder::new();
     pb.push_circle(cx, cy, r);
     fill_path(pm, pb, c);
+}
+
+/// Erase a rounded rect to full transparency (BlendMode::Clear), so whatever
+/// is painted there next composites against nothing rather than against what
+/// was already drawn underneath.
+fn clear_round_rect(pm: &mut Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32) {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    let mut pb = PathBuilder::new();
+    pb.move_to(x + r, y);
+    pb.line_to(x + w - r, y);
+    pb.quad_to(x + w, y, x + w, y + r);
+    pb.line_to(x + w, y + h - r);
+    pb.quad_to(x + w, y + h, x + w - r, y + h);
+    pb.line_to(x + r, y + h);
+    pb.quad_to(x, y + h, x, y + h - r);
+    pb.line_to(x, y + r);
+    pb.quad_to(x, y, x + r, y);
+    pb.close();
+    if let Some(path) = pb.finish() {
+        let paint = Paint {
+            blend_mode: tiny_skia::BlendMode::Clear,
+            anti_alias: true,
+            ..Default::default()
+        };
+        pm.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
 }
 
 pub(crate) fn fill_round_rect(
