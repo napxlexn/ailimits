@@ -777,18 +777,6 @@ fn text_extent(text: &str, size: f32) -> (f32, f32) {
     }
 }
 
-/// Coverage -> alpha, gamma-corrected, built once. The exponent was fitted
-/// against the measured shell tooltip: 1/1.45 only moved the mean lit luma
-/// from 169 to 175 against DirectWrite's 197, so it goes further.
-static TEXT_GAMMA_LUT: std::sync::LazyLock<[u8; 256]> = std::sync::LazyLock::new(|| {
-    let mut lut = [0u8; 256];
-    for (i, slot) in lut.iter_mut().enumerate() {
-        let c = i as f32 / 255.0;
-        *slot = (c.powf(1.0 / 2.8) * 255.0).round().clamp(0.0, 255.0) as u8;
-    }
-    lut
-});
-
 /// Draw `text` at `size` px with its ink top-left at (x, y) — like
 /// draw_digits_fit but with no auto-shrink and top-left (not centered) anchor.
 fn draw_text_at(pm: &mut Pixmap, text: &str, x: f32, y: f32, size: f32, c: tiny_skia::Color) {
@@ -819,12 +807,13 @@ fn draw_text_at(pm: &mut Pixmap, text: &str, x: f32, y: f32, size: f32, c: tiny_
                 continue;
             }
             let idx = ((py * w + px) * 4) as usize;
-            // Gamma-correct the coverage. Blending it linearly makes our text
-            // measurably thinner than the shell's: over the same string the
-            // mean lit luma came out 169 against DirectWrite's 197, with both
-            // peaking at 255 — the colour was right, the antialiasing was not.
-            // DirectWrite gamma-corrects; matching it is what closes the gap.
-            let a = TEXT_GAMMA_LUT[cov as usize] as u32;
+            // Coverage is blended LINEARLY. An earlier pass gamma-corrected it
+            // (cov^(1/2.8)) on the theory that DirectWrite does, but that was
+            // fitted against a different string than the shell was showing.
+            // Measured on the SAME string, gamma 1.0 puts the mean lit luma at
+            // 128.3 against the shell's 129.5, while 2.8 pushed it to 138 —
+            // brighter and heavier than the shell, which is what it looked like.
+            let a = cov as u32;
             let inv = 255 - a;
             data[idx] = ((cr * a) / 255 + data[idx] as u32 * inv / 255) as u8;
             data[idx + 1] = ((cg * a) / 255 + data[idx + 1] as u32 * inv / 255) as u8;

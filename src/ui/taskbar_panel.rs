@@ -46,9 +46,21 @@ const HIT_ALPHA: u8 = 1;
 /// Ink + track colors for the current system theme. Near-black on a light
 /// taskbar, near-white on a dark one; the track is the ink at a low alpha so
 /// it reads as a faint groove rather than a filled box.
+///
+/// The light ink is 36, not the 20 it used to be. Measured against the shell's
+/// own clock on the same bar: our digits had a median ink luma of 110 where the
+/// clock's was 119, over a background of 228 — we were ~8% darker, and read as
+/// heavier and higher-contrast than everything else in the tray. Solving
+/// `median = ink*cov + bg*(1-cov)` at the measured coverage of 0.567 gives 36.
+///
+/// Note this is a CONTRAST correction, not a weight one: our glyphs are not
+/// thicker, they are inked harder. fontdue rasterises with crisper edges than
+/// DirectWrite (over the same string the shell lights 163 columns to our 118,
+/// at the same mean), so matching the shell's darkness is the closest we get
+/// without swapping the rasteriser.
 fn theme_ink(light: bool) -> (Color, Color) {
     if light {
-        (color(20, 20, 20, 255), color(20, 20, 20, 64))
+        (color(36, 36, 36, 255), color(36, 36, 36, 64))
     } else {
         (color(236, 236, 236, 255), color(236, 236, 236, 66))
     }
