@@ -639,6 +639,16 @@ pub(crate) const TIP_GAP: i32 = 12;
 /// and darkened it. With the box punched out of the shadow the body stands
 /// alone, and needs the extra two counts to land on the same measured value.
 const TIP_FILL_ALPHA: u8 = 246;
+/// The light theme's tooltip is markedly more translucent than the dark one —
+/// measured over grey 128 it reads 232 against the dark theme's 49, and over
+/// white 249. 219 reproduces both; the dark theme's near-opaque 246 came out 12
+/// counts too bright over grey.
+///
+/// Windows' light acrylic is not a plain alpha blend (black 153, grey 232,
+/// white 249 do not lie on a line), so this is fitted to the two backdrops that
+/// actually occur under a tooltip — a light taskbar and light windows — rather
+/// than to a black one, which no tooltip sits on in this theme.
+const TIP_FILL_ALPHA_LIGHT: u8 = 219;
 /// The bar height that means 100% scaling; the bar is our only DPI signal here.
 const TIP_BASE_BAR_H: f32 = 48.0;
 
@@ -687,7 +697,15 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     // measured falloff (-3,-4,-7,-10 luma at 5..2px out over grey 128) rather
     // than by eye; a first pass at 6/8/10/14 compounded to -15..-31, three
     // times too heavy.
-    for (step, alpha) in [(5.0, 4u8), (4.0, 4), (3.0, 5), (2.0, 6), (1.0, 8)] {
+    // The light theme casts a much softer shadow: measured -2/-4/-6 at 4..2px
+    // out against the dark theme's -4/-7/-10. Reusing the dark ramp made the
+    // light tooltip look like it was floating higher than the shell's.
+    let ramp: [(f32, u8); 5] = if light {
+        [(5.0, 1), (4.0, 2), (3.0, 3), (2.0, 4), (1.0, 6)]
+    } else {
+        [(5.0, 4), (4.0, 4), (3.0, 5), (2.0, 6), (1.0, 8)]
+    };
+    for (step, alpha) in ramp {
         let s = step * scale;
         fill_round_rect(
             &mut pm,
@@ -713,7 +731,10 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     // LIGHT: a hairline IS present there — a near-white body needs it — so it
     // stays, as a 1px under-fill with the body inset into it.
     let (body, text_ink) = if light {
-        (color(249, 249, 249, TIP_FILL_ALPHA), color(26, 26, 26, 255))
+        (
+            color(249, 249, 249, TIP_FILL_ALPHA_LIGHT),
+            color(26, 26, 26, 255),
+        )
     } else {
         // Grey 46 is the body's true colour behind alpha 244; the measured 44
         // over black is what that composites to.
