@@ -69,11 +69,51 @@ jobs:
           "### Installer SHA256`n`n``$hash```n`nfor ``$(Split-Path $exe -Leaf)`` — paste into installer/winget/*.installer.yaml" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
+      # Release notes come from CHANGELOG.md, not from the commit log: the
+      # changelog is written for users ("what changed for me"), --generate-notes
+      # lists commit subjects, which are written for the next developer. Falls
+      # back to generated notes when the tag has no changelog section, so a
+      # release is never blocked on it.
+      - name: Release notes from CHANGELOG
+        id: notes
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $found = $false
+          if (Test-Path CHANGELOG.md) {
+              $lines = Get-Content CHANGELOG.md
+              $start = -1
+              $end = $lines.Count
+              # [regex]::Escape, not \Q..\E - PowerShell's -match is .NET regex,
+              # which has no \Q quoting, so a version with dots would match loosely.
+              $esc = [regex]::Escape($version)
+              for ($i = 0; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -match "^##\s+$esc(\s|$)") { $start = $i + 1; continue }
+                  if ($start -ge 0 -and $lines[$i] -match '^##\s') { $end = $i; break }
+              }
+              if ($start -ge 0) {
+                  $body = ($lines[$start..($end - 1)] -join "`n").Trim()
+                  if ($body) {
+                      $body | Out-File -FilePath release-notes.md -Encoding utf8
+                      $found = $true
+                      Write-Host "Using the CHANGELOG section for $version"
+                  }
+              }
+          }
+          if (-not $found) { Write-Host "::warning::no CHANGELOG section for $version - falling back to generated notes" }
+          "found=$($found.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" `
-            (Get-ChildItem target/installer/*.exe).FullName `
-            --title "AI Limits ${{ github.ref_name }}" `
-            --generate-notes
+          $exe = (Get-ChildItem target/installer/*.exe).FullName
+          if ("${{ steps.notes.outputs.found }}" -eq "true") {
+            gh release create "${{ github.ref_name }}" $exe `
+              --title "AI Limits ${{ github.ref_name }}" `
+              --notes-file release-notes.md
+          } else {
+            gh release create "${{ github.ref_name }}" $exe `
+              --title "AI Limits ${{ github.ref_name }}" `
+              --generate-notes
+          }

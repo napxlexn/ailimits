@@ -2,10 +2,16 @@
 
 Notable, user-visible changes. Dates are release dates.
 
-## Unreleased
+## 0.6.1 - 2026-08-20
 
 ### Added
 
+- **Widget width.** The rows layout can be shown at 100%, 75% or 50% of its
+  natural width, from the context menu — useful when the widget shares a corner
+  with something else.
+- **Column arrangement.** With vertical progress bars the providers can sit side
+  by side or stacked, flipping the widget between a wide, short shape and a
+  narrow, tall one.
 - **The taskbar panel can now follow a display other than the primary one.**
   On a multi-monitor setup where Windows shows the taskbar on more than one
   display, **Indicator → Display** picks which taskbar the panel attaches to.
@@ -15,19 +21,39 @@ Notable, user-visible changes. Dates are release dates.
   nudge the taskbar panel's position in pixels — a repair tool for unusual
   taskbar layouts, not exposed in the menu.
 
+### Changed
+
+- **The tray icon is now two rings.** The busiest provider is the outer ring,
+  the runner-up the inner one, each filling clockwise from 12 o'clock. It is
+  monochrome and inks itself in the system taskbar theme, so it reads on a light
+  or a dark bar. A single provider shows the outer ring alone, so nothing moves
+  when a second one starts reporting.
+- **The panel's hover tooltip matches the shell's.** Size, padding, corner
+  radius, text weight and the drop shadow were measured against a real Windows
+  tooltip instead of estimated, so it now sits alongside the system's own
+  tooltips rather than merely near them.
+
 ### Fixed
 
+- **90% no longer looks like 100% in the tray.** A round line cap paints past
+  the end of an arc — nearly a tenth of the circumference on the inner ring — so
+  a nearly-full gauge closed completely and could not be told from a full one.
+  That overhang is now subtracted, and only a true 100% closes a ring.
+- **The panel comes back after the Start menu closes.** It could otherwise stay
+  gone for the rest of the session, with the tray icon standing in until the app
+  was restarted.
+- **The panel no longer jumps to another display when Start opens**, and it
+  settles into place after the taskbar's slide animation instead of mid-flight.
+- **The panel survives an Explorer restart** — its taskbar watch re-points
+  itself at the new bars instead of tracking windows that no longer exist.
+- **A panel parked by a fullscreen app can be revived without restarting the
+  app**, by switching its display.
 - **The taskbar panel no longer overlaps the clock on taskbars that expose no
   notification area.** Some secondary Windows 11 taskbars have no
   `TrayNotifyWnd` to measure, so the panel now reserves a fixed width for the
   clock on those bars instead of assuming it can use the full edge.
 - **A failed taskbar panel present is now logged instead of vanishing
   silently**, so a stuck or missing overlay leaves a diagnosable trace.
-
-## 0.6.1 - 2026-08-05
-
-### Fixed
-
 - **Antigravity showed a full quota while the weekly pool was spent.** The
   widget could not read the account's Code Assist project id, and Google
   answers project-less quota requests with a default view where every bucket
