@@ -73,6 +73,18 @@ async fn check_and_install(client: &reqwest::Client) -> Result<()> {
         update.version,
         env!("CARGO_PKG_VERSION")
     );
+    // Only a copy that our OWN installer put on disk may silently reinstall
+    // itself. A Scoop/portable/dev copy running the installer would not update
+    // the running copy at all — it would create a SECOND install in the Inno
+    // directory and relaunch that one, leaving the manager-owned copy stale
+    // and the user with two AI Limits. Those copies are updated by whatever
+    // installed them (scoop update, a fresh zip, cargo build).
+    if !running_from_managed_install() {
+        info!(
+            "skipping silent self-update: this copy is not managed by the installer              (portable, Scoop or a dev build) — update it through its own channel"
+        );
+        return Ok(());
+    }
     let installer = download_and_verify(client, &update).await?;
     info!("update verified; launching installer for a silent upgrade");
     // Diverges on success: the installer replaces this process. A failed
@@ -171,6 +183,80 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
 /// relying on it — see `relaunch_target`.
 fn installed_exe_path() -> Option<PathBuf> {
     dirs::data_local_dir().map(|d| d.join("AiLimits").join("ailimits.exe"))
+}
+
+/// Where the Inno uninstall entry says the app is installed, if it exists.
+/// Written by the installer itself (per-user key, `{AppId}_is1`), so unlike
+/// `installed_exe_path()` it is correct even for a custom install directory.
+#[cfg(target_os = "windows")]
+fn inno_install_location() -> Option<PathBuf> {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+    };
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}_is1"),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        )
+        .is_err()
+        {
+            return None;
+        }
+        let mut buf = [0u8; 1040];
+        let mut len = buf.len() as u32;
+        let ok = RegQueryValueExW(
+            key,
+            w!("InstallLocation"),
+            None,
+            None,
+            Some(buf.as_mut_ptr()),
+            Some(&mut len),
+        )
+        .is_ok();
+        let _ = RegCloseKey(key);
+        if !ok {
+            return None;
+        }
+        let u16s: Vec<u16> = buf[..len as usize]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|&c| c != 0)
+            .collect();
+        let s = String::from_utf16_lossy(&u16s);
+        (!s.is_empty()).then(|| PathBuf::from(s))
+    }
+}
+
+/// Whether the running exe lives inside the directory our installer manages.
+/// Decided by canonicalized paths, so the registry's trailing backslash and
+/// any case difference do not matter. Pure on its inputs for testability.
+fn exe_is_inside(current_exe: Option<&Path>, install_dir: Option<&Path>) -> bool {
+    let (Some(exe), Some(dir)) = (current_exe, install_dir) else {
+        return false;
+    };
+    let (Ok(exe), Ok(dir)) = (exe.canonicalize(), dir.canonicalize()) else {
+        // A location that cannot be resolved cannot be trusted to upgrade.
+        return false;
+    };
+    exe.parent() == Some(dir.as_path())
+}
+
+#[cfg(target_os = "windows")]
+fn running_from_managed_install() -> bool {
+    exe_is_inside(
+        std::env::current_exe().ok().as_deref(),
+        inno_install_location().as_deref(),
+    )
+}
+
+#[cfg(not(target_os = "windows"))]
+fn running_from_managed_install() -> bool {
+    false
 }
 
 /// Pick where to relaunch after an update: the standard install path if it
@@ -304,6 +390,49 @@ mod tests {
         // relaunch must aim there, not at whatever copy happens to be running.
         let p = installed_exe_path().expect("local data dir resolves on Windows");
         assert!(p.ends_with("AiLimits/ailimits.exe") || p.ends_with(r"AiLimits\ailimits.exe"));
+    }
+
+    /// The self-update guard: only a copy inside the installer-managed
+    /// directory may reinstall itself. A Scoop or portable copy running the
+    /// installer would create a second install and leave itself stale.
+    #[test]
+    fn a_copy_inside_the_managed_dir_is_recognised() {
+        let dir = std::env::temp_dir().join("ailimits_managed_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("ailimits.exe");
+        std::fs::write(&exe, b"stub").unwrap();
+        // The registry stores the location with a trailing separator and its
+        // own casing; canonicalisation must absorb both.
+        let reg_style = format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR);
+        assert!(exe_is_inside(
+            Some(exe.as_path()),
+            Some(std::path::Path::new(&reg_style))
+        ));
+        let _ = std::fs::remove_file(&exe);
+    }
+
+    #[test]
+    fn a_copy_elsewhere_or_with_no_install_record_is_not_managed() {
+        let dir = std::env::temp_dir().join("ailimits_managed_test2");
+        std::fs::create_dir_all(&dir).unwrap();
+        let elsewhere = std::env::temp_dir().join("ailimits_elsewhere.exe");
+        std::fs::write(&elsewhere, b"stub").unwrap();
+        assert!(
+            !exe_is_inside(Some(elsewhere.as_path()), Some(dir.as_path())),
+            "an exe outside the recorded install dir must not self-update"
+        );
+        assert!(
+            !exe_is_inside(Some(elsewhere.as_path()), None),
+            "no uninstall record means no managed install"
+        );
+        assert!(
+            !exe_is_inside(
+                Some(elsewhere.as_path()),
+                Some(std::path::Path::new("Z:/does/not/exist"))
+            ),
+            "an unresolvable location cannot be trusted to upgrade"
+        );
+        let _ = std::fs::remove_file(&elsewhere);
     }
 
     #[test]
