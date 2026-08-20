@@ -72,10 +72,29 @@
 
 ## Встановлення
 
-Завантаж `AiLimits-Setup-<версія>.exe` зі сторінки
+Із термінала, працює вже зараз:
+
+```powershell
+irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
+```
+
+Скрипт тягне останній реліз, звіряє SHA-256 з опублікованим дайджестом і
+запускає тихе встановлення без прав адміністратора.
+
+Менеджери пакетів, щойно подання пройдуть модерацію
+(winget, Chocolatey і Scoop зараз на розгляді):
+
+```powershell
+winget install napxlexn.AILimits
+choco install ailimits
+scoop bucket add extras; scoop install ailimits
+```
+
+Або завантаж `AiLimits-Setup-<версія>.exe` зі сторінки
 [Releases](https://github.com/napxlexn/ailimits/releases) і запусти.
-Права адміністратора не потрібні (ставиться у `%LOCALAPPDATA%\AiLimits`).
-Опційно під час встановлення: автозапуск із Windows, ярлик на робочому столі.
+Права адміністратора не потрібні (ставиться в `%LOCALAPPDATA%\AiLimits`).
+До кожного релізу також додається portable-zip без інсталятора. Portable-копія
+не самооновлюється: її оновлює менеджер пакетів або ти сам.
 
 > Інсталятор **не підписаний** цифровим підписом, тож Windows SmartScreen
 > може показати «Windows захистила ваш ПК». Натисни **Докладніше → Все одно

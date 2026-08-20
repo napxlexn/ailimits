@@ -11,3 +11,7 @@
 # never in the public repository.
 /CLAUDE.md
 /.okf
+
+# Chocolatey pack output - built from a release, never committed.
+installer/choco/build
+installer/choco/*.nupkg

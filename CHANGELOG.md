@@ -2,6 +2,26 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## 0.6.2 - 2026-08-21
+
+### Added
+
+- **Terminal installs.** A one-line PowerShell install
+  (`irm .../install.ps1 | iex`) that verifies the installer against the
+  release digest before running it, a Chocolatey package, and a Scoop
+  manifest. A portable zip (the two exes plus the licence texts, no
+  installer) is now attached to every release.
+
+### Changed
+
+- **A copy not managed by the installer no longer self-updates.** Running
+  from a Scoop directory, an unpacked zip or a dev build, the auto-updater
+  used to install a second copy into the regular install directory and leave
+  the running one stale. It now recognises that the copy is not the one the
+  installer put on disk, logs the available version, and leaves the update to
+  whatever installed it. Installer copies, including those in a custom
+  directory, update exactly as before.
+
 ## 0.6.1 - 2026-08-20
 
 ### Added

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>ailimits</id>
+    <version>{{VERSION}}</version>
+    <title>AI Limits</title>
+    <authors>napxlexn</authors>
+    <owners>napxlexn</owners>
+    <projectUrl>https://github.com/napxlexn/ailimits</projectUrl>
+    <projectSourceUrl>https://github.com/napxlexn/ailimits</projectSourceUrl>
+    <packageSourceUrl>https://github.com/napxlexn/ailimits/tree/master/installer/choco</packageSourceUrl>
+    <bugTrackerUrl>https://github.com/napxlexn/ailimits/issues</bugTrackerUrl>
+    <releaseNotes>https://github.com/napxlexn/ailimits/blob/master/CHANGELOG.md</releaseNotes>
+    <licenseUrl>https://github.com/napxlexn/ailimits/blob/master/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <iconUrl>https://raw.githubusercontent.com/napxlexn/ailimits/master/assets/icon.png</iconUrl>
+    <tags>ai claude codex copilot antigravity usage-limits widget overlay tray</tags>
+    <summary>Desktop overlay showing AI provider usage limits</summary>
+    <description>
+A tiny native Windows 11 floating overlay that shows your AI provider usage
+limits on the desktop: Claude, OpenAI Codex, GitHub Copilot, Google
+Antigravity. It reads the tokens the official CLI tools already store on the
+machine (read-only, never refreshes them), needs no login or configuration,
+and renders on the CPU with a measured idle load of 0.024% of one core.
+
+The app updates itself silently from GitHub Releases by default (toggle in
+the context menu), so the installed version may run ahead of the package
+version between pushes.
+    </description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

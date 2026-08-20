@@ -70,10 +70,30 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 
 ## Install
 
-Download `AiLimits-Setup-<version>.exe` from
+From the terminal, works today:
+
+```powershell
+irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
+```
+
+It downloads the latest release, verifies its SHA-256 against the published
+digest, and runs the silent per-user install.
+
+Package managers, once the submissions clear their moderation queues
+(winget, Chocolatey and Scoop are all in review):
+
+```powershell
+winget install napxlexn.AILimits
+choco install ailimits
+scoop bucket add extras; scoop install ailimits
+```
+
+Or download `AiLimits-Setup-<version>.exe` from
 [Releases](https://github.com/napxlexn/ailimits/releases) and run it.
 No admin rights needed (installs to `%LOCALAPPDATA%\AiLimits`).
 Optional during setup: autostart with Windows, a desktop shortcut.
+A portable zip (no installer) is attached to each release as well. A portable
+copy does not self-update: its package manager, or you, updates it.
 
 > The installer is **not code-signed**, so Windows SmartScreen may show
 > "Windows protected your PC". Click **More info → Run anyway**. You can

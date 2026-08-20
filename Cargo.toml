@@ -1,6 +1,6 @@
 [package]
 name = "ailimits"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 # Build-from-source floor. Driven by icu_* (via reqwest → url → idna); Cargo
 # emits a clear error on an older toolchain instead of a deep dependency error.

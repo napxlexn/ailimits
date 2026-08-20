@@ -49,6 +49,20 @@ jobs:
       - name: Build (release-min)
         run: cargo build --profile release-min
 
+      # A portable zip alongside the installer: what Scoop installs, and the
+      # no-install option generally. The exe is statically linked, so the zip
+      # is just the two binaries plus the licence texts. The self-updater
+      # recognises an unmanaged copy and stands down (see updater.rs), so a
+      # portable install stays whatever version its manager put there.
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $v = "${{ github.ref_name }}" -replace '^v',''
+          New-Item -ItemType Directory -Force target\installer, target\portable | Out-Null
+          Copy-Item target\release-min\ailimits.exe, target\release-min\ailimits-auth.exe, LICENSE, TRADEMARKS.md, README.md target\portable\
+          Compress-Archive -Path target\portable\* -DestinationPath "target\installer\AiLimits-Portable-$v.zip" -Force
+          Get-FileHash "target\installer\AiLimits-Portable-$v.zip" -Algorithm SHA256 | Format-List
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
@@ -107,13 +121,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $exe = (Get-ChildItem target/installer/*.exe).FullName
+          $assets = (Get-ChildItem target/installer/*.exe, target/installer/*.zip).FullName
           if ("${{ steps.notes.outputs.found }}" -eq "true") {
-            gh release create "${{ github.ref_name }}" $exe `
+            gh release create "${{ github.ref_name }}" @assets `
               --title "AI Limits ${{ github.ref_name }}" `
               --notes-file release-notes.md
           } else {
-            gh release create "${{ github.ref_name }}" $exe `
+            gh release create "${{ github.ref_name }}" @assets `
               --title "AI Limits ${{ github.ref_name }}" `
               --generate-notes
           }
