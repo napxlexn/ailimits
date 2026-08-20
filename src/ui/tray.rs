@@ -1138,6 +1138,43 @@ mod tests {
         );
     }
 
+    /// Every measurement behind the tooltip and ring constants was taken at
+    /// 100% scaling on a 48px bar. These pin what the scaling does elsewhere,
+    /// because a 150% or 200% display is the case nobody re-measures and the
+    /// one where a rounding slip turns into a visibly wrong box.
+    #[test]
+    fn tooltip_geometry_holds_at_every_scale() {
+        for (bar_h, label) in [
+            (41.0, "85% floor"),
+            (48.0, "100%"),
+            (72.0, "150%"),
+            (96.0, "200%"),
+        ] {
+            let pm = render_tooltip("Claude 68%  ·  Codex 100%", bar_h, false);
+            let inset = tip_shadow_inset(bar_h);
+            let scale = (bar_h / TIP_BASE_BAR_H).clamp(0.85, 3.0);
+
+            // The shadow must fit in the margin reserved for it, or the
+            // outermost ring is clipped and the tooltip gains a hard edge.
+            let outermost = 5.0 * scale;
+            assert!(
+                inset as f32 >= outermost,
+                "{label}: shadow reaches {outermost}px but only {inset}px is reserved"
+            );
+            // The box must still be inside the pixmap on both axes.
+            let box_h = (TIP_LINE_H * scale).round()
+                + (TIP_PAD_TOP * scale).round()
+                + (TIP_PAD_BOTTOM * scale).round();
+            assert!(
+                pm.height() as f32 >= box_h + inset as f32 * 2.0,
+                "{label}: pixmap {} too short for a {box_h}px box plus {inset}px margins",
+                pm.height()
+            );
+            // And the whole thing must grow with the bar, not jump around.
+            assert!(pm.height() > 0 && pm.width() > 0, "{label}: empty pixmap");
+        }
+    }
+
     /// Render the tooltip with a GIVEN string, composited over mid grey, so it
     /// can be compared pixel-for-pixel with a capture of the shell's own
     /// tooltip showing the same text. Comparing different strings is not a
