@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 PackageIdentifier: napxlexn.AILimits
-PackageVersion: 0.6.1
+PackageVersion: 0.6.2
 MinimumOSVersion: 10.0.22000.0
 InstallerType: inno
 Scope: user
@@ -9,13 +9,13 @@ InstallModes:
   - silent
   - silentWithProgress
 UpgradeBehavior: install
-ReleaseDate: 2026-08-05
+ReleaseDate: 2026-08-21
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/napxlexn/ailimits/releases/download/v0.6.1/AiLimits-Setup-0.6.1.exe
-    # From the v0.6.1 release asset's published digest, cross-checked against
+    InstallerUrl: https://github.com/napxlexn/ailimits/releases/download/v0.6.2/AiLimits-Setup-0.6.2.exe
+    # From the v0.6.2 release asset's published digest, cross-checked against
     # the release build's "Installer SHA256" step.
-    InstallerSha256: 8FED1F96B885E3EC7AED0F304930040DE1218FE2554126A020522881CA68DDA4
+    InstallerSha256: 84AE14D4B8968E873F51C4CC38989567DB913C31E504A8D1A34D93AA8CE4A40F
     ProductCode: '{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}_is1'
     AppsAndFeaturesEntries:
       - DisplayName: AI Limits
