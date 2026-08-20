@@ -6,3 +6,8 @@
 
 # Agent worktrees and local session scratch — never part of the product.
 /.claude
+
+# Agent/dev-process files: kept locally and in the private backup only,
+# never in the public repository.
+/CLAUDE.md
+/.okf
