@@ -185,8 +185,9 @@ Antigravity CLI; віджет читає token Antigravity із Windows Credenti
 ## Контекстне меню
 
 ПКМ на віджеті: рівень деталізації (Compact / Medium / Expanded), лейаут
-(Vertical / Horizontal), `Lock position` і `Always on top` (два незалежні
-перемикачі), Palette (монохром + 8 кольорів), Background opacity, Brightness,
+(Vertical / Horizontal), Width (100 / 75 / 50%, лише горизонтальні смужки),
+Arrangement (у ряд / у стовпчик, лише вертикальні), `Lock position` і
+`Always on top` (два незалежні перемикачі), Palette (монохром + 8 кольорів), Background opacity, Brightness,
 Saturation, Forecast (burn-rate «~час до ліміту», вимкнений за
 замовчуванням), Update interval (1 / 5 / 15 / 30 хв), `Automatic updates`
 (тихе фонове самооновлення, увімкнено за замовчуванням), Indicator,

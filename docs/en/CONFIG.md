@@ -77,6 +77,13 @@ monochrome = false
 layout = "vertical"
 # Detail level: "compact" / "medium" / "expanded".
 detail = "compact"
+# Width step for the horizontal-bar (rows) layout; the vertical-bar layout
+# ignores it. "full" / "three_quarters" / "half" (menu: Width).
+width_scale = "full"
+# Column arrangement for the vertical-bar layout; the rows layout ignores it.
+# "row" (side by side, wide and short) or "column" (stacked, narrow and tall)
+# (menu: Arrangement).
+column_flow = "row"
 # Burn-rate forecast ("~Xh to limit" when usage is climbing; menu: Forecast).
 # Never replaces the reset countdown — shown only when no future reset is known.
 show_forecast = false

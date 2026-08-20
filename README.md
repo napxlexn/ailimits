@@ -184,8 +184,9 @@ with the CLI. The provider returns to its subscription sources.
 ## The context menu
 
 Right-click the widget: detail level (Compact / Medium / Expanded), layout
-(Vertical / Horizontal), `Lock position` and `Always on top` (two independent
-toggles), Palette (monochrome + 8 colors), Background opacity, Brightness,
+(Vertical / Horizontal), Width (100 / 75 / 50%, horizontal bars only),
+Arrangement (in a row / in a column, vertical bars only), `Lock position` and
+`Always on top` (two independent toggles), Palette (monochrome + 8 colors), Background opacity, Brightness,
 Saturation, Forecast (burn-rate "~time to limit", off by default), Update
 interval (1 / 5 / 15 / 30 min), `Automatic updates` (silent background
 self-update, on by default), Indicator, per-provider settings, Quit.

@@ -19,6 +19,11 @@ app.rs ─── володіє всім: конфіг, дані, вікно, м
    ├── monitor/trend.rs       burn-rate проєкція (опційний прогноз)
    ├── platform/win.rs        Win32: WinEvent-стеження за таскбаром/треєм,
    │                          layered-презентація, промоція трей-іконок
+   ├── updater.rs             щоденне опитування GitHub Releases, перевірка
+   │                          SHA-256, тихе встановлення + перезапуск
+   ├── platform/taskbar_geom.rs  чисті правила розміщення/фолбеку панелі
+   │                          (тестуються без Win32)
+   ├── config/ (schema.rs, storage.rs)  структури конфігу + толерантний TOML
    └── notifications/toast.rs Windows-тости
 ```
 

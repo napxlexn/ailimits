@@ -19,6 +19,11 @@ app.rs ─── owns everything: config, display data, window, menu
    ├── monitor/trend.rs       burn-rate projection (the optional forecast)
    ├── platform/win.rs        Win32 glue: taskbar/tray WinEvent watch,
    │                          layered presents, tray-icon promotion
+   ├── updater.rs             daily GitHub Releases poll, SHA-256 verify,
+   │                          silent install + relaunch (menu: Automatic updates)
+   ├── platform/taskbar_geom.rs  pure placement/fallback rules for the panel
+   │                          (testable, no Win32 calls)
+   ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save
    └── notifications/toast.rs Windows toasts
 ```
 
