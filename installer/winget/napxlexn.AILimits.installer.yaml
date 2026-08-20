@@ -13,9 +13,9 @@ ReleaseDate: 2026-08-05
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/napxlexn/ailimits/releases/download/v0.6.1/AiLimits-Setup-0.6.1.exe
-    # Placeholder until the v0.6.1 release build publishes the real asset;
-    # filled in after the release build.
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    # From the v0.6.1 release asset's published digest, cross-checked against
+    # the release build's "Installer SHA256" step.
+    InstallerSha256: 8FED1F96B885E3EC7AED0F304930040DE1218FE2554126A020522881CA68DDA4
     ProductCode: '{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}_is1'
     AppsAndFeaturesEntries:
       - DisplayName: AI Limits
