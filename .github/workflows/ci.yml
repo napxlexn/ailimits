@@ -25,5 +25,14 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Advisories (non-blocking)
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
       - name: Tests
         run: cargo test

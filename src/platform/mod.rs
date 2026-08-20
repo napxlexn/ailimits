@@ -3,13 +3,16 @@
 #[cfg(target_os = "windows")]
 mod win;
 
+pub mod taskbar_geom;
+
 // Taskbar embedding for the mini panel (Windows-only by nature; the
 // callers in ui/taskbar_panel.rs are cfg-gated accordingly).
 #[cfg(target_os = "windows")]
 pub use win::{
-    bring_to_front, create_tooltip_window, ensure_on_screen, foreground_scrim_active,
-    fullscreen_foreground_active, hide_window, install_taskbar_watch, mouse_hover_time_ms,
-    point_owner, present_layered, raise_panel_topmost, taskbar_slot, TaskbarSlot,
+    bring_to_front, create_tooltip_window, destroy_window, ensure_on_screen,
+    foreground_scrim_active, fullscreen_foreground_active, hide_window, install_taskbar_watch,
+    mouse_hover_time_ms, point_owner, present_layered, raise_panel_topmost, secondary_taskbars,
+    taskbar_slot, watch_taskbar, TaskbarSlot,
 };
 
 /// Pin this exe's tray icons to the visible taskbar corner (Windows 11

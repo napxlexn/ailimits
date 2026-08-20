@@ -111,6 +111,17 @@ pub struct GeneralConfig {
     /// enabled, matching the shipped behaviour.
     #[serde(default = "default_auto_update")]
     pub auto_update: bool,
+    /// Manual nudge for the taskbar panel, in pixels, applied after the
+    /// computed position. Config-only: a repair tool for shell replacements
+    /// and unusual taskbars, not a preference. Clamped to +/-200.
+    #[serde(default)]
+    pub panel_offset_x: i32,
+    #[serde(default)]
+    pub panel_offset_y: i32,
+    /// Taskbar the panel indicator attaches to. Falls back to the primary
+    /// when the chosen display is gone.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub panel_display: PanelDisplay,
 }
 
 impl Default for GeneralConfig {
@@ -119,6 +130,9 @@ impl Default for GeneralConfig {
             update_interval_secs: default_update_interval(),
             indicator: IndicatorKind::default(),
             auto_update: default_auto_update(),
+            panel_offset_x: 0,
+            panel_offset_y: 0,
+            panel_display: PanelDisplay::Primary,
         }
     }
 }
@@ -166,6 +180,13 @@ pub struct UIConfig {
     pub layout: Layout,
     #[serde(default, deserialize_with = "de_enum_or_default")]
     pub detail: DetailLevel,
+    /// Width step for the rows layout; the columns layout ignores it.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub width_scale: WidthScale,
+    /// Column arrangement for the vertical-bars layout; the rows layout
+    /// ignores it. The two settings are the same choice on opposite axes.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub column_flow: ColumnFlow,
     /// Show a burn-rate forecast ("~Xh to limit") when usage is climbing.
     /// It never replaces the reset countdown — it only fills the slot when no
     /// future reset is known. Off by default: the reset time is the fact
@@ -183,6 +204,8 @@ impl Default for UIConfig {
             monochrome: false,
             layout: Layout::Vertical,
             detail: DetailLevel::Compact,
+            width_scale: WidthScale::Full,
+            column_flow: ColumnFlow::Row,
             show_forecast: false,
         }
     }
@@ -247,6 +270,39 @@ pub enum Layout {
     Grid,
 }
 
+/// Widget width as a fraction of its natural width, for the rows layout.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WidthScale {
+    #[default]
+    Full,
+    ThreeQuarters,
+    Half,
+}
+
+/// How the provider columns are arranged when the bars are vertical.
+/// Ignored by the rows layout, which has no columns to arrange.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnFlow {
+    /// Side by side: a wide, short widget.
+    #[default]
+    Row,
+    /// Stacked downwards: a narrow, tall widget.
+    Column,
+}
+
+impl WidthScale {
+    /// The fraction of the natural width this step keeps.
+    pub fn fraction(&self) -> f32 {
+        match self {
+            Self::Full => 1.0,
+            Self::ThreeQuarters => 0.75,
+            Self::Half => 0.5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DetailLevel {
@@ -256,7 +312,7 @@ pub enum DetailLevel {
     Expanded,
 }
 
-/// The taskbar usage indicator: a tray pie icon, a 16px tray icon with
+/// The taskbar usage indicator: a tray ring icon, a 16px tray icon with
 /// stacked bars (legacy, config-only), a transparent overlay painted over
 /// the taskbar next to the tray (monochrome, system-theme-following; the
 /// two busiest providers as clock-sized "percent + bar" rows), or none.
@@ -271,6 +327,16 @@ pub enum IndicatorKind {
     PanelRows,
     PanelGrid,
     Off,
+}
+
+/// Which taskbar the mini panel attaches to. Secondary bars are numbered
+/// left to right, starting at 0, across the taskbars that actually exist.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelDisplay {
+    #[default]
+    Primary,
+    Secondary(u8),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]

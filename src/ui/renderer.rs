@@ -4,11 +4,13 @@
 // zones from ui/layout.rs.
 
 use super::{
-    layout::{BodyLayout, Rect, WindowLayout},
+    layout::{BodyLayout, Rect, RowTier, WindowLayout},
     theme::{Color, ComputedTheme, UsageLevel},
 };
 use crate::config::schema::DetailLevel;
-use crate::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+use crate::providers::{
+    Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use fontdue::{
@@ -44,11 +46,11 @@ pub(crate) fn load_ui_font() -> Option<Font> {
 }
 
 /// Name column width in vertical compact.
-const NAME_WIDTH: f32 = 48.0;
+pub(super) const NAME_WIDTH: f32 = 48.0;
 /// Percent column width.
-const PCT_WIDTH: f32 = 30.0;
+pub(super) const PCT_WIDTH: f32 = 30.0;
 /// Gap between row elements.
-const ROW_GAP: f32 = 7.0;
+pub(super) const ROW_GAP: f32 = 7.0;
 
 /// Bar and text colors, accounting for staleness and estimation —
 /// both render grey.
@@ -169,12 +171,18 @@ impl Renderer {
                         theme,
                         data,
                         detail,
+                        layout.row_tier,
                         cursor,
                         fc.as_deref(),
                         reason.as_deref(),
                     );
                 }
-                if *detail == DetailLevel::Compact && hint.h > 0.0 {
+                // The hint is written for the natural width; a narrowed window
+                // would paint it past its own edge, so it goes with the names.
+                if *detail == DetailLevel::Compact
+                    && hint.h > 0.0
+                    && layout.row_tier == RowTier::Full
+                {
                     let hover_hint = hovered_hint_text(rows, providers, cursor, errors);
                     self.draw_hint(pixmap, hint, theme, providers, hover_hint.as_deref());
                 }
@@ -208,46 +216,70 @@ impl Renderer {
         theme: &ComputedTheme,
         data: &ProviderData,
         detail: &DetailLevel,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
     ) {
         match detail {
             // Compact has no per-row reset slot; the reason shows in the hint line.
-            DetailLevel::Compact => self.vertical_compact(pixmap, row, theme, data, cursor),
-            DetailLevel::Medium => {
-                self.vertical_medium(pixmap, row, theme, data, false, cursor, forecast, reason)
-            }
-            DetailLevel::Expanded => {
-                self.vertical_medium(pixmap, row, theme, data, true, cursor, forecast, reason)
-            }
+            DetailLevel::Compact => self.vertical_compact(pixmap, row, theme, data, tier, cursor),
+            DetailLevel::Medium => self.vertical_medium(
+                pixmap, row, theme, data, false, tier, cursor, forecast, reason,
+            ),
+            DetailLevel::Expanded => self.vertical_medium(
+                pixmap, row, theme, data, true, tier, cursor, forecast, reason,
+            ),
         }
     }
 
-    /// Compact: name | bar | pct in one line.
+    /// Compact: name | bar | pct in one line, minus whatever the width cannot
+    /// carry (see `layout::row_tier`).
     fn vertical_compact(
         &self,
         pixmap: &mut Pixmap,
         row: &Rect,
         theme: &ComputedTheme,
         data: &ProviderData,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
     ) {
         let text_y = row.y + (row.h - 13.0) / 2.0;
-        self.draw_text(
-            pixmap,
-            data.id.display_name(),
-            row.x,
-            text_y,
-            11.0,
-            theme.provider_name,
-            Align::Left,
-            NAME_WIDTH,
-        );
-
-        let bar = vertical_compact_bar_rect(row);
+        if tier == RowTier::Full {
+            self.draw_text(
+                pixmap,
+                data.id.display_name(),
+                row.x,
+                text_y,
+                11.0,
+                theme.provider_name,
+                Align::Left,
+                NAME_WIDTH,
+            );
+        }
 
         let active_metric = active_progress_metric(data, row, cursor);
+        let Some(bar) = vertical_compact_bar_rect(row, tier) else {
+            // Too narrow for a bar: the percent alone, centred on the row.
+            // Providers are told apart by position, as in the taskbar panel.
+            if let (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) =
+                (&data.status, active_metric.and_then(Metric::percentage))
+            {
+                let (_, text_color) = row_colors(theme, data, pct);
+                self.draw_text(
+                    pixmap,
+                    &pct_text(data, pct),
+                    row.x,
+                    text_y,
+                    11.0,
+                    text_color,
+                    Align::Center,
+                    row.w,
+                );
+            }
+            return;
+        };
+
         match (&data.status, active_metric.and_then(Metric::percentage)) {
             (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => {
                 let (bar_color, text_color) = row_colors(theme, data, pct);
@@ -283,6 +315,7 @@ impl Renderer {
         theme: &ComputedTheme,
         data: &ProviderData,
         expanded: bool,
+        tier: RowTier,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
@@ -292,16 +325,20 @@ impl Renderer {
         let hovered_reason =
             reason.filter(|_| cursor.is_some_and(|point| point_in_rect(point, row)));
         let name_size = if expanded { 13.0 } else { 12.0 };
-        self.draw_text(
-            pixmap,
-            data.id.display_name(),
-            row.x,
-            row.y + 3.0,
-            name_size,
-            theme.provider_name,
-            Align::Left,
-            row.w,
-        );
+        // Name and percent share this line with no clipping between them, so a
+        // row too narrow for both drops the name rather than overlapping it.
+        if tier == RowTier::Full {
+            self.draw_text(
+                pixmap,
+                data.id.display_name(),
+                row.x,
+                row.y + 3.0,
+                name_size,
+                theme.provider_name,
+                Align::Left,
+                row.w,
+            );
+        }
 
         let bar_h = if expanded { 5.0 } else { 4.0 };
         let bar_y = row.y + if expanded { 26.0 } else { 20.0 };
@@ -344,14 +381,14 @@ impl Renderer {
                     );
                 }
                 let weekly_active_in_expanded =
-                    expanded && active_metric.is_some_and(is_weekly_metric);
+                    expanded && active_metric.is_some_and(is_long_window_metric);
                 if hovered_reason.is_none() && !weekly_active_in_expanded {
-                    if active_metric.is_some_and(is_weekly_metric) {
+                    if active_metric.is_some_and(is_long_window_metric) {
                         self.draw_weekly_time_only(pixmap, row, theme, active_metric, meta_y);
                     } else {
                         // Meta line: the metric on the left, the reset on the right.
-                        if let Some(m) =
-                            active_metric.filter(|m| !is_percent_metric(m) || is_weekly_metric(m))
+                        if let Some(m) = active_metric
+                            .filter(|m| !is_percent_metric(m) || is_long_window_metric(m))
                         {
                             self.draw_text(
                                 pixmap,
@@ -413,7 +450,7 @@ impl Renderer {
             // Status on the bar line, so it does not overlap the provider name.
             _ => {
                 if matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated)
-                    && weekly_metric(data).is_some()
+                    && long_window_metric(data).is_some()
                 {
                     self.draw_text(
                         pixmap,
@@ -447,7 +484,7 @@ impl Renderer {
         y: f32,
         cursor: Option<(f32, f32)>,
     ) {
-        let Some(metric) = weekly_metric(data) else {
+        let Some(metric) = long_window_metric(data) else {
             return;
         };
         let text = if cursor.is_some_and(|point| point_in_rect(point, row)) {
@@ -957,47 +994,31 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, color: Color, alpha: u8) {
     data[idx + 3] = (a + data[idx + 3] as u32 * inv / 255).min(255) as u8;
 }
 
-/// A window at or above this percentage is exhausted: the account is blocked on
-/// it regardless of any other window's reading.
-const EXHAUSTED_PCT: f32 = 100.0;
-
-/// Active metric for the percent/bar: hovering the provider temporarily switches
-/// to the weekly metric. The weekly metric also takes over the *default* view
-/// once it is exhausted — a maxed weekly limit blocks the account even when the
-/// session window reads low (or is no longer reported), so leaving the session
-/// primary there would hide the real limit until the user happened to hover.
+/// Active metric for the percent/bar. Hovering a row temporarily reveals the
+/// long-window limit; otherwise the row shows whatever `headline_metric`
+/// decides, so the widget can never disagree with the tray or the panel.
 fn active_progress_metric<'a>(
     data: &'a ProviderData,
     hover_area: &Rect,
     cursor: Option<(f32, f32)>,
 ) -> Option<&'a Metric> {
-    let primary = primary_progress_metric(data);
-    let weekly = weekly_metric(data).filter(|metric| metric.percentage().is_some());
     if cursor.is_some_and(|point| point_in_rect(point, hover_area)) {
-        return weekly.or(primary);
+        return long_window_metric(data)
+            .filter(|metric| metric.percentage().is_some())
+            .or_else(|| data.headline_metric());
     }
-    // Exhausted weekly → show it by default; otherwise the session stays primary,
-    // falling back to the weekly when no session window is present at all.
-    if weekly.is_some_and(|metric| metric.percentage().is_some_and(|pct| pct >= EXHAUSTED_PCT)) {
-        return weekly;
-    }
-    primary.or(weekly)
+    data.headline_metric()
 }
 
-/// Primary metric for the large percent and bar: weekly limits render separately.
-fn primary_progress_metric(data: &ProviderData) -> Option<&Metric> {
+/// The long-window (general) metric, if the provider reports one.
+fn long_window_metric(data: &ProviderData) -> Option<&Metric> {
     data.metrics
         .iter()
-        .find(|metric| !is_weekly_metric(metric) && metric.percentage().is_some())
+        .find(|metric| is_long_window_metric(metric))
 }
 
-/// The weekly secondary metric.
-fn weekly_metric(data: &ProviderData) -> Option<&Metric> {
-    data.metrics.iter().find(|metric| is_weekly_metric(metric))
-}
-
-fn is_weekly_metric(metric: &Metric) -> bool {
-    metric.label.to_lowercase().contains("week")
+fn is_long_window_metric(metric: &Metric) -> bool {
+    matches!(metric.window, MetricWindow::Long)
 }
 
 fn point_in_rect(point: (f32, f32), rect: &Rect) -> bool {
@@ -1007,13 +1028,25 @@ fn point_in_rect(point: (f32, f32), rect: &Rect) -> bool {
         && point.1 <= rect.y + rect.h
 }
 
-fn vertical_compact_bar_rect(row: &Rect) -> Rect {
-    Rect {
-        x: row.x + NAME_WIDTH + ROW_GAP,
+/// The bar rectangle for a compact row, or None when the row is too narrow
+/// to carry one. Never returns a negative width: the tier decides before any
+/// arithmetic that could go below zero.
+fn vertical_compact_bar_rect(row: &Rect, tier: RowTier) -> Option<Rect> {
+    let (x, w) = match tier {
+        RowTier::Full => (
+            row.x + NAME_WIDTH + ROW_GAP,
+            row.w - NAME_WIDTH - PCT_WIDTH - ROW_GAP * 2.0,
+        ),
+        // The name column is reclaimed whole; the percent keeps its slot.
+        RowTier::Nameless => (row.x, row.w - PCT_WIDTH - ROW_GAP),
+        RowTier::PercentOnly => return None,
+    };
+    Some(Rect {
+        x,
         y: row.y + (row.h - 3.0) / 2.0,
-        w: row.w - NAME_WIDTH - PCT_WIDTH - ROW_GAP * 2.0,
+        w,
         h: 3.0,
-    }
+    })
 }
 
 /// Hover explanation for a greyed/estimated row: the last stored fetch
@@ -1059,7 +1092,7 @@ fn hovered_hint_text(
             return Some(format!("{}: {}", data.id.display_name(), reason));
         }
 
-        weekly_metric(data).map(|metric| {
+        long_window_metric(data).map(|metric| {
             let prefix = format!("{} {}:", data.id.display_name(), metric.label);
             metric
                 .reset_at
@@ -1126,14 +1159,183 @@ pub fn format_duration(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::MetricWindow;
 
-    fn pct_metric(label: &str, pct: u64) -> Metric {
+    fn row(w: f32) -> Rect {
+        Rect {
+            x: 11.1,
+            y: 4.0,
+            w,
+            h: 22.0,
+        }
+    }
+
+    #[test]
+    fn a_nameless_row_gives_the_name_column_to_the_bar() {
+        let r = row(96.0);
+
+        let full = vertical_compact_bar_rect(&r, RowTier::Full).expect("Full keeps a bar");
+        let nameless =
+            vertical_compact_bar_rect(&r, RowTier::Nameless).expect("Nameless keeps a bar");
+
+        assert_eq!(
+            nameless.x, r.x,
+            "without a name the bar starts at the row's left edge"
+        );
+        assert!(
+            nameless.w > full.w,
+            "the reclaimed name column must widen the bar: full {} vs nameless {}",
+            full.w,
+            nameless.w
+        );
+    }
+
+    #[test]
+    fn a_percent_only_row_builds_no_bar_at_all() {
+        assert!(
+            vertical_compact_bar_rect(&row(60.0), RowTier::PercentOnly).is_none(),
+            "PercentOnly must not produce a rectangle - a negative width would be drawn"
+        );
+    }
+
+    /// Design preview: renders every width step at every detail level to
+    /// %TEMP% so the degradation ladder can be judged by eye — the drawing
+    /// itself is not unit tested. Run explicitly:
+    /// `cargo test preview_width_steps -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_width_steps() {
+        use crate::config::schema::{Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let providers = vec![
+            {
+                let mut d = data(vec![pct_metric("session", 18, MetricWindow::Session)]);
+                d.id = ProviderId::Claude;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 100, MetricWindow::Long)]);
+                d.id = ProviderId::Codex;
+                d
+            },
+        ];
+
+        let dir = std::env::temp_dir();
+        for (dname, detail) in [
+            ("compact", DetailLevel::Compact),
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
+            for (wname, scale) in [
+                ("100", WidthScale::Full),
+                ("075", WidthScale::ThreeQuarters),
+                ("050", WidthScale::Half),
+            ] {
+                let win = layout::compute(
+                    &Layout::Vertical,
+                    &detail,
+                    &scale,
+                    &crate::config::schema::ColumnFlow::Row,
+                    providers.len(),
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_width_{dname}_{wname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} -> {:?}", path.display(), win.row_tier);
+            }
+        }
+    }
+
+    /// Design preview for the column arrangement, same purpose as
+    /// `preview_width_steps`. Run: `cargo test preview_arrangement -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_arrangement() {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let providers = vec![
+            {
+                let mut d = data(vec![pct_metric("session", 18, MetricWindow::Session)]);
+                d.id = ProviderId::Claude;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 100, MetricWindow::Long)]);
+                d.id = ProviderId::Codex;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("session", 44, MetricWindow::Session)]);
+                d.id = ProviderId::Copilot;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("session", 61, MetricWindow::Session)]);
+                d.id = ProviderId::Antigravity;
+                d
+            },
+        ];
+
+        let dir = std::env::temp_dir();
+        for (fname, flow) in [("row", ColumnFlow::Row), ("column", ColumnFlow::Column)] {
+            for (dname, detail) in [
+                ("compact", DetailLevel::Compact),
+                ("medium", DetailLevel::Medium),
+                ("expanded", DetailLevel::Expanded),
+            ] {
+                let win = layout::compute(
+                    &Layout::Horizontal,
+                    &detail,
+                    &WidthScale::Full,
+                    &flow,
+                    providers.len(),
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_flow_{fname}_{dname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} {}x{}", path.display(), win.width, win.height);
+            }
+        }
+    }
+
+    fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
             label: label.into(),
             used: pct,
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: None,
+            window,
         }
     }
 
@@ -1158,7 +1360,10 @@ mod tests {
 
     #[test]
     fn default_view_shows_session_when_weekly_not_exhausted() {
-        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let d = data(vec![
+            pct_metric("Session", 30, MetricWindow::Session),
+            pct_metric("Weekly", 60, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Session");
     }
@@ -1167,7 +1372,10 @@ mod tests {
     fn exhausted_weekly_takes_over_default_view() {
         // Weekly maxed while the session reads low: the bar must reflect the
         // blocking weekly limit without needing a hover.
-        let d = data(vec![pct_metric("Session", 20), pct_metric("Weekly", 100)]);
+        let d = data(vec![
+            pct_metric("Session", 20, MetricWindow::Session),
+            pct_metric("Weekly", 100, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Weekly");
         assert_eq!(active.percentage(), Some(100.0));
@@ -1177,14 +1385,17 @@ mod tests {
     fn exhausted_weekly_shown_when_session_window_absent() {
         // When the weekly cap is hit the source may stop reporting the session
         // window entirely; the weekly must still drive the bar.
-        let d = data(vec![pct_metric("Weekly", 100)]);
+        let d = data(vec![pct_metric("Weekly", 100, MetricWindow::Long)]);
         let active = active_progress_metric(&d, &any_rect(), None).unwrap();
         assert_eq!(active.label, "Weekly");
     }
 
     #[test]
     fn hover_still_reveals_weekly() {
-        let d = data(vec![pct_metric("Session", 30), pct_metric("Weekly", 60)]);
+        let d = data(vec![
+            pct_metric("Session", 30, MetricWindow::Session),
+            pct_metric("Weekly", 60, MetricWindow::Long),
+        ]);
         let active = active_progress_metric(&d, &any_rect(), Some((5.0, 5.0))).unwrap();
         assert_eq!(active.label, "Weekly");
     }

@@ -6,7 +6,7 @@
 //   2. the Codex CLI token from auth.json (READ-ONLY, never refreshed)
 // Both are used for a single undocumented endpoint: wham/usage.
 
-use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -173,18 +173,18 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
     };
 
     let mut metrics = Vec::new();
-    let mut push_window = |key: &str, label: &str| {
-        let window = match rate_limit.get(key) {
+    let mut push_window = |key: &str, label: &str, window: MetricWindow| {
+        let field = match rate_limit.get(key) {
             Some(w) if w.is_object() => w,
             _ => return,
         };
-        let pct = window
+        let pct = field
             .get("used_percent")
             .and_then(|v| v.as_f64())
             .map(|f| f.round().clamp(0.0, 100.0) as u64);
         if let Some(pct) = pct {
             // reset_at is unix epoch seconds.
-            let reset_at = window
+            let reset_at = field
                 .get("reset_at")
                 .and_then(|v| v.as_i64())
                 .and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
@@ -194,13 +194,14 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at,
+                window,
             });
         }
     };
 
     // Order matters: the first metric drives the progress bar.
-    push_window("primary_window", "Session");
-    push_window("secondary_window", "Weekly");
+    push_window("primary_window", "Session", MetricWindow::Session);
+    push_window("secondary_window", "Weekly", MetricWindow::Long);
 
     Ok(metrics)
 }

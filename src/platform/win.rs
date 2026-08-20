@@ -19,21 +19,33 @@ pub struct TaskbarSlot {
     pub height: i32,
     /// False while the auto-hidden taskbar is slid off-screen.
     pub visible: bool,
+    /// False when `TrayNotifyWnd` could not be found and `tray_left` is an
+    /// estimate. Secondary Win11 taskbars have no notification area window.
+    pub tray_found: bool,
 }
 
-/// Locate the primary taskbar and its notification area (screen coords).
-pub fn taskbar_slot() -> Option<TaskbarSlot> {
+/// Locate the target taskbar and its notification area (screen coords).
+/// `PanelDisplay::Secondary` falls back to the primary taskbar when the
+/// requested display does not exist (see `secondary_taskbars`).
+pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<TaskbarSlot> {
     use windows::core::w;
     use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, GetWindowRect};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowRect};
 
     unsafe {
-        let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
-            return None;
-        };
+        // Resolved fresh every call — see `resolve_taskbar`. A missing secondary
+        // display is expected, not exceptional: it falls back to the primary
+        // bar there, because an indicator on the wrong screen is recoverable
+        // and a vanished one looks like a crash.
+        let taskbar = resolve_taskbar(target)?;
+        // Explorer recreates the bars on restart, so the handle we just found
+        // may differ from the one the move/auto-hide hook is comparing events
+        // against. Re-point it here rather than waiting for the user to switch
+        // displays: this is the only code path that runs regularly.
+        rearm_if_stale(taskbar);
         let mut bar = RECT::default();
         if GetWindowRect(taskbar, &mut bar).is_err() {
             return None;
@@ -51,24 +63,79 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
         } else {
             true
         };
-        let tray_left = match FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
-            Ok(tray) => {
-                let mut r = RECT::default();
-                if GetWindowRect(tray, &mut r).is_ok() {
-                    r.left
-                } else {
-                    bar.right
+        let (tray_left, tray_found) =
+            match FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
+                Ok(tray) => {
+                    let mut r = RECT::default();
+                    if GetWindowRect(tray, &mut r).is_ok() {
+                        (r.left, true)
+                    } else {
+                        (
+                            crate::platform::taskbar_geom::estimated_tray_left(
+                                bar.right,
+                                bar.bottom - bar.top,
+                            ),
+                            false,
+                        )
+                    }
                 }
-            }
-            Err(_) => bar.right,
-        };
+                Err(_) => (
+                    crate::platform::taskbar_geom::estimated_tray_left(
+                        bar.right,
+                        bar.bottom - bar.top,
+                    ),
+                    false,
+                ),
+            };
         Some(TaskbarSlot {
             tray_left,
             top: bar.top,
             height: bar.bottom - bar.top,
             visible,
+            tray_found,
         })
     }
+}
+
+/// Every `Shell_SecondaryTrayWnd`, ordered left to right by monitor.
+/// Windows creates one per display when "show my taskbar on all displays" is
+/// on; there are none when it is off, which is why callers must tolerate an
+/// empty result rather than treating it as an error.
+pub fn secondary_taskbars() -> Vec<isize> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowRect};
+
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let out = &mut *(lparam.0 as *mut Vec<(isize, i32)>);
+        let mut cls = [0u16; 32];
+        let n = GetClassNameW(hwnd, &mut cls);
+        if n > 0 && String::from_utf16_lossy(&cls[..n as usize]) == "Shell_SecondaryTrayWnd" {
+            let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let left = if GetMonitorInfoW(monitor, &mut mi).as_bool() {
+                mi.rcMonitor.left
+            } else {
+                let mut r = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut r);
+                r.left
+            };
+            out.push((hwnd.0 as isize, left));
+        }
+        BOOL(1)
+    }
+
+    let mut found: Vec<(isize, i32)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&mut found as *mut _ as isize));
+    }
+    crate::platform::taskbar_geom::order_bars(&mut found);
+    found.into_iter().map(|(hwnd, _)| hwnd).collect()
 }
 
 /// Present a premultiplied-BGRA image as the ENTIRE content of a per-pixel
@@ -77,7 +144,14 @@ pub fn taskbar_slot() -> Option<TaskbarSlot> {
 /// only the painted digits/bars appear — there is no opaque panel window/box,
 /// which is what made the old softbuffer panel look like a pasted rectangle.
 /// `bgra` must be premultiplied BGRA, top-down, w*h*4 bytes.
-pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32) {
+pub fn present_layered(
+    hwnd: isize,
+    bgra: &[u8],
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<(), u32> {
     use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
@@ -90,7 +164,7 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
         WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
     if w <= 0 || h <= 0 || bgra.len() < (w * h * 4) as usize {
-        return;
+        return Err(0);
     }
     unsafe {
         let hwnd = HWND(hwnd as _);
@@ -119,7 +193,9 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
             ..Default::default()
         };
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        if let Ok(dib) = CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+        let result = if let Ok(dib) =
+            CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+        {
             if !bits.is_null() {
                 std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, (w * h * 4) as usize);
             }
@@ -133,7 +209,7 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
                 SourceConstantAlpha: 255,
                 AlphaFormat: AC_SRC_ALPHA as u8,
             };
-            let _ = UpdateLayeredWindow(
+            let ok = UpdateLayeredWindow(
                 hwnd,
                 screen_dc,
                 Some(&dst),
@@ -144,9 +220,17 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
                 Some(&blend),
                 ULW_ALPHA,
             );
+            let update_result = if ok.is_ok() {
+                Ok(())
+            } else {
+                Err(windows::Win32::Foundation::GetLastError().0)
+            };
             SelectObject(mem_dc, old);
             let _ = DeleteObject(HGDIOBJ(dib.0));
-        }
+            update_result
+        } else {
+            Err(windows::Win32::Foundation::GetLastError().0)
+        };
         let _ = DeleteDC(mem_dc);
         ReleaseDC(None, screen_dc);
 
@@ -160,6 +244,8 @@ pub fn present_layered(hwnd: isize, bgra: &[u8], x: i32, y: i32, w: i32, h: i32)
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
+
+        result
     }
 }
 
@@ -308,8 +394,9 @@ pub fn bring_to_front(hwnd: isize) {
 /// tray icon, which the shell keeps visible, while this is true. Matched by the
 /// foreground window's host process (Start/Search are served by these on
 /// Win11; the exact host varies by build, so several are accepted).
-pub fn foreground_scrim_active() -> bool {
+pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> bool {
     use windows::Win32::Foundation::{CloseHandle, FALSE};
+    use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
@@ -343,14 +430,30 @@ pub fn foreground_scrim_active() -> bool {
         }
         let path = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
         let name = path.rsplit(['\\', '/']).next().unwrap_or(path.as_str());
-        matches!(
+        if !matches!(
             name,
             "searchhost.exe"
                 | "startmenuexperiencehost.exe"
                 | "searchapp.exe"
                 | "shellexperiencehost.exe"
-        )
+        ) {
+            return false;
+        }
+        // Same shell process, different screen: the panel is not obstructed.
+        let Some(slot) = taskbar_slot(target) else {
+            return true;
+        };
+        let panel_monitor = monitor_at(slot.tray_left - 1, slot.top + slot.height / 2);
+        let scrim_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST).0 as isize;
+        panel_monitor == scrim_monitor
     }
+}
+
+/// The monitor handle containing a screen point, as an isize for comparison.
+fn monitor_at(x: i32, y: i32) -> isize {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+    unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST).0 as isize }
 }
 
 /// True while a fullscreen app (a game, a video, an F11 browser) owns the
@@ -360,7 +463,7 @@ pub fn foreground_scrim_active() -> bool {
 /// over the game (and the foreground-raise would even re-assert it there).
 /// While true the indicator hides the panel, exactly like the taskbar; the
 /// next foreground change (alt-tab back to the desktop) restores it.
-pub fn fullscreen_foreground_active() -> bool {
+pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay) -> bool {
     // Deliberately NOT SHQueryUserNotificationState: that reports a
     // machine-wide state which stays "busy" for as long as a fullscreen game
     // is RUNNING, even while the user is back on the desktop with another
@@ -369,7 +472,7 @@ pub fn fullscreen_foreground_active() -> bool {
     // in the foreground). What matters is whether a fullscreen window is in
     // FRONT of the taskbar right now, which the geometric check answers
     // precisely, with no shell-update latency.
-    foreground_covers_taskbar_monitor()
+    foreground_covers_taskbar_monitor(target)
 }
 
 /// Whether the current foreground window covers the ENTIRE monitor that hosts
@@ -380,15 +483,12 @@ pub fn fullscreen_foreground_active() -> bool {
 /// an ordinary window the bar slides over, not a fullscreen app. Real games
 /// run as popup windows without WS_MAXIMIZE; F11 browser fullscreen is caught
 /// by the shell state either way.
-fn foreground_covers_taskbar_monitor() -> bool {
-    use windows::core::w;
+fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay) -> bool {
     use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+        GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowThreadProcessId, GWL_STYLE, WS_MAXIMIZE,
     };
     unsafe {
@@ -414,10 +514,23 @@ fn foreground_covers_taskbar_monitor() -> bool {
                 return false;
             }
         }
-        let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
+        // The panel's display, not the primary one. A game fullscreen on the
+        // secondary must hide a panel that lives there; a game on the primary
+        // must not.
+        //
+        // No taskbar slot to compare against: assume NOT fullscreen. `false`
+        // is the less destructive answer here — unlike the scrim check above,
+        // where an unresolved slot assumes obstruction, `true` would gate
+        // every presentation path (suppress_for_fullscreen) until an explicit
+        // restore, hiding the panel indefinitely on a spurious query failure
+        // rather than just skipping one obstruction check.
+        let Some(slot) = taskbar_slot(target) else {
             return false;
         };
-        let bar_monitor = MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST);
+        let bar_monitor = windows::Win32::Graphics::Gdi::HMONITOR(monitor_at(
+            slot.tray_left - 1,
+            slot.top + slot.height / 2,
+        ) as _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -489,6 +602,21 @@ pub fn create_tooltip_window() -> isize {
     }
 }
 
+/// Destroy a window we created ourselves (the tooltip). The OS reclaims it at
+/// process exit anyway, so this matters only if the owner is ever recreated
+/// rather than mutated — at which point the old window would linger, invisible
+/// and unowned, for the rest of the session.
+pub fn destroy_window(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
+    if hwnd == 0 {
+        return;
+    }
+    unsafe {
+        let _ = DestroyWindow(HWND(hwnd as _));
+    }
+}
+
 /// Hide the panel window (indicator switched away / taskbar slid away).
 pub fn hide_window(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
@@ -498,27 +626,136 @@ pub fn hide_window(hwnd: isize) {
     }
 }
 
+// Handles the taskbar watch hook compares incoming WinEvents against. Module
+// scope because both the hook callback (inside `install_taskbar_watch`) and
+// `watch_taskbar` (called at startup and whenever the target display
+// changes) need to read/write them.
+static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// Last secondary bar we successfully enumerated, and the index it answered.
+///
+/// Windows drops `Shell_SecondaryTrayWnd` out of `EnumWindows` for as long as
+/// the Start menu is up — measured, not assumed. Without this cache the
+/// enumeration comes back empty for those few hundred milliseconds, the
+/// primary-bar fallback fires, and the panel JUMPS TO THE OTHER DISPLAY every
+/// time the user presses the Windows key. It then looks like the panel
+/// "disappeared" from the display it was configured for.
+static LAST_SECONDARY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static LAST_SECONDARY_IDX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Resolve the taskbar a target refers to, right now.
+///
+/// Deliberately re-queried on every call rather than cached: `Shell_TrayWnd`
+/// and `Shell_SecondaryTrayWnd` are DESTROYED AND RECREATED whenever Explorer
+/// restarts — which happens on its own, days into a session, with no event the
+/// app subscribes to. A handle captured at startup is a handle to a window
+/// that no longer exists.
+fn resolve_taskbar(
+    target: crate::config::schema::PanelDisplay,
+) -> Option<windows::Win32::Foundation::HWND> {
+    use crate::config::schema::PanelDisplay;
+    use windows::core::w;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+    unsafe {
+        match target {
+            PanelDisplay::Primary => FindWindowW(w!("Shell_TrayWnd"), None).ok(),
+            PanelDisplay::Secondary(i) => {
+                use std::sync::atomic::Ordering::Relaxed;
+                use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+                if let Some(&h) = secondary_taskbars().get(i as usize) {
+                    LAST_SECONDARY.store(h, Relaxed);
+                    LAST_SECONDARY_IDX.store(i as i32, Relaxed);
+                    return Some(HWND(h as _));
+                }
+                // Enumeration came back without it. Two very different causes,
+                // and telling them apart is the whole point: the Start menu
+                // hides the bar from enumeration while leaving the window
+                // alive, whereas an unplugged monitor destroys it. Trust a
+                // handle that is still a window; only a dead one means the
+                // display is really gone.
+                let cached = LAST_SECONDARY.load(Relaxed);
+                if cached != 0
+                    && LAST_SECONDARY_IDX.load(Relaxed) == i as i32
+                    && IsWindow(HWND(cached as _)).as_bool()
+                {
+                    return Some(HWND(cached as _));
+                }
+                // Genuinely gone: fall back to the primary bar rather than
+                // hiding, because a visible indicator on the wrong display is
+                // recoverable and a vanished one looks like a crash.
+                FindWindowW(w!("Shell_TrayWnd"), None).ok()
+            }
+        }
+    }
+}
+
+/// Store the handles the hook compares against.
+fn arm_watch(taskbar: windows::Win32::Foundation::HWND) {
+    use windows::core::w;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
+    unsafe {
+        TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
+        TRAY.store(
+            FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None)
+                .map(|t| t.0 as isize)
+                .unwrap_or(0),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+}
+
+/// Re-point the hook if the taskbar it watches is no longer the taskbar we
+/// resolve. Cheap: one integer compare on the common path.
+///
+/// **Why this is not optional.** The hook is armed once at startup and again
+/// on an explicit display switch. Explorer restarting between those two
+/// moments leaves the hook comparing events against a destroyed window: every
+/// auto-hide slide stops being reported, and the panel survives only on the
+/// 60-second provider tick — it stops following the bar and looks like it
+/// vanished. Measured in the field: after five days of uptime BOTH bar handles
+/// had changed.
+fn rearm_if_stale(taskbar: windows::Win32::Foundation::HWND) {
+    if TASKBAR.load(std::sync::atomic::Ordering::Relaxed) != taskbar.0 as isize {
+        tracing::debug!("taskbar handle changed, re-arming the watch");
+        arm_watch(taskbar);
+    }
+}
+
+/// Point the existing hook at a taskbar. The hook itself is process-wide and
+/// installed once; only the handles it compares against change.
+pub fn watch_taskbar(target: crate::config::schema::PanelDisplay) {
+    let Some(taskbar) = resolve_taskbar(target) else {
+        return;
+    };
+    arm_watch(taskbar);
+}
+
 /// Watch the taskbar for moves/slides (auto-hide) and the notification area
 /// for width changes (icons pinned/unpinned), event-driven via
 /// `SetWinEventHook` — no polling, keeps the 0% idle CPU budget. The callback
 /// fires on THIS thread's message loop and forwards a `TaskbarMoved` user
-/// event so the panel can reposition.
-pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>) {
+/// event so the panel can reposition. Installs the process-wide hook exactly
+/// once, then points it at `target` (see `watch_taskbar`).
+pub fn install_taskbar_watch(
+    proxy: tao::event_loop::EventLoopProxy<crate::app::UserEvent>,
+    target: crate::config::schema::PanelDisplay,
+) {
     use std::sync::Mutex;
     use std::sync::OnceLock;
     use windows::core::w;
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowExW, FindWindowW, GetDesktopWindow, GetWindowThreadProcessId,
-        EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW,
-        WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+        FindWindowW, GetDesktopWindow, GetWindowThreadProcessId, EVENT_OBJECT_LOCATIONCHANGE,
+        EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+        WINEVENT_SKIPOWNPROCESS,
     };
 
     static PROXY: OnceLock<Mutex<tao::event_loop::EventLoopProxy<crate::app::UserEvent>>> =
         OnceLock::new();
-    static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-    static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
     unsafe extern "system" fn on_event(
         _hook: HWINEVENTHOOK,
@@ -575,17 +812,29 @@ pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::
     }
 
     unsafe {
+        // Install the hooks ONCE per process. Nothing unhooks them, and the
+        // PROXY OnceLock below only makes the proxy idempotent, not the hooks:
+        // a second call would add three more global hooks while the first three
+        // keep firing, so every taskbar event would arrive twice. Re-pointing
+        // the watch at a different bar is `watch_taskbar`, which touches only
+        // the comparison handles and is safe to call as often as needed.
+        static HOOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if HOOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            tracing::debug!("taskbar watch already installed; re-pointing only");
+            watch_taskbar(target);
+            return;
+        }
+
+        // Any taskbar window works here: the pid is Explorer-process-wide (all
+        // taskbars, primary and secondary, live in the same explorer.exe), so
+        // scoping the hook via the primary bar is enough regardless of which
+        // bar the panel is actually attached to. `watch_taskbar` below is what
+        // points the callback's comparison handles at the right one.
         let Ok(taskbar) = FindWindowW(w!("Shell_TrayWnd"), None) else {
+            // Nothing was hooked - let a later call try again.
+            HOOKED.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
-        TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        // The notification-area child: its LOCATIONCHANGE is how we learn that
-        // icons were pinned/unpinned (the bar itself does not move then).
-        // Resolved once, like the bar — an Explorer restart invalidates both
-        // hwnds and the pid-scoped hook alike.
-        if let Ok(tray) = FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
-            TRAY.store(tray.0 as isize, std::sync::atomic::Ordering::Relaxed);
-        }
         let mut pid = 0u32;
         GetWindowThreadProcessId(taskbar, Some(&mut pid));
         let _ = PROXY.set(Mutex::new(proxy));
@@ -639,6 +888,7 @@ pub fn install_taskbar_watch(proxy: tao::event_loop::EventLoopProxy<crate::app::
             );
         }
     }
+    watch_taskbar(target);
 }
 
 /// Promote this exe's notification icons onto the always-visible taskbar

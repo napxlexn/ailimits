@@ -17,8 +17,8 @@ use crate::{
     notifications::toast::ToastNotifier,
     providers::{
         antigravity::AntigravityProvider, claude::ClaudeProvider, codex::CodexProvider,
-        copilot::CopilotProvider, key_label_for, usage_token_label_for, Metric, Provider,
-        ProviderData, ProviderId, ProviderStatus,
+        copilot::CopilotProvider, key_label_for, usage_token_label_for, Metric, MetricWindow,
+        Provider, ProviderData, ProviderId, ProviderStatus,
     },
     ui::{
         context_menu::{ContextMenu, MenuAction},
@@ -93,7 +93,14 @@ pub enum TrayKind {
 /// foreground event) re-presents it, exactly like the taskbar reappears. When
 /// a non-fullscreen fallback clears, a redraw re-presents the still-positioned
 /// panel. No-op outside the Panel modes (every panel method guards on the mode).
+///
+/// `target` is the display the panel is currently attached to: the scrim and
+/// fullscreen signals are queried against that display specifically (a scrim
+/// or a fullscreen app on some OTHER display must not blank a panel that is
+/// plainly visible here), while the third signal, coverage, is read straight
+/// from the panel's own on-screen rect and needs no display of its own.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 fn eval_indicator_fallback(
     panel: &mut TaskbarPanel,
     tray: &mut Tray,
@@ -102,13 +109,62 @@ fn eval_indicator_fallback(
     theme: &ComputedTheme,
     fallback_was_active: &mut bool,
     fullscreen_was_active: &mut bool,
+    target: crate::config::schema::PanelDisplay,
 ) {
-    let scrim = crate::platform::foreground_scrim_active();
-    let fullscreen = crate::platform::fullscreen_foreground_active();
+    let scrim = crate::platform::foreground_scrim_active(target);
+    let fullscreen = crate::platform::fullscreen_foreground_active(target);
     // While hidden for fullscreen the rect is None, so is_covered reads false —
     // ordering matters: check coverage before this pass may hide the panel.
     let covered = panel.is_covered();
-    let fallback = scrim || covered || fullscreen;
+    // `covered` can latch the fallback on forever. Closing the Start menu is the
+    // repro: the scrim clears, but the panel has meanwhile lost the z-fight to
+    // the taskbar, so `is_covered` still reads true, the fallback stays on, and
+    // nothing ever lifts the panel again — it keeps its rectangle (so it is not
+    // "hidden") while the bar owns its pixels. Verified live: after Start closed
+    // the log read `scrim false, covered true` on every evaluation and the panel
+    // never came back.
+    //
+    // So when nothing explains the obstruction, try lifting the panel once and
+    // ask again. This cannot weaken the guarantees that matter: a scrim or a
+    // fullscreen app on this display is judged separately above, and during the
+    // cursor-edge "rude topmost" peek the compositor keeps the bar on top
+    // regardless, so the panel stays covered and the fallback still engages.
+    let covered = if covered && !scrim && !fullscreen {
+        panel.raise();
+        panel.is_covered()
+    } else {
+        covered
+    };
+    // A panel that could not place itself at all (no taskbar resolved, or a
+    // vertical bar we refuse to draw on) reads as "not covered" — an absent
+    // rectangle cannot be obstructed. Without this the user is left with no
+    // indicator whatsoever and no hint why.
+    let unavailable = panel.is_unavailable();
+    let fallback =
+        crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen, unavailable);
+    // Which of the four inputs decided it. Without this a stuck fallback is
+    // indistinguishable from a correct one: the panel is simply absent and the
+    // tray icon is simply present, with nothing saying why. Logged on every
+    // change of verdict, and at trace level on every evaluation.
+    if fallback != *fallback_was_active {
+        tracing::debug!(
+            "indicator fallback {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
+            if fallback { "ON" } else { "off" },
+            scrim,
+            covered,
+            fullscreen,
+            unavailable
+        );
+    } else {
+        tracing::trace!(
+            "indicator fallback unchanged: {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
+            fallback,
+            scrim,
+            covered,
+            fullscreen,
+            unavailable
+        );
+    }
     tray.set_scrim_fallback(fallback, menu, providers, theme);
     if fullscreen {
         // Idempotent — also re-hides the panel if anything re-presented it
@@ -178,16 +234,22 @@ fn cacheable_provider_data(data: &ProviderData) -> Option<ProviderData> {
     prune_provider_cache_entry(data)
 }
 
+/// Whether a live metric already occupies the slot a cached metric would fill.
+///
+/// The label is authoritative when both sides have one. Beyond that, only
+/// session-window metrics may collapse onto a shared slot by unit: providers
+/// rename those rows between fetches (Antigravity follows Google's model
+/// rotation), whereas long windows are distinct named pools — Claude reports
+/// Weekly, Opus and Sonnet at once — so two differently-labelled long metrics
+/// are always different slots.
 fn metrics_match_slot(a: &Metric, b: &Metric) -> bool {
-    a.label.eq_ignore_ascii_case(&b.label)
-        || (metric_is_weekly(a) && metric_is_weekly(b))
-        || (!metric_is_weekly(a)
-            && !metric_is_weekly(b)
-            && std::mem::discriminant(&a.unit) == std::mem::discriminant(&b.unit))
-}
-
-fn metric_is_weekly(metric: &Metric) -> bool {
-    metric.label.to_lowercase().contains("week")
+    if a.label.eq_ignore_ascii_case(&b.label) {
+        return true;
+    }
+    if matches!(a.window, MetricWindow::Long) || matches!(b.window, MetricWindow::Long) {
+        return false;
+    }
+    std::mem::discriminant(&a.unit) == std::mem::discriminant(&b.unit)
 }
 
 fn merge_cached_metrics(mut data: ProviderData, cached: Option<&ProviderData>) -> ProviderData {
@@ -440,14 +502,30 @@ fn apply_windows_glass(window: &tao::window::Window) {
     // Glass tint — the single dark theme.
     let (tint_r, tint_g, tint_b, tint_a): (u32, u32, u32, u32) = (18, 18, 18, 28);
 
+    // Resolved ONCE. This function runs on every focus change, every scale
+    // change and every drag that ends on another monitor; calling LoadLibraryA
+    // each time bumps user32's reference count with no matching FreeLibrary and
+    // re-resolves an export that cannot move. `None` caches the failure too, so
+    // a machine without the export does not retry on every focus.
+    static COMPOSITION_PROC: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+
     unsafe {
         let hwnd = window.hwnd() as HWND;
-        let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
-        if user32.is_null() {
-            warn!("acrylic accent unavailable: failed to load user32.dll");
-        } else if let Some(proc) =
-            GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast())
-        {
+        let proc = *COMPOSITION_PROC.get_or_init(|| {
+            let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
+            if user32.is_null() {
+                warn!("acrylic accent unavailable: failed to load user32.dll");
+                return None;
+            }
+            match GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast()) {
+                Some(p) => Some(p as usize),
+                None => {
+                    warn!("acrylic accent unavailable: SetWindowCompositionAttribute missing");
+                    None
+                }
+            }
+        });
+        if let Some(proc) = proc {
             let set_window_composition_attribute: SetWindowCompositionAttribute =
                 std::mem::transmute(proc);
             let apply_state = |state: u32, color: u32| {
@@ -471,8 +549,6 @@ fn apply_windows_glass(window: &tao::window::Window) {
                 ACCENT_ENABLE_BLURBEHIND,
                 tint_r | (tint_g << 8) | (tint_b << 16) | (tint_a << 24),
             );
-        } else {
-            warn!("acrylic accent unavailable: SetWindowCompositionAttribute missing");
         }
 
         // Native Win11 rounded corners: DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2.
@@ -552,7 +628,13 @@ fn apply_ui_change(
     menu: &ContextMenu,
     provider_count: usize,
 ) {
-    *win_layout = layout::compute(&config.ui.layout, &config.ui.detail, provider_count);
+    *win_layout = layout::compute(
+        &config.ui.layout,
+        &config.ui.detail,
+        &config.ui.width_scale,
+        &config.ui.column_flow,
+        provider_count,
+    );
     *theme = ComputedTheme::compute(&config.ui);
 
     let (w, h) = (win_layout.width as u32, win_layout.height as u32);
@@ -566,6 +648,26 @@ fn apply_ui_change(
         *pixmap = pm;
     }
     win_state.size = (win_layout.width as f64, win_layout.height as f64);
+
+    // Resizing keeps the top-left corner, so a widget parked against the right
+    // or bottom edge would grow straight off the screen. Pull it back into the
+    // work area of the monitor it sits on.
+    if let Ok(wp) = window.outer_position() {
+        let pos = (wp.x as f64, wp.y as f64);
+        let centre = (
+            (pos.0 + win_state.size.0 / 2.0) as i32,
+            (pos.1 + win_state.size.1 / 2.0) as i32,
+        );
+        if let Some((l, t, r, b)) = crate::platform::work_area_at(centre.0, centre.1) {
+            let work = (l as f64, t as f64, r as f64, b as f64);
+            let (nx, ny) = crate::ui::window::clamp_to_work_area(pos, win_state.size, work);
+            if (nx, ny) != pos {
+                window.set_outer_position(PhysicalPosition::new(nx as i32, ny as i32));
+                win_state.pos = (nx, ny);
+            }
+        }
+    }
+
     menu.sync(config, win_state.pinned);
     window.request_redraw();
 }
@@ -646,7 +748,13 @@ pub fn run() -> Result<()> {
     // 5. Layout, theme, renderer — mut: switched live from the menu.
     // The layout is computed from VISIBLE providers, not all of them.
     let mut visible_count = visible_data(&config, &display).len();
-    let mut win_layout = layout::compute(&config.ui.layout, &config.ui.detail, visible_count);
+    let mut win_layout = layout::compute(
+        &config.ui.layout,
+        &config.ui.detail,
+        &config.ui.width_scale,
+        &config.ui.column_flow,
+        visible_count,
+    );
     let mut theme = ComputedTheme::compute(&config.ui);
     let renderer = Renderer::new()?;
 
@@ -769,8 +877,10 @@ pub fn run() -> Result<()> {
     // 9c. The taskbar mini panel (the readable indicator) + the event-driven
     // watcher that keeps it glued to the (auto-hiding) taskbar.
     let mut panel = TaskbarPanel::new(&event_loop)?;
+    panel.set_offset(config.general.panel_offset_x, config.general.panel_offset_y);
+    panel.set_display(config.general.panel_display);
     #[cfg(target_os = "windows")]
-    crate::platform::install_taskbar_watch(proxy.clone());
+    crate::platform::install_taskbar_watch(proxy.clone(), config.general.panel_display);
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
     let mut window_visible = true;
     // The indicator falls back to a tray icon while a Panel overlay cannot be
@@ -817,13 +927,14 @@ pub fn run() -> Result<()> {
     // Save the config in the background through a single serialised writer
     // (storage::spawn_saver): a burst coalesces to the latest config on a
     // one-slot channel, so the newest setting always wins and a slow disk
-    // cannot grow the queue.
+    // cannot grow the queue. The saver itself is kept for the shutdown
+    // handshake so the final write cannot race an in-flight background one.
+    let saver = storage::spawn_saver(&rt_handle, storage::config_path());
     let save_config = {
-        let tx = storage::spawn_saver(&rt_handle, storage::config_path());
-        move |cfg: Config| {
-            let _ = tx.send(Some(cfg));
-        }
+        let handle = saver.handle();
+        move |cfg: Config| handle.save(cfg)
     };
+    let mut saver_at_exit = Some(saver);
 
     info!("AI Limits Widget ready");
 
@@ -852,6 +963,18 @@ pub fn run() -> Result<()> {
                 if let Some(t) = recheck_at {
                     if now >= t {
                         recheck_at = None;
+                        // **Re-place before re-judging.** The taskbar SLIDES in
+                        // and out over ~200ms, and the move events arrive
+                        // during that slide: acting on the first one pins the
+                        // panel to a mid-animation position — measured at bar
+                        // top 1410 and 1413 while the settled bar is at 1392 —
+                        // which leaves it hanging below the bar, partly off the
+                        // screen edge, looking like it never appeared. Nothing
+                        // else re-runs placement afterwards: the fallback
+                        // evaluation only redraws into the rectangle it is
+                        // given, so the stale position survived until the next
+                        // slide or the 60-second provider tick.
+                        panel.on_taskbar_moved(&visible_data(&config, &display));
                         eval_indicator_fallback(
                             &mut panel,
                             &mut tray,
@@ -860,6 +983,7 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            config.general.panel_display,
                         );
                     }
                 }
@@ -1084,7 +1208,7 @@ pub fn run() -> Result<()> {
                             if pct >= threshold && cooled {
                                 last_toast.insert(data.id.clone(), std::time::Instant::now());
                                 if config.notifications.enabled {
-                                    let body = match data.next_reset() {
+                                    let body = match data.headline_reset() {
                                         Some(t) => {
                                             let secs = t
                                                 .signed_duration_since(Utc::now())
@@ -1109,7 +1233,7 @@ pub fn run() -> Result<()> {
                                     hooks::HookEvent::Threshold,
                                     data.id.clone(),
                                     Some(pct),
-                                    data.next_reset(),
+                                    data.headline_reset(),
                                 );
                             }
 
@@ -1126,7 +1250,7 @@ pub fn run() -> Result<()> {
                                         hooks::HookEvent::Reset,
                                         data.id.clone(),
                                         Some(pct),
-                                        data.next_reset(),
+                                        data.headline_reset(),
                                     );
                                 }
                             }
@@ -1137,7 +1261,7 @@ pub fn run() -> Result<()> {
                             // resets before the projected hit).
                             let trend = trends.entry(data.id.clone()).or_default();
                             trend.push(Utc::now(), pct);
-                            match trend.forecast(data.next_reset()) {
+                            match trend.forecast(data.headline_reset()) {
                                 Some(f) if f.hit_at > Utc::now() => {
                                     forecasts.insert(data.id.clone(), f.hit_at);
                                 }
@@ -1156,7 +1280,7 @@ pub fn run() -> Result<()> {
                                 hooks::HookEvent::Startup,
                                 data.id.clone(),
                                 data.primary_percentage(),
-                                data.next_reset(),
+                                data.headline_reset(),
                             );
                         }
 
@@ -1284,6 +1408,7 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            config.general.panel_display,
                         );
                         recheck_at =
                             Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
@@ -1320,6 +1445,29 @@ pub fn run() -> Result<()> {
                         // Tray and panel each ignore the other's modes.
                         tray.set_mode(kind, &menu.menu, &visible_data(&config, &display), &theme);
                         panel.set_mode(kind, &visible_data(&config, &display));
+                        menu.sync(&config, win_state.pinned);
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::SetPanelDisplay(target)) => {
+                        config.general.panel_display = target;
+                        panel.set_display(target);
+                        #[cfg(target_os = "windows")]
+                        crate::platform::watch_taskbar(target);
+                        // A full restart, not a reposition: `on_taskbar_moved`
+                        // returns early while the panel is suppressed, so a
+                        // panel parked by a fullscreen app could not be brought
+                        // back by switching displays at all.
+                        panel.restart(&visible_data(&config, &display));
+                        // The new display may be owned by a fullscreen app; the
+                        // reposition above cannot see that, so arm the same
+                        // deferred re-check TaskbarMoved uses to catch it a beat
+                        // later instead of painting straight over the game.
+                        #[cfg(target_os = "windows")]
+                        {
+                            recheck_at = Some(
+                                std::time::Instant::now() + std::time::Duration::from_millis(150),
+                            );
+                        }
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }
@@ -1517,6 +1665,36 @@ pub fn run() -> Result<()> {
                         );
                         save_config(config.clone());
                     }
+                    Some(MenuAction::SetWidthScale(w)) => {
+                        config.ui.width_scale = w;
+                        apply_ui_change(
+                            &config,
+                            &mut win_layout,
+                            &mut theme,
+                            &mut pixmap,
+                            &mut surface,
+                            &window,
+                            &mut win_state,
+                            &menu,
+                            visible_count,
+                        );
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::SetColumnFlow(f)) => {
+                        config.ui.column_flow = f;
+                        apply_ui_change(
+                            &config,
+                            &mut win_layout,
+                            &mut theme,
+                            &mut pixmap,
+                            &mut surface,
+                            &window,
+                            &mut win_state,
+                            &menu,
+                            visible_count,
+                        );
+                        save_config(config.clone());
+                    }
                     Some(MenuAction::SetPalette(p)) => {
                         // Picking a palette disables monochrome.
                         config.ui.palette = p;
@@ -1603,8 +1781,7 @@ pub fn run() -> Result<()> {
                     Some(MenuAction::ToggleAutoUpdate) => {
                         config.general.auto_update = !config.general.auto_update;
                         // The updater task reads this before each check.
-                        auto_update_enabled
-                            .store(config.general.auto_update, Ordering::Relaxed);
+                        auto_update_enabled.store(config.general.auto_update, Ordering::Relaxed);
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }
@@ -1620,7 +1797,107 @@ pub fn run() -> Result<()> {
                 },
             },
 
+            // tao calls process::exit() right after this event, and that does
+            // not wait for the background writer. Hand the writer the final
+            // config and wait for it to finish, so a setting changed moments
+            // before quitting survives — and no in-flight background write can
+            // land after it. This one arm covers every exit path (window
+            // close, tray Quit, menu Quit).
+            Event::LoopDestroyed => {
+                if let Some(saver) = saver_at_exit.take() {
+                    saver.shutdown(config.clone(), &rt_handle);
+                }
+            }
+
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::MetricUnit;
+
+    fn pct(label: &str, used: u64, window: MetricWindow) -> Metric {
+        Metric {
+            label: label.to_string(),
+            used,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: None,
+            window,
+        }
+    }
+
+    fn data(metrics: Vec<Metric>) -> ProviderData {
+        ProviderData {
+            id: ProviderId::Claude,
+            status: ProviderStatus::Ok,
+            metrics,
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    #[test]
+    fn a_session_metric_never_covers_a_long_windows_slot() {
+        // The old label guess called neither of these "weekly" and then matched
+        // them on their shared unit, so a cached Opus row was thrown away.
+        let session = pct("Session", 20, MetricWindow::Session);
+        let opus = pct("Opus", 100, MetricWindow::Long);
+        assert!(!metrics_match_slot(&session, &opus));
+    }
+
+    #[test]
+    fn two_different_long_pools_are_different_slots() {
+        // Claude reports Weekly, Opus and Sonnet at the same time; one long
+        // window no longer stands for all of them.
+        let weekly = pct("Weekly", 50, MetricWindow::Long);
+        let opus = pct("Opus", 100, MetricWindow::Long);
+        assert!(!metrics_match_slot(&weekly, &opus));
+    }
+
+    #[test]
+    fn the_same_label_is_always_the_same_slot() {
+        let a = pct("Weekly", 50, MetricWindow::Long);
+        let b = pct("Weekly", 90, MetricWindow::Long);
+        assert!(metrics_match_slot(&a, &b));
+        let c = pct("Session", 10, MetricWindow::Session);
+        let d = pct("session", 80, MetricWindow::Session);
+        assert!(metrics_match_slot(&c, &d));
+    }
+
+    #[test]
+    fn session_metrics_with_different_labels_still_share_a_slot_by_unit() {
+        // Antigravity renames its rows as Google rotates models, so two session
+        // metrics of the same unit must keep collapsing onto one slot.
+        let a = pct("2.5 Pro", 30, MetricWindow::Session);
+        let b = pct("3.6 Flash", 40, MetricWindow::Session);
+        assert!(metrics_match_slot(&a, &b));
+    }
+
+    #[test]
+    fn merging_restores_long_pools_the_api_omitted_this_cycle() {
+        // Claude answers "seven_day_opus": null on some cycles; the cached rows
+        // must come back instead of being swallowed by the Session metric.
+        let live = data(vec![
+            pct("Session", 20, MetricWindow::Session),
+            pct("Weekly", 60, MetricWindow::Long),
+        ]);
+        let cached = data(vec![
+            pct("Session", 15, MetricWindow::Session),
+            pct("Weekly", 55, MetricWindow::Long),
+            pct("Opus", 100, MetricWindow::Long),
+            pct("Sonnet", 40, MetricWindow::Long),
+        ]);
+        let merged = merge_cached_metrics(live, Some(&cached));
+        let labels: Vec<&str> = merged.metrics.iter().map(|m| m.label.as_str()).collect();
+        assert!(labels.contains(&"Opus"), "Opus was dropped: {labels:?}");
+        assert!(labels.contains(&"Sonnet"), "Sonnet was dropped: {labels:?}");
+        // The live values must win for the slots the API did return.
+        let weekly = merged.metrics.iter().find(|m| m.label == "Weekly").unwrap();
+        assert_eq!(weekly.used, 60);
+        assert_eq!(merged.metrics.len(), 4, "no duplicate slots: {labels:?}");
+    }
 }

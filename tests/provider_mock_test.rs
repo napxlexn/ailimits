@@ -1,6 +1,8 @@
 // tests/provider_mock_test.rs — provider logic tests, no network involved.
 
-use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+use ailimits::providers::{
+    Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+};
 use chrono::Utc;
 
 // Helper: a metric with used/limit.
@@ -11,6 +13,7 @@ fn metric(used: u64, limit: Option<u64>) -> Metric {
         limit,
         unit: MetricUnit::Requests,
         reset_at: None,
+        window: MetricWindow::Session,
     }
 }
 
@@ -33,6 +36,7 @@ fn token_display_text_uses_short_format() {
         limit: Some(1_000_000),
         unit: MetricUnit::Tokens,
         reset_at: None,
+        window: MetricWindow::Session,
     };
     // 112000 → "112k", 1000000 → "1.0M".
     assert_eq!(m.display_text(), "112k / 1.0M");
@@ -166,61 +170,6 @@ fn antigravity_keyring_token_skips_expired_token() {
 }
 
 #[test]
-fn antigravity_bucket_quota_parses_real_schema() {
-    use ailimits::providers::antigravity::parse_quota_buckets;
-
-    // Real schema captured live 2026-06-11: a `buckets` array.
-    let body = r#"{"buckets": [
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash", "remainingFraction": 1},
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash-lite", "remainingFraction": 1},
-        {"resetTime": "2026-06-12T20:26:13Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-pro", "remainingFraction": 0.30}
-    ]}"#;
-    let metrics = parse_quota_buckets(body).expect("should parse");
-    assert_eq!(metrics.len(), 3);
-    // Pro is ordered first (drives the bar) with a clean version label.
-    assert_eq!(metrics[0].label, "2.5 Pro");
-    assert_eq!(metrics[0].used, 70); // (1 - 0.30) * 100
-    assert_eq!(metrics[0].limit, Some(100));
-    assert!(metrics[0].reset_at.is_some());
-    // Flash before Flash-Lite; labels are distinct.
-    assert_eq!(metrics[1].label, "2.5 Flash");
-    assert_eq!(metrics[2].label, "2.5 Flash-Lite");
-
-    // Unknown schema → empty (the provider then reports an honest error).
-    assert!(parse_quota_buckets(r#"{"foo": 1}"#).unwrap().is_empty());
-}
-
-#[test]
-fn antigravity_project_quota_orders_newest_pro_first_and_drops_epoch_resets() {
-    use ailimits::providers::antigravity::parse_quota_buckets;
-
-    // Real per-project schema captured live 2026-07-09 (Antigravity consumer
-    // account): exhausted Pro buckets report remainingFraction 0 with the
-    // epoch placeholder as resetTime.
-    let body = r#"{"buckets": [
-        {"resetTime": "2026-07-10T15:29:07Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-flash", "remainingFraction": 1},
-        {"resetTime": "1970-01-01T00:00:00Z", "tokenType": "REQUESTS", "modelId": "gemini-2.5-pro", "remainingFraction": 0},
-        {"resetTime": "1970-01-01T00:00:00Z", "tokenType": "REQUESTS", "modelId": "gemini-3.1-pro-preview", "remainingFraction": 0},
-        {"resetTime": "2026-07-10T15:29:07Z", "tokenType": "REQUESTS", "modelId": "gemini-3.1-flash-lite", "remainingFraction": 0.6}
-    ]}"#;
-    let metrics = parse_quota_buckets(body).expect("should parse");
-    assert_eq!(metrics.len(), 4);
-    // Newest Pro leads (Antigravity drives 3.x), older Pro after it.
-    assert_eq!(metrics[0].label, "3.1 Pro-Preview");
-    assert_eq!(metrics[0].used, 100); // remainingFraction 0
-    assert_eq!(
-        metrics[0].reset_at, None,
-        "the epoch placeholder must not count as a real reset"
-    );
-    assert_eq!(metrics[1].label, "2.5 Pro");
-    // Flash class after Pro, real reset kept.
-    assert_eq!(metrics[2].label, "2.5 Flash");
-    assert!(metrics[2].reset_at.is_some());
-    assert_eq!(metrics[3].label, "3.1 Flash-Lite");
-    assert_eq!(metrics[3].used, 40);
-}
-
-#[test]
 fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
     use ailimits::providers::antigravity::parse_available_models_quota;
 
@@ -242,7 +191,8 @@ fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
     assert_eq!(metrics[0].used, 37); // (1 - 0.6300952) * 100, rounded
     assert!(metrics[0].reset_at.is_some());
 
-    // Unknown shape → empty (the provider falls back to the bucket view).
+    // Unknown shape → empty (the provider reports it as Unusable and moves
+    // on; there is no further fallback source).
     assert!(parse_available_models_quota(r#"{"foo": 1}"#)
         .unwrap()
         .is_empty());
@@ -250,7 +200,9 @@ fn antigravity_models_quota_dedupes_shared_pool_and_skips_foreign_models() {
 
 #[test]
 fn hover_reason_explains_stale_rows_only() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use ailimits::ui::renderer::hover_reason;
     use chrono::{Duration, Utc};
     use std::collections::HashMap;
@@ -264,6 +216,7 @@ fn hover_reason_explains_stale_rows_only() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::hours(10),
         received_at: None, // wall-age staleness (10 h)
@@ -323,7 +276,9 @@ fn antigravity_load_code_assist_project_parses() {
 
 #[test]
 fn stale_data_with_passed_reset_extrapolates_to_zero() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use chrono::{Duration, Utc};
 
     // Data from 10 minutes ago; the session reset 5 minutes ago,
@@ -338,6 +293,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
+                window: MetricWindow::Session,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -345,6 +301,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() + Duration::days(3)),
+                window: MetricWindow::Session,
             },
         ],
         updated_at: Utc::now() - Duration::minutes(10),
@@ -363,7 +320,9 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
 
 #[test]
 fn fresh_data_is_not_extrapolated() {
-    use ailimits::providers::{Metric, MetricUnit, ProviderData, ProviderId, ProviderStatus};
+    use ailimits::providers::{
+        Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+    };
     use chrono::{Duration, Utc};
 
     // Fresh data (30s old) is left intact even with a reset in the past:
@@ -377,6 +336,7 @@ fn fresh_data_is_not_extrapolated() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(10)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::seconds(30),
         received_at: Some(std::time::Instant::now()),
@@ -399,6 +359,154 @@ fn primary_percentage_uses_first_metric() {
     assert_eq!(data.primary_percentage(), Some(50.0));
 }
 
+// Helper: a percent metric with an explicit window.
+fn window_metric(label: &str, used: u64, window: MetricWindow) -> Metric {
+    Metric {
+        label: label.to_string(),
+        used,
+        limit: Some(100),
+        unit: MetricUnit::Percent,
+        reset_at: None,
+        window,
+    }
+}
+
+#[test]
+fn an_exhausted_long_window_becomes_the_headline_for_every_surface() {
+    // Claude shape: the weekly cap is spent, so no new session can start —
+    // the tray, the taskbar panel and the toast must all read 100%, not 20%.
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 20, MetricWindow::Session),
+            window_metric("Weekly", 100, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Weekly")
+    );
+    assert_eq!(data.primary_percentage(), Some(100.0));
+}
+
+#[test]
+fn an_exhausted_opus_pool_counts_even_though_its_label_never_says_week() {
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 10, MetricWindow::Session),
+            window_metric("Weekly", 50, MetricWindow::Long),
+            window_metric("Opus", 100, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Opus")
+    );
+}
+
+#[test]
+fn a_long_window_with_headroom_leaves_the_session_in_charge() {
+    let data = ProviderData {
+        id: ProviderId::Codex,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            window_metric("Session", 40, MetricWindow::Session),
+            window_metric("Weekly", 60, MetricWindow::Long),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Session")
+    );
+    assert_eq!(data.primary_percentage(), Some(40.0));
+}
+
+#[test]
+fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
+    use chrono::Duration;
+    // Claude shape: the Session window resets in an hour but the spent Weekly
+    // window (the headline, since it's exhausted) resets in five days. The
+    // notification must quote the Weekly reset — quoting the Session reset
+    // would tell a blocked user they are unblocked in an hour when they are
+    // not.
+    let now = Utc::now();
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            Metric {
+                label: "Session".to_string(),
+                used: 20,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::hours(1)),
+                window: MetricWindow::Session,
+            },
+            Metric {
+                label: "Weekly".to_string(),
+                used: 100,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::days(5)),
+                window: MetricWindow::Long,
+            },
+        ],
+        updated_at: now,
+        received_at: Some(std::time::Instant::now()),
+    };
+    let long_reset = data.metrics[1].reset_at.unwrap();
+    let session_reset = data.metrics[0].reset_at.unwrap();
+    assert_eq!(data.headline_reset(), Some(long_reset));
+    assert_ne!(data.headline_reset(), Some(session_reset));
+    // next_reset() itself would have picked the sooner Session reset — this
+    // is exactly the reset headline_reset() must NOT quote here.
+    assert_eq!(data.next_reset(), Some(session_reset));
+}
+
+#[test]
+fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
+    use chrono::Duration;
+    // No spent long window, so the headline is the Session metric itself —
+    // headline_reset() must agree with next_reset() (the nearest future
+    // reset), same as before this fix.
+    let now = Utc::now();
+    let data = ProviderData {
+        id: ProviderId::Codex,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            Metric {
+                label: "Session".to_string(),
+                used: 40,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::hours(1)),
+                window: MetricWindow::Session,
+            },
+            Metric {
+                label: "Weekly".to_string(),
+                used: 60,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: Some(now + Duration::days(5)),
+                window: MetricWindow::Long,
+            },
+        ],
+        updated_at: now,
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(data.headline_reset(), data.next_reset());
+    assert_eq!(data.headline_reset(), data.metrics[0].reset_at);
+}
+
 #[test]
 fn live_data_survives_a_wall_clock_jump() {
     use chrono::Duration;
@@ -415,6 +523,7 @@ fn live_data_survives_a_wall_clock_jump() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::hours(1),
         received_at: Some(std::time::Instant::now()),
@@ -457,6 +566,7 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(30)),
+            window: MetricWindow::Session,
         }],
         updated_at: Utc::now() - Duration::minutes(10),
         received_at: None,
@@ -488,6 +598,7 @@ fn next_reset_skips_past_timestamps() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
+                window: MetricWindow::Session,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -495,6 +606,7 @@ fn next_reset_skips_past_timestamps() {
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at: Some(future),
+                window: MetricWindow::Session,
             },
         ],
         updated_at: Utc::now(),
@@ -509,8 +621,109 @@ fn next_reset_skips_past_timestamps() {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::minutes(5)),
+            window: MetricWindow::Session,
         }],
         ..data
     };
     assert_eq!(all_past.next_reset(), None);
+}
+
+#[test]
+fn claude_marks_every_seven_day_window_as_long() {
+    use ailimits::providers::claude::parse_oauth_usage;
+    use ailimits::providers::MetricWindow;
+    let body = r#"{"five_hour": {"utilization": 20.0, "resets_at": "2026-08-02T10:00:00Z"},
+        "seven_day": {"utilization": 100.0, "resets_at": "2026-08-07T10:00:00Z"},
+        "seven_day_opus": {"utilization": 100.0, "resets_at": "2026-08-07T10:00:00Z"},
+        "seven_day_sonnet": {"utilization": 40.0, "resets_at": "2026-08-07T10:00:00Z"}}"#;
+    let metrics = parse_oauth_usage(body).expect("should parse");
+    assert_eq!(metrics.len(), 4);
+    assert_eq!(metrics[0].label, "Session");
+    assert_eq!(metrics[0].window, MetricWindow::Session);
+    // Opus and Sonnet are seven-day pools too; their labels never say "week",
+    // which is exactly what the old label-sniffing rule missed.
+    for m in &metrics[1..] {
+        assert_eq!(
+            m.window,
+            MetricWindow::Long,
+            "{} must be a long window",
+            m.label
+        );
+    }
+}
+
+#[test]
+fn codex_marks_the_secondary_window_as_long() {
+    use ailimits::providers::codex::parse_wham_usage;
+    use ailimits::providers::MetricWindow;
+    let body = r#"{"rate_limit": {
+        "primary_window": {"used_percent": 30, "reset_at": 1786000000},
+        "secondary_window": {"used_percent": 100, "reset_at": 1786600000}}}"#;
+    let metrics = parse_wham_usage(body).expect("should parse");
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[0].window, MetricWindow::Session);
+    assert_eq!(metrics[1].window, MetricWindow::Long);
+}
+
+#[test]
+fn antigravity_quota_summary_parses_shared_pools() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    use ailimits::providers::MetricWindow;
+    // Verified live 2026-08-01 (field names and group names are real).
+    let body = r#"{"groups": [
+        {"displayName": "Gemini Models", "buckets": [
+            {"bucketId": "gemini", "displayName": "Weekly Limit", "window": "WEEKLY",
+             "resetTime": "2026-08-07T18:30:57Z", "remainingFraction": 0}]},
+        {"displayName": "Claude and GPT models", "buckets": [
+            {"bucketId": "claude_gpt", "displayName": "Weekly Limit", "window": "WEEKLY",
+             "resetTime": "2026-08-07T19:41:22Z", "remainingFraction": 0.873262}]}]}"#;
+    let metrics = parse_quota_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[0].label, "Gemini");
+    assert_eq!(metrics[0].used, 100, "a spent pool must read 100% used");
+    assert_eq!(metrics[0].window, MetricWindow::Long);
+    assert_eq!(metrics[1].label, "Claude/GPT");
+    assert_eq!(metrics[1].used, 13);
+}
+
+#[test]
+fn antigravity_quota_summary_refuses_the_project_less_default_view() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    // Without a project id Google answers one synthetic "All Models" group
+    // with everything full. Rendering it would claim a full quota that may be
+    // entirely spent, so the parser must yield nothing.
+    let body = r#"{"groups": [{"displayName": "All Models", "buckets": [
+        {"remainingFraction": 1}, {"remainingFraction": 1}]}]}"#;
+    assert!(parse_quota_summary(body).unwrap().is_empty());
+}
+
+#[test]
+fn antigravity_quota_summary_treats_a_missing_fraction_with_a_reset_as_exhausted() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    let body = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [
+        {"resetTime": "2026-08-07T18:30:57Z"}]}]}"#;
+    let metrics = parse_quota_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].used, 100);
+}
+
+#[test]
+fn antigravity_quota_summary_ignores_an_unknown_shape() {
+    use ailimits::providers::antigravity::parse_quota_summary;
+    assert!(parse_quota_summary(r#"{"foo": 1}"#).unwrap().is_empty());
+}
+
+#[test]
+fn antigravity_models_quota_treats_a_missing_fraction_as_exhausted() {
+    use ailimits::providers::antigravity::parse_available_models_quota;
+    // Verified live 2026-08-01: every gemini model reported quotaInfo with a
+    // resetTime and no remainingFraction while the weekly pool was spent.
+    let body = r#"{"models": {
+        "gemini-3.6-flash-high": {"displayName": "Gemini 3.6 Flash",
+            "quotaInfo": {"resetTime": "2026-08-07T18:30:57Z"}},
+        "gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro",
+            "quotaInfo": {"resetTime": "2026-08-07T18:30:57Z"}}}}"#;
+    let metrics = parse_available_models_quota(body).expect("should parse");
+    assert_eq!(metrics.len(), 1, "one shared pool, deduped");
+    assert_eq!(metrics[0].used, 100);
 }

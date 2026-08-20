@@ -1,7 +1,7 @@
 // providers/claude.rs — Claude provider (API key and subscription modes).
 // See docs/en/PROVIDERS.md, section "Claude".
 
-use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
 use crate::config::schema::{AuthMethod, ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -101,6 +101,7 @@ impl ClaudeProvider {
                 limit: Some(limit),
                 unit: MetricUnit::Requests,
                 reset_at: header_datetime(&resp, HEADER_REQUESTS_RESET),
+                window: MetricWindow::Session,
             });
         }
 
@@ -114,6 +115,7 @@ impl ClaudeProvider {
                 limit: Some(limit),
                 unit: MetricUnit::Tokens,
                 reset_at: header_datetime(&resp, HEADER_TOKENS_RESET),
+                window: MetricWindow::Session,
             });
         }
 
@@ -303,30 +305,30 @@ pub fn parse_oauth_usage(body: &str) -> Result<Vec<Metric>> {
     let value: serde_json::Value = serde_json::from_str(body)?;
     let mut metrics = Vec::new();
 
-    let mut push_window = |key: &str, label: &str| {
-        let window = match value.get(key) {
+    let mut push_window = |key: &str, label: &str, window: MetricWindow| {
+        let field = match value.get(key) {
             Some(w) if w.is_object() => w,
             _ => return,
         };
-        let pct = window
+        let pct = field
             .get("utilization")
             .and_then(|v| v.as_f64())
             .map(|f| f.round().clamp(0.0, 100.0) as u64);
         if let Some(pct) = pct {
-            let reset_at = window
+            let reset_at = field
                 .get("resets_at")
                 .and_then(|v| v.as_str())
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|dt| dt.with_timezone(&Utc));
-            metrics.push(pct_metric(label, pct, reset_at));
+            metrics.push(pct_metric(label, pct, reset_at, window));
         }
     };
 
     // Order matters: the first metric drives the progress bar.
-    push_window("five_hour", "Session");
-    push_window("seven_day", "Weekly");
-    push_window("seven_day_opus", "Opus");
-    push_window("seven_day_sonnet", "Sonnet");
+    push_window("five_hour", "Session", MetricWindow::Session);
+    push_window("seven_day", "Weekly", MetricWindow::Long);
+    push_window("seven_day_opus", "Opus", MetricWindow::Long);
+    push_window("seven_day_sonnet", "Sonnet", MetricWindow::Long);
 
     Ok(metrics)
 }
@@ -372,6 +374,7 @@ async fn read_statusline(path: &PathBuf) -> Result<Option<StatuslineSnapshot>> {
                 &snapshot,
                 &["session_reset", "session_reset_at", "sessionResetAt"],
             ),
+            MetricWindow::Session,
         ));
     }
     // Weekly limit percentage.
@@ -386,6 +389,7 @@ async fn read_statusline(path: &PathBuf) -> Result<Option<StatuslineSnapshot>> {
                 &snapshot,
                 &["weekly_reset", "week_reset_at", "weeklyResetAt"],
             ),
+            MetricWindow::Long,
         ));
     }
 
@@ -399,13 +403,19 @@ async fn read_statusline(path: &PathBuf) -> Result<Option<StatuslineSnapshot>> {
 }
 
 /// Percentage metric.
-fn pct_metric(label: &str, pct: u64, reset_at: Option<DateTime<Utc>>) -> Metric {
+fn pct_metric(
+    label: &str,
+    pct: u64,
+    reset_at: Option<DateTime<Utc>>,
+    window: MetricWindow,
+) -> Metric {
     Metric {
         label: label.to_string(),
         used: pct.min(100),
         limit: Some(100),
         unit: MetricUnit::Percent,
         reset_at,
+        window,
     }
 }
 

@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 /// Absolute path to the system command interpreter, so a planted cmd.exe in
 /// the working/app directory cannot hijack a hook. Falls back to the bare
 /// name if %SystemRoot% is somehow unset.
-fn system_cmd_exe() -> std::path::PathBuf {
+pub(crate) fn system_cmd_exe() -> std::path::PathBuf {
     #[cfg(target_os = "windows")]
     {
         if let Some(root) = std::env::var_os("SystemRoot") {

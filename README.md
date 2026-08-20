@@ -17,13 +17,33 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 </p>
 
 <p align="center">
+  <img src="docs/images/widget-width.gif" width="380" alt="The widget narrowing through its width steps; at the narrowest the provider names drop out and the bars take their place">
+  <br><sub>Three width steps for the horizontal-bar layout. As it narrows, provider names are dropped whole rather than squeezed — the bar takes the freed column, so nothing is ever painted over anything else.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/widget-arrangement.gif" width="300" alt="The vertical-bar layout switching between providers side by side and providers stacked into a tall narrow column">
+  <br><sub>With vertical bars the providers sit side by side or stack into a column — the widget itself turns from wide and short to narrow and tall.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/widget-providers.gif" width="380" alt="The widget growing from a single provider row to four and back">
+  <br><sub>The card is sized from what you actually configured — one provider or four, it is never padded out to a fixed shape.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/widget-opacity.gif" width="380" alt="The widget background going from almost fully transparent to almost solid while the text stays readable">
+  <br><sub>Background opacity runs from almost clear to almost solid. Only the background alpha moves — the text and bars keep their contrast at every step.</sub>
+</p>
+
+<p align="center">
   <img src="docs/images/palette.gif" width="340" alt="The widget cycling through random readable looks — the monochrome and eight color palettes with the brightness, saturation and background-opacity sliders all varied">
   <br><sub>The look is yours: the monochrome and eight color palettes, plus the Brightness, Saturation and Background-opacity sliders — cycling through random readable presets, rendered exactly as the app draws them.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray pie, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The cursor reveals the hover tooltip over both the panel and the tray pie, and every mode follows the dark / light Windows theme.</sub>
+  <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
+  <br><sub>The taskbar indicator — when the overlay is hidden, a compact readout stays on the taskbar. The tray icon carries the two busiest providers as two concentric rings. The cursor reveals the hover tooltip over both the panel and the icon, and every mode follows the dark / light Windows theme.</sub>
 </p>
 
 ## Why this widget
@@ -172,17 +192,24 @@ self-update, on by default), Indicator, per-provider settings, Quit.
 Even with the overlay hidden or covered by a fullscreen app, a compact usage
 readout stays visible. Right-click → **Indicator**:
 
-- **Tray icon** — a single 16px system-tray pie of the highest current %.
+- **Tray icon** — a single 16px system-tray icon: two concentric rings, the
+  busiest provider outside and the runner-up inside, each sweeping clockwise
+  from 12 o’clock. Monochrome, inked in the system taskbar theme.
 - **Panel (rows / grid)** — a transparent overlay next to the clock: no
   window or box, just clock-sized digits and bars over the taskbar.
   Monochrome, follows the system light/dark theme, shows the first two
   providers in the widget's order, and tracks the taskbar live (auto-hide,
   resolution, tray width). **Hover** it for a shell-style tooltip with every
   provider. When **Start / Search** or the auto-hide bar covers it, it falls
-  back to a tray pie and returns on its own; when a **fullscreen app** (a
+  back to the tray rings and returns on its own; when a **fullscreen app** (a
   game, an F11 browser) takes the screen, it hides with the taskbar and
   returns the moment you alt-tab back to the desktop.
 - **Off** — no indicator.
+
+If Windows shows the taskbar on more than one display, **Indicator → Display**
+picks which taskbar the panel attaches to. The submenu only appears when a
+second taskbar exists; if the chosen display is later disconnected, the panel
+falls back to the primary taskbar.
 
 Left-clicking the tray icon or the panel brings the widget to the front (or
 hides it if it is already there, on top); right-clicking **anywhere on the

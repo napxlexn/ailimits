@@ -3,19 +3,16 @@
 //
 // Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
 
-use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tracing::warn;
 
-/// Undocumented Code Assist quota endpoint (multi-source documented).
-const QUOTA_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 /// Onboarding endpoint that reports the account's Code Assist project id.
-/// The REAL per-account quota buckets are PER-PROJECT: retrieveUserQuota with
-/// an empty body answers a default view where every bucket reads
-/// remainingFraction=1 regardless of actual usage (verified 2026-07-09).
+/// Quota queries need it — every quota endpoint answers a misleading
+/// "everything full" default view without a project id (verified 2026-07-09).
 const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 /// The endpoint Antigravity's own quota manager uses (verified 2026-07-09):
 /// per-model `quotaInfo` with the live remainingFraction/resetTime for the
@@ -24,6 +21,12 @@ const LOAD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeA
 /// User-Agent / X-Goog-Api-Client headers below), otherwise 403.
 const MODELS_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
+/// The shared quota pools Antigravity meters today ("Gemini Models",
+/// "Claude and GPT models"), verified live 2026-08-01. Needs the project id in
+/// the body and an identified client; without the project it answers a single
+/// synthetic "All Models" group with everything full.
+const SUMMARY_URL: &str =
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 /// Antigravity Windows credential target (ціль запису Antigravity у Windows Credential Manager).
 const ANTIGRAVITY_CREDENTIAL_TARGET: &str = "gemini:antigravity";
 
@@ -33,6 +36,38 @@ pub struct AntigravityProvider {
     /// Code Assist project id from loadCodeAssist, cached after the first
     /// success — it is stable for the account, and quota queries need it.
     project: std::sync::Mutex<Option<String>>,
+}
+
+/// Outcome of one quota request (retrieveUserQuotaSummary or
+/// fetchAvailableModels).
+enum QuotaOutcome {
+    /// Usable metrics.
+    Metrics(Vec<Metric>),
+    /// The endpoint answered, but with nothing we can trust (non-200 other
+    /// than 401/403, an unparseable body, or a recognized-but-empty shape).
+    Unusable,
+    /// The token was rejected (401/403). No other source will do better —
+    /// callers must stop the fallback chain and report this directly.
+    TokenRejected,
+}
+
+/// Outcome of resolving the Code Assist project id.
+enum ProjectResolution {
+    /// Resolved project id (from cache or a fresh loadCodeAssist call).
+    Project(String),
+    /// The endpoint answered, but with nothing we can use.
+    Unusable,
+    /// The token was rejected (401/403).
+    TokenRejected,
+}
+
+/// Identify like Antigravity's own client. Google treats anonymous callers
+/// differently on every Code Assist endpoint: `loadCodeAssist` answers 200 but
+/// silently omits `cloudaicompanionProject`, `fetchAvailableModels` and
+/// `retrieveUserQuotaSummary` answer 403 (verified live 2026-08-01).
+fn identified(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    req.header("User-Agent", "antigravity/1.0")
+        .header("X-Goog-Api-Client", "gl-go antigravity")
 }
 
 impl AntigravityProvider {
@@ -51,56 +86,113 @@ impl AntigravityProvider {
         }
     }
 
-    /// One fetchAvailableModels request; Ok(None) when the shape is unknown.
-    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<Option<Vec<Metric>>> {
-        let resp = self
-            .http
-            .post(MODELS_URL)
+    /// One fetchAvailableModels request. 401/403 → TokenRejected; any other
+    /// non-200 or an unparseable/empty body → Unusable.
+    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
+        let resp = identified(self.http.post(MODELS_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
-            // The endpoint answers 403 to anonymous clients; identify like
-            // the Antigravity CLI does.
-            .header("User-Agent", "antigravity/1.0")
-            .header("X-Goog-Api-Client", "gl-go antigravity")
             .body(serde_json::json!({ "project": project }).to_string())
             .send()
             .await?;
-        if resp.status().as_u16() != 200 {
-            warn!(
-                "fetchAvailableModels returned HTTP {}",
-                resp.status().as_u16()
-            );
-            return Ok(None);
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
+            other => {
+                warn!("fetchAvailableModels returned HTTP {other}");
+                return Ok(QuotaOutcome::Unusable);
+            }
         }
         let body = resp.text().await?;
-        Ok(Some(parse_available_models_quota(&body)?))
+        let metrics = parse_available_models_quota(&body)?;
+        if metrics.is_empty() {
+            Ok(QuotaOutcome::Unusable)
+        } else {
+            Ok(QuotaOutcome::Metrics(metrics))
+        }
     }
 
-    /// Resolve the Code Assist project id (cached). None on any failure —
-    /// the quota request then falls back to the empty body.
-    async fn resolve_project(&self, token: &str) -> Option<String> {
-        if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
-            return Some(p);
+    /// One retrieveUserQuotaSummary request. 401/403 → TokenRejected; any
+    /// other non-200 or an unparseable/empty body → Unusable.
+    async fn fetch_quota_summary(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
+        let resp = identified(self.http.post(SUMMARY_URL))
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .body(serde_json::json!({ "project": project }).to_string())
+            .send()
+            .await?;
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
+            other => {
+                warn!("retrieveUserQuotaSummary returned HTTP {other}");
+                return Ok(QuotaOutcome::Unusable);
+            }
         }
-        let resp = self
-            .http
-            .post(LOAD_URL)
+        let body = resp.text().await?;
+        let metrics = parse_quota_summary(&body)?;
+        if metrics.is_empty() {
+            Ok(QuotaOutcome::Unusable)
+        } else {
+            Ok(QuotaOutcome::Metrics(metrics))
+        }
+    }
+
+    /// Resolve the Code Assist project id (cached). Unusable/TokenRejected on
+    /// failure — callers must treat both as fatal, since every quota endpoint
+    /// answers a misleading "everything full" default view without the
+    /// project id, and a rejected token cannot succeed on any endpoint.
+    async fn resolve_project(&self, token: &str) -> ProjectResolution {
+        if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
+            return ProjectResolution::Project(p);
+        }
+        let resp = match identified(self.http.post(LOAD_URL))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body("{}")
             .send()
             .await
-            .ok()?;
-        if resp.status().as_u16() != 200 {
-            warn!("loadCodeAssist returned HTTP {}", resp.status().as_u16());
-            return None;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("loadCodeAssist request failed: {e}");
+                return ProjectResolution::Unusable;
+            }
+        };
+        match resp.status().as_u16() {
+            200 => {}
+            401 | 403 => return ProjectResolution::TokenRejected,
+            other => {
+                warn!("loadCodeAssist returned HTTP {other}");
+                return ProjectResolution::Unusable;
+            }
         }
-        let body = resp.text().await.ok()?;
-        let project = parse_load_code_assist_project(&body)?;
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                warn!("loadCodeAssist body read failed: {e}");
+                return ProjectResolution::Unusable;
+            }
+        };
+        let Some(project) = parse_load_code_assist_project(&body) else {
+            warn!("loadCodeAssist returned no cloudaicompanionProject");
+            return ProjectResolution::Unusable;
+        };
         if let Ok(mut guard) = self.project.lock() {
             *guard = Some(project.clone());
         }
-        Some(project)
+        ProjectResolution::Project(project)
+    }
+
+    /// The single message produced when Antigravity rejects the token — used
+    /// at every request site so the wording never drifts.
+    fn token_rejected(&self) -> ProviderData {
+        self.data(
+            ProviderStatus::AuthError(
+                "Antigravity token rejected — run Antigravity CLI once".to_string(),
+            ),
+            vec![],
+        )
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -123,61 +215,56 @@ impl AntigravityProvider {
             }
         };
 
-        // Primary source: Antigravity's own per-model quota (fetchAvailableModels).
-        let project = self.resolve_project(&token).await;
-        if let Some(ref project) = project {
-            match self.fetch_models_quota(&token, project).await {
-                Ok(Some(metrics)) if !metrics.is_empty() => {
-                    return Ok(self.data(ProviderStatus::Ok, metrics));
-                }
-                Ok(_) => { /* no quotaInfo in the response — fall back */ }
-                Err(e) => warn!("fetchAvailableModels failed, falling back: {e}"),
+        // The project id is REQUIRED. Every Code Assist quota endpoint answers
+        // a synthetic "everything full" default view when it is missing, which
+        // is indistinguishable from a genuinely unused account — so report an
+        // honest error instead of rendering numbers we know may be wrong.
+        let project = match self.resolve_project(&token).await {
+            ProjectResolution::Project(p) => p,
+            ProjectResolution::TokenRejected => return Ok(self.token_rejected()),
+            ProjectResolution::Unusable => {
+                return Ok(self.data(
+                    ProviderStatus::NetworkError(
+                        "no Code Assist project id — open Antigravity once".to_string(),
+                    ),
+                    vec![],
+                ));
             }
-        }
-
-        // Fallback: the Code Assist bucket view. Without the project id the
-        // endpoint serves the misleading default view (every bucket full) —
-        // see LOAD_URL above.
-        let quota_body = match project {
-            Some(project) => serde_json::json!({ "project": project }).to_string(),
-            None => "{}".to_string(),
-        };
-        let resp = match self
-            .http
-            .post(QUOTA_URL)
-            .bearer_auth(&token)
-            .header("Content-Type", "application/json")
-            .body(quota_body)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
         };
 
-        match resp.status().as_u16() {
-            200 => {
-                let body = resp.text().await?;
-                let metrics = parse_quota_buckets(&body)?;
-                if metrics.is_empty() {
-                    return Ok(self.data(
-                        ProviderStatus::NetworkError("unrecognized quota schema".to_string()),
-                        vec![],
-                    ));
-                }
-                Ok(self.data(ProviderStatus::Ok, metrics))
+        // Primary: the shared pools Antigravity itself shows.
+        match self.fetch_quota_summary(&token, &project).await {
+            Ok(QuotaOutcome::Metrics(metrics)) => {
+                return Ok(self.data(ProviderStatus::Ok, metrics));
             }
-            401 | 403 => Ok(self.data(
-                ProviderStatus::AuthError(
-                    "Antigravity token rejected — run Antigravity CLI once".to_string(),
-                ),
-                vec![],
-            )),
-            other => Ok(self.data(
-                ProviderStatus::NetworkError(format!("HTTP {other}")),
-                vec![],
-            )),
+            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
+            Ok(QuotaOutcome::Unusable) => {
+                warn!("retrieveUserQuotaSummary returned no usable pools, falling back")
+            }
+            Err(e) => warn!("retrieveUserQuotaSummary failed, falling back: {e}"),
         }
+
+        // Per-model quota (the pools Antigravity itself meters).
+        match self.fetch_models_quota(&token, &project).await {
+            Ok(QuotaOutcome::Metrics(metrics)) => {
+                return Ok(self.data(ProviderStatus::Ok, metrics));
+            }
+            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
+            Ok(QuotaOutcome::Unusable) => warn!("fetchAvailableModels returned no usable quota"),
+            Err(e) => warn!("fetchAvailableModels failed: {e}"),
+        }
+
+        // Both real sources failed or returned nothing usable. There is no
+        // further fallback: retrieveUserQuota answers the Code Assist bucket
+        // view, which does NOT track Antigravity consumption — an
+        // Antigravity-only account reads remainingFraction=1 there
+        // regardless of actual usage. Showing that would be ProviderStatus::Ok
+        // at 0% used while the real pool may be fully spent, which is worse
+        // than showing nothing.
+        Ok(self.data(
+            ProviderStatus::NetworkError("Antigravity quota unavailable".to_string()),
+            vec![],
+        ))
     }
 }
 
@@ -326,30 +413,69 @@ pub fn parse_antigravity_keyring_token(body: &str) -> Result<Option<String>> {
         .map(|s| s.to_string()))
 }
 
-/// Parse the quota response. Verified live schema (2026-06-11):
-/// `{"buckets": [{"modelId": "gemini-2.5-pro", "remainingFraction": 1,
-///   "resetTime": "RFC3339", "tokenType": "REQUESTS"}, …]}`.
-/// We still walk the JSON tolerantly (collecting every object with a
-/// `remainingFraction`) so a future shape change degrades to an honest error
-/// rather than wrong data. The Pro model is ordered first (it drives the bar).
-pub fn parse_quota_buckets(body: &str) -> Result<Vec<Metric>> {
+/// Parse the retrieveUserQuotaSummary response. Verified live 2026-08-01:
+/// `{"groups": [{"displayName": "Gemini Models", "buckets": [{"bucketId": "…",
+///   "displayName": "Weekly Limit", "window": "…", "resetTime": "RFC3339",
+///   "remainingFraction": 0}]}, …], "description": "…"}`.
+pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
     let value: serde_json::Value = serde_json::from_str(body)?;
+    let Some(groups) = value.get("groups").and_then(|v| v.as_array()) else {
+        return Ok(Vec::new());
+    };
+
     let mut metrics = Vec::new();
-    collect_quota(&value, &mut metrics);
-    // Pro first (the headline limit), then flash, then flash-lite; within a
-    // class the newest version first — Antigravity drives the 3.x models, so
-    // they are the relevant headline, not the retired 2.5 buckets.
-    metrics.sort_by(|a, b| {
-        model_rank(&a.label)
-            .cmp(&model_rank(&b.label))
-            .then_with(|| {
-                model_version(&b.label)
-                    .partial_cmp(&model_version(&a.label))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    });
-    metrics.truncate(4);
+    for group in groups {
+        let name = group
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // The project-less default view: one catch-all group, everything full.
+        // Treat it as no data rather than as a full quota.
+        if name.eq_ignore_ascii_case("All Models") {
+            return Ok(Vec::new());
+        }
+        let Some(buckets) = group.get("buckets").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for bucket in buckets {
+            let reset_at = bucket
+                .get("resetTime")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc))
+                .filter(|dt| dt.timestamp() > 0);
+            // A spent pool drops remainingFraction and keeps only the reset —
+            // that is zero remaining, not an unknown quota.
+            let frac = match bucket.get("remainingFraction").and_then(|v| v.as_f64()) {
+                Some(f) => f,
+                None if reset_at.is_some() => 0.0,
+                None => continue,
+            };
+            metrics.push(Metric {
+                label: short_pool_label(name),
+                used: ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at,
+                // These pools ARE Antigravity's general limits; it has no
+                // session window, so a spent pool must drive every surface.
+                window: MetricWindow::Long,
+            });
+        }
+    }
     Ok(metrics)
+}
+
+/// Compact pool name for the widget's narrow rows.
+fn short_pool_label(display_name: &str) -> String {
+    let lower = display_name.to_ascii_lowercase();
+    if lower.contains("gemini") {
+        "Gemini".to_string()
+    } else if lower.contains("claude") || lower.contains("gpt") {
+        "Claude/GPT".to_string()
+    } else {
+        display_name.to_string()
+    }
 }
 
 /// Parse the fetchAvailableModels response. Verified live 2026-07-09:
@@ -374,14 +500,18 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
         let Some(quota) = info.get("quotaInfo") else {
             continue;
         };
-        let Some(frac) = quota.get("remainingFraction").and_then(|v| v.as_f64()) else {
-            continue;
-        };
         let reset_str = quota
             .get("resetTime")
             .and_then(|v| v.as_str())
             .unwrap_or_default()
             .to_string();
+        // A spent pool drops remainingFraction and keeps only the reset — zero
+        // remaining, not an unknown quota (verified live 2026-08-01).
+        let frac = match quota.get("remainingFraction").and_then(|v| v.as_f64()) {
+            Some(f) => f,
+            None if !reset_str.is_empty() => 0.0,
+            None => continue,
+        };
         let reset_at = DateTime::parse_from_rfc3339(&reset_str)
             .ok()
             .map(|dt| dt.with_timezone(&Utc))
@@ -393,6 +523,7 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
             limit: Some(100),
             unit: MetricUnit::Percent,
             reset_at,
+            window: MetricWindow::Session,
         };
         let key = ((frac.clamp(0.0, 1.0) * 1000.0).round() as u64, reset_str);
         let rank = model_rank(&label);
@@ -429,47 +560,6 @@ pub fn parse_load_code_assist_project(body: &str) -> Option<String> {
         .as_str()
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-}
-
-/// Recursively collect `{remainingFraction, resetTime, modelId?}` objects.
-fn collect_quota(value: &serde_json::Value, out: &mut Vec<Metric>) {
-    match value {
-        serde_json::Value::Object(map) => {
-            if let Some(frac) = map.get("remainingFraction").and_then(|v| v.as_f64()) {
-                let used = ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64;
-                let label = map
-                    .get("modelId")
-                    .or_else(|| map.get("model"))
-                    .and_then(|v| v.as_str())
-                    .map(model_label)
-                    .unwrap_or_else(|| "Antigravity".to_string());
-                let reset_at = map
-                    .get("resetTime")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                    .map(|dt| dt.with_timezone(&Utc))
-                    // Exhausted/unscheduled buckets carry the epoch
-                    // placeholder ("1970-01-01T00:00:00Z") — not a real reset.
-                    .filter(|dt| dt.timestamp() > 0);
-                out.push(Metric {
-                    label,
-                    used,
-                    limit: Some(100),
-                    unit: MetricUnit::Percent,
-                    reset_at,
-                });
-            }
-            for v in map.values() {
-                collect_quota(v, out);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for v in arr {
-                collect_quota(v, out);
-            }
-        }
-        _ => {}
-    }
 }
 
 /// "gemini-2.5-pro" → "2.5 Pro", "gemini-2.5-flash-lite" → "2.5 Flash-Lite".

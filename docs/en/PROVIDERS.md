@@ -155,29 +155,43 @@ flows. Individual users are expected to migrate to Antigravity CLI; Antigravity
 stores session tokens in the OS keyring. On Windows, current Antigravity CLI
 stores the consumer session under `gemini:antigravity`.
 
-Quota is a chain of three sources (all verified live 2026-07-09):
+Quota is a chain of sources (all verified live 2026-08-01):
 
 1. `loadCodeAssist` (empty body) → `cloudaicompanionProject`, cached per
-   session. Everything below needs it.
-2. **`fetchAvailableModels`** — the endpoint Antigravity's own quota manager
-   uses, and the only one that tracks the pools Antigravity actually
-   consumes. Requires the project id in the body AND an identified client
-   (`User-Agent` + `X-Goog-Api-Client` headers), else 403:
+   session. It is returned ONLY to an identified client (`User-Agent:
+   antigravity/1.0` + `X-Goog-Api-Client: gl-go antigravity`); an anonymous
+   call still answers 200 but omits the field. Everything below needs the id,
+   and without it the widget reports an honest error instead of quota — every
+   endpoint answers an "everything full" default view when the project is
+   missing, which is indistinguishable from an unused account.
+2. **`retrieveUserQuotaSummary`** — the shared pools Antigravity meters today:
 
    ```
-   POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels
-   Body: {"project": "<cloudaicompanionProject>"}
-   → {"models": {"gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro",
-        "quotaInfo": {"remainingFraction": 0.63, "resetTime": "RFC3339"}}, …}}
+   POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary
+   Body: {"project": "..."}
+   → {"groups": [{"displayName": "Gemini Models",
+        "buckets": [{"bucketId": "...", "displayName": "Weekly Limit",
+                     "window": "...", "resetTime": "RFC3339",
+                     "remainingFraction": 0}]},
+       {"displayName": "Claude and GPT models", "buckets": [...]}]}
    ```
 
-   All Gemini models share one pool today (identical fraction + reset), so
-   pools are deduped and represented by their newest Pro member. Antigravity
-   also fronts Claude / GPT-OSS pools — skipped, they are not Gemini.
-3. Fallback: `retrieveUserQuota` with `{"project": …}` (the Code Assist
-   bucket view; does NOT track Antigravity usage), then with `{}` as the
-   last resort — that default view reads `remainingFraction: 1` everywhere
-   regardless of usage, which is what used to render as an eternal 0%.
+   A spent pool may report `remainingFraction: 0` or omit the field and keep
+   only `resetTime` — both mean zero remaining. A single `All Models` group is
+   the project-less default view and is refused. These pools are Antigravity's
+   general limits, so they are recorded as long-window metrics.
+3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; a spent model omits
+   `remainingFraction` and keeps `resetTime`).
+
+If both `retrieveUserQuotaSummary` and `fetchAvailableModels` fail or return
+nothing usable, the widget reports an honest error instead of quota. There is
+no further fallback to `retrieveUserQuota`: that endpoint answers the Code
+Assist *bucket* view, which does NOT track Antigravity consumption — for an
+account that only uses Antigravity, those buckets read `remainingFraction: 1`
+regardless of actual usage. Both `retrieveUserQuotaSummary` and
+`fetchAvailableModels` live on `daily-cloudcode-pa.googleapis.com`, which is
+flaky (see below), so a single timeout can lose both in one poll cycle — that
+is expected to surface as an error, not as a silently wrong "0% used".
 
 used % = `(1 - remainingFraction) * 100`; the epoch placeholder
 (`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 →

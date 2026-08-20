@@ -4,7 +4,7 @@
 // Single method: the internal quota endpoint copilot_internal/user (the same
 // data VS Code shows). Token: a PAT from Credential Manager, or the gh CLI.
 
-use super::{Metric, MetricUnit, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -254,6 +254,7 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
                 limit: Some(limit),
                 unit: MetricUnit::Requests,
                 reset_at,
+                window: MetricWindow::Session,
             });
         }
     };

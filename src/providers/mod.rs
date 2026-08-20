@@ -77,6 +77,19 @@ pub enum MetricUnit {
     Percent,
 }
 
+/// Which limit window a metric measures. Serialised into the provider cache,
+/// so it must default: entries written before this field existed read back as
+/// `Session`, which is what every pre-existing first metric was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum MetricWindow {
+    /// A short rolling window (the Claude / Codex 5-hour session).
+    #[default]
+    Session,
+    /// A long window that gates the short one — a spent long limit blocks new
+    /// sessions no matter what the session gauge reads.
+    Long,
+}
+
 /// A single provider metric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric {
@@ -89,6 +102,10 @@ pub struct Metric {
     pub unit: MetricUnit,
     /// Reset time, when known.
     pub reset_at: Option<DateTime<Utc>>,
+    /// Which limit window this measures. Providers classify their own windows;
+    /// never infer it from the label.
+    #[serde(default)]
+    pub window: MetricWindow,
 }
 
 impl Metric {
@@ -156,6 +173,10 @@ pub const STALE_AFTER_SECS: i64 = 300;
 /// stops a small wall-clock skew from fabricating a reset that never happened.
 pub const RESET_GRACE_SECS: i64 = 60;
 
+/// A window at or above this percentage is spent: the account is blocked on it
+/// regardless of what any other window reads.
+pub const EXHAUSTED_PCT: f32 = 100.0;
+
 /// Provider data for display.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderData {
@@ -177,9 +198,25 @@ pub struct ProviderData {
 }
 
 impl ProviderData {
-    /// Primary percentage for display: taken from the first metric.
+    /// The metric that represents this provider right now.
+    ///
+    /// A spent long window outranks the session gauge: once the weekly cap is
+    /// gone no new session can start, so a session reading "20% used" would
+    /// claim headroom the account does not have. Every surface — widget, tray,
+    /// taskbar panel, tooltips, notifications — must agree, so the rule lives
+    /// here rather than inside one renderer.
+    pub fn headline_metric(&self) -> Option<&Metric> {
+        let spent = self.metrics.iter().find(|m| {
+            matches!(m.window, MetricWindow::Long)
+                && m.percentage().is_some_and(|p| p >= EXHAUSTED_PCT)
+        });
+        // Otherwise the long-standing contract: the provider's first metric.
+        spent.or_else(|| self.metrics.first())
+    }
+
+    /// Primary percentage for display: the headline metric's percentage.
     pub fn primary_percentage(&self) -> Option<f32> {
-        self.metrics.first().and_then(|m| m.percentage())
+        self.headline_metric().and_then(|m| m.percentage())
     }
 
     /// Time of the nearest FUTURE metric reset. A reset timestamp already in
@@ -193,6 +230,20 @@ impl ProviderData {
             .filter_map(|m| m.reset_at)
             .filter(|t| *t > now)
             .min()
+    }
+
+    /// The reset that belongs to the headline metric — the one whose
+    /// percentage every surface is showing. `next_reset()` answers the nearest
+    /// reset across ALL windows, which is the wrong one to quote once a spent
+    /// long window has taken over the headline: the session window resets far
+    /// sooner and quoting it tells the user they are unblocked when they are
+    /// not. Falls back to the nearest future reset when the headline has none.
+    pub fn headline_reset(&self) -> Option<DateTime<Utc>> {
+        let now = Utc::now();
+        self.headline_metric()
+            .and_then(|m| m.reset_at)
+            .filter(|t| *t > now)
+            .or_else(|| self.next_reset())
     }
 
     /// Data age in seconds, if stale. The staleness DECISION is monotonic for

@@ -156,30 +156,46 @@ Antigravity CLI; Antigravity зберігає session tokens у OS keyring (си
 сховищі ключів). На Windows поточний Antigravity CLI зберігає consumer-сеанс
 під `gemini:antigravity`.
 
-Квота — ланцюжок із трьох джерел (усі звірені наживо 2026-07-09):
+Квота — ланцюжок джерел (усі звірені наживо 2026-08-01):
 
 1. `loadCodeAssist` (порожнє тіло) → `cloudaicompanionProject`, кешується на
-   сесію. Все нижче потребує його.
-2. **`fetchAvailableModels`** — endpoint, яким користується власний quota
-   manager Antigravity, і єдиний, що відстежує пули, які Antigravity реально
-   споживає. Вимагає project id у тілі ТА ідентифікованого клієнта
-   (заголовки `User-Agent` + `X-Goog-Api-Client`), інакше 403:
+   сесію. Повертається ЛИШЕ ідентифікованому клієнту (`User-Agent:
+   antigravity/1.0` + `X-Goog-Api-Client: gl-go antigravity`); анонімний
+   виклик так само відповідає 200, але без цього поля. Все нижче потребує
+   цього id, а без нього віджет показує чесну помилку замість квоти —
+   кожен endpoint без project id відповідає дефолтним виглядом
+   «все повне», який неможливо відрізнити від невикористаного акаунту.
+2. **`retrieveUserQuotaSummary`** — спільні пули, які Antigravity сьогодні
+   метрить:
 
    ```
-   POST https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels
-   Body: {"project": "<cloudaicompanionProject>"}
-   → {"models": {"gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro",
-        "quotaInfo": {"remainingFraction": 0.63, "resetTime": "RFC3339"}}, …}}
+   POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary
+   Body: {"project": "..."}
+   → {"groups": [{"displayName": "Gemini Models",
+        "buckets": [{"bucketId": "...", "displayName": "Weekly Limit",
+                     "window": "...", "resetTime": "RFC3339",
+                     "remainingFraction": 0}]},
+       {"displayName": "Claude and GPT models", "buckets": [...]}]}
    ```
 
-   Усі Gemini-моделі сьогодні ділять один пул (ідентичні fraction + reset),
-   тож пули дедуплікуються і представляються найновішим Pro-членом.
-   Antigravity також фронтить пули Claude / GPT-OSS — пропускаються, це не
-   Gemini.
-3. Fallback: `retrieveUserQuota` з `{"project": …}` (бакети Code Assist; НЕ
-   відстежують використання Antigravity), потім `{}` як останній засіб —
-   той дефолтний вигляд має `remainingFraction: 1` всюди незалежно від
-   використання, саме це рендерилось як вічні 0%.
+   Витрачений пул може віддати `remainingFraction: 0` або взагалі
+   пропустити це поле, лишивши тільки `resetTime` — обидва варіанти
+   означають нуль залишку. Одна група `All Models` — це дефолтний вигляд
+   без project id, і вона відкидається. Ці пули — загальні ліміти
+   Antigravity, тож фіксуються як long-window метрики.
+3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; витрачена модель
+   пропускає `remainingFraction` і лишає `resetTime`).
+
+Якщо і `retrieveUserQuotaSummary`, і `fetchAvailableModels` не спрацювали або
+не дали нічого придатного, віджет показує чесну помилку замість квоти. Далі
+немає fallback на `retrieveUserQuota`: цей endpoint відповідає bucket-виглядом
+Code Assist, який НЕ відстежує використання Antigravity — для акаунту, що
+використовує лише Antigravity, ці buckets показують `remainingFraction: 1`
+незалежно від реального використання. І `retrieveUserQuotaSummary`, і
+`fetchAvailableModels` живуть на `daily-cloudcode-pa.googleapis.com`, який
+нестабільний (див. нижче), тож один таймаут може забрати обидва джерела за
+один цикл опитування — це має проявлятись як помилка, а не як тихо неправильні
+«0% використано».
 
 used % = `(1 - remainingFraction) * 100`; epoch-заглушка (`1970-01-01…`) у
 `resetTime` парситься як «скидання невідоме». 401/403 → "Antigravity token

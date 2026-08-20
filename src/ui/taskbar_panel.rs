@@ -3,8 +3,10 @@
 // NOT a window with a background: a per-pixel-alpha layered overlay whose
 // transparent pixels let the taskbar show through, so only the painted digits
 // and bars are visible — exactly like a native tray glyph, with no pasted
-// rectangle. (A true SetParent child of `Shell_TrayWnd` is invisible on Win11;
-// XMeters/TrafficMonitor float an overlay above instead — the approach here.)
+// rectangle. (TrafficMonitor takes the other route — a real SetParent child of
+// Shell_TrayWnd, guarded by a fallback flag for when the insert fails. We stay
+// a free-floating overlay: no dependency on the shell accepting a foreign
+// child window, and nothing to unwind when it does not.)
 // Content is presented with UpdateLayeredWindow, not softbuffer.
 //
 // Design goal: look like a continuation of the taskbar. So it is MONOCHROME
@@ -87,6 +89,11 @@ pub struct TaskbarPanel {
     /// (update ticks, taskbar moves, raises) is gated on this, so nothing can
     /// resurrect the overlay over a game between fallback evaluations.
     suppressed: bool,
+    /// The panel could not place itself: no taskbar resolved, or the bar is a
+    /// shape we refuse to draw on. Distinct from "the bar is auto-hidden",
+    /// which is normal and needs no substitute — the tray icon lives in that
+    /// same bar and would be hidden with it.
+    unavailable: bool,
     /// Our own hover-tooltip window (a raw layered top-level window we paint),
     /// and whether it is currently shown. Painted dark/rounded/borderless to
     /// match the shell's tooltips, which a native control cannot.
@@ -94,6 +101,33 @@ pub struct TaskbarPanel {
     tip_hwnd: isize,
     #[cfg(target_os = "windows")]
     tip_shown: bool,
+    /// Last UpdateLayeredWindow error code, so a failing present is logged
+    /// once per distinct cause instead of on every provider tick. `None`
+    /// means the last present succeeded (or none has run yet) — distinct
+    /// from `Some(0)`, which is itself a legitimate cause (the early
+    /// size/buffer guard in `present_layered` returns `Err(0)`).
+    last_present_error: Option<u32>,
+    /// Manual position nudge from the config, already clamped.
+    offset: (i32, i32),
+    /// Which taskbar the panel attaches to.
+    display: crate::config::schema::PanelDisplay,
+}
+
+/// The tooltip window is ours, created with CreateWindowExW; nothing else owns
+/// it. Harmless to leak while exactly one panel lives for the whole process,
+/// but `restart()` already exists as the "rebuild the panel" path, and the day
+/// that becomes "make a new TaskbarPanel" the old window would outlive it.
+///
+/// **This does not run on a normal exit.** `tao::EventLoop::run` is `-> !` and
+/// terminates the process from inside, so the closure holding the panel is
+/// never dropped. The window is reclaimed by the OS instead. This impl exists
+/// for the case above — a panel dropped while the process keeps running — and
+/// is deliberately a no-op today rather than a fix for a live leak.
+impl Drop for TaskbarPanel {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        crate::platform::destroy_window(self.tip_hwnd);
+    }
 }
 
 impl TaskbarPanel {
@@ -125,11 +159,34 @@ impl TaskbarPanel {
             size: (INIT_W, INIT_H),
             rect: None,
             suppressed: false,
+            unavailable: false,
             #[cfg(target_os = "windows")]
+            // No DWM blur here, deliberately. It tints and blurs the whole
+            // WINDOW rectangle, not the rounded box we paint inside it, so once
+            // the pixmap grew a margin for the drop shadow the blur showed up
+            // as a hard-edged grey rectangle around the tooltip. Measurement
+            // says we do not want it anyway: the shell's tooltip is alpha ~244,
+            // i.e. all but opaque, and what separates it from the background is
+            // the shadow.
             tip_hwnd: crate::platform::create_tooltip_window(),
             #[cfg(target_os = "windows")]
             tip_shown: false,
+            last_present_error: None,
+            offset: (0, 0),
+            display: crate::config::schema::PanelDisplay::Primary,
         })
+    }
+
+    /// Apply the configured manual offset. Clamped here, so no caller can
+    /// push the panel off the desktop by editing config.toml.
+    pub fn set_offset(&mut self, x: i32, y: i32) {
+        use crate::platform::taskbar_geom::clamp_offset;
+        self.offset = (clamp_offset(x), clamp_offset(y));
+    }
+
+    /// Point the panel at a taskbar. The caller re-positions afterwards.
+    pub fn set_display(&mut self, target: crate::config::schema::PanelDisplay) {
+        self.display = target;
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -151,7 +208,11 @@ impl TaskbarPanel {
         self.mode = mode;
         // A mode change is an explicit user action — start unsuppressed; the
         // next fallback evaluation re-hides if a fullscreen app is still up.
+        // The placement verdict is cleared too: it belongs to the mode that
+        // just ended, and keeping it would hand the tray a stale reason to
+        // stay up after the user turned the panel back on.
         self.suppressed = false;
+        self.unavailable = false;
         if Self::is_panel_mode(mode) {
             self.last.clear();
             self.reposition();
@@ -194,10 +255,14 @@ impl TaskbarPanel {
             let light = crate::platform::system_uses_light_theme();
             let pm = crate::ui::tray::render_tooltip(&text, self.size.1 as f32, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
+            // The pixmap carries the drop shadow around the box, so the box's
+            // own bottom edge sits `shadow` above the pixmap's — add it back or
+            // the gap to the bar comes out short by that much.
+            let shadow = crate::ui::tray::tip_shadow_inset(self.size.1 as f32);
             let tx = px + (pw as i32 - w) / 2;
-            let ty = py - h - 4;
+            let ty = py - crate::ui::tray::TIP_GAP - h + shadow;
             let bgra = pixmap_to_bgra(&pm);
-            crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
+            let _ = crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
             self.tip_shown = true;
         }
         #[cfg(not(target_os = "windows"))]
@@ -235,6 +300,17 @@ impl TaskbarPanel {
     /// a floating overlay cannot beat. Read from what the compositor actually
     /// shows at the panel's center (WindowFromPoint); drives the tray fallback.
     #[cfg(target_os = "windows")]
+    /// The panel cannot place itself at all — as opposed to being hidden with
+    /// an auto-hidden bar, which is normal.
+    ///
+    /// `is_covered` cannot answer this: with no rectangle it reads `false`,
+    /// i.e. "not obstructed", so a panel that never made it onto the screen
+    /// looked exactly like a healthy one and the tray substitute stayed hidden.
+    /// The user was left with no indicator at all and no way to tell why.
+    pub fn is_unavailable(&self) -> bool {
+        Self::is_panel_mode(self.mode) && self.unavailable
+    }
+
     pub fn is_covered(&self) -> bool {
         if !Self::is_panel_mode(self.mode) {
             return false;
@@ -244,6 +320,29 @@ impl TaskbarPanel {
         };
         let owner = crate::platform::point_owner(x + w as i32 / 2, y + h as i32 / 2);
         owner != 0 && owner != self.hwnd()
+    }
+
+    /// Restart the panel: forget every cached judgement and place it again.
+    ///
+    /// **Why switching displays was not enough.** `set_display` changed the
+    /// target but left `suppressed` alone, and `on_taskbar_moved` returns early
+    /// while suppressed — so a panel parked by a fullscreen app could not be
+    /// revived by moving it, toggling it, or anything else short of restarting
+    /// the whole application. That is what the user hit.
+    ///
+    /// Clearing `last` matters too: it is the "what did I draw" cache, and a
+    /// stale entry means the redraw is skipped as a no-op precisely when the
+    /// panel needs re-presenting.
+    pub fn restart(&mut self, providers: &[ProviderData]) {
+        self.suppressed = false;
+        self.unavailable = false;
+        self.last.clear();
+        if !Self::is_panel_mode(self.mode) {
+            self.hide();
+            return;
+        }
+        self.reposition();
+        self.redraw(providers);
     }
 
     /// The taskbar moved (auto-hide slide / resolution change) or the tray
@@ -310,11 +409,31 @@ impl TaskbarPanel {
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            let Some(slot) = crate::platform::taskbar_slot() else {
+            let before = self.rect;
+            let Some(slot) = crate::platform::taskbar_slot(self.display) else {
+                // No taskbar at all: the panel has nowhere to live, and the tray
+                // has nowhere either — but say so, so the indicator can degrade
+                // instead of silently showing nothing.
+                if before.is_some() {
+                    tracing::debug!("panel hidden: no taskbar resolved for {:?}", self.display);
+                }
+                self.unavailable = true;
                 self.hide();
                 return;
             };
             if !slot.visible {
+                // The bar slid away (auto-hide). NOT unavailable: the tray icon
+                // sits in that same bar and is hidden with it, so substituting
+                // one for the other would gain nothing and flicker on every
+                // slide.
+                if before.is_some() {
+                    tracing::debug!(
+                        "panel hidden: bar auto-hidden (top {}, height {})",
+                        slot.top,
+                        slot.height
+                    );
+                }
+                self.unavailable = false;
                 self.hide();
                 return;
             }
@@ -325,11 +444,25 @@ impl TaskbarPanel {
             // bar is ~96px, so anything taller than this is not a bottom bar.
             const MAX_BAR_HEIGHT: i32 = 200;
             if slot.height > MAX_BAR_HEIGHT {
+                // A vertical taskbar: we refuse to draw on it. The tray icon
+                // still works there, so this IS a case for the substitute.
+                if before.is_some() {
+                    tracing::debug!("panel hidden: bar height {} looks vertical", slot.height);
+                }
+                self.unavailable = true;
                 self.hide();
                 return;
             }
+            self.unavailable = false;
             let (w, h) = self.desired_size(slot.height);
-            let x = slot.tray_left - w as i32 - TRAY_MARGIN;
+            // An estimated tray edge is a guess at where the clock starts, so
+            // keep a little more air than when the edge was measured.
+            let margin = if slot.tray_found {
+                TRAY_MARGIN
+            } else {
+                TRAY_MARGIN * 2
+            };
+            let x = slot.tray_left - w as i32 - margin;
             let y = slot.top + (slot.height - h as i32) / 2;
             if self.size != (w, h) {
                 self.resize_pixmap(w, h);
@@ -338,6 +471,17 @@ impl TaskbarPanel {
             // Re-presenting is needed when reappearing after a hide.
             if self.rect.is_none() {
                 self.last.clear();
+            }
+            let x = x + self.offset.0;
+            let y = y + self.offset.1;
+            if before.map(|(bx, _, _, _)| bx) != Some(x) {
+                tracing::debug!(
+                    "panel placed at {x},{y} (target {:?}, bar top {}, tray_left {}, measured {})",
+                    self.display,
+                    slot.top,
+                    slot.tray_left,
+                    slot.tray_found
+                );
             }
             self.rect = Some((x, y, w, h));
         }
@@ -411,7 +555,20 @@ impl TaskbarPanel {
             d[3] = s[3];
         }
         #[cfg(target_os = "windows")]
-        crate::platform::present_layered(self.hwnd(), &bgra, x, y, w as i32, h as i32);
+        match crate::platform::present_layered(self.hwnd(), &bgra, x, y, w as i32, h as i32) {
+            Ok(()) => {
+                if self.last_present_error.is_some() {
+                    tracing::info!("taskbar panel present recovered");
+                    self.last_present_error = None;
+                }
+            }
+            Err(code) => {
+                if self.last_present_error != Some(code) {
+                    tracing::warn!("taskbar panel present failed, error {code}");
+                    self.last_present_error = Some(code);
+                }
+            }
+        }
         #[cfg(not(target_os = "windows"))]
         {
             let _ = (&bgra, x, y);

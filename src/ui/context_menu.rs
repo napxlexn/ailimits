@@ -4,7 +4,10 @@
 // lives in the "Providers" submenu: keys and tokens are pasted FROM THE
 // CLIPBOARD (a native menu has no text input).
 
-use crate::config::schema::{AuthMethod, Config, DetailLevel, IndicatorKind, Layout, Palette};
+use crate::config::schema::{
+    AuthMethod, ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay,
+    WidthScale,
+};
 use anyhow::Result;
 use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
@@ -22,12 +25,18 @@ const INTERVAL_STEPS: &[u64] = &[60, 300, 900, 1800];
 pub enum MenuAction {
     SetDetail(DetailLevel),
     SetLayout(Layout),
+    /// Pick the widget width step (horizontal bars only).
+    SetWidthScale(WidthScale),
+    /// Arrange the provider columns in a row or in a column (vertical bars only).
+    SetColumnFlow(ColumnFlow),
     /// Lock the widget position (disables dragging).
     ToggleLock,
     /// Always on top.
     TogglePin,
     /// Pick the secondary indicator: tray icon / taskbar bar / off.
     SetIndicator(IndicatorKind),
+    /// Move the panel indicator to another taskbar.
+    SetPanelDisplay(PanelDisplay),
     /// Show/hide the burn-rate forecast.
     ToggleForecast,
     /// Enable/disable silent background auto-updates.
@@ -92,9 +101,14 @@ pub struct ContextMenu {
     pub menu: Menu,
     detail_items: Vec<(CheckMenuItem, DetailLevel)>,
     layout_items: Vec<(CheckMenuItem, Layout)>,
+    width_items: Vec<(CheckMenuItem, WidthScale)>,
+    flow_items: Vec<(CheckMenuItem, ColumnFlow)>,
     lock_item: CheckMenuItem,
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
+    /// Which taskbar the mini panel attaches to. Empty on a single-display
+    /// machine — see the "Only worth showing..." comment where it's built.
+    display_items: Vec<(CheckMenuItem, PanelDisplay)>,
     forecast_item: CheckMenuItem,
     auto_update_item: CheckMenuItem,
     monochrome_item: CheckMenuItem,
@@ -142,6 +156,47 @@ impl ContextMenu {
         .map(|(label, l)| (CheckMenuItem::new(label, true, ui.layout == l, None), l))
         .collect();
 
+        // Width steps. Only the rows layout can be narrowed: the columns
+        // layouts size themselves from the provider count, so their items are
+        // greyed rather than hidden - a missing menu entry reads as a bug.
+        let width_submenu = Submenu::new("Width", true);
+        let width_items: Vec<(CheckMenuItem, WidthScale)> = [
+            ("100%", WidthScale::Full),
+            ("75%", WidthScale::ThreeQuarters),
+            ("50%", WidthScale::Half),
+        ]
+        .into_iter()
+        .map(|(label, w)| {
+            (
+                CheckMenuItem::new(label, true, ui.width_scale == w, None),
+                w,
+            )
+        })
+        .collect();
+        for (item, _) in &width_items {
+            width_submenu.append(item)?;
+        }
+
+        // Column arrangement. The mirror image of Width: it only means
+        // something when the bars are vertical, and it flips the widget's own
+        // orientation rather than its size.
+        let flow_submenu = Submenu::new("Arrangement", true);
+        let flow_items: Vec<(CheckMenuItem, ColumnFlow)> = [
+            ("In a row", ColumnFlow::Row),
+            ("In a column", ColumnFlow::Column),
+        ]
+        .into_iter()
+        .map(|(label, f)| {
+            (
+                CheckMenuItem::new(label, true, ui.column_flow == f, None),
+                f,
+            )
+        })
+        .collect();
+        for (item, _) in &flow_items {
+            flow_submenu.append(item)?;
+        }
+
         // Two INDEPENDENT options: position lock and always-on-top.
         let lock_item = CheckMenuItem::new("Lock position", true, config.window.locked, None);
         let pin_item = CheckMenuItem::new("Always on top", true, pinned, None);
@@ -153,7 +208,7 @@ impl ContextMenu {
         // was superseded by the top-2 design), so panel_grid in an old config
         // is just an alias that checks this same item.
         let indicator_items: Vec<(CheckMenuItem, IndicatorKind)> = [
-            ("Tray pie icon", IndicatorKind::Tray),
+            ("Tray icon", IndicatorKind::Tray),
             ("Taskbar panel", IndicatorKind::PanelRows),
             ("Off", IndicatorKind::Off),
         ]
@@ -173,6 +228,39 @@ impl ContextMenu {
         for (item, _) in &indicator_items {
             indicator_submenu.append(item)?;
         }
+
+        // "Display" submenu — which taskbar the mini panel attaches to.
+        // Only worth showing when there IS another taskbar: a one-entry
+        // "Display" submenu on a single-monitor machine is pure noise.
+        let ui_display = config.general.panel_display;
+        #[cfg(target_os = "windows")]
+        let bars = crate::platform::secondary_taskbars();
+        // No secondary taskbars to offer on other platforms.
+        #[cfg(not(target_os = "windows"))]
+        let bars: Vec<isize> = Vec::new();
+        let mut display_items: Vec<(CheckMenuItem, PanelDisplay)> = Vec::new();
+        tracing::debug!(
+            "menu: {} secondary taskbar(s) found, Display submenu {}",
+            bars.len(),
+            if bars.is_empty() { "OMITTED" } else { "shown" }
+        );
+        if !bars.is_empty() {
+            let display_submenu = Submenu::new("Display", true);
+            let mut entries = vec![("Primary".to_string(), PanelDisplay::Primary)];
+            for i in 0..bars.len() {
+                entries.push((
+                    format!("Display {}", i + 2),
+                    PanelDisplay::Secondary(i as u8),
+                ));
+            }
+            for (label, target) in entries {
+                let item = CheckMenuItem::new(label, true, ui_display == target, None);
+                display_submenu.append(&item)?;
+                display_items.push((item, target));
+            }
+            indicator_submenu.append(&display_submenu)?;
+        }
+
         let forecast_item = CheckMenuItem::new("Forecast", true, config.ui.show_forecast, None);
         let auto_update_item =
             CheckMenuItem::new("Automatic updates", true, config.general.auto_update, None);
@@ -321,6 +409,8 @@ impl ContextMenu {
         for (item, _) in &layout_items {
             menu.append(item)?;
         }
+        menu.append(&width_submenu)?;
+        menu.append(&flow_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&lock_item)?;
         menu.append(&pin_item)?;
@@ -348,9 +438,12 @@ impl ContextMenu {
             menu,
             detail_items,
             layout_items,
+            width_items,
+            flow_items,
             lock_item,
             pin_item,
             indicator_items,
+            display_items,
             forecast_item,
             auto_update_item,
             monochrome_item,
@@ -379,6 +472,16 @@ impl ContextMenu {
         for (item, l) in &self.layout_items {
             if *event_id == item.id() {
                 return Some(MenuAction::SetLayout(l.clone()));
+            }
+        }
+        for (item, w) in &self.width_items {
+            if *event_id == item.id() {
+                return Some(MenuAction::SetWidthScale(*w));
+            }
+        }
+        for (item, f) in &self.flow_items {
+            if *event_id == item.id() {
+                return Some(MenuAction::SetColumnFlow(*f));
             }
         }
         for (item, p) in &self.palette_items {
@@ -415,6 +518,11 @@ impl ContextMenu {
         for (item, k) in &self.indicator_items {
             if *event_id == item.id() {
                 return Some(MenuAction::SetIndicator(*k));
+            }
+        }
+        for (item, target) in &self.display_items {
+            if *event_id == item.id() {
+                return Some(MenuAction::SetPanelDisplay(*target));
             }
         }
         if *event_id == self.forecast_item.id() {
@@ -471,6 +579,18 @@ impl ContextMenu {
         for (item, l) in &self.layout_items {
             item.set_checked(ui.layout == *l);
         }
+        // Width and Arrangement are the same choice on opposite axes, so
+        // exactly one of them applies at a time. The inapplicable one is
+        // greyed rather than hidden - a menu that changes shape reads as a bug.
+        let rows_layout = matches!(ui.layout, Layout::Vertical | Layout::Grid);
+        for (item, w) in &self.width_items {
+            item.set_checked(ui.width_scale == *w);
+            item.set_enabled(rows_layout);
+        }
+        for (item, f) in &self.flow_items {
+            item.set_checked(ui.column_flow == *f);
+            item.set_enabled(!rows_layout);
+        }
         self.monochrome_item.set_checked(ui.monochrome);
         for (item, p) in &self.palette_items {
             item.set_checked(!ui.monochrome && ui.palette == *p);
@@ -495,6 +615,9 @@ impl ContextMenu {
         self.lock_item.set_checked(config.window.locked);
         for (item, k) in &self.indicator_items {
             item.set_checked(indicator_matches(config.general.indicator, *k));
+        }
+        for (item, target) in &self.display_items {
+            item.set_checked(config.general.panel_display == *target);
         }
         self.forecast_item.set_checked(config.ui.show_forecast);
         self.auto_update_item
