@@ -72,26 +72,14 @@
 
 ## Встановлення
 
-Із термінала, працює вже зараз:
+Із термінала:
 
 ```powershell
+# встановлення одним рядком: тягне останній реліз, звіряє SHA-256
+# з опублікованим дайджестом, запускає тихе встановлення без прав адміна
 irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
-```
 
-Скрипт тягне останній реліз, звіряє SHA-256 з опублікованим дайджестом і
-запускає тихе встановлення без прав адміністратора.
-
-Менеджери пакетів, щойно подання пройдуть модерацію
-(winget і Chocolatey зараз на розгляді):
-
-```powershell
-winget install napxlexn.AILimits
-choco install ailimits
-```
-
-Scoop працює вже зараз, із власного bucket проєкту:
-
-```powershell
+# Scoop, із власного bucket проєкту
 scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits
 scoop install ailimits
 ```

@@ -70,26 +70,14 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 
 ## Install
 
-From the terminal, works today:
+From the terminal:
 
 ```powershell
+# one-line install: downloads the latest release, verifies its SHA-256
+# against the published digest, runs the silent per-user install
 irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
-```
 
-It downloads the latest release, verifies its SHA-256 against the published
-digest, and runs the silent per-user install.
-
-Package managers, once the submissions clear their moderation queues
-(winget and Chocolatey are in review):
-
-```powershell
-winget install napxlexn.AILimits
-choco install ailimits
-```
-
-Scoop works today, from the project's own bucket:
-
-```powershell
+# Scoop, from the project's own bucket
 scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits
 scoop install ailimits
 ```
