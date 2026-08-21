@@ -80,12 +80,18 @@ It downloads the latest release, verifies its SHA-256 against the published
 digest, and runs the silent per-user install.
 
 Package managers, once the submissions clear their moderation queues
-(winget, Chocolatey and Scoop are all in review):
+(winget and Chocolatey are in review):
 
 ```powershell
 winget install napxlexn.AILimits
 choco install ailimits
-scoop bucket add extras; scoop install ailimits
+```
+
+Scoop works today, from the project's own bucket:
+
+```powershell
+scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits
+scoop install ailimits
 ```
 
 Or download `AiLimits-Setup-<version>.exe` from

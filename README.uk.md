@@ -82,12 +82,18 @@ irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
 запускає тихе встановлення без прав адміністратора.
 
 Менеджери пакетів, щойно подання пройдуть модерацію
-(winget, Chocolatey і Scoop зараз на розгляді):
+(winget і Chocolatey зараз на розгляді):
 
 ```powershell
 winget install napxlexn.AILimits
 choco install ailimits
-scoop bucket add extras; scoop install ailimits
+```
+
+Scoop працює вже зараз, із власного bucket проєкту:
+
+```powershell
+scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits
+scoop install ailimits
 ```
 
 Або завантаж `AiLimits-Setup-<версія>.exe` зі сторінки
