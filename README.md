@@ -8,7 +8,7 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="The floating widget switching live between the Compact, Medium and Expanded detail levels, with horizontal progress bars">
-  <br><sub>Three detail levels: Compact, Medium, Expanded. Switching is live. Horizontal bars here.</sub>
+  <br><sub>Three detail levels: Compact, Medium, Expanded. Switching is live; the optional burn-rate forecast (~time to limit) appears on the meta line. Horizontal bars here.</sub>
 </p>
 
 <p align="center">

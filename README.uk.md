@@ -8,7 +8,7 @@
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="Floating-віджет наживо перемикається між рівнями деталізації Compact, Medium і Expanded з горизонтальними смужками">
-  <br><sub>Три рівні деталізації: Compact, Medium, Expanded. Перемикаються без перезапуску. Тут із горизонтальними смужками.</sub>
+  <br><sub>Три рівні деталізації: Compact, Medium, Expanded. Перемикаються без перезапуску; опційний прогноз burn-rate (~час до ліміту) з’являється в метарядку. Тут із горизонтальними смужками.</sub>
 </p>
 
 <p align="center">
