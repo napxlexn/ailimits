@@ -75,6 +75,9 @@
 Із термінала:
 
 ```powershell
+# winget
+winget install napxlexn.AILimits
+
 # встановлення одним рядком: тягне останній реліз, звіряє SHA-256
 # з опублікованим дайджестом, запускає тихе встановлення без прав адміна
 irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex

@@ -73,6 +73,9 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 From the terminal:
 
 ```powershell
+# winget
+winget install napxlexn.AILimits
+
 # one-line install: downloads the latest release, verifies its SHA-256
 # against the published digest, runs the silent per-user install
 irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
