@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Limits – Claude, Codex &amp; Copilot usage limits on your Windows desktop</title>
+<meta name="description" content="A native Windows 11 widget that shows how much of your Claude, Codex, Copilot and Antigravity limits is used and when each window resets. No API keys, open source.">
+<link rel="canonical" href="https://napxlexn.github.io/ailimits/">
+<link rel="icon" type="image/png" href="./media/favicon.png">
+<link rel="apple-touch-icon" href="./media/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AI Limits">
+<meta property="og:title" content="AI Limits – your AI usage limits, live on the Windows desktop">
+<meta property="og:description" content="Claude, Codex, Copilot and Antigravity limits in one acrylic widget. Reads your existing CLI logins, no API keys. Free and open source.">
+<meta property="og:url" content="https://napxlexn.github.io/ailimits/">
+<meta property="og:image" content="https://napxlexn.github.io/ailimits/media/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AI Limits – your AI usage limits, live on the Windows desktop">
+<meta name="twitter:description" content="Claude, Codex, Copilot and Antigravity limits in one acrylic widget. No API keys. Free and open source.">
+<meta name="twitter:image" content="https://napxlexn.github.io/ailimits/media/og.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "AI Limits",
+  "operatingSystem": "Windows 11",
+  "applicationCategory": "UtilitiesApplication",
+  "softwareVersion": "0.6.2",
+  "description": "A native Windows 11 desktop widget that shows live usage limits for Claude, OpenAI Codex, GitHub Copilot and Google Antigravity: session and weekly windows, reset countdowns, tray and taskbar indicators.",
+  "url": "https://napxlexn.github.io/ailimits/",
+  "downloadUrl": "https://github.com/napxlexn/ailimits/releases/latest",
+  "image": "https://napxlexn.github.io/ailimits/media/og.png",
+  "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+  "author": { "@type": "Person", "name": "napxlexn", "url": "https://github.com/napxlexn" },
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "How do I check my Claude Code session and weekly limit?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Install AI Limits and log in to Claude Code as usual. The widget reads the Claude Code login on your machine and shows the 5-hour session, the weekly window and the Opus and Sonnet pools with live percentages and reset countdowns. Nothing to configure." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does AI Limits need API keys?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. It reads the logins your CLI tools already have: Claude Code, Codex CLI, the gh CLI and Antigravity. The tokens are used read-only and are never rotated, so your tools stay logged in. API keys are an optional extra path, stored in Windows Credential Manager." }
+    },
+    {
+      "@type": "Question",
+      "name": "Which AI providers are supported?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each provider can be toggled on or off from the context menu." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it slow the PC down?",
+      "acceptedAnswer": { "@type": "Answer", "text": "The footprint is measured, not estimated: about 0.005% of one CPU core, zero GPU use (it renders on the CPU), around 37 MB of RAM, and no raised timer resolution. Polling pauses when you are away from the keyboard." }
+    },
+    {
+      "@type": "Question",
+      "name": "Is AI Limits free?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. It is open source under GPL-3.0. The code, releases and issue tracker are on GitHub." }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it show GitHub Copilot premium requests?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. Copilot rows show premium interactions, chat and completions quotas with the monthly reset date, using the same data the VS Code extension sees." }
+    }
+  ]
+}
+</script>
+<style>
+:root {
+  --desk-0: #0c0f12;
+  --desk-1: #131920;
+  --glass: rgba(19, 22, 27, 0.52);
+  --glass-solid: #16191e;
+  --rim: rgba(255, 255, 255, 0.09);
+  --ink: #ececec;
+  --ink-2: rgba(233, 238, 243, 0.62);
+  --meta: rgba(233, 238, 243, 0.36);
+  --hair: rgba(255, 255, 255, 0.07);
+  --low: #6fbf8c;
+  --mid: #d2a946;
+  --high: #d25a5a;
+  --cmd: #7ecd9c;
+  --track: rgba(255, 255, 255, 0.09);
+  --maxw: 1060px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font: 400 1.02rem/1.65 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink-2);
+  background:
+    radial-gradient(1100px 520px at 78% -80px, rgba(72, 108, 84, 0.16), transparent 65%),
+    radial-gradient(900px 600px at -140px 480px, rgba(52, 74, 96, 0.12), transparent 60%),
+    linear-gradient(180deg, var(--desk-1), var(--desk-0) 640px);
+  background-color: var(--desk-0);
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3 {
+  font-family: "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.16;
+}
+a { color: var(--ink); text-decoration-color: var(--meta); text-underline-offset: 3px; }
+a:hover { text-decoration-color: var(--ink); }
+:focus-visible { outline: 2px solid var(--cmd); outline-offset: 3px; border-radius: 4px; }
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+/* top bar */
+header.top {
+  display: flex; align-items: center; justify-content: space-between;
+  max-width: var(--maxw); margin: 0 auto; padding: 22px 24px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--ink); text-decoration: none; }
+.brand img { width: 26px; height: 26px; }
+nav.top-links { display: flex; gap: 22px; font-size: 0.94rem; }
+nav.top-links a { color: var(--ink-2); text-decoration: none; }
+nav.top-links a:hover { color: var(--ink); }
+
+/* hero */
+.hero {
+  display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: 56px; align-items: center; padding: 64px 0 84px;
+}
+.eyebrow { font-size: 0.82rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--meta); margin-bottom: 18px; }
+h1 { font-size: clamp(2.1rem, 4.6vw, 3.15rem); margin-bottom: 18px; }
+.hero p.lead { font-size: 1.12rem; max-width: 34em; margin-bottom: 30px; }
+.cmd {
+  display: flex; align-items: center; gap: 12px;
+  background: rgba(24, 28, 32, 0.85); border: 1px solid var(--hair); border-radius: 10px;
+  padding: 13px 16px; font-family: "Cascadia Code", Consolas, monospace; font-size: 0.95rem;
+  color: var(--cmd); max-width: 460px;
+}
+.cmd code { flex: 1; overflow-x: auto; white-space: nowrap; scrollbar-width: none; }
+.cmd button {
+  border: 1px solid var(--hair); background: transparent; color: var(--ink-2);
+  border-radius: 7px; padding: 5px 11px; font: inherit; font-size: 0.8rem; cursor: pointer;
+}
+.cmd button:hover { color: var(--ink); border-color: var(--meta); }
+.hero .after-cmd { margin-top: 16px; font-size: 0.92rem; color: var(--meta); }
+.hero .after-cmd a { color: var(--ink-2); }
+
+/* the live widget replica */
+.widget {
+  justify-self: center; width: min(340px, 100%);
+  background: var(--glass);
+  backdrop-filter: blur(22px) saturate(1.4);
+  -webkit-backdrop-filter: blur(22px) saturate(1.4);
+  border-radius: 10px; padding: 18px 18px 14px;
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--rim);
+  position: relative;
+}
+@supports not (backdrop-filter: blur(1px)) { .widget { background: var(--glass-solid); } }
+.widget .row { padding: 9px 0; }
+.widget .row + .row { border-top: 1px solid rgba(255, 255, 255, 0.045); }
+.widget .line1 { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
+.widget .name { font-size: 0.86rem; color: var(--ink-2); }
+.widget .pct { font-size: 0.98rem; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+.widget .bar { height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+.widget .bar i {
+  display: block; height: 100%; border-radius: 2px; width: 0;
+  transition: width 1.1s cubic-bezier(0.22, 0.9, 0.3, 1);
+}
+.widget .meta { display: flex; justify-content: flex-end; font-size: 0.76rem; color: var(--meta); margin-top: 5px; font-variant-numeric: tabular-nums; }
+.widget .cap { position: absolute; left: 0; right: 0; bottom: -30px; text-align: center; font-size: 0.8rem; color: var(--meta); }
+
+/* sections */
+section { padding: 72px 0; border-top: 1px solid var(--hair); }
+.kicker { font-size: 0.82rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--meta); margin-bottom: 12px; }
+h2 { font-size: clamp(1.5rem, 3vw, 2.05rem); margin-bottom: 14px; }
+.sub { max-width: 44em; margin-bottom: 40px; }
+
+/* video */
+.reel { border-radius: 12px; overflow: hidden; border: 1px solid var(--hair); box-shadow: 0 30px 80px rgba(0, 0, 0, 0.45); }
+.reel video { display: block; width: 100%; height: auto; }
+
+/* provider grid */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 14px; }
+.card {
+  background: rgba(255, 255, 255, 0.028); border: 1px solid var(--hair); border-radius: 12px;
+  padding: 22px 20px;
+}
+.card h3 { font-size: 1.02rem; margin-bottom: 9px; }
+.card p { font-size: 0.92rem; color: var(--ink-2); }
+.card .win { display: block; margin-top: 10px; font-size: 0.8rem; color: var(--meta); font-family: "Cascadia Code", Consolas, monospace; }
+
+/* measured numbers */
+.numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+.num { border-left: 2px solid var(--hair); padding: 4px 0 4px 18px; }
+.num b { display: block; font-size: 1.55rem; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.num span { font-size: 0.88rem; color: var(--meta); }
+
+/* install */
+.installs { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.inst { background: rgba(255, 255, 255, 0.028); border: 1px solid var(--hair); border-radius: 12px; padding: 20px; }
+.inst h3 { font-size: 0.95rem; margin-bottom: 12px; color: var(--ink-2); font-weight: 600; }
+.inst .cmd { max-width: none; font-size: 0.86rem; }
+.inst p { font-size: 0.85rem; color: var(--meta); margin-top: 10px; }
+.inst p a { color: var(--ink-2); }
+
+/* faq */
+.faq details { border-top: 1px solid var(--hair); }
+.faq details:last-child { border-bottom: 1px solid var(--hair); }
+.faq summary {
+  cursor: pointer; list-style: none; padding: 18px 4px; color: var(--ink);
+  font-weight: 600; font-size: 1rem; display: flex; justify-content: space-between; gap: 16px;
+}
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; color: var(--meta); font-weight: 400; }
+.faq details[open] summary::after { content: "\2212"; }
+.faq .a { padding: 0 4px 20px; max-width: 52em; font-size: 0.95rem; }
+
+/* footer */
+footer { padding: 44px 0 60px; border-top: 1px solid var(--hair); font-size: 0.88rem; color: var(--meta); }
+footer .cols { display: flex; flex-wrap: wrap; gap: 28px; justify-content: space-between; align-items: baseline; }
+footer a { color: var(--ink-2); }
+
+@media (max-width: 900px) {
+  .hero { grid-template-columns: 1fr; gap: 64px; padding: 40px 0 64px; }
+  .widget { justify-self: start; }
+  section { padding: 56px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  .widget .bar i { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="./"><img src="./media/favicon.png" alt="" width="26" height="26">AI Limits</a>
+  <nav class="top-links" aria-label="Site">
+    <a href="#install">Install</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/napxlexn/ailimits">GitHub</a>
+  </nav>
+</header>
+
+<main class="wrap">
+
+  <section class="hero" style="border-top: none;">
+    <div>
+      <p class="eyebrow">Windows 11 · open source · no API keys</p>
+      <h1>Your Claude, Codex and Copilot limits, live on the desktop</h1>
+      <p class="lead">AI Limits is a native acrylic widget that reads the logins your CLI tools already have and shows every usage window: the 5-hour session, the weekly cap, Copilot premium requests, Antigravity pools. With a countdown to each reset.</p>
+      <div class="cmd">
+        <code id="cmd-main">winget install napxlexn.AILimits</code>
+        <button type="button" data-copy="cmd-main">Copy</button>
+      </div>
+      <p class="after-cmd">3 MB, starts with Windows if you want it to. <a href="#install">More ways to install</a></p>
+    </div>
+    <div class="widget" aria-label="Live preview of the AI Limits widget">
+      <div class="row">
+        <div class="line1"><span class="name">Claude</span><span class="pct">93%</span></div>
+        <div class="bar"><i data-w="93" style="background: var(--high);"></i></div>
+        <div class="meta"><span id="tick">2h 22min</span></div>
+      </div>
+      <div class="row">
+        <div class="line1"><span class="name">Codex</span><span class="pct">81%</span></div>
+        <div class="bar"><i data-w="81" style="background: var(--high);"></i></div>
+        <div class="meta">57min</div>
+      </div>
+      <div class="row">
+        <div class="line1"><span class="name">Copilot</span><span class="pct">40%</span></div>
+        <div class="bar"><i data-w="40" style="background: var(--low);"></i></div>
+        <div class="meta">14h 40min</div>
+      </div>
+      <div class="row">
+        <div class="line1"><span class="name">Antigravity</span><span class="pct">7%</span></div>
+        <div class="bar"><i data-w="7" style="background: var(--low);"></i></div>
+        <div class="meta">33min</div>
+      </div>
+      <p class="cap">Rendered by the page, but this is exactly what the widget looks like.</p>
+    </div>
+  </section>
+
+  <section id="reel">
+    <p class="kicker">30 seconds</p>
+    <h2>One widget, every shape you need</h2>
+    <p class="sub">Rows or columns, three detail levels, width steps, palettes, a taskbar mini panel and a tray ring icon. The whole tour:</p>
+    <div class="reel">
+      <video preload="none" poster="./media/poster.jpg" muted loop playsinline
+             aria-label="AI Limits demo reel: the widget morphs between layouts, then the taskbar panel, tray icon and install command">
+        <source src="./media/reel.mp4" type="video/mp4">
+      </video>
+    </div>
+  </section>
+
+  <section id="providers">
+    <p class="kicker">What it reads</p>
+    <h2>Four providers, their real limit windows</h2>
+    <p class="sub">Everything comes from the subscriptions you already pay for. The widget signs in with nothing: it reads each tool's existing login, read-only, and never rotates a token.</p>
+    <div class="grid">
+      <div class="card">
+        <h3>Claude</h3>
+        <p>The Claude Code login gives the live server-side percentages for every window, the same numbers <code>/usage</code> shows.</p>
+        <span class="win">5-hour session · weekly · Opus · Sonnet</span>
+      </div>
+      <div class="card">
+        <h3>OpenAI Codex</h3>
+        <p>Reads the Codex CLI login from your ChatGPT subscription. Session and weekly windows with reset times.</p>
+        <span class="win">5-hour session · weekly</span>
+      </div>
+      <div class="card">
+        <h3>GitHub Copilot</h3>
+        <p>The gh CLI login or a PAT. Shows the quotas the VS Code extension sees, including the monthly reset date.</p>
+        <span class="win">premium requests · chat · completions</span>
+      </div>
+      <div class="card">
+        <h3>Google Antigravity</h3>
+        <p>Reads the Antigravity session and shows the shared model pools it actually meters.</p>
+        <span class="win">Gemini pool · Claude/GPT pool</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="honest">
+    <p class="kicker">Measured, not estimated</p>
+    <h2>A widget that stays out of the way</h2>
+    <p class="sub">The footprint numbers are taken from the released build with an automated audit, and the honesty rules are design constraints: when a source is down, old data turns grey with its age instead of pretending to be fresh, and a provably reset window shows an estimate marked as one.</p>
+    <div class="numbers">
+      <div class="num"><b>0.005%</b><span>of one CPU core at idle</span></div>
+      <div class="num"><b>0.00%</b><span>GPU: it renders on the CPU</span></div>
+      <div class="num"><b>37 MB</b><span>working set</span></div>
+      <div class="num"><b>3 MB</b><span>installer, no runtime deps</span></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <p class="kicker">Install</p>
+    <h2>Pick whichever fits your terminal</h2>
+    <p class="sub">Windows 11, per-user install, no admin rights. Updates itself silently in the background if you leave that switch on.</p>
+    <div class="installs">
+      <div class="inst">
+        <h3>winget</h3>
+        <div class="cmd"><code id="cmd-winget">winget install napxlexn.AILimits</code><button type="button" data-copy="cmd-winget">Copy</button></div>
+      </div>
+      <div class="inst">
+        <h3>PowerShell</h3>
+        <div class="cmd"><code id="cmd-irm">irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex</code><button type="button" data-copy="cmd-irm">Copy</button></div>
+        <p>Verifies the installer against the release digest before running it.</p>
+      </div>
+      <div class="inst">
+        <h3>Scoop</h3>
+        <div class="cmd"><code id="cmd-scoop">scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits; scoop install ailimits</code><button type="button" data-copy="cmd-scoop">Copy</button></div>
+      </div>
+      <div class="inst">
+        <h3>No install</h3>
+        <div class="cmd"><code>AiLimits-Portable-x.y.z.zip</code></div>
+        <p>A portable zip on every <a href="https://github.com/napxlexn/ailimits/releases/latest">release</a>: two exes and the licence texts, nothing else.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="faq">
+    <p class="kicker">FAQ</p>
+    <h2>Questions people actually ask</h2>
+    <div style="margin-top: 28px;">
+      <details>
+        <summary>How do I check my Claude Code session and weekly limit?</summary>
+        <p class="a">Install AI Limits and log in to Claude Code as usual. The widget reads the Claude Code login on your machine and shows the 5-hour session, the weekly window and the Opus and Sonnet pools with live percentages and reset countdowns. Nothing to configure.</p>
+      </details>
+      <details>
+        <summary>Does it need API keys?</summary>
+        <p class="a">No. It reads the logins your CLI tools already have: Claude Code, Codex CLI, the gh CLI and Antigravity. The tokens are used read-only and never rotated, so your tools stay logged in. API keys are an optional extra path, stored in Windows Credential Manager, never in a config file.</p>
+      </details>
+      <details>
+        <summary>Which providers are supported?</summary>
+        <p class="a">Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each one can be toggled from the context menu; disabled providers make no network requests.</p>
+      </details>
+      <details>
+        <summary>Does it slow the PC down?</summary>
+        <p class="a">The numbers above are from an automated audit of the released build: about 0.005% of one CPU core, zero GPU engine use, around 37 MB of RAM, no raised timer resolution. Polling pauses entirely when you are away from the keyboard.</p>
+      </details>
+      <details>
+        <summary>Is it free?</summary>
+        <p class="a">Yes. Open source under GPL-3.0; the code, releases and issue tracker live on <a href="https://github.com/napxlexn/ailimits">GitHub</a>.</p>
+      </details>
+      <details>
+        <summary>What does the tray icon show?</summary>
+        <p class="a">Two concentric rings: the busiest provider on the outer ring, the runner-up inside, both sweeping clockwise from 12 o'clock. There is also a taskbar mini panel with clock-sized digits, or you can turn the secondary indicator off.</p>
+      </details>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap cols">
+    <span>AI Limits · GPL-3.0 · built by <a href="https://github.com/napxlexn">napxlexn</a></span>
+    <span>
+      <a href="https://github.com/napxlexn/ailimits">Source</a> ·
+      <a href="https://github.com/napxlexn/ailimits/releases">Releases</a> ·
+      <a href="https://github.com/napxlexn/ailimits/blob/master/docs/en/PROVIDERS.md">How it reads each provider</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+// copy buttons
+document.querySelectorAll("[data-copy]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var el = document.getElementById(b.getAttribute("data-copy"));
+    navigator.clipboard.writeText(el.textContent).then(function () {
+      var old = b.textContent;
+      b.textContent = "Copied";
+      setTimeout(function () { b.textContent = old; }, 1400);
+    });
+  });
+});
+// widget bars fill on first view; countdown ticks like the real widget
+var widget = document.querySelector(".widget");
+var filled = false;
+function fill() {
+  if (filled) return;
+  filled = true;
+  widget.querySelectorAll(".bar i").forEach(function (i) { i.style.width = i.getAttribute("data-w") + "%"; });
+}
+if ("IntersectionObserver" in window) {
+  new IntersectionObserver(function (e, o) {
+    if (e[0].isIntersecting) { fill(); o.disconnect(); }
+  }).observe(widget);
+} else { fill(); }
+var left = 142 * 60;
+setInterval(function () {
+  left = Math.max(0, left - 60);
+  var h = Math.floor(left / 3600), m = Math.floor(left % 3600 / 60);
+  document.getElementById("tick").textContent = h > 0 ? h + "h " + m + "min" : m + "min";
+}, 60000);
+// the reel starts only when scrolled into view (keeps the page light)
+var v = document.querySelector(".reel video");
+if (v && "IntersectionObserver" in window) {
+  new IntersectionObserver(function (e) {
+    if (e[0].isIntersecting) { v.play().catch(function () {}); }
+    else { v.pause(); }
+  }, { threshold: 0.25 }).observe(v);
+} else if (v) { v.setAttribute("controls", ""); }
+</script>
+
+</body>
+</html>
