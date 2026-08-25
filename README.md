@@ -4,7 +4,8 @@ A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 **Google Antigravity**.
 
-🇺🇦 [Українська версія / Ukrainian version](README.uk.md)
+🇺🇦 [Українська версія / Ukrainian version](README.uk.md) ·
+[Website](https://napxlexn.github.io/ailimits/)
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="The floating widget switching live between the Compact, Medium and Expanded detail levels, with horizontal progress bars">

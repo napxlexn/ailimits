@@ -4,7 +4,8 @@
 використання AI-провайдерів прямо на робочому столі: **Claude**,
 **OpenAI Codex**, **GitHub Copilot**, **Google Antigravity**.
 
-🇬🇧 [English version](README.md)
+🇬🇧 [English version](README.md) ·
+[Сайт](https://napxlexn.github.io/ailimits/)
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="Floating-віджет наживо перемикається між рівнями деталізації Compact, Medium і Expanded з горизонтальними смужками">
