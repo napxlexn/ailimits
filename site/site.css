@@ -148,6 +148,10 @@ main { position: relative; z-index: 3; }
 .hud a { color: var(--ink-2); }
 .scene-tag { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
 .scene-tag::before { content: ""; width: 30px; height: 1px; background: var(--meta); }
+/* text-wrap: pretty keeps a paragraph from ending on one stranded word; where
+   the engine does not know it, the wrap is simply the ordinary one */
+.lead, .shape-note, .dl-note, .honesty-note, .pg-note, .pane p, .tb-note {
+  text-wrap: pretty; }
 .lead { font-size: 1.08rem; max-width: 35em; }
 .caret {
   display: inline-block; width: 2px; height: 0.95em;
@@ -243,7 +247,10 @@ main { position: relative; z-index: 3; }
   padding: 90px 30px 40px; max-width: 1240px; margin: 0 auto;
 }
 .m-side { font-size: clamp(1.8rem, 3.2vw, 2.7rem); margin: 18px 0; }
-.shape-note { color: var(--meta); font-size: 0.94rem; max-width: 26em; min-height: 3.2em; }
+/* this is 01's body copy, the same job the lead does in every other section —
+   it was wearing --meta, the colour reserved for the small labels, and read a
+   shade darker than the rest of the page */
+.shape-note { color: var(--ink-2); font-size: 0.94rem; max-width: 26em; min-height: 3.2em; }
 .shape-stage { display: grid; grid-template-columns: auto auto; gap: 34px; align-items: center; justify-content: center; }
 .shape-main { will-change: width, height; }
 .shape-sats { display: grid; gap: 22px; }
@@ -316,7 +323,11 @@ main { position: relative; z-index: 3; }
 .tb-scrub { height: 200vh; width: 100vw; margin-left: calc(50% - 50vw); }
 /* the exact offset is measured in JS: main's right padding for the rail makes
    the arithmetic version land half that padding off */
-.tb-stage { position: sticky; top: 0; height: 100vh; width: 100vw; }
+/* the rig's own box is 420px wide however small the projection inside it is,
+   so the stage holds it in: anything sticking out past the window widens the
+   document, and the acrylic sheet — being exactly the window — leaves that
+   strip unblurred */
+.tb-stage { position: sticky; top: 0; height: 100vh; width: 100vw; overflow: clip; }
 /* While a rail jump is in flight this scene is scenery going past at speed.
    Its layers still cost the compositor everything they normally do — a sticky
    surface the size of the viewport, four transformed plates, a wide shadow —
@@ -372,10 +383,36 @@ html[data-jump] .tb-stage { visibility: hidden; }
   pointer-events: none; }
 .tb-note.on { opacity: var(--legend, 1); }
 .tb-note b { color: #f2f4f6; font-weight: 600; }
+/* the name of the layer being pointed at, above the stack; only a phone uses
+   it, where there is no room for a column of labels beside the object */
+.tb-name { position: absolute; left: 50%; transform: translateX(-50%);
+  z-index: 8; display: none; white-space: nowrap;
+  font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--ink); opacity: var(--legend, 1);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8); pointer-events: none; }
+
 @media (max-width: 900px) {
-  .tb-scrub { height: auto; }
-  .tb-stage { position: static; height: 62vh; }
-  .tb-tag, .tb-csvg, .tb-note { display: none; }
+  /* the scene stays; it is the scale that changes (see SCALE in site.js).
+     svh, not vh: a pinned stage must not resize when the address bar slides */
+  .tb-scrub { height: 175svh; }
+  .tb-stage { height: 100svh; }
+  /* the stage is pinned, so this offset holds for the entire scroll — 5vh put
+     the tag behind the fixed bar and kept it there */
+  .tb-head { top: max(9.5vh, 78px); }
+  .tb-head .manifesto { font-size: clamp(1.9rem, 8.2vw, 2.6rem); }
+  .tb-head .lead { font-size: 0.95rem; }
+  /* no room for a column of labels beside the stack, and no hover to ask for
+     one — so the scroll does the pointing: the name rides above the object and
+     the description holds one place below it, joined by a leader */
+  .tb-tag { display: none; }
+  .tb-name { display: block; }
+  .tb-csvg { display: block; }
+  .tb-note { left: 50%; transform: translateX(-50%); width: min(300px, 100vw - 44px);
+    text-align: center; font-size: 12px; line-height: 1.5; }
+}
+@supports not (height: 100svh) {
+  @media (max-width: 900px) { .tb-scrub { height: 175vh; } .tb-stage { height: 100vh; } }
+  @media (max-width: 980px) { .shape { height: 205vh; } .pin { height: 100vh; } }
 }
 
 /* 05 playground */
@@ -384,13 +421,24 @@ html[data-jump] .tb-stage { visibility: hidden; }
 /* nothing in here is text to take away: it is a widget to drag and a rail of
    controls, and a drag that leaves a trail of highlighted labels behind it
    reads as a bug */
-.pg { margin-top: 54px; display: grid; grid-template-columns: 272px 1fr; gap: 28px; align-items: start;
+/* the rail holds three buttons cut to one width; at 272px the widest option
+   (Compact / Medium / Expanded) no longer fitted between its walls */
+.pg { margin-top: 54px; display: grid; grid-template-columns: 300px 1fr; gap: 28px; align-items: start;
   -webkit-user-select: none; user-select: none; }
 .pg-rail { --op: 0.58; display: grid; gap: 20px; padding: 22px;
   box-shadow: 0 30px 70px rgba(0, 0, 0, 0.4); }
 .pg-group[data-hidden] { opacity: 0.35; pointer-events: none; }
 .pg-group .hud { margin-bottom: 9px; display: flex; justify-content: space-between; }
-.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+/* Every choice inside one option reads as one control, so the buttons in it are
+   cut to a single width — the widest of them. A grid whose tracks are all 1fr and
+   whose own width comes from its content resolves each track to the largest, so
+   the base follows the labels instead of being written down anywhere; max-width
+   keeps a long row inside the rail, where the tracks simply shrink together. */
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px;
+  width: max-content; max-width: 100%; }
+/* the palette has nine of them, so it runs in rows of three rather than one line */
+.seg-wrap { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg button { min-width: 0; }
 .seg button {
   font: 500 0.8rem var(--font); color: var(--ink-2);
   background: transparent; border: 1px solid var(--hair); border-radius: 7px;
@@ -456,6 +504,14 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
   border-bottom: 1px solid var(--hair);
 }
 .term-tabs { display: flex; align-items: stretch; gap: 2px; min-width: 0; }
+/* On a full window the tabs are cut to one measure: a grid laid out in columns,
+   every track 1fr, sized by its own content — the tracks then all resolve to the
+   widest tab. On a phone they stay flex, where the room is too tight to spend on
+   padding the short names out to the length of PowerShell. */
+@media (min-width: 901px) {
+  .term-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; }
+  .term-tab { justify-content: center; }
+}
 .term-tab {
   display: inline-flex; align-items: center; gap: 8px;
   font: inherit; font-size: 0.78rem; color: rgba(236, 240, 244, 0.55);
@@ -542,21 +598,41 @@ footer a { color: var(--ink-2); }
 
 /* ════ RESPONSIVE ════ */
 @media (max-width: 1180px) {
-  .hero-grid { grid-template-columns: 1fr; gap: 56px; }
+  /* a grid sizes to its content unless told otherwise: the hero was as wide as
+     its widest child wanted to be, and the whole first screen hung over the
+     right edge by that much */
+  .hero-grid { grid-template-columns: 1fr; gap: 56px; width: 100%; }
+  .hero-grid > * { min-width: 0; }
+  #aw-hero { max-width: 100%; }
   .hero-stage { min-height: 430px; }
 }
 @media (max-width: 980px) {
   .hero-s { padding-top: 96px; }
   .shape { height: auto; }
-  .pin { position: static; height: auto; grid-template-columns: 1fr; padding: 12vh 30px; }
-  .shape-stage { grid-template-columns: 1fr; justify-items: center; }
-  .shape-sats { grid-auto-flow: column; }
+  /* the scene keeps its pin and its morph; only the arrangement turns from
+     side-by-side into stacked, and the replicas are drawn smaller (see
+     shapeScale in site.js) so the whole family fits the screen */
+  .shape { height: 205svh; }
+  /* the top padding is what holds 01 clear of the fixed bar once the stage is
+     pinned; it is also the run of nothing the reader crosses to get here, so
+     it is cut to the bar plus a line of air and no more */
+  .pin { grid-template-columns: 1fr; padding: max(8vh, 73px) 22px 3vh; height: 100svh;
+    /* safe, not plain, centring: on a short screen the stack is taller than the
+       room it has, and plain centring pushes the heading up under the fixed bar
+       instead of letting the padding hold it */
+    align-content: safe center; gap: 18px; }
+  .shape-stage { grid-template-columns: 1fr; justify-items: center; gap: 22px; }
+  .shape-sats { grid-auto-flow: column; gap: 14px; justify-content: center; }
+  .shape-main, .shape-sats { max-width: 100%; }
+  .m-side { font-size: clamp(1.9rem, 8.2vw, 2.6rem); }
   .telemetry .ghost { right: -10vw; }
   .honesty { grid-template-columns: 1fr; justify-items: start; }
   .pg { grid-template-columns: 1fr; }
   .pg-desk { min-height: 460px; }
   .rings-bg { right: -85vmin; }
-  .sat-b { right: -4%; bottom: 20px; }
+  /* -4% put the card past the right edge of the window on a tablet, which
+     widened the document and left a strip the fixed acrylic could not cover */
+  .sat-b { right: 0; bottom: 20px; }
   .sheet { -webkit-backdrop-filter: blur(26px) saturate(135%); backdrop-filter: blur(26px) saturate(135%); }
 }
 @media (max-width: 640px) {
@@ -568,6 +644,141 @@ footer a { color: var(--ink-2); }
   .hero-s { padding-left: 18px; padding-right: 18px; }
   .screen-view img { width: 340px; height: 68px; }
   .stage-cap { display: none; }
+}
+
+/* ════ WITHIN ARM'S REACH ════
+   A phone is held, not pointed at: every target has to be worth a thumb, and
+   the smallest type has to survive being read at arm's length. The scenes are
+   untouched — this is spacing, hit area and one step of type scale. */
+@media (max-width: 900px) {
+  /* 44px is the smallest a thumb can be asked to hit reliably */
+  .top { padding: 6px 18px; }
+  @media (max-width: 360px) {
+    .top { padding: 6px 12px; }
+    .top-links { gap: 2px; font-size: 0.84rem; }
+    .top-links a { padding: 0 5px; }
+  }
+  .brand, .top-links a { min-height: 44px; display: inline-flex; align-items: center; }
+  .top-links { gap: 6px; }
+  .top-links a { padding: 0 8px; }
+  .seg button, .term-tab, .pg-file span, .pg-reset, .cmd button, .term-copy, .hero-dl {
+    min-height: 44px; }
+  .seg { gap: 6px; }
+  summary { min-height: 44px; display: flex; align-items: center; }
+  /* every link the reader can tap gets a thumb's worth of room, including the
+     ones sitting inside a sentence */
+  .hud a, footer span a, .dl-note a, .alt-grid a, .faq a, .skip {
+    display: inline-block; padding: 12px 2px; }
+  .seg button { min-width: 44px; }
+  /* a slider's track is 3px; the hand needs the whole row, so the padding
+     carries the hit area and the track keeps its size inside it */
+  /* the track stays 3px; the padding around it is what the hand gets */
+  .ctl input, .pg-group input[type="range"] {
+    padding: 20px 0; height: 44px; background-clip: content-box; }
+
+  /* one step up for the smallest type on the page */
+  .hud { font-size: 0.75rem; }
+  .shape-sats figcaption { font-size: 0.72rem; }
+  .pane .windows, .dl-card .dl-meta, .pg-note { font-size: 0.78rem; }
+  .lead { font-size: 1rem; }
+
+  /* the ghost figure hangs off the right on purpose; on a narrow screen that
+     hang lands outside the window, which widens the document and leaves a
+     strip the fixed acrylic cannot reach */
+  .telemetry { overflow: clip; }
+
+  /* the page was eleven screens; the air between scenes is where that went */
+  .providers, .telemetry, .playground, .finale { padding-top: 9vh; padding-bottom: 9vh; }
+  .hero-s { padding: 96px 22px 40px; }
+  .panes { margin-top: 30px; }
+  .numbers { margin-top: 34px; }
+  .pg { margin-top: 30px; gap: 20px; }
+  .term { margin-top: 30px; }
+  .dl { margin-top: 26px; }
+  /* the questions answer what the panel above them opens; a screen and a half
+     of air between the two read as the end of the page */
+  .faq { margin-top: 6vh; padding-top: 0; }
+}
+
+/* ════ HELD IN ONE HAND ════
+   What a phone held upright cannot afford to repeat, and what has to be
+   re-ordered once a row becomes a column. */
+@media (max-width: 900px) {
+  /* 00: the widget stands here at 150% to be looked at. Upright, there is no
+     room beside the copy for that, and 01 shows the very same widget a screen
+     later with its variants around it — so the hero keeps the words and hands
+     the object over. It comes back the moment the phone is turned. */
+  @media (orientation: portrait) {
+    .hero-stage { display: none; }
+    .hero-grid { gap: 0; }
+    /* 00 keeps the screen to itself: nothing of 01 may show while it is being
+       read. lvh, not svh — svh is the screen with the address bar out, so once
+       the bar slides away the section would fall short and 01 would peek in.
+       What was cut instead is the run after it: the padding here and the one
+       above 01 are now the whole distance between them. */
+    .hero-s { min-height: 100lvh; padding-bottom: 2vh; }
+  }
+
+  /* 05: on a desk the settings sit in a rail beside the glass and both are in
+     view at once. Stacked, whichever comes first is what the section is about,
+     and this section is about touching the widget — so the glass leads and the
+     options follow it. */
+  .pg-desk { order: 1; }
+  .pg-rail { order: 2; }
+
+  /* 06: the tabs and the window buttons were laid out for a window twice this
+     wide and had begun to sit on top of one another. The tabs give up padding
+     and gain a gap between them, the new-tab plus goes (there is nothing to
+     add), and the strip scrolls rather than ever reaching the buttons again. */
+  .term-bar { padding: 7px 8px 0; gap: 0; }
+  .term-tabs { flex: 0 1 auto; gap: 5px; overflow-x: auto; scrollbar-width: none;
+    -ms-overflow-style: none; }
+  .term-tabs::-webkit-scrollbar { display: none; }
+  .term-tab { font-size: 0.7rem; padding: 6px 9px 7px; gap: 5px; flex: none; }
+  .term-tab .tab-mark { width: 13px; height: 13px; }
+  /* the plus keeps its place beside the last tab and the window buttons keep
+     theirs at the right edge, as on a desk; what gives way instead is the tab
+     strip, which scrolls rather than pushing the chrome around */
+  .term-plus { padding: 0 7px; }
+  .term-win { margin-left: auto; padding-left: 10px; }
+  .term-win i { padding: 4px 6px; }
+
+  /* the command is what the reader came for; the button was taking a third of
+     the line away from it, so it moves under the line and the text gets the
+     whole width */
+  .term-body { flex-direction: column; align-items: stretch; gap: 0; padding: 16px 14px 14px; }
+  /* stacked, a line that grows would push the button to the floor of the box */
+  .term-line { flex: 0 0 auto; }
+  /* with the button out of the way the headline command fits one line again,
+     which is the whole point of the widened terminal */
+  @media (max-width: 430px) { .term-body { font-size: 0.8rem; } }
+  .term-copy { align-self: flex-end; margin-top: 12px; }
+  /* one more notch, so the last tab is not cut on the narrowest phones */
+  @media (max-width: 380px) {
+    .term-bar { padding: 7px 6px 0; }
+    .term-tab { font-size: 0.66rem; padding: 6px 7px 7px; gap: 4px; }
+    .term-tab .tab-mark { width: 12px; height: 12px; }
+    .term-plus { padding: 0 5px; }
+    .term-win i { padding: 4px 5px; }
+  }
+
+  /* the last few pixels, so that a 360-wide phone still shows all three tabs
+     without the strip having to scroll */
+  @media (max-width: 400px) {
+    .term-tab { padding: 6px 8px 7px; }
+    .term-win { margin-left: 12px; }
+    .term-win i { padding: 4px 5px; }
+  }
+}
+
+/* A short phone has to hold the whole 01 column — heading, the widget, its two
+   variants and their captions — inside one pinned screen. What gives is the air
+   between them, not the objects themselves. */
+@media (max-width: 980px) and (max-height: 820px) {
+  .pin { gap: 10px; }
+  .shape-stage { gap: 12px; }
+  .shape-sats { gap: 10px; }
+  .shape-side .shape-note { margin-top: 6px; }
 }
 
 /* ════ REDUCED MOTION ════ */

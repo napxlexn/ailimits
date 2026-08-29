@@ -206,18 +206,51 @@ const capEls = [$("[data-cap-s1]"), $("[data-cap-s2]")];
 const shapeHud = $("[data-shape-hud]");
 const shapeNote = $("[data-shape-note]");
 let famRendered = -1;
+/* The replica is drawn at a chosen scale, so fitting a phone is a matter of
+   choosing a smaller one — the composition, the spacing and the type inside it
+   stay exactly as they are on a desktop. */
+function shapeScale(natural, room, max) {
+  return Math.max(0.52, Math.min(max, room / natural));
+}
+/* the room is the column the scene actually stands in, not the window: a phone
+   reports a layout viewport that need not match what the section was given */
+function shapeRoom() {
+  const pin = $(".shape .pin");
+  if (!pin) return Math.min(innerWidth - 44, 760);
+  const cs = getComputedStyle(pin);
+  const w = pin.getBoundingClientRect().width
+    - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  let room = Math.min(Math.max(240, w), 760);
+  /* Side by side, only the width is ever scarce. Stacked, the column shares one
+     pinned screen with the heading and the two variants, and on a short phone
+     the height runs out first — the captions were dropping past the fold. The
+     widget is about two thirds as tall as it is wide, and the variants under it
+     add about half of that again, so the room the height allows is the leftover
+     divided by that ratio. */
+  if (innerWidth <= 980) {
+    const side = $(".shape-side");
+    const left = pin.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+      - (side ? side.offsetHeight : 0) - 54;          /* gaps and the captions */
+    if (left > 0) room = Math.min(room, Math.max(200, left / 1.02));
+  }
+  return room;
+}
 function setFam(i) {
   if (famRendered === i) return;
   famRendered = i;
   const f = FAMS[i];
-  renderWidget(shapeEl, baseState(f.main), f.mk);
+  const room = shapeRoom();
+  const main = computeSize(baseState(f.main))[0];
+  renderWidget(shapeEl, baseState(f.main), shapeScale(main, room, f.mk));
   shapeHud.textContent = f.hud;
   shapeNote.textContent = f.note;
   satEls.forEach((el, s) => {
     const fig = el.closest("figure");
     if (f.sats[s]) {
       fig.style.display = "";
-      renderWidget(el, baseState(f.sats[s].st), 0.9);
+      /* two of them stand side by side, so each gets half the room */
+      const satRoom = (shapeRoom() - 22) / (f.sats.length > 1 ? 2 : 1);
+      renderWidget(el, baseState(f.sats[s].st), shapeScale(computeSize(baseState(f.sats[s].st))[0], satRoom, 0.9));
       capEls[s].textContent = f.sats[s].cap;
     } else {
       fig.style.display = "none";
@@ -284,7 +317,7 @@ if (reduced) setFam(0);
     };
     const ask = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
     addEventListener("scroll", ask, { passive: true });
-    addEventListener("resize", ask);
+    addEventListener("resize", () => { famRendered = -1; ask(); });
     addEventListener("load", ask);
     ask();
   }
@@ -322,8 +355,24 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
   if (stage && !reduced) {
     const RAD = Math.PI / 180, TAU = Math.PI * 2;
     const BAR_W = 420, BAR_H = 48, ICON_BOX = 44, ICON_C = ICON_BOX / 2;
-    const Z = [0, 55, 110, 165];        /* bar, gauge, panel, tooltip */
+    /* The heights are set so the GAPS between the drawn layers match, not the
+       numbers: the layers are different sizes, so even steps leave uneven air.
+       Measured at the fully exploded moment — 8.9px between the gauge and the
+       panel, 8.2px between the panel and the tooltip. A phone needs the
+       tooltip a little higher, because its text box does not shrink with the
+       projection as fast as the rest does. */
+    const Z = [0, 44, 66, 121];         /* bar, gauge, panel, tooltip */
+    const ZP = [0, 48, 90, 142];        /* the same, for a narrow screen */
+    /* design/taskbar-heights.html drives these from outside while they are
+       being chosen; with nothing set, the numbers above are what ships */
+    const zAt = (i) => ((narrow() ? window.__tbZP || ZP : window.__tbZ || Z)[i]);
     const DX = [0, 0, -84, 0];          /* the panel starts pushed left */
+    const dxAt = (i) => ((window.__tbDX || DX)[i]);
+    /* On a narrow screen the bar is short and the room around it is large, so
+       the same proportions read as a scattered group rather than as a stack:
+       the panel in particular drifts up and away from the thing it belongs to.
+       The layers are held closer together there, and pushed aside less. */
+    const dxk = () => (narrow() ? 0.72 : 1);
     const TARGETS = [93, 81, 40, 7];
     const SCRUB = $(".tb-scrub");
     const rig = $("[data-tb-rig]");
@@ -338,10 +387,14 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
     const tns = [...document.querySelectorAll("[data-tb-tn]")];
     const csvg = $("[data-tb-csvg]"), cline = $("[data-tb-cline]");
     const noteBox = $("[data-tb-notebox]");
+    const nameBox = $("[data-tb-name]");
+    const NAMES = ["taskbar", "tray icon", "panel", "tooltip"];
     const COL_GAP = 56, NOTE_MIN = 32, NOTE_W = 260;
     /* the section rail lives on the right of every viewport wide enough for it,
        and the tag column has to stop before it */
     const railW = () => (innerWidth >= 1181 ? 150 : 24);
+    /* a phone has no column for labels, so the rig may use the whole width */
+    const narrow = () => innerWidth <= 900;
     /* The pose has two independent writers: the scroll sets the base (the plane
        turns to face you at the end of the scrub) and the pointer adds a
        parallax offset. Both used to assign `tilt`/`spin` outright, so a scroll
@@ -355,7 +408,7 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
     let offX = 0, offY = 0;                 /* what is actually drawn */
     let chasing = false;
     let tilt = 55, spin = -10, PROJ = null, activeEl = null;
-    let fill = 0, spread = 1, SCALE = 1, tipOut = 0;
+    let fill = 0, spread = 1, SCALE = 1, tipOut = 0, pinnedAt = 0;
 
     /* the shared bar render carries the Ukrainian language label; Windows shows
        three latin letters, so it is repainted once into an offscreen copy.
@@ -456,10 +509,16 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       const [l, t, w, h] = geo.box[i];
       return [[l, t], [l + w, t], [l + w, t + h], [l, t + h]].map(([x, y]) => {
         const u = x - cx, v = y - cy;
-        return [ox + cx + a * u + c * v + DX[i] * spread * SCALE,
-                oy + cy + b * u + d * v - Z[i] * spread * lift];
+        return [ox + cx + a * u + c * v + dxAt(i) * dxk() * spread * SCALE,
+                oy + cy + b * u + d * v - zAt(i) * spread * lift];
       });
     };
+    /* design/taskbar-heights.html reads the drawn corners back out to measure
+       the real air between layers; a bounding box would lie, the shapes lean */
+    const showQuads = () => [0, 1, 2, 3].map(quadOf);
+    window.__tbQuads = showQuads;
+    window.__tbZDef = { desk: Z, phone: ZP, dx: DX[2] };   /* what ships, for the lab */
+
     const ptSeg = (p, a, b) => {
       const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
       let t = L ? ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L : 0;
@@ -475,6 +534,14 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       }
       return inside;
     };
+    /* two segments crossing, by the sign of the turns they make around each
+       other: a leader can pass clean through a layer with neither of its own
+       corners inside it, and distance alone reads that as a free lane */
+    const segCross = (a, b, c, d) => {
+      const turn = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+      const t1 = turn(c, d, a), t2 = turn(c, d, b), t3 = turn(a, b, c), t4 = turn(a, b, d);
+      return (t1 > 0) !== (t2 > 0) && (t3 > 0) !== (t4 > 0);
+    };
     const clearance = (pts, quads) => {
       let m = Infinity;
       for (let i = 0; i < pts.length; i++) {
@@ -483,6 +550,7 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
         for (const qd of quads) {
           for (let k = 0; k < 4; k++) {
             const p1 = pts[i], p2 = pts[i + 1], q1 = qd[k], q2 = qd[(k + 1) % 4];
+            if (segCross(p1, p2, q1, q2)) return 0;
             m = Math.min(m, Math.min(ptSeg(p1, q1, q2), ptSeg(p2, q1, q2),
                                      ptSeg(q1, p1, p2), ptSeg(q2, p1, p2)));
           }
@@ -497,8 +565,12 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       /* the rig takes whatever the viewport leaves between the note column and
          the tag column: more screen pixels per plate is the only real cure for
          a soft projection — tilted 55 degrees a 48px bar owns 27 device rows */
-      const room = sr.width - (NOTE_MIN + NOTE_W + 90) - (railW() + 190);
-      SCALE = Math.max(1, Math.min(1.9, room / (BAR_W * 1.06)));
+      const room = narrow()
+        ? sr.width - 28                       /* the screen, less a hair of margin */
+        : sr.width - (NOTE_MIN + NOTE_W + 90) - (railW() + 190);
+      /* Below 1 the bar is smaller than life, which is what a phone leaves
+         room for; the floor keeps it legible rather than decorative. */
+      SCALE = Math.max(narrow() ? 0.58 : 1, Math.min(1.9, room / (BAR_W * 1.06)));
       const sq = Math.cos(tilt * RAD), lift = Math.sin(tilt * RAD) * SCALE, th = spin * RAD;
       const a = Math.cos(th) * SCALE, b = sq * Math.sin(th) * SCALE;
       const c = -Math.sin(th) * SCALE, d = sq * Math.cos(th) * SCALE;
@@ -507,14 +579,17 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       /* centring by measurement: the stack grows upward from the bar, so its
          visual middle wanders as the layers collapse and the tilt flattens */
       const set = (ty) => plates.forEach((p, i) => {
-        p.style.transform = `translate(${(DX[i] * spread * SCALE).toFixed(2)}px,` +
-          `${(ty - Z[i] * spread * lift).toFixed(2)}px) ${m}`;
+        p.style.transform = `translate(${(dxAt(i) * dxk() * spread * SCALE).toFixed(2)}px,` +
+          `${(ty - zAt(i) * spread * lift).toFixed(2)}px) ${m}`;
       });
       const bounds = [0, 1, 2, 3].map(quadOf).flat().map((p) => p[1]);
       /* centre in the room under the heading, which now shares the stage */
       const head = stage.querySelector(".tb-head");
       const top = head ? head.offsetTop + head.offsetHeight : 0;
-      const ty = top + (sr.height - top) / 2 - (Math.min(...bounds) + Math.max(...bounds)) / 2;
+      /* a touch above the middle of the room: dead centre leaves the group
+         stranded far below the text that introduces it */
+      const bias = narrow() ? 0.42 : 0.5;
+      const ty = top + (sr.height - top) * bias - (Math.min(...bounds) + Math.max(...bounds)) / 2;
       set(ty);
       PROJ.oy = geo.oy + ty;
       if (!fast) drawBar(sq);
@@ -529,8 +604,86 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
          starts as the limits finish filling and is over early in the assembly,
          so the stack lands with the panel and the gauge alone. */
       tipbox.style.setProperty("--o", (1 - tipOut).toFixed(3));
-      layoutTags(sr);
-      if (activeEl) route(activeEl, false);
+      if (narrow()) legendOnPhone(sr);
+      else { layoutTags(sr); if (activeEl) route(activeEl, false); }
+    }
+
+    /* ── the phone's legend ──
+       No hover, no room beside the object: the scroll points instead. The
+       layers are taken in the order they stand, from the top one down, and for
+       each the name rides above the stack while the description holds one
+       place at the foot of the screen. A leader joins the two, entering each
+       layer from the side that keeps it clear of the others: the tooltip and
+       the tray icon from the right, the panel from the left, and the bar from
+       directly below. Both fade on the same curve the layers assemble on. */
+    const ORDER = [3, 2, 1, 0];              /* tooltip, panel, gauge, bar */
+    const SIDE = { 3: "right", 2: "left", 1: "right", 0: "under" };
+    let namedIdx = -1;
+    function legendOnPhone(sr) {
+      const par = Math.min(1, Math.max(0, (spread - 0.15) / 0.35));
+      const quads = [0, 1, 2, 3].map(quadOf);
+      const xs = quads.flat().map((p) => p[0]), ys = quads.flat().map((p) => p[1]);
+      const stackT = Math.min(...ys), stackB = Math.max(...ys);
+      const stackL = Math.min(...xs), stackR = Math.max(...xs);
+
+      /* which layer the scroll is on: the run before the layers begin to land,
+         split evenly into as many bands as there are layers. The handover is
+         driven by the scroll as well — the pair fades out as a boundary comes
+         up and back in past it, so the swap itself is never seen. */
+      const t = Math.min(0.999, Math.max(0, (pinnedAt - 0.03) / 0.5));
+      const pos = t * ORDER.length;
+      const band = Math.min(ORDER.length - 1, Math.floor(pos));
+      const idx = ORDER[band];
+      const frac = pos - band;
+      const edge = Math.min(frac, 1 - frac) / 0.34;   /* ~40px of scroll each way */
+      const swap = band === 0 && frac < 0.5 ? 1
+                 : band === ORDER.length - 1 && frac > 0.5 ? 1
+                 : smooth(Math.min(1, Math.max(0, edge)));
+
+      nameBox.style.top = Math.max(8, stackT - 30) + "px";
+      noteBox.style.top = Math.min(sr.height - 96, stackB + 74) + "px";
+      if (idx !== namedIdx) {
+        namedIdx = idx;
+        nameBox.textContent = NAMES[idx];
+        noteBox.innerHTML = targets[idx].dataset.tbNote;
+      }
+      const vis = par * swap;
+      const show = vis > 0.02;
+      nameBox.style.opacity = show ? vis.toFixed(3) : "0";
+      noteBox.classList.toggle("on", show);
+      stage.style.setProperty("--legend", vis.toFixed(3));
+      if (!show) { cline.setAttribute("points", ""); return; }
+
+      /* the leader: out of the note, along a corridor that clears the stack,
+         and into the layer from its own side */
+      const qd = quads[idx];
+      const nb = noteBox.getBoundingClientRect(), st = stage.getBoundingClientRect();
+      const nx = Math.round(nb.left + nb.width / 2 - st.left);
+      const ny = Math.round(nb.top - st.top) - 8;
+      const cy = Math.round(stackB + 26);          /* the corridor under the stack */
+      const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+      let pts;
+      if (SIDE[idx] === "under") {
+        /* the note sits directly under the bar, so the leader is one straight
+           run and nothing else: it stops short of the edge rather than meeting
+           it, and it never turns aside */
+        const a2 = qd[3], b2 = qd[2];              /* the bar's lower edge */
+        const t2 = Math.abs(b2[0] - a2[0]) < 0.01 ? 0.5 : (nx - a2[0]) / (b2[0] - a2[0]);
+        const edgeY = a2[1] + (b2[1] - a2[1]) * Math.min(1, Math.max(0, t2));
+        pts = [[nx, ny], [nx, Math.round(edgeY + 16)]];
+      } else {
+        const right = SIDE[idx] === "right";
+        const e = right ? mid(qd[1], qd[2]) : mid(qd[3], qd[0]);
+        const lane = right ? Math.min(sr.width - 10, stackR + 14)
+                           : Math.max(10, stackL - 14);
+        pts = [[nx, ny], [nx, cy], [lane, cy], [lane, Math.round(e[1])],
+               [Math.round(e[0] + (right ? 4 : -4)), Math.round(e[1])]];
+      }
+      csvg.setAttribute("viewBox", "0 0 " + sr.width + " " + sr.height);
+      csvg.setAttribute("width", sr.width); csvg.setAttribute("height", sr.height);
+      cline.style.transition = "none";
+      cline.style.strokeDasharray = "none";
+      cline.setAttribute("points", pts.map((p) => p.join(",")).join(" "));
     }
 
     function layoutTags(sr) {
@@ -561,7 +714,10 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       const asmT = Math.min(...all.map((p) => p[1]));
       const asmB = Math.max(...all.map((p) => p[1]));
       const C = quads[idx].reduce((m, p) => (p[0] < m[0] ? p : m));
-      const S = [C[0] - 12, C[1]];
+      /* the leader points at the layer, it does not reach it: 12px left of the
+         corner still read as a touch, since the corner it aims at is rounded
+         and carries a shadow */
+      const S = [C[0] - 24, C[1]];
       /* the note sits just left of the model, so the leader is short by
          construction rather than stretching across the window */
       const noteL = Math.max(NOTE_MIN, Math.round(asmL - 90 - noteBox.offsetWidth));
@@ -573,13 +729,25 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       noteBox.style.top = (noteY - 10) + "px";
       const jx = S[0] - 16;
       const lane = (ly) => [S, [jx, S[1]], [jx, ly], [bendX, ly], [bendX, noteY], [endX, noteY]];
-      const cands = [
-        [S, [bendX, S[1]], [bendX, noteY], [endX, noteY]],
-        lane(S[1] - 16), lane(S[1] + 16), lane(S[1] - 30), lane(S[1] + 30),
-        lane(asmT - 24), lane(asmB + 24),
-      ];
-      let pts = cands[0], best = -1;
-      cands.forEach((cd) => { const g = clearance(cd, quads); if (g > best) { best = g; pts = cd; } });
+      /* the straight run first, then lanes swept above and below it, because
+         the corridor between two layers is rarely where a couple of fixed
+         offsets happen to land. Each carries how far it strays from the
+         layer's own height. */
+      const cands = [{ p: [S, [bendX, S[1]], [bendX, noteY], [endX, noteY]], dy: 0 }];
+      for (let dy = -96; dy <= 96; dy += 8) if (dy) cands.push({ p: lane(S[1] + dy), dy });
+      cands.push({ p: lane(asmT - 24), dy: asmT - 24 - S[1] },
+                 { p: lane(asmB + 24), dy: asmB + 24 - S[1] });
+      /* Scored against the OTHER layers only: every candidate leaves the same
+         point beside the target, so counting the target in gave them all the
+         same number and the first one always won. Then, among the lanes that
+         are as roomy as the best, the one that stays nearest the layer's own
+         height wins — climbing past two layers for a couple more pixels of air
+         reads as a detour, not as a pointer. */
+      const others = quads.filter((q, k) => k !== idx);
+      const scored = cands.map((c) => ({ p: c.p, dy: c.dy, g: clearance(c.p, others) }));
+      const top = Math.max(...scored.map((c) => c.g));
+      const pts = scored.filter((c) => c.g >= top - 4)
+        .sort((a, b) => Math.abs(a.dy) - Math.abs(b.dy))[0].p;
       cline.setAttribute("points", pts.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" "));
       csvg.setAttribute("viewBox", `0 0 ${sr.width} ${sr.height}`);
       csvg.setAttribute("width", sr.width); csvg.setAttribute("height", sr.height);
@@ -668,6 +836,7 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       const r = SCRUB.getBoundingClientRect();
       const denom = Math.max(1, r.height - stage.offsetHeight);
       const pinned = Math.min(1, Math.max(0, -r.top / denom));
+      pinnedAt = pinned;
       const after = Math.min(1, Math.max(0, (-r.top - denom) / (stage.offsetHeight * 0.38)));
       const eInOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
       fill = ease(seg(pinned, 0.02, 0.5));
@@ -799,22 +968,57 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       }
     };
 
+    /* The cards do not always stand in one row: the grid gives four columns on
+       a desk, two on a tablet and one on a phone. The reading follows whatever
+       row a card is actually in — four across is one pass over the four, a
+       column is four passes, each starting when its own card arrives. Grouped
+       by offsetTop, and only when the layout can have changed, since reading
+       it back mid-frame would cost a layout every time. */
+    let bands = null;
+    const groups = () => {
+      if (bands) return bands;
+      const by = new Map();
+      panes.forEach((pane) => {
+        const k = Math.round(pane.offsetTop);
+        if (!by.has(k)) by.set(k, []);
+        by.get(k).push(pane);
+      });
+      bands = [...by.entries()].sort((a, b) => a[0] - b[0]).map(([, ps]) => ps);
+      return bands;
+    };
+    addEventListener("resize", () => { bands = null; }, { passive: true });
+
     let running = false;
     const tick = () => {
-      const rr = row.getBoundingClientRect();
-      /* The pass belongs to the row's arrival: it starts as the cards come in
-         at the bottom edge and finishes as the section itself settles into the
-         screen — which is exactly where the cards stand when you arrive from
-         the rail, so the reading is complete however you got here. Ending it
-         any earlier left the last cards resolving off in the lower corner. */
+      /* The pass belongs to the band's arrival: it starts as those cards come
+         in at the bottom edge and finishes as they settle into the screen —
+         which is where they stand when you arrive from the rail, so the reading
+         is complete however you got here. Ending it any earlier left the last
+         cards resolving off in the lower corner. */
       const secTop = sec.getBoundingClientRect().top;
-      const endTop = Math.min(innerHeight * 0.55, rr.top - secTop);
-      const raw = cl((innerHeight - rr.top) / Math.max(1, innerHeight - endTop));
-      /* the front starts before the row and ends past it: stopping it on the
-         edge would leave the last card's right margin never fully resolved */
-      const x = sm(raw) * (rr.width + D.ramp * 1.4) - D.ramp * 0.7;
-      const live = raw > 0.002 && raw < 0.998;
-      panes.forEach((pane) => decode(pane, pane.getBoundingClientRect(), rr, x, live));
+      const bs = groups(), stacked = bs.length > 1;
+      bs.forEach((ps) => {
+        const rects = ps.map((pane) => pane.getBoundingClientRect());
+        const br = { left: Math.min(...rects.map((r) => r.left)),
+                     top: Math.min(...rects.map((r) => r.top)) };
+        br.width = Math.max(...rects.map((r) => r.right)) - br.left;
+        /* One row reads across the whole section as it settles. Stacked, a card
+           is only a screen-fifth tall and would otherwise be finished while it
+           was still at the bottom edge, so its reading ends higher up — by the
+           time the card has risen into view it has been read. */
+        const endTop = stacked ? innerHeight * 0.22
+                               : Math.min(innerHeight * 0.55, br.top - secTop);
+        /* stacked, the reading starts a little under the fold, so a card is
+           already being read by the time it comes up rather than waiting to be
+           in view before anything happens */
+        const from = stacked ? innerHeight * 1.18 : innerHeight;
+        const raw = cl((from - br.top) / Math.max(1, from - endTop));
+        /* the front starts before the band and ends past it: stopping it on the
+           edge would leave the last card's right margin never fully resolved */
+        const x = sm(raw) * (br.width + D.ramp * 1.4) - D.ramp * 0.7;
+        const live = raw > 0.002 && raw < 0.998;
+        ps.forEach((pane, i) => decode(pane, rects[i], br, x, live));
+      });
       if (running) requestAnimationFrame(tick);
     };
     /* it only costs anything while the row is on screen */
@@ -1440,4 +1644,40 @@ if (typeof gsap !== "undefined" && !reduced) {
       jumpEnd = setTimeout(endJump, 1300);
     });
   });
+
+  /* An answer that opens below the fold is an answer nobody reads: the page
+     stays where it was and the text arrives off screen. So opening one brings
+     it up under the header, and closing it hands the reader back the place
+     they were reading from — but only if they are still looking at it, since
+     a jump back from somewhere else would be a jump out of nowhere. */
+  {
+    const topBar = $(".top");
+    const goTo = (y) => {
+      const to = Math.max(0, Math.min(y, document.documentElement.scrollHeight - innerHeight));
+      if (lenis) lenis.scrollTo(to, { duration: 0.7 });
+      else scrollTo({ top: to, behavior: "smooth" });
+    };
+    const came = new WeakMap();
+    $$(".alt-installs details, .faq details").forEach((d) => {
+      d.addEventListener("toggle", () => {
+        if (d.open) {
+          came.set(d, scrollY);
+          /* after the layout has the answer in it, not before */
+          requestAnimationFrame(() => {
+            const r = d.getBoundingClientRect();
+            const head = (topBar ? topBar.offsetHeight : 0) + 14;
+            if (r.top >= head && r.bottom <= innerHeight - 14) return;   /* already read-able */
+            goTo(scrollY + r.top - head);
+          });
+          return;
+        }
+        const y = came.get(d);
+        came.delete(d);
+        if (y === undefined) return;
+        const r = d.getBoundingClientRect();
+        if (r.bottom < 0 || r.top > innerHeight) return;   /* they have moved on */
+        goTo(y);
+      });
+    });
+  }
 }
