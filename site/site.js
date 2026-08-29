@@ -882,6 +882,61 @@ $$("[data-opt-range]").forEach((r) => {
   });
 }
 
+/* ════ the playground's desktop ════
+   The widget is acrylic: it takes its colour and its blur from whatever lies
+   behind it, so the only honest way to judge it is against the reader's own
+   wallpaper. The file is read with an object URL — it is never uploaded, never
+   copied anywhere, and the URL is released as soon as it is replaced. */
+{
+  const desk = $("[data-pg-desk]");
+  const file = $("[data-desk-file]");
+  const reset = $("[data-desk-reset]");
+  if (desk && file) {
+    let url = null;
+    const put = (blob) => {
+      if (!blob || !/^image\//.test(blob.type)) return;
+      const next = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        if (url) URL.revokeObjectURL(url);
+        url = next;
+        desk.style.setProperty("--desk", 'url("' + url + '")');
+        reset.hidden = false;
+      };
+      img.onerror = () => URL.revokeObjectURL(next);
+      img.src = next;
+    };
+    file.addEventListener("change", () => { put(file.files && file.files[0]); file.value = ""; });
+    reset.addEventListener("click", () => {
+      desk.style.removeProperty("--desk");
+      if (url) { URL.revokeObjectURL(url); url = null; }
+      reset.hidden = true;
+    });
+    /* dropping a picture on the glass, and pasting one, are the two things a
+       reader tries without being told */
+    let over = 0;
+    desk.addEventListener("dragenter", (e) => { e.preventDefault(); over++; desk.classList.add("dropping"); });
+    desk.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+    desk.addEventListener("dragleave", () => { if (--over <= 0) { over = 0; desk.classList.remove("dropping"); } });
+    desk.addEventListener("drop", (e) => {
+      e.preventDefault(); over = 0; desk.classList.remove("dropping");
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) put(f);
+    });
+    /* a picture dropped just outside the glass would otherwise replace the page
+       with the image file and lose the reader's place */
+    addEventListener("dragover", (e) => e.preventDefault());
+    addEventListener("drop", (e) => e.preventDefault());
+    addEventListener("paste", (e) => {
+      const r = desk.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > innerHeight) return;      /* only while it is on screen */
+      const items = [...(e.clipboardData ? e.clipboardData.items : [])];
+      const img = items.find((i) => i.type.startsWith("image/"));
+      if (img) put(img.getAsFile());
+    });
+  }
+}
+
 (function drag() {
   const desk = $("[data-pg-desk]");
   if (!desk || !playEl) return;

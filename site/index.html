@@ -320,9 +320,21 @@ document.documentElement.classList.add("js");
       <div class="pg-group"><p class="hud">SATURATION <output data-out="saturation">55</output>%</p>
         <input type="range" min="0" max="100" step="25" value="55" data-opt-range="saturation" aria-label="Saturation">
       </div>
+      <div class="pg-group"><p class="hud">DESKTOP</p>
+        <div class="pg-wall">
+          <label class="pg-file">
+            <input type="file" accept="image/*" data-desk-file>
+            <span>Use my wallpaper</span>
+          </label>
+          <button type="button" class="pg-reset" data-desk-reset hidden>Reset</button>
+        </div>
+        <p class="pg-note">Drop a picture on the glass or paste one. It is read in your
+        browser and goes nowhere.</p>
+      </div>
     </div>
     <div class="pg-desk" data-pg-desk>
       <p class="hud pg-hint" aria-hidden="true">DRAG ANYWHERE ON THE GLASS</p>
+      <p class="pg-drop" data-desk-drop aria-hidden="true">Drop it here</p>
       <div class="aw" id="aw-play" data-drag></div>
     </div>
   </div>
