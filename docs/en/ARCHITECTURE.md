@@ -71,21 +71,23 @@ the scheduler), save the config, and request a redraw.
 
 ## Resource footprint (measured, not estimated)
 
-Audited 2026-07-08 with `bench/perf_audit.ps1` (5 min at 1 Hz, running
+Audited 2026-08-23 with `bench/perf_audit.ps1` (5 min at 1 Hz, running
 `release-min`, Win11 26200, Ryzen 9 9950X3D / 32 threads, elevated). CPU is
 exact kernel accounting, not sampling. Report:
-`bench/results/perf-audit-published-2026-07-08.json`.
+`bench/results/perf-audit-2026-08-23_0740.json`. The 2026-07-08 run, kept
+beside it as `perf-audit-published-2026-07-08.json`, read 0.024% of one core
+and 61 MB — the same window on the same machine, five releases earlier.
 
 | Metric | Measured |
 |---|---|
-| CPU (exact accounting) | 0.078 CPU-s per 326 s = **0.024% of one core** (0.0007% of the machine) |
+| CPU (exact accounting) | 0.016 CPU-s per 327 s = **0.005% of one core** (0.0002% of the machine) |
 | GPU | **0%** — the process owns no GPU-engine counter instances at all (CPU rendering) |
-| Working set | 61 MB avg / 69 MB peak |
-| Threads | ~9 avg / 15 peak |
-| Handles | ~300 |
-| I/O | 136 B/s avg; spikes are the update-cycle HTTPS (3 requests / cycle, < 5 KB each) |
-| Context switches (idle-wakeup proxy) | ~8.5/s whole-window average |
+| Working set | 37 MB avg / 40 MB peak |
+| Threads | ~10 avg / 13 peak |
+| Handles | ~377 |
+| I/O | 184 B/s avg; spikes are the update-cycle HTTPS (3 requests / cycle, < 5 KB each) |
+| Context switches (idle-wakeup proxy) | ~0.9/s whole-window average |
 | Platform timer resolution | **not raised** (`powercfg /energy`: no request from ailimits) |
-| SRUM energy estimate | ~160 units/min avg — CPU + network only; display/disk/GPU all zero |
+| SRUM energy estimate | ~160 units/min avg — CPU + network only; display/disk/GPU all zero (carried from the 2026-07-08 report; the August run stores raw hourly buckets, not this normalisation) |
 | DPC/latency impact | none possible: user-mode, no drivers, no timer-resolution requests |
 | Binary (`release-min`) | ~3 MB |

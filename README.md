@@ -59,8 +59,8 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
   and sends no telemetry.
 - **No setup.** Your normal CLI use keeps the tokens valid, so there is
   nothing to log into and nothing to configure.
-- **Low load, measured on the running app.** 0.024% of one CPU core, no GPU
-  use (it renders on the CPU), about 60 MB RAM, no raised timer resolution,
+- **Low load, measured on the running app.** 0.005% of one CPU core, no GPU
+  use (it renders on the CPU), about 37 MB RAM, no raised timer resolution,
   a 3 MB exe. Reproduce it with `bench/perf_audit.ps1`; the full numbers are
   in [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
 - **Stale data is marked as stale.** A value that stops updating greys out and
