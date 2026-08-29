@@ -40,6 +40,10 @@ code { font-family: var(--mono); }
    3 main · 40 grain · 45 rail · 50 header */
 .world { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none;
   background: var(--bg-0); }
+/* nothing of the world is shown until its wallpaper is decoded (see the head
+   script); js-less readers get it immediately, as they always did */
+html.js .wall, html.js .rings-bg { opacity: 0; }
+html.js.wall-in .wall, html.js.wall-in .rings-bg { opacity: 1; transition: opacity 0.55s ease; }
 .wall { position: absolute; inset: 0;
   background: url("./media/wall.jpg") center / cover no-repeat;
   transform: scaleX(-1); }
@@ -67,7 +71,12 @@ code { font-family: var(--mono); }
 }
 /* cursor life: code tokens drifting behind and above the acrylic sheet;
    the frost depth of each layer is baked into pre-blurred sprites in JS */
-.fx-tokens { position: fixed; inset: 0; z-index: 2; pointer-events: none; display: block; }
+/* a canvas is a replaced element: inset alone leaves its CSS box at the size of
+   the backing store, so the moment the backing store stopped matching the
+   window the swarm was drawn to the wrong place. The box is pinned to the
+   window and the backing store scales inside it. */
+.fx-tokens { position: fixed; inset: 0; width: 100%; height: 100%;
+  z-index: 2; pointer-events: none; display: block; }
 main { position: relative; z-index: 3; }
 @media (min-width: 1181px) { main { padding-right: 132px; } }
 .grain-top { position: fixed; inset: -60px; z-index: 40; pointer-events: none;
@@ -121,7 +130,11 @@ main { position: relative; z-index: 3; }
   line-height: 1.03;
   font-size: clamp(2.5rem, 5.6vw, 4.7rem);
 }
-.manifesto .line { display: block; overflow: clip; padding-bottom: 0.07em; margin-bottom: -0.07em; }
+/* The clip exists only so the characters can start below the line and slide up.
+   Left in place afterwards it cut the descenders — the tail of every "y" — so
+   it is worn only while the line is split, and dropped with the split. */
+.manifesto .line { display: block; padding-bottom: 0.07em; margin-bottom: -0.07em; }
+.manifesto .line.masked { overflow: clip; }
 .manifesto .dim { color: rgba(236, 240, 244, 0.30); }
 .manifesto .w { display: inline-block; white-space: pre; }
 .manifesto .ch { display: inline-block; will-change: transform; }
@@ -293,9 +306,14 @@ main { position: relative; z-index: 3; }
    texture path comes back; the canvases size their backing store to the
    projected device footprint for the same reason. */
 .taskbar { display: block; }
-.tb-head { max-width: 1240px; margin: 0 auto; padding: 15vh 30px 0; width: 100%; }
-.tb-head .lead { margin: 20px 0 14px; }
-.tb-scrub { height: 240vh; width: 100vw; margin-left: calc(50% - 50vw); }
+/* the heading lives in the pinned stage now: it arrives with the object and
+   holds while the layers land, instead of leaving a screen of empty page */
+.tb-head { position: absolute; left: 50%; transform: translateX(-50%);
+  top: 8vh; width: min(1240px, 100vw - 60px); padding: 0 30px; z-index: 8;
+  pointer-events: none; }
+.tb-head .lead { margin: 18px 0 0; max-width: 42em; }
+.tb-head .manifesto { font-size: clamp(2.1rem, 3.8vw, 3.4rem); }
+.tb-scrub { height: 200vh; width: 100vw; margin-left: calc(50% - 50vw); }
 /* the exact offset is measured in JS: main's right padding for the rail makes
    the arithmetic version land half that padding off */
 .tb-stage { position: sticky; top: 0; height: 100vh; width: 100vw; }

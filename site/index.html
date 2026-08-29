@@ -21,7 +21,22 @@
 <meta name="twitter:description" content="Claude, Codex, Copilot and Antigravity limits in one acrylic widget. No API keys. Free and open source.">
 <meta name="twitter:image" content="https://napxlexn.github.io/ailimits/media/og.png">
 <meta name="theme-color" content="#0a0c0e">
-<script>document.documentElement.classList.add("js");</script>
+<link rel="preload" as="image" href="./media/wall.jpg" fetchpriority="high">
+<script>
+/* The wallpaper is the last thing to arrive, and until it does the page is a
+   dark rectangle with the rings already drawn on it — which reads as a
+   different, older site for the half-second it lasts. The world waits for the
+   image and then fades in; before that there is only the base colour. */
+document.documentElement.classList.add("js");
+(function () {
+  var i = new Image();
+  var done = function () { document.documentElement.classList.add("wall-in"); };
+  i.onload = function () { (i.decode ? i.decode().catch(done) : Promise.resolve()).then(done); };
+  i.onerror = done;
+  i.src = "./media/wall.jpg";
+  setTimeout(done, 2500);              /* never leave the world hidden */
+})();
+</script>
 <link rel="stylesheet" href="./site.css">
 <script type="application/ld+json">
 {
@@ -224,16 +239,16 @@
 
 <!-- ════ 04 · TASKBAR: the real corner, real pixels ════ -->
 <section class="scene taskbar" id="taskbar" aria-label="Taskbar indicators">
-  <div class="tb-head">
-    <p class="hud scene-tag">04 · TASKBAR</p>
-    <h2 class="manifesto"><span class="line">Hide the widget.</span><span class="line dim">Keep the signal.</span></h2>
-    <p class="lead">Closed, it does not go away — it moves into the taskbar. Here it is taken apart:
-    the bar, our tray icon integrated into the system row, the mini panel living as its own window
-    above it, and the tooltip on top. Scroll to fill the limits and put it back together;
-    hover a layer for what it is.</p>
-  </div>
   <div class="tb-scrub">
     <div class="tb-stage" data-tb-stage>
+      <div class="tb-head">
+        <p class="hud scene-tag">04 · TASKBAR</p>
+        <h2 class="manifesto"><span class="line">Hide the widget.</span><span class="line dim">Keep the signal.</span></h2>
+        <p class="lead">Closed, it does not go away — it moves into the taskbar. Here it is taken apart:
+        the bar, our tray icon integrated into the system row, the mini panel living as its own window
+        above it, and the tooltip on top. Scroll to fill the limits and put it back together;
+        hover a layer for what it is.</p>
+      </div>
       <div class="tb-rig" data-tb-rig>
         <div class="tb-plate"><canvas class="tb-bar" data-tb-note="&lt;b&gt;The taskbar itself.&lt;/b&gt; Real renderer pixels: the system tray, the language, the clock. The empty slot in the icon row is where our tray icon sits — lifted one layer up here."></canvas></div>
         <div class="tb-plate"><canvas class="tb-tic" data-tb-note="&lt;b&gt;The tray icon.&lt;/b&gt; INTEGRATED into the system row, so it sits closest to the bar and is built differently from the panel: two rings, the outer one the first provider, the inner one the second."></canvas></div>

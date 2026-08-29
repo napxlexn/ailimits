@@ -246,8 +246,6 @@ function shapeProgress(p) {
   const t = smooth((inSlot - HOLD) / (1 - HOLD));
   const a = computeSize(baseState(FAMS[idx].main));
   const b = computeSize(baseState(FAMS[idx + 1].main));
-  shapeEl.style.width = lerp(a[0], b[0], t).toFixed(1) + "px";
-  shapeEl.style.height = lerp(a[1], b[1], t).toFixed(1) + "px";
   /* a straight cross-dissolve: the old family fades out, the new one fades in,
      and the swap happens at the single point where nothing is on screen. The
      old curve held alpha at zero across a quarter of the transition, so the
@@ -255,12 +253,42 @@ function shapeProgress(p) {
   let alpha;
   if (t < 0.5) { setFam(idx); alpha = 1 - t / 0.5; }
   else { setFam(idx + 1); alpha = (t - 0.5) / 0.5; }
+  /* AFTER the family is drawn, never before: rendering a family writes the
+     widget's natural size, so setting the interpolated size first left the
+     scene showing whichever size the last render happened to write — and
+     whether it rendered at all depended on where the reader had come from. */
+  shapeEl.style.width = lerp(a[0], b[0], t).toFixed(1) + "px";
+  shapeEl.style.height = lerp(a[1], b[1], t).toFixed(1) + "px";
   const c = shapeEl.firstElementChild;
   if (c) c.style.opacity = alpha.toFixed(3);
   // the satellites cross-fade with the same curve
   $(".shape-sats").style.opacity = alpha.toFixed(3);
 }
 if (reduced) setFam(0);
+
+/* ════ 01 shapes: the scrub reads the scroll itself ════
+   It used to hang off ScrollTrigger's update cycle, which runs on gsap's
+   ticker: whenever that stalls — a refresh that moves progress without firing
+   onUpdate, a throttled frame clock — the section stood still at whatever it
+   had drawn last. Reading the section's own rect makes the state a pure
+   function of the scroll position, however the reader got there. */
+{
+  const sec = document.getElementById("shapes");
+  if (sec && !reduced) {
+    let queued = false;
+    const draw = () => {
+      queued = false;
+      const span = sec.offsetHeight - innerHeight;
+      if (span <= 0) return shapeProgress(0);
+      shapeProgress(Math.min(1, Math.max(0, -sec.getBoundingClientRect().top / span)));
+    };
+    const ask = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
+    addEventListener("scroll", ask, { passive: true });
+    addEventListener("resize", ask);
+    addEventListener("load", ask);
+    ask();
+  }
+}
 
 /* ════ honesty cycle ════ */
 const honEl = $("#aw-honesty");
@@ -483,7 +511,10 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
           `${(ty - Z[i] * spread * lift).toFixed(2)}px) ${m}`;
       });
       const bounds = [0, 1, 2, 3].map(quadOf).flat().map((p) => p[1]);
-      const ty = sr.height / 2 - (Math.min(...bounds) + Math.max(...bounds)) / 2;
+      /* centre in the room under the heading, which now shares the stage */
+      const head = stage.querySelector(".tb-head");
+      const top = head ? head.offsetTop + head.offsetHeight : 0;
+      const ty = top + (sr.height - top) / 2 - (Math.min(...bounds) + Math.max(...bounds)) / 2;
       set(ty);
       PROJ.oy = geo.oy + ty;
       if (!fast) drawBar(sq);
@@ -1029,6 +1060,7 @@ if (typeof gsap !== "undefined" && !reduced) {
     const raw = rawText.get(line);
     if (raw === undefined) return;
     rawText.delete(line);
+    line.classList.remove("masked");
     const i = splitLines.indexOf(line);
     if (i >= 0) splitLines.splice(i, 1);
     line.textContent = raw;
@@ -1063,6 +1095,7 @@ if (typeof gsap !== "undefined" && !reduced) {
       const raw = line.textContent;
       rawText.set(line, raw);
       splitLines.push(line);
+      line.classList.add("masked");        /* the clip belongs to the split */
       const words = raw.split(" ");
       line.textContent = "";
       words.forEach((word, wi) => {
@@ -1245,11 +1278,6 @@ if (typeof gsap !== "undefined" && !reduced) {
     }, { passive: true });
   }
 
-  /* shapes scrub */
-  ScrollTrigger.create({
-    trigger: "#shapes", start: "top top", end: "bottom bottom",
-    onUpdate: (self) => shapeProgress(self.progress),
-  });
   const shapeChars = split($("#shapes .m-side"));
   revealChars(shapeChars, {
     scrollTrigger: { trigger: "#shapes", start: "top 70%" },
