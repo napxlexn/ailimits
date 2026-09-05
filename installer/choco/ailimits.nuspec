@@ -13,7 +13,10 @@
     <releaseNotes>https://github.com/napxlexn/ailimits/blob/master/CHANGELOG.md</releaseNotes>
     <licenseUrl>https://github.com/napxlexn/ailimits/blob/master/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <iconUrl>https://raw.githubusercontent.com/napxlexn/ailimits/master/assets/icon.png</iconUrl>
+    <!-- a CDN, not raw.githubusercontent.com: the moderator holds that as a
+         Requirement, and pinning to the release tag is the form they ask for.
+         pack.ps1 fills {{VERSION}} here too, so every release pins itself. -->
+    <iconUrl>https://cdn.jsdelivr.net/gh/napxlexn/ailimits@v{{VERSION}}/assets/icon.png</iconUrl>
     <tags>ai claude codex copilot antigravity usage-limits widget overlay tray</tags>
     <summary>Desktop overlay showing AI provider usage limits</summary>
     <description>
