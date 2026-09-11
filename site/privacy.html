@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Limits – Privacy</title>
+<meta name="description" content="What the AI Limits widget reads, where it sends it, what it stores, and what it never does. Plainly, as the code does it.">
+<link rel="canonical" href="https://napxlexn.github.io/ailimits/privacy.html">
+<link rel="icon" type="image/png" href="./media/favicon.png">
+<meta name="theme-color" content="#0a0c0e">
+<link rel="stylesheet" href="./site.css">
+<style>
+/* A reading page on the same glass as the landing. The landing's own
+   styles carry the world and the sheet; this only lays out prose. */
+.doc { position: relative; z-index: 3; max-width: 44em; margin: 0 auto; padding: 120px 30px 80px; }
+.doc h1 { font: 700 clamp(1.9rem, 4vw, 2.6rem)/1.1 var(--font-display); color: var(--ink); letter-spacing: -0.015em; }
+.doc h2 { font: 600 1.15rem/1.3 var(--font-display); color: var(--ink); margin: 40px 0 10px; }
+.doc p, .doc li { font-size: 1.0rem; line-height: 1.66; color: var(--ink-2); }
+.doc p { margin: 12px 0; }
+.doc ul { margin: 10px 0 10px 1.2em; }
+.doc li { margin: 6px 0; }
+.doc code { font-family: var(--mono); font-size: 0.88em; color: var(--ink); }
+.doc .hud { margin-bottom: 18px; }
+.doc .back { display: inline-block; margin-top: 44px; }
+@media (max-width: 560px) { .doc { padding: 96px 18px 60px; } }
+</style>
+</head>
+<body>
+
+<header class="top" aria-label="Site header">
+  <a class="brand" href="./"><img src="./media/favicon.png" alt="" width="22" height="22">AI&nbsp;Limits</a>
+  <nav class="top-links">
+    <a href="./#install">Install</a>
+    <a href="https://github.com/napxlexn/ailimits">GitHub</a>
+  </nav>
+</header>
+
+<div class="world" aria-hidden="true">
+  <div class="wall"></div>
+</div>
+<div class="sheet" aria-hidden="true"></div>
+
+<main class="doc">
+  <p class="hud">PRIVACY · 2026-09-11</p>
+  <h1>What the widget reads, and what it never does.</h1>
+
+  <p>AI Limits is a desktop widget that shows how much of your AI subscription
+  windows you have used. It runs entirely on your computer. There is no account
+  to create, no server of ours in the middle, and nothing it learns about you
+  ever leaves your machine except the requests described below, which go to the
+  providers themselves.</p>
+
+  <h2>What it reads</h2>
+  <p>To show a limit, the widget needs to ask the provider the same way its own
+  command-line tool does. So it reads the login those tools already keep on your
+  machine, <strong>read-only</strong>:</p>
+  <ul>
+    <li><strong>Claude</strong> — the Claude Code login in <code>%USERPROFILE%\.claude\.credentials.json</code>, and, if present, Claude Code's status-line snapshot file.</li>
+    <li><strong>OpenAI Codex</strong> — the Codex CLI login in <code>%USERPROFILE%\.codex\auth.json</code>.</li>
+    <li><strong>GitHub Copilot</strong> — the token the gh CLI prints for <code>gh auth token</code>.</li>
+    <li><strong>Google Antigravity</strong> — the Antigravity session in Windows Credential Manager, or the legacy Gemini CLI login in <code>~/.gemini/oauth_creds.json</code>.</li>
+  </ul>
+  <p>The widget never writes to those files, never refreshes or rotates a token,
+  and never signs you in or out of anything. If a login is missing or expired,
+  the row for that provider goes grey; nothing else happens.</p>
+
+  <h2>Where it sends</h2>
+  <p>Each token is sent only to the endpoint of the provider that issued it, over
+  HTTPS, to fetch your usage: <code>api.anthropic.com</code>,
+  <code>chatgpt.com</code>, <code>api.github.com</code> and
+  <code>daily-cloudcode-pa.googleapis.com</code>. One request per enabled provider
+  per update cycle, no more often than once a minute, and none at all while the
+  computer is idle or locked. A provider you disable in the menu is never
+  contacted.</p>
+  <p>The installer build also asks <code>api.github.com</code> whether a newer
+  release exists, and downloads it only after checking the digest GitHub
+  publishes for it. The Microsoft Store build does not do this; the Store
+  updates it. That request carries the standard user agent
+  <code>ailimits/&lt;version&gt;</code> and nothing about you.</p>
+  <p>There is no telemetry, no analytics, no crash reporting and no advertising.
+  Nothing is sent to us, because there is no us to send it to: the project has no
+  server.</p>
+
+  <h2>What it stores</h2>
+  <ul>
+    <li><strong>Settings</strong> — in <code>%APPDATA%\AiLimits\config.toml</code>: layout, palette, which providers are on. It holds labels, never secrets.</li>
+    <li><strong>Optional keys and tokens you add yourself</strong> — an API key or a pasted usage token goes into Windows Credential Manager under the service <code>ailimits</code>, never into a file.</li>
+    <li><strong>The last readings</strong> — in <code>provider-cache.json</code> beside the settings, so the widget can show them, marked with their age, while a provider is unreachable.</li>
+    <li><strong>A log</strong> — only if you set <code>AILIMITS_LOG</code> yourself. Tokens are never written to it.</li>
+  </ul>
+
+  <h2>Removing it</h2>
+  <p>The installer's uninstaller removes the settings, the cache and every
+  Credential Manager entry the widget created. The Microsoft Store cannot run
+  a step of ours at uninstall, so after removing the Store version any keys or
+  tokens you added by hand stay in Credential Manager under <code>ailimits</code>
+  until you delete them there. The CLI logins the widget only read are not ours
+  and are never touched either way.</p>
+
+  <h2>Who this is from</h2>
+  <p>AI Limits is free software under the GPL-3.0, written and maintained by one
+  person. The code that does everything described here is public at
+  <a href="https://github.com/napxlexn/ailimits">github.com/napxlexn/ailimits</a>;
+  the file <a href="https://github.com/napxlexn/ailimits/blob/master/docs/en/PROVIDERS.md">docs/en/PROVIDERS.md</a>
+  lists each provider's exact source and endpoint. Questions go to the
+  <a href="https://github.com/napxlexn/ailimits/issues">issue tracker</a>.
+  If this page ever changes, the date at the top changes with it.</p>
+
+  <a class="back" href="./">Back to the site</a>
+</main>
+
+</body>
+</html>
