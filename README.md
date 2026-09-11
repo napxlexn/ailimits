@@ -84,6 +84,9 @@ irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
 # Scoop, from the project's own bucket
 scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits
 scoop install ailimits
+
+# Chocolatey
+choco install ailimits
 ```
 
 Or download `AiLimits-Setup-<version>.exe` from
