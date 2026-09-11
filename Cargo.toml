@@ -119,6 +119,8 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Gdi",
     # SetWinEventHook — event-driven taskbar tracking (no polling).
     "Win32_UI_Accessibility",
+    # GetCurrentPackageFullName — is this copy running inside an MSIX package?
+    "Win32_Storage_Packaging_Appx",
 ] }
 
 [build-dependencies]

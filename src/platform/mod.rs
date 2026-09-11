@@ -15,6 +15,22 @@ pub use win::{
     taskbar_slot, watch_taskbar, TaskbarSlot,
 };
 
+/// Whether this copy runs inside an MSIX package — the Microsoft Store
+/// build. Such a copy is installed, started at login and updated by the
+/// Store, and it must not reach into the user's registry, so the paths that
+/// do those things for the installer build stand down. Always false off
+/// Windows.
+pub fn is_packaged() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::is_packaged()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Pin this exe's tray icons to the visible taskbar corner (Windows 11
 /// hides new ones in the overflow). Returns how many icons were promoted.
 pub fn promote_tray_icons() -> u32 {

@@ -73,6 +73,13 @@ async fn check_and_install(client: &reqwest::Client) -> Result<()> {
         update.version,
         env!("CARGO_PKG_VERSION")
     );
+    // A Store copy is updated by the Store: its files sit in a read-only
+    // package directory, so an installer run there could not replace them
+    // and would leave a second, unmanaged copy beside the managed one.
+    if crate::platform::is_packaged() {
+        info!("skipping silent self-update: this copy is a Store package — the Store updates it");
+        return Ok(());
+    }
     // Only a copy that our OWN installer put on disk may silently reinstall
     // itself. A Scoop/portable/dev copy running the installer would not update
     // the running copy at all — it would create a SECOND install in the Inno

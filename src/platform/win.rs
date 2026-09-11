@@ -891,6 +891,20 @@ pub fn install_taskbar_watch(
     watch_taskbar(target);
 }
 
+/// Whether this process runs inside an MSIX package (the Microsoft Store
+/// build). `GetCurrentPackageFullName` answers with a name for a packaged
+/// process and `APPMODEL_ERROR_NO_PACKAGE` for a plain exe; any other
+/// outcome is treated as unpackaged, which is the conservative reading —
+/// the packaged paths only ever take things away.
+pub fn is_packaged() -> bool {
+    use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+    use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+    let mut len = 0u32;
+    // A zero-length buffer only asks for the size; the answer is in the code.
+    let err = unsafe { GetCurrentPackageFullName(&mut len, windows::core::PWSTR::null()) };
+    err != APPMODEL_ERROR_NO_PACKAGE && len > 0
+}
+
 /// Promote this exe's notification icons onto the always-visible taskbar
 /// corner. Windows 11 hides new tray icons behind the overflow chevron;
 /// the per-icon "always show" toggle is just `IsPromoted=1` under the
@@ -898,6 +912,11 @@ pub fn install_taskbar_watch(
 /// widget can flip it for its own icons. Explorer watches the key and
 /// applies the change live. A no-op on Windows 10 (no such key) and on
 /// any registry error — promotion is best-effort, never fatal.
+///
+/// Inside an MSIX package it is skipped outright: HKCU writes from a
+/// packaged process land in the package's virtualised hive, which Explorer
+/// never reads, so the write could not work — and the Store policy asks
+/// that a product not change Windows settings without the user's say.
 pub fn promote_tray_icons() -> u32 {
     use windows::core::w;
     use windows::Win32::System::Registry::{
@@ -905,6 +924,9 @@ pub fn promote_tray_icons() -> u32 {
         HKEY_CURRENT_USER, KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_DWORD,
     };
 
+    if is_packaged() {
+        return 0;
+    }
     let Ok(exe) = std::env::current_exe() else {
         return 0;
     };
