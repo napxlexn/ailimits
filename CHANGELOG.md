@@ -2,6 +2,32 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## 0.6.3 - 2026-09-11
+
+### Added
+
+- **A Microsoft Store package.** The same `ailimits.exe` the installer ships,
+  packaged as MSIX (`installer/msix/`). Inside the package the app knows it
+  is packaged and leaves two things to the Store: the tray-icon registry
+  write (a packaged process's HKCU writes never reach Explorer, and the
+  Store policy asks that settings not change without the user's say) and
+  the silent self-update (the package directory is read-only; the Store
+  updates it). Start at sign-in is the package's startup task. Installer,
+  Scoop and portable copies behave exactly as before.
+- **A privacy page** on the site, written from the code: which logins the
+  widget reads and where each lives, which four provider hosts it sends
+  them to, what it stores, and what each uninstall route leaves behind.
+
+### Changed
+
+- **The published footprint is the August audit.** READMEs, both
+  architecture documents and the Chocolatey description quoted the July
+  run (0.024% of one core, 61 MB); the 2026-08-23 audit of the same window
+  reads 0.005% and 37 MB.
+- **Chocolatey and winget metadata** point at the site as the project's
+  home, and the Chocolatey icon comes from a CDN pinned to the release tag,
+  as the repository's moderator asked.
+
 ## 0.6.2 - 2026-08-21
 
 ### Added
