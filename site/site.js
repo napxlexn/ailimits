@@ -235,26 +235,60 @@ function shapeRoom() {
   }
   return room;
 }
+/* How large a family may stand: by the column's width, and, stacked, by the
+   pinned screen's height as well. Pure in its inputs except for the heading
+   and captions it measures, so the dissolve can ask about the family it is
+   about to show before that family has been drawn. */
+const famZoom = [];
+function fitFor(f) {
+  const room = shapeRoom();
+  const mainSize = computeSize(baseState(f.main));
+  let mainScale = shapeScale(mainSize[0], room, f.mk);
+  /* two of them stand side by side, so each gets half the room */
+  const satRoom = (room - 22) / (f.sats.length > 1 ? 2 : 1);
+  const satSizes = f.sats.map((sat) => computeSize(baseState(sat.st)));
+  let satScale = f.sats.length
+    ? Math.min(...satSizes.map((sz) => shapeScale(sz[0], satRoom, 0.9)))
+    : 0;
+  /* Stacked, the column also has to fit the pinned screen: heading, the
+     widget, the variants and their captions. The width alone sized them, and
+     a tall variant on a short phone ran the captions past the fold. When the
+     column is too tall the two scales shrink together, so the family keeps
+     its proportions and only its size gives. */
+  const pin = $(".shape .pin");
+  if (pin && innerWidth <= 980) {
+    const cs = getComputedStyle(pin);
+    const side = $(".shape-side");
+    const capH = Math.max(0, ...capEls.filter((c, s) => f.sats[s]).map((c) => c.offsetHeight));
+    const avail = pin.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+      - (side ? side.offsetHeight : 0) - 10 - 12 - 8 - capH;   /* the gaps and the tallest caption */
+    const satH = f.sats.length ? Math.max(...satSizes.map((sz) => sz[1])) * satScale : 0;
+    const need = mainSize[1] * mainScale + satH;
+    if (avail > 0 && need > avail) {
+      const k = avail / need;
+      mainScale = Math.max(0.3, mainScale * k);
+      satScale = Math.max(0.3, satScale * k);
+    }
+  }
+  return { mainScale, satScale };
+}
 function setFam(i) {
   if (famRendered === i) return;
   famRendered = i;
   const f = FAMS[i];
-  const room = shapeRoom();
-  const main = computeSize(baseState(f.main))[0];
-  renderWidget(shapeEl, baseState(f.main), shapeScale(main, room, f.mk));
+  /* the texts go in first: the note is part of the heading's height and a
+     caption can run to three lines, so both are measured, not guessed */
   shapeHud.textContent = f.hud;
   shapeNote.textContent = f.note;
   satEls.forEach((el, s) => {
-    const fig = el.closest("figure");
-    if (f.sats[s]) {
-      fig.style.display = "";
-      /* two of them stand side by side, so each gets half the room */
-      const satRoom = (shapeRoom() - 22) / (f.sats.length > 1 ? 2 : 1);
-      renderWidget(el, baseState(f.sats[s].st), shapeScale(computeSize(baseState(f.sats[s].st))[0], satRoom, 0.9));
-      capEls[s].textContent = f.sats[s].cap;
-    } else {
-      fig.style.display = "none";
-    }
+    el.closest("figure").style.display = f.sats[s] ? "" : "none";
+    if (f.sats[s]) capEls[s].textContent = f.sats[s].cap;
+  });
+  const { mainScale, satScale } = fitFor(f);
+  famZoom[i] = mainScale;
+  renderWidget(shapeEl, baseState(f.main), mainScale);
+  satEls.forEach((el, s) => {
+    if (f.sats[s]) renderWidget(el, baseState(f.sats[s].st), satScale);
   });
 }
 setFam(0);
@@ -290,8 +324,29 @@ function shapeProgress(p) {
      widget's natural size, so setting the interpolated size first left the
      scene showing whichever size the last render happened to write — and
      whether it rendered at all depended on where the reader had come from. */
-  shapeEl.style.width = lerp(a[0], b[0], t).toFixed(1) + "px";
-  shapeEl.style.height = lerp(a[1], b[1], t).toFixed(1) + "px";
+  /* in layout pixels — each family's natural size under its own zoom — then
+     back into the units of the zoom currently applied to the element. Lerping
+     natural sizes under one zoom stood the box up to a third taller than
+     either family half-way through, past the fold on a short phone. */
+  const za = famZoom[idx] ?? fitFor(FAMS[idx]).mainScale;
+  const zb = famZoom[idx + 1] ?? fitFor(FAMS[idx + 1]).mainScale;
+  const zc = parseFloat(shapeEl.style.zoom) || 1;
+  let wpx = lerp(a[0] * za, b[0] * zb, t), hpx = lerp(a[1] * za, b[1] * zb, t);
+  /* Stacked, the box half-way between two families stands with whichever
+     family's variants are laid out at that moment, and the pair can be
+     taller than either family alone was fitted for. So the box is held to
+     the room the variants actually leave, measured, and shrinks in
+     proportion rather than running past the fold. */
+  const pin = $(".shape .pin");
+  if (pin && innerWidth <= 980) {
+    const cs = getComputedStyle(pin), side = $(".shape-side"), sats = $(".shape-sats");
+    const cap = pin.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)
+      - (side ? side.offsetHeight : 0) - parseFloat(cs.rowGap || 0)
+      - parseFloat(getComputedStyle(stage).rowGap || 0) - (sats ? sats.offsetHeight : 0);
+    if (cap > 0 && hpx > cap) { wpx *= cap / hpx; hpx = cap; }
+  }
+  shapeEl.style.width = (wpx / zc).toFixed(1) + "px";
+  shapeEl.style.height = (hpx / zc).toFixed(1) + "px";
   const c = shapeEl.firstElementChild;
   if (c) c.style.opacity = alpha.toFixed(3);
   // the satellites cross-fade with the same curve
@@ -641,12 +696,17 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
                  : smooth(Math.min(1, Math.max(0, edge)));
 
       nameBox.style.top = Math.max(8, stackT - 30) + "px";
-      noteBox.style.top = Math.min(sr.height - 96, stackB + 74) + "px";
       if (idx !== namedIdx) {
         namedIdx = idx;
         nameBox.textContent = NAMES[idx];
         noteBox.innerHTML = targets[idx].dataset.tbNote;
       }
+      /* the note keeps 16px of stage under its own measured height, so a
+         wider fallback font cannot push its last line past the clipped edge;
+         between the stack and the note, 74px of air gives way down to 28 */
+      noteBox.style.left = "";                 /* never a desktop left here */
+      const fits = sr.height - noteBox.offsetHeight - 16;
+      noteBox.style.top = Math.max(stackB + 28, Math.min(stackB + 74, fits)) + "px";
       const vis = par * swap;
       const show = vis > 0.02;
       nameBox.style.opacity = show ? vis.toFixed(3) : "0";
@@ -764,6 +824,9 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
 
     targets.forEach((el, i) => {
       el.addEventListener("pointerenter", () => {
+        /* on a phone a tap arrives here too; the legend there is the scroll's,
+           and the desktop route would pin the note at a desktop `left` */
+        if (narrow()) return;
         if (spread < 0.25) return;            /* assembled: nothing to explain */
         activeEl = el;
         stage.classList.add("hovering");
@@ -773,6 +836,7 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
         route(el, true);
       });
       el.addEventListener("pointerleave", () => {
+        if (narrow()) return;
         activeEl = null;
         stage.classList.remove("hovering");
         tags.forEach((t) => t.classList.remove("hot"));

@@ -357,13 +357,16 @@ document.documentElement.classList.add("js");
       <div class="term-tabs" role="tablist" aria-label="Ways to install">
         <button type="button" class="term-tab" role="tab" id="tab-winget" aria-selected="true"
           aria-controls="term-panel" data-term-cmd="winget install napxlexn.AILimits">
-          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M1.8 6.6h12.4M8 2.8v3.8"/></svg>winget</button>
+          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.4"/><path d="M1.8 6.6h12.4M8 2.8v3.8"/></svg><span class="tab-label">winget</span></button>
         <button type="button" class="term-tab" role="tab" id="tab-ps" aria-selected="false" tabindex="-1"
           aria-controls="term-panel" data-term-cmd="irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex">
-          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 2.8 8.4 8l-5.8 5.2"/><path d="M9.4 13.2h4"/></svg>PowerShell</button>
+          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 2.8 8.4 8l-5.8 5.2"/><path d="M9.4 13.2h4"/></svg><span class="tab-label">PowerShell</span></button>
         <button type="button" class="term-tab" role="tab" id="tab-scoop" aria-selected="false" tabindex="-1"
           aria-controls="term-panel" data-term-cmd="scoop bucket add ailimits https://github.com/napxlexn/scoop-ailimits; scoop install ailimits">
-          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.9 6.2h12.2l-1.5 7.6H3.4z"/><path d="M4.8 6.2c0-3.4 6.4-3.4 6.4 0"/></svg>Scoop</button>
+          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.9 6.2h12.2l-1.5 7.6H3.4z"/><path d="M4.8 6.2c0-3.4 6.4-3.4 6.4 0"/></svg><span class="tab-label">Scoop</span></button>
+        <button type="button" class="term-tab" role="tab" id="tab-choco" aria-selected="false" tabindex="-1"
+          aria-controls="term-panel" data-term-cmd="choco install ailimits">
+          <svg class="tab-mark" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.6 2H11.6A2.4 2.4 0 0 0 14 4.4V11.4A2.6 2.6 0 0 1 11.4 14H4.6A2.6 2.6 0 0 1 2 11.4V4.6A2.6 2.6 0 0 1 4.6 2Z"/><path d="M5.9 6.5V7.3M10.1 6.5V7.3" stroke-width="1.5"/><path d="M5.3 9.7Q8 12.1 10.7 9.7"/></svg><span class="tab-label">Chocolatey</span></button>
       </div>
       <span class="term-plus" aria-hidden="true">
         <svg viewBox="0 0 10 10"><path d="M5 .5v9M.5 5h9"/></svg></span>
