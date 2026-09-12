@@ -15,7 +15,7 @@ Installers:
     InstallerUrl: https://github.com/napxlexn/ailimits/releases/download/v0.6.4/AiLimits-Setup-0.6.4.exe
     # From the v0.6.4 release asset's published digest, cross-checked against
     # the release build's "Installer SHA256" step.
-    InstallerSha256: A832FB6DE66337D103E5172FFA280D755BA33C238C691A24F0611C6ED57C9A26
+    InstallerSha256: FA39A89F039BB4D533740DAC7AA54D63DE9EF3C982483A5263AA612C28561B8E
     ProductCode: '{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}_is1'
     AppsAndFeaturesEntries:
       - DisplayName: AI Limits
