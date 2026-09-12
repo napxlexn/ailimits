@@ -181,7 +181,16 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (t) => t * t * (3 - 2 * t);
 
 /* ════ hero constellation ════ */
-renderWidget($("#aw-hero"), baseState({}), innerWidth < 700 ? Math.min(1.25, (innerWidth - 56) / 277.5) : 1.5);
+/* The size is the viewport's, so it is drawn again whenever the viewport
+   changes its mind: a page that crosses the phone line after load — a rotated
+   phone, a resized window — would otherwise keep the size it was born with. */
+const heroScale = () => (innerWidth < 700 ? Math.min(1.25, (innerWidth - 56) / 277.5) : 1.5);
+let heroAt = heroScale();
+renderWidget($("#aw-hero"), baseState({}), heroAt);
+addEventListener("resize", () => {
+  const k = heroScale();
+  if (k !== heroAt) renderWidget($("#aw-hero"), baseState({}), heroAt = k);
+});
 renderWidget($("#aw-sat-a"), baseState({ detail: "compact" }), 0.95);
 renderWidget($("#aw-sat-b"), baseState({ detail: "medium", layout: "cols-row" }), 0.95);
 
@@ -272,6 +281,12 @@ function fitFor(f) {
   }
   return { mainScale, satScale };
 }
+/* for the lab: the fit and the measurements it was made from */
+window.__shapeFit = (i) => {
+  const pin = $(".shape .pin"), cs = getComputedStyle(pin);
+  return { ...fitFor(FAMS[i]), room: shapeRoom(), pinH: pin.clientHeight, pad: cs.paddingTop + "/" + cs.paddingBottom,
+           sideH: $(".shape-side").offsetHeight, capH: capEls.map((c) => c.offsetHeight).join("/") };
+};
 function setFam(i) {
   if (famRendered === i) return;
   famRendered = i;
@@ -284,12 +299,24 @@ function setFam(i) {
     el.closest("figure").style.display = f.sats[s] ? "" : "none";
     if (f.sats[s]) capEls[s].textContent = f.sats[s].cap;
   });
-  const { mainScale, satScale } = fitFor(f);
-  famZoom[i] = mainScale;
-  renderWidget(shapeEl, baseState(f.main), mainScale);
-  satEls.forEach((el, s) => {
-    if (f.sats[s]) renderWidget(el, baseState(f.sats[s].st), satScale);
-  });
+  /* The captions are as wide as the variants under them, and their height is
+     part of the fit — which sets the variants' width. So the family is drawn,
+     the captions measured as they will actually stand, and the fit taken
+     again until it holds still: the first pass measures them under whatever
+     variants were there before, and a caption that wraps under a narrow one
+     and not under a wide one moved the fit by a few percent, differently
+     depending on which family the reader had come from. */
+  let fit = fitFor(f);
+  for (let pass = 0; pass < 3; pass++) {
+    renderWidget(shapeEl, baseState(f.main), fit.mainScale);
+    satEls.forEach((el, s) => {
+      if (f.sats[s]) renderWidget(el, baseState(f.sats[s].st), fit.satScale);
+    });
+    const again = fitFor(f);
+    if (Math.abs(again.mainScale - fit.mainScale) < 1e-3) break;
+    fit = again;
+  }
+  famZoom[i] = fit.mainScale;
 }
 setFam(0);
 
@@ -352,7 +379,25 @@ function shapeProgress(p) {
   // the satellites cross-fade with the same curve
   $(".shape-sats").style.opacity = alpha.toFixed(3);
 }
-if (reduced) setFam(0);
+/* A fit is cached per family for the dissolve; every cached one belongs to
+   the viewport it was measured in, so a resize forgets them all — not only the
+   family on screen, or the next dissolve would lean on a stale neighbour. */
+function refitFams() { famRendered = -1; famZoom.length = 0; }
+/* fn runs on every resize, once more when the events stop, and once the fonts
+   are in. The second pass is for what the event is ahead of: mid-drag, and on
+   a phone whose toolbar is still sliding away, the pinned screen's own height
+   lags the resize by a beat, and a fit taken on the event stands a few percent
+   off. The fonts pass is for the first fit of all, taken before the faces
+   arrived and measuring their fallbacks. */
+function refitOn(fn) {
+  let later = 0;
+  addEventListener("resize", () => { fn(); clearTimeout(later); later = setTimeout(fn, 220); });
+  if (document.fonts) document.fonts.ready.then(fn);
+}
+if (reduced) {
+  setFam(0);
+  refitOn(() => { refitFams(); setFam(0); });
+}
 
 /* ════ 01 shapes: the scrub reads the scroll itself ════
    It used to hang off ScrollTrigger's update cycle, which runs on gsap's
@@ -372,7 +417,7 @@ if (reduced) setFam(0);
     };
     const ask = () => { if (!queued) { queued = true; requestAnimationFrame(draw); } };
     addEventListener("scroll", ask, { passive: true });
-    addEventListener("resize", () => { famRendered = -1; ask(); });
+    refitOn(() => { refitFams(); ask(); });
     addEventListener("load", ask);
     ask();
   }
@@ -557,6 +602,11 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
         box: targets.map(visBox),
         tagW: Math.max(...tags.map((t) => t.offsetWidth)),
       };
+      /* the leader's canvas is sized by whichever route last drew in it; the
+         other route's size would stand across a resize until the next hover */
+      const sr = stage.getBoundingClientRect();
+      csvg.setAttribute("viewBox", `0 0 ${sr.width} ${sr.height}`);
+      csvg.setAttribute("width", sr.width); csvg.setAttribute("height", sr.height);
     }
 
     const quadOf = (i) => {
@@ -1050,7 +1100,10 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       bands = [...by.entries()].sort((a, b) => a[0] - b[0]).map(([, ps]) => ps);
       return bands;
     };
-    addEventListener("resize", () => { bands = null; }, { passive: true });
+    addEventListener("resize", () => {
+      bands = null;
+      panes.forEach((pane) => { pane.__ox = undefined; });   /* the padding moved with the breakpoint */
+    }, { passive: true });
 
     let running = false;
     const tick = () => {
@@ -1572,19 +1625,35 @@ if (typeof gsap !== "undefined" && !reduced) {
   gsap.to(".rings-alt", { rotation: -360, duration: 520, repeat: -1, ease: "none" });
   gsap.to(".rings-alt", { scrollTrigger: { start: 0, end: "max", scrub: 2.2 }, yPercent: -16 });
 
-  /* hero intro */
+  /* A reveal that has played is over, and the element goes back to what the
+     stylesheet says. A tween that ends by leaving its inline transform behind
+     leaves it for good: recorded on one side of a breakpoint — the terminal's
+     translateX(-50%) on a wide screen — it followed the box to the other side,
+     where the rule that had asked for it no longer applied, and the box stood
+     half its width off centre until a reload. The hero constellation is the one
+     set left alone: the pointer keeps writing its parallax after the intro, so
+     its centring is given to gsap outright below instead. */
+  const SETTLE = "transform,opacity,filter";
+
+  /* hero intro. The widget's centring is stated to gsap outright rather than
+     left for it to read off the stylesheet: what it reads is whatever the
+     first tween finds — on a phone that hides the widget, nothing — and the
+     parallax below keeps writing x and y on top of that reading for the life
+     of the page. Stated as percentages of its own box, the centring holds at
+     every size the page is later given. */
   const heroChars = split($(".hero-copy .manifesto"));
+  gsap.set("#aw-hero", { xPercent: -50, yPercent: -50 });
   gsap.timeline({ defaults: { ease: "power3.out" } })
-    .from(".top", { y: -24, opacity: 0, duration: 0.7 }, 0.1)
-    .from(".rail", { x: 26, opacity: 0, duration: 0.8 }, 0.9)
+    .from(".top", { y: -24, opacity: 0, duration: 0.7, clearProps: SETTLE }, 0.1)
+    .from(".rail", { x: 26, opacity: 0, duration: 0.8, clearProps: SETTLE }, 0.9)
     .from(heroChars, { yPercent: 118, duration: 0.9, stagger: 0.016, ease: "power4.out",
                        onComplete: () => unsplitOf(heroChars) }, 0.15)
-    .from(".hero-copy .lead", { y: 26, opacity: 0, duration: 0.8 }, 0.55)
-    .from(".hero-copy .cmd", { y: 22, opacity: 0, duration: 0.7 }, 0.7)
-    .from(".hud-under", { opacity: 0, duration: 0.6 }, 0.85)
+    .from(".hero-copy .lead", { y: 26, opacity: 0, duration: 0.8, clearProps: SETTLE }, 0.55)
+    .from(".hero-copy .cmd", { y: 22, opacity: 0, duration: 0.7, clearProps: SETTLE }, 0.7)
+    .from(".hud-under", { opacity: 0, duration: 0.6, clearProps: SETTLE }, 0.85)
     .from(".hero-stage .sat", { y: 60, opacity: 0, duration: 1.1, stagger: 0.14 }, 0.4)
     .from("#aw-hero", { y: 44, opacity: 0, scale: 0.96, duration: 1.0 }, 0.6)
-    .from(".stage-cap", { opacity: 0, duration: 0.7 }, 1.2)
+    .from(".stage-cap", { opacity: 0, duration: 0.7, clearProps: SETTLE }, 1.2)
     .add(() => typeInto($(".hero-copy .typed"), 0), 0.7);
 
   /* gentle pointer parallax on the constellation */
@@ -1615,7 +1684,7 @@ if (typeof gsap !== "undefined" && !reduced) {
   });
   gsap.from(".pane", {
     scrollTrigger: { trigger: ".panes", start: "top 82%" },
-    y: 64, opacity: 0, rotateX: 8, duration: 1.0, stagger: 0.1, ease: "power3.out",
+    y: 64, opacity: 0, rotateX: 8, duration: 1.0, stagger: 0.1, ease: "power3.out", clearProps: SETTLE,
   });
   {
     const rx = gsap.quickTo(".panes", "rotationX", { duration: 0.8, ease: "power2.out" });
@@ -1638,11 +1707,11 @@ if (typeof gsap !== "undefined" && !reduced) {
   });
   gsap.from(".num", {
     scrollTrigger: { trigger: ".numbers", start: "top 82%" },
-    y: 40, opacity: 0, duration: 0.8, stagger: 0.09, ease: "power3.out",
+    y: 40, opacity: 0, duration: 0.8, stagger: 0.09, ease: "power3.out", clearProps: SETTLE,
   });
   gsap.from(".honesty", {
     scrollTrigger: { trigger: ".honesty", start: "top 84%" },
-    y: 40, opacity: 0, duration: 0.9, ease: "power3.out",
+    y: 40, opacity: 0, duration: 0.9, ease: "power3.out", clearProps: SETTLE,
   });
 
   /* taskbar */
@@ -1660,14 +1729,14 @@ if (typeof gsap !== "undefined" && !reduced) {
   });
   gsap.from([".pg-rail", ".pg-desk"], {
     scrollTrigger: { trigger: ".pg", start: "top 80%" },
-    y: 56, opacity: 0, duration: 0.9, stagger: 0.12, ease: "power3.out",
+    y: 56, opacity: 0, duration: 0.9, stagger: 0.12, ease: "power3.out", clearProps: SETTLE,
   });
 
   /* finale */
   const finChars = split($(".finale .manifesto"));
   gsap.from(".fin-icon img", {
     scrollTrigger: { trigger: ".finale", start: "top 70%" },
-    scale: 0.6, opacity: 0, filter: "blur(14px)", duration: 1.1, ease: "power3.out",
+    scale: 0.6, opacity: 0, filter: "blur(14px)", duration: 1.1, ease: "power3.out", clearProps: SETTLE,
   });
   revealChars(finChars, {
     scrollTrigger: { trigger: ".finale", start: "top 62%" },
@@ -1675,7 +1744,7 @@ if (typeof gsap !== "undefined" && !reduced) {
   });
   gsap.from(".term", {
     scrollTrigger: { trigger: ".term", start: "top 82%" },
-    y: 44, opacity: 0, duration: 0.9, ease: "power3.out",
+    y: 44, opacity: 0, duration: 0.9, ease: "power3.out", clearProps: SETTLE,
   });
 
   /* smooth the jump; which entry is lit is decided by the rail's own spy */

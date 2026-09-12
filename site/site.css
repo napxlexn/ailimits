@@ -225,6 +225,8 @@ main { position: relative; z-index: 3; }
 .cmd button:hover, .term-copy:hover { color: var(--ink); border-color: var(--meta); }
 .hud-under { margin-top: 16px; }
 .hero-stage { position: relative; min-height: 470px; }
+/* the centring here is the fallback for a page without gsap; with it, the
+   hero intro restates it in gsap's own terms before anything is tweened */
 .hero-stage .main { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%); z-index: 3; }
 .hero-stage .sat { position: absolute; z-index: 2; opacity: 0.92; }
 .sat-a { left: -2%; top: 0; }
@@ -501,8 +503,10 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
 .term { margin: 42px auto 0; width: min(100%, 940px); text-align: left; --op: 0.66;
   overflow: hidden; box-shadow: 0 34px 80px rgba(0, 0, 0, 0.45); }
 @media (min-width: 1120px) {
-  /* wider than its column, centred on it */
-  .term { width: 940px; max-width: calc(100vw - 190px); margin-left: 50%; transform: translateX(-50%); }
+  /* wider than its column, centred on it — by margin, not by transform: the
+     reveal tween records the transform it finds and writes it back inline,
+     and an inline translateX(-50%) outlives the breakpoint that asked for it */
+  .term { width: min(940px, 100vw - 190px); margin-left: calc(50% - min(470px, 50vw - 95px)); }
 }
 .term-bar {
   display: flex; align-items: stretch; gap: 2px;
