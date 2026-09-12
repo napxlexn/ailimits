@@ -63,7 +63,7 @@ const COL_W = { compact: 46 * D, medium: 54 * D, expanded: 62 * D };
 const BODY_H = { compact: 42 * D, medium: 68 * D, expanded: 88 * D };
 const COL_PAD = 6 * D, GAP_ROW = 2.5 * D, GAP_STACK = 10 * D;
 const COL_SPEC = { compact: [7, 4, 13, 0, 9.5, 0], medium: [8.5, 19, 17, 12.5, 10.5, 0], expanded: [11, 23, 30, 14.5, 11.5, 11] };
-const NAME_W = 48, PCT_W = 30, RGAP = 7, MIN_BAR = 24;
+const NAME_W = 56, PCT_W = 30, RGAP = 7, MIN_BAR = 24;   /* 56: "Antigravity" at 11px is 52.6px wide */
 
 function rowTier(detail, rowW) {
   if (detail === "compact") {

@@ -45,8 +45,11 @@ pub(crate) fn load_ui_font() -> Option<Font> {
     None
 }
 
-/// Name column width in vertical compact.
-pub(super) const NAME_WIDTH: f32 = 48.0;
+/// Name column width in vertical compact. Wide enough for the longest
+/// provider name at the compact size: "Antigravity" at 11px Segoe UI runs
+/// 52.6px, and at 48 the name reached into the gap before the bar (the
+/// site's port, which clips the box, showed it as "Antigravit").
+pub(super) const NAME_WIDTH: f32 = 56.0;
 /// Percent column width.
 pub(super) const PCT_WIDTH: f32 = 30.0;
 /// Gap between row elements.
