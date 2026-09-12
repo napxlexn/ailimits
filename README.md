@@ -1,11 +1,23 @@
 # AI Limits
 
+[![Release](https://img.shields.io/github/v/release/napxlexn/ailimits?style=for-the-badge)](https://github.com/napxlexn/ailimits/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/napxlexn/ailimits/total?style=for-the-badge)](https://github.com/napxlexn/ailimits/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/napxlexn/ailimits/ci.yml?branch=master&style=for-the-badge)](https://github.com/napxlexn/ailimits/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/napxlexn/ailimits?style=for-the-badge)](https://github.com/napxlexn/ailimits/blob/master/LICENSE)
+[![winget](https://img.shields.io/winget/v/napxlexn.AILimits?style=for-the-badge)](https://github.com/microsoft/winget-pkgs/tree/master/manifests/n/napxlexn/AILimits)
+[![Chocolatey](https://img.shields.io/chocolatey/v/ailimits?style=for-the-badge)](https://community.chocolatey.org/packages/ailimits)
+[![Scoop](https://img.shields.io/scoop/v/ailimits?bucket=https%3A%2F%2Fgithub.com%2Fnapxlexn%2Fscoop-ailimits&style=for-the-badge)](https://github.com/napxlexn/scoop-ailimits)
+[![Platform](https://img.shields.io/badge/platform-Windows%2011-0078d4?style=for-the-badge)](https://napxlexn.github.io/ailimits/)
+[![Built with](https://img.shields.io/badge/built%20with-Rust-dea584?style=for-the-badge)](https://www.rust-lang.org/)
+
 A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 **Google Antigravity**.
 
 🇺🇦 [Українська версія / Ukrainian version](README.uk.md) ·
 [Website](https://napxlexn.github.io/ailimits/)
+
+Listed on [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — if it helps you, a like there helps others find it.
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="The floating widget switching live between the Compact, Medium and Expanded detail levels, with horizontal progress bars">
