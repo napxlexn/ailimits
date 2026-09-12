@@ -1,6 +1,6 @@
 # Build the Chocolatey package for a published release.
 #
-#   pwsh installer/choco/pack.ps1 -Version 0.6.3
+#   pwsh installer/choco/pack.ps1 -Version 0.6.4
 #
 # Fills the version and the installer's SHA-256 (taken from the digest GitHub
 # publishes for the release asset, the same source check-manifests.ps1 and the

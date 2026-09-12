@@ -2,6 +2,15 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## 0.6.4 - 2026-09-12
+
+### Fixed
+
+- **The compact widget's name column fits every provider name.** It was 48px
+  wide and "Antigravity" at the compact size runs 52.6px, so the name reached
+  into the gap before its bar. The column is 56px now, in the app and in the
+  site's renderer; every width step still lands on the same tier.
+
 ## 0.6.3 - 2026-09-11
 
 ### Added
