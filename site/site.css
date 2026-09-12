@@ -461,7 +461,7 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
   /* a window cut through the frost: the widget drags over the real desktop */
   background:
     linear-gradient(rgba(8, 10, 12, 0.18), rgba(8, 10, 12, 0.34)),
-    var(--desk, url("./media/wall.jpg")) center / cover no-repeat;
+    var(--desk, url("./media/desk.jpg")) center / cover no-repeat;   /* the full-resolution cut: at 2x the desk is 1744 px wide */
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.10);
   touch-action: none;
