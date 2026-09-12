@@ -1,14 +1,16 @@
 # AI Limits
 
-[![Release](https://img.shields.io/github/v/release/napxlexn/ailimits?style=for-the-badge)](https://github.com/napxlexn/ailimits/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/napxlexn/ailimits/total?style=for-the-badge)](https://github.com/napxlexn/ailimits/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/napxlexn/ailimits/ci.yml?branch=master&style=for-the-badge)](https://github.com/napxlexn/ailimits/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/napxlexn/ailimits?style=for-the-badge)](https://github.com/napxlexn/ailimits/blob/master/LICENSE)
-[![winget](https://img.shields.io/winget/v/napxlexn.AILimits?style=for-the-badge)](https://github.com/microsoft/winget-pkgs/tree/master/manifests/n/napxlexn/AILimits)
-[![Chocolatey](https://img.shields.io/chocolatey/v/ailimits?style=for-the-badge)](https://community.chocolatey.org/packages/ailimits)
-[![Scoop](https://img.shields.io/scoop/v/ailimits?bucket=https%3A%2F%2Fgithub.com%2Fnapxlexn%2Fscoop-ailimits&style=for-the-badge)](https://github.com/napxlexn/scoop-ailimits)
-[![Platform](https://img.shields.io/badge/platform-Windows%2011-0078d4?style=for-the-badge)](https://napxlexn.github.io/ailimits/)
-[![Built with](https://img.shields.io/badge/built%20with-Rust-dea584?style=for-the-badge)](https://www.rust-lang.org/)
+<p align="center">
+<a href="https://napxlexn.github.io/ailimits/"><img alt="Platform" src="https://img.shields.io/badge/platform-Windows%2011-0078d4?style=flat-square"></a>
+<a href="https://www.rust-lang.org/"><img alt="Built with" src="https://img.shields.io/badge/built%20with-Rust-dea584?style=flat-square"></a>
+<a href="https://github.com/napxlexn/ailimits/blob/master/LICENSE"><img alt="License" src="https://img.shields.io/github/license/napxlexn/ailimits?style=flat-square"></a>
+<a href="https://github.com/napxlexn/ailimits/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/napxlexn/ailimits/total?style=flat-square"></a>
+<a href="https://github.com/napxlexn/ailimits/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/napxlexn/ailimits/ci.yml?branch=master&style=flat-square"></a>
+<a href="https://github.com/napxlexn/ailimits/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/napxlexn/ailimits?style=flat-square"></a>
+<a href="https://github.com/microsoft/winget-pkgs/tree/master/manifests/n/napxlexn/AILimits"><img alt="winget" src="https://img.shields.io/winget/v/napxlexn.AILimits?style=flat-square"></a>
+<a href="https://community.chocolatey.org/packages/ailimits"><img alt="Chocolatey" src="https://img.shields.io/chocolatey/v/ailimits?style=flat-square"></a>
+<a href="https://github.com/napxlexn/scoop-ailimits"><img alt="Scoop" src="https://img.shields.io/scoop/v/ailimits?bucket=https%3A%2F%2Fgithub.com%2Fnapxlexn%2Fscoop-ailimits&style=flat-square"></a>
+</p>
 
 Маленький нативний floating-віджет для Windows 11, що показує ліміти
 використання AI-провайдерів прямо на робочому столі: **Claude**,
