@@ -74,7 +74,7 @@ the scheduler), save the config, and request a redraw.
 Audited 2026-08-23 with `bench/perf_audit.ps1` (5 min at 1 Hz, running
 `release-min`, Win11 26200, Ryzen 9 9950X3D / 32 threads, elevated). CPU is
 exact kernel accounting, not sampling. Report:
-`bench/results/perf-audit-2026-08-23_0740.json`. The 2026-07-08 run, kept
+`bench/results/perf-audit-published-2026-08-23.json`. The 2026-07-08 run, kept
 beside it as `perf-audit-published-2026-07-08.json`, read 0.024% of one core
 and 61 MB — the same window on the same machine, five releases earlier.
 
