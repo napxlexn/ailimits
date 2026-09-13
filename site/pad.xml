@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<XML_DIZ_INFO>
+  <MASTER_PAD_VERSION_INFO>
+    <MASTER_PAD_VERSION>4.0</MASTER_PAD_VERSION>
+    <MASTER_PAD_EDITOR>hand-written; regenerated at every release</MASTER_PAD_EDITOR>
+    <MASTER_PAD_INFO>Portable Application Description, or PAD for short, is a data set that is used by shareware authors to disseminate product descriptions and specifications to online sources in a standard way, using a standard data format that will allow webmasters and program librarians to automate program listings. PAD was developed by the Association of Shareware Professionals. Visit http://www.asp-software.org/pad for more information.</MASTER_PAD_INFO>
+  </MASTER_PAD_VERSION_INFO>
+  <Company_Info>
+    <Company_Name>napxlexn</Company_Name>
+    <Address_1></Address_1>
+    <Address_2></Address_2>
+    <City_Town></City_Town>
+    <State_Province></State_Province>
+    <Zip_Postal_Code></Zip_Postal_Code>
+    <Country>Ukraine</Country>
+    <Company_WebSite_URL>https://napxlexn.github.io/ailimits/</Company_WebSite_URL>
+    <Contact_Info>
+      <Author_First_Name>Vasyl</Author_First_Name>
+      <Author_Last_Name>Hleba</Author_Last_Name>
+      <Author_Email>vasyagleba@gmail.com</Author_Email>
+      <Contact_First_Name>Vasyl</Contact_First_Name>
+      <Contact_Last_Name>Hleba</Contact_Last_Name>
+      <Contact_Email>vasyagleba@gmail.com</Contact_Email>
+    </Contact_Info>
+    <Support_Info>
+      <Sales_Email>vasyagleba@gmail.com</Sales_Email>
+      <Support_Email>vasyagleba@gmail.com</Support_Email>
+      <General_Email>vasyagleba@gmail.com</General_Email>
+      <Sales_Phone></Sales_Phone>
+      <Support_Phone></Support_Phone>
+      <General_Phone></General_Phone>
+      <Fax_Phone></Fax_Phone>
+    </Support_Info>
+  </Company_Info>
+  <Program_Info>
+    <Program_Name>AI Limits</Program_Name>
+    <Program_Version>0.6.4</Program_Version>
+    <Program_Release_Month>09</Program_Release_Month>
+    <Program_Release_Day>12</Program_Release_Day>
+    <Program_Release_Year>2026</Program_Release_Year>
+    <Program_Cost_Dollars>0</Program_Cost_Dollars>
+    <Program_Cost_Other_Code></Program_Cost_Other_Code>
+    <Program_Cost_Other></Program_Cost_Other>
+    <Program_Type>Freeware</Program_Type>
+    <Program_Release_Status>Minor Update</Program_Release_Status>
+    <Program_Install_Support>No Install Support</Program_Install_Support>
+    <Program_OS_Support>Windows 11</Program_OS_Support>
+    <Program_Language>English</Program_Language>
+    <Program_Change_Info>The compact widget's name column fits every provider name.</Program_Change_Info>
+    <Program_Specific_Category>Desktop</Program_Specific_Category>
+    <Program_Category_Class>Desktop::Other</Program_Category_Class>
+    <Program_System_Requirements>Windows 11 (build 22000 or later), x64. No runtime, no admin rights. At least one signed-in AI command-line tool: Claude Code, Codex CLI, GitHub CLI or the Antigravity CLI.</Program_System_Requirements>
+    <File_Info>
+      <File_Size_Bytes>3184235</File_Size_Bytes>
+      <File_Size_K>3110</File_Size_K>
+      <File_Size_MB>3.04</File_Size_MB>
+    </File_Info>
+    <Expire_Info>
+      <Has_Expire_Info>N</Has_Expire_Info>
+      <Expire_Count></Expire_Count>
+      <Expire_Based_On></Expire_Based_On>
+      <Expire_Other_Info></Expire_Other_Info>
+      <Expire_Month></Expire_Month>
+      <Expire_Day></Expire_Day>
+      <Expire_Year></Expire_Year>
+    </Expire_Info>
+  </Program_Info>
+  <Program_Descriptions>
+    <English>
+      <Keywords>AI usage limits, usage monitor, desktop widget, quota, rate limit, taskbar, system tray, Claude, Codex, Copilot, Antigravity</Keywords>
+      <Char_Desc_45>Live AI usage limits on the Windows desktop</Char_Desc_45>
+      <Char_Desc_80>Native Windows 11 widget with live Claude, Codex, Copilot and Antigravity limits</Char_Desc_80>
+      <Char_Desc_250>A tiny native Windows 11 floating overlay that shows your AI provider usage limits on the desktop: Claude, OpenAI Codex, GitHub Copilot and Google Antigravity. It reads the logins your CLI tools already have, needs no API key, and sends no telemetry.</Char_Desc_250>
+      <Char_Desc_450>AI Limits is a tiny native Windows 11 floating overlay that shows how much of each AI subscription window you have used and when it resets: Claude's session and weekly windows, Codex's session and weekly windows, Copilot's premium requests, chat and completions, and the model pools Antigravity meters. It reads the logins your CLI tools already keep, read-only, needs no API key and no account, and sends no telemetry. Free and open source, GPL-3.0.</Char_Desc_450>
+      <Char_Desc_2000>AI Limits reads the logins of the AI command-line tools already on your computer - Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI - and shows the usage limits behind them, live, on the desktop: how much of each subscription window is used and when it resets. Claude's 5-hour session, weekly and weekly Opus and Sonnet windows. OpenAI Codex's session and weekly windows. GitHub Copilot's premium requests, chat and completions, with the date each one resets. The shared model pools Google Antigravity meters.
+
+It reads those logins read-only and never refreshes a token, so your tools stay signed in. There is nothing to configure and no API key to paste; API keys are an optional path and live in Windows Credential Manager, never in a file. Each token is sent only to the provider that issued it. There is no telemetry and no server of ours in the middle.
+
+Closed, it does not disappear: it folds into a tray icon whose two rings carry the two busiest providers, or into a mini panel painted beside the system tray on the taskbar. When a source is down, the last real reading turns grey and shows its age instead of vanishing. A window that has provably reset shows an estimate, marked as an estimate. It never invents a number.
+
+Measured on the audited release build: about 0.005% of one CPU core at idle, no GPU time at all (the interface is drawn on the CPU), and around 37 MB of memory. A 3 MB executable, statically linked, no runtime to install, no admin rights needed.
+
+Three detail levels, several layouts, nine palettes; opacity, brightness and saturation are adjustable. Free and open source under GPL-3.0; the source is on GitHub.</Char_Desc_2000>
+    </English>
+  </Program_Descriptions>
+  <Web_Info>
+    <Application_URLs>
+      <Application_Info_URL>https://napxlexn.github.io/ailimits/</Application_Info_URL>
+      <Application_Order_URL></Application_Order_URL>
+      <Application_Screenshot_URL>https://napxlexn.github.io/ailimits/media/og.png</Application_Screenshot_URL>
+      <Application_Icon_URL>https://napxlexn.github.io/ailimits/media/favicon.png</Application_Icon_URL>
+      <Application_XML_File_URL>https://napxlexn.github.io/ailimits/pad.xml</Application_XML_File_URL>
+    </Application_URLs>
+    <Download_URLs>
+      <Primary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.6.4/AiLimits-Portable-0.6.4.zip</Primary_Download_URL>
+      <Secondary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.6.4/AiLimits-Setup-0.6.4.exe</Secondary_Download_URL>
+      <Additional_Download_URL_1></Additional_Download_URL_1>
+      <Additional_Download_URL_2></Additional_Download_URL_2>
+    </Download_URLs>
+  </Web_Info>
+  <Permissions>
+    <Distribution_Permissions>AI Limits is free software under the GNU General Public License, version 3.0 or later. It may be freely redistributed unmodified; the licence text ships with the program and at https://github.com/napxlexn/ailimits/blob/master/LICENSE.</Distribution_Permissions>
+    <EULA>GNU General Public License v3.0 or later. https://www.gnu.org/licenses/gpl-3.0.html</EULA>
+  </Permissions>
+</XML_DIZ_INFO>
