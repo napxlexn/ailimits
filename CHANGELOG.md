@@ -2,6 +2,19 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## Unreleased
+
+### Fixed
+
+- **The taskbar mini panel keeps following an auto-hide bar after Explorer
+  restarts.** The move/auto-hide watch is a WinEvent hook scoped to
+  Explorer's process; when Explorer is killed and started again (or crashes
+  and comes back) the new process has a new id and the hook never fires
+  again, so the panel only moved on the 60-second tick or when some other
+  window change nudged it - a laggy panel drawn over a hidden bar and vice
+  versa. The hook is now re-scoped to the new process the moment the new
+  taskbar is seen.
+
 ## 0.6.4 - 2026-09-12
 
 ### Fixed

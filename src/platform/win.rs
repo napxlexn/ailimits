@@ -632,6 +632,16 @@ pub fn hide_window(hwnd: isize) {
 // changes) need to read/write them.
 static TASKBAR: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// The move/auto-hide hook and the Explorer process it is scoped to. The
+/// scope is what makes the hook cheap — only Explorer's events reach the
+/// callback — and what makes it die with Explorer: a WinEvent hook scoped by
+/// process id never fires for the process that replaces it. See
+/// `rearm_if_stale`.
+static LOC_HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+static HOOK_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PROXY: std::sync::OnceLock<
+    std::sync::Mutex<tao::event_loop::EventLoopProxy<crate::app::UserEvent>>,
+> = std::sync::OnceLock::new();
 
 /// Last secondary bar we successfully enumerated, and the index it answered.
 ///
@@ -717,10 +727,131 @@ fn arm_watch(taskbar: windows::Win32::Foundation::HWND) {
 /// 60-second provider tick — it stops following the bar and looks like it
 /// vanished. Measured in the field: after five days of uptime BOTH bar handles
 /// had changed.
+///
+/// **And the hook itself, not only its handles.** The move/auto-hide hook is
+/// scoped to Explorer's process id, so `taskkill /f /im explorer.exe && start
+/// explorer.exe` — or Explorer crashing and coming back — leaves it bound to a
+/// process that no longer exists. Re-pointing the handles is not enough then:
+/// no slide is ever reported again, and the panel only moves on the 60-second
+/// tick or whenever some unrelated foreground change happens to nudge it,
+/// which reads as a laggy, out-of-step panel on an auto-hide bar. A changed
+/// bar handle with a changed owning pid means a new Explorer: unhook and hook
+/// again for the process that is actually there.
 fn rearm_if_stale(taskbar: windows::Win32::Foundation::HWND) {
-    if TASKBAR.load(std::sync::atomic::Ordering::Relaxed) != taskbar.0 as isize {
-        tracing::debug!("taskbar handle changed, re-arming the watch");
-        arm_watch(taskbar);
+    use std::sync::atomic::Ordering::Relaxed;
+    if TASKBAR.load(Relaxed) == taskbar.0 as isize {
+        return;
+    }
+    tracing::debug!("taskbar handle changed, re-arming the watch");
+    arm_watch(taskbar);
+    let pid = window_pid(taskbar);
+    if pid != 0 && LOC_HOOK.load(Relaxed) != 0 && HOOK_PID.load(Relaxed) != pid {
+        tracing::info!(
+            "explorer is a new process ({} -> {}); re-scoping the taskbar hook",
+            HOOK_PID.load(Relaxed),
+            pid
+        );
+        hook_location_changes(pid);
+    }
+}
+
+/// The process id owning a window; 0 for a dead handle.
+fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid
+}
+
+/// Install (or replace) the move/auto-hide hook, scoped to one Explorer
+/// process. Any previous one is unhooked first, so there is exactly one and
+/// every event arrives once. Must run on the thread with the message loop.
+fn hook_location_changes(pid: u32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EVENT_OBJECT_LOCATIONCHANGE, WINEVENT_OUTOFCONTEXT,
+    };
+    unsafe {
+        let old = LOC_HOOK.swap(0, Relaxed);
+        if old != 0 {
+            let _ = UnhookWinEvent(HWINEVENTHOOK(old as _));
+        }
+        let hook = SetWinEventHook(
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            None,
+            Some(on_event),
+            pid,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if hook.is_invalid() {
+            tracing::warn!("taskbar watch hook failed — panel won't track auto-hide");
+            HOOK_PID.store(0, Relaxed);
+        } else {
+            LOC_HOOK.store(hook.0 as isize, Relaxed);
+            HOOK_PID.store(pid, Relaxed);
+        }
+    }
+}
+
+/// The WinEvent callback shared by the three hooks. Fires on the hooking
+/// thread's message loop and forwards a user event; the comparison handles
+/// decide which taskbar's events count.
+unsafe extern "system" fn on_event(
+    _hook: windows::Win32::UI::Accessibility::HWINEVENTHOOK,
+    event: u32,
+    hwnd: windows::Win32::Foundation::HWND,
+    id_object: i32,
+    _id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetDesktopWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER,
+        EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW,
+    };
+    let ev = match event {
+        // The taskbar itself moved/slid (auto-hide, resolution change), OR
+        // the notification area changed width (an icon was pinned/unpinned
+        // — the bar stays put, only `TrayNotifyWnd`'s left edge shifts) →
+        // reposition the panel. Win11 animates the tray resize, so a pin
+        // emits a burst of these; each reposition is a cheap re-present,
+        // and following the burst keeps the panel gliding with the icons.
+        EVENT_OBJECT_LOCATIONCHANGE if id_object == OBJID_WINDOW.0 => {
+            let h = hwnd.0 as isize;
+            let tray = TRAY.load(std::sync::atomic::Ordering::Relaxed);
+            if h == TASKBAR.load(std::sync::atomic::Ordering::Relaxed) || (tray != 0 && h == tray) {
+                crate::app::UserEvent::TaskbarMoved
+            } else {
+                return;
+            }
+        }
+        // Some window came to the foreground (the tray overflow flyout, the
+        // Start menu, an app) — it may have covered the overlay, which only
+        // re-asserts topmost on a present. Re-raise it (cheap, no repaint).
+        EVENT_SYSTEM_FOREGROUND => crate::app::UserEvent::PanelRaise,
+        // The shell re-stacked top-level z-order (reported on the taskbar or
+        // the DESKTOP). The auto-hide bar peeking back can front itself above
+        // the floating overlay as a pure z change — no move/foreground event —
+        // which a topmost overlay cannot beat. Re-check whether the overlay is
+        // now covered so the indicator can fall back to a tray icon.
+        EVENT_OBJECT_REORDER => {
+            let tb = TASKBAR.load(std::sync::atomic::Ordering::Relaxed);
+            let h = hwnd.0 as isize;
+            if h == tb || h == GetDesktopWindow().0 as isize {
+                crate::app::UserEvent::PanelRecheck
+            } else {
+                return;
+            }
+        }
+        _ => return,
+    };
+    if let Some(proxy) = PROXY.get() {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(ev);
+        }
     }
 }
 
@@ -744,80 +875,22 @@ pub fn install_taskbar_watch(
     target: crate::config::schema::PanelDisplay,
 ) {
     use std::sync::Mutex;
-    use std::sync::OnceLock;
     use windows::core::w;
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
+    use windows::Win32::UI::Accessibility::SetWinEventHook;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, GetDesktopWindow, GetWindowThreadProcessId, EVENT_OBJECT_LOCATIONCHANGE,
-        EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+        FindWindowW, EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
         WINEVENT_SKIPOWNPROCESS,
     };
 
-    static PROXY: OnceLock<Mutex<tao::event_loop::EventLoopProxy<crate::app::UserEvent>>> =
-        OnceLock::new();
-
-    unsafe extern "system" fn on_event(
-        _hook: HWINEVENTHOOK,
-        event: u32,
-        hwnd: HWND,
-        id_object: i32,
-        _id_child: i32,
-        _thread: u32,
-        _time: u32,
-    ) {
-        let ev = match event {
-            // The taskbar itself moved/slid (auto-hide, resolution change), OR
-            // the notification area changed width (an icon was pinned/unpinned
-            // — the bar stays put, only `TrayNotifyWnd`'s left edge shifts) →
-            // reposition the panel. Win11 animates the tray resize, so a pin
-            // emits a burst of these; each reposition is a cheap re-present,
-            // and following the burst keeps the panel gliding with the icons.
-            EVENT_OBJECT_LOCATIONCHANGE if id_object == OBJID_WINDOW.0 => {
-                let h = hwnd.0 as isize;
-                let tray = TRAY.load(std::sync::atomic::Ordering::Relaxed);
-                if h == TASKBAR.load(std::sync::atomic::Ordering::Relaxed)
-                    || (tray != 0 && h == tray)
-                {
-                    crate::app::UserEvent::TaskbarMoved
-                } else {
-                    return;
-                }
-            }
-            // Some window came to the foreground (the tray overflow flyout, the
-            // Start menu, an app) — it may have covered the overlay, which only
-            // re-asserts topmost on a present. Re-raise it (cheap, no repaint).
-            EVENT_SYSTEM_FOREGROUND => crate::app::UserEvent::PanelRaise,
-            // The shell re-stacked top-level z-order (reported on the taskbar or
-            // the DESKTOP). The auto-hide bar peeking back can front itself above
-            // the floating overlay as a pure z change — no move/foreground event —
-            // which a topmost overlay cannot beat. Re-check whether the overlay is
-            // now covered so the indicator can fall back to a tray icon.
-            EVENT_OBJECT_REORDER => {
-                let tb = TASKBAR.load(std::sync::atomic::Ordering::Relaxed);
-                let h = hwnd.0 as isize;
-                if h == tb || h == GetDesktopWindow().0 as isize {
-                    crate::app::UserEvent::PanelRecheck
-                } else {
-                    return;
-                }
-            }
-            _ => return,
-        };
-        if let Some(proxy) = PROXY.get() {
-            if let Ok(proxy) = proxy.lock() {
-                let _ = proxy.send_event(ev);
-            }
-        }
-    }
-
     unsafe {
-        // Install the hooks ONCE per process. Nothing unhooks them, and the
-        // PROXY OnceLock below only makes the proxy idempotent, not the hooks:
-        // a second call would add three more global hooks while the first three
-        // keep firing, so every taskbar event would arrive twice. Re-pointing
-        // the watch at a different bar is `watch_taskbar`, which touches only
-        // the comparison handles and is safe to call as often as needed.
+        // Install the hooks ONCE per process. Nothing unhooks the two global
+        // ones, and the PROXY OnceLock only makes the proxy idempotent, not the
+        // hooks: a second call would add more global hooks while the first
+        // keep firing, so every event would arrive twice. Re-pointing the
+        // watch at a different bar is `watch_taskbar`, which touches only the
+        // comparison handles and is safe to call as often as needed; the
+        // Explorer-scoped hook alone is replaced when Explorer is, by
+        // `rearm_if_stale`.
         static HOOKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if HOOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             tracing::debug!("taskbar watch already installed; re-pointing only");
@@ -835,23 +908,10 @@ pub fn install_taskbar_watch(
             HOOKED.store(false, std::sync::atomic::Ordering::SeqCst);
             return;
         };
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(taskbar, Some(&mut pid));
         let _ = PROXY.set(Mutex::new(proxy));
         // Scoped to the Explorer process; only the taskbar hwnd passes the
-        // callback filter. The hook lives for the process lifetime.
-        let hook = SetWinEventHook(
-            EVENT_OBJECT_LOCATIONCHANGE,
-            EVENT_OBJECT_LOCATIONCHANGE,
-            None,
-            Some(on_event),
-            pid,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        );
-        if hook.is_invalid() {
-            tracing::warn!("taskbar watch hook failed — panel won't track auto-hide");
-        }
+        // callback filter. Lives until Explorer is replaced (`rearm_if_stale`).
+        hook_location_changes(window_pid(taskbar));
         // A second, GLOBAL hook for foreground changes so the panel can re-raise
         // itself above whatever just covered it (the tray overflow flyout etc.).
         let fg_hook = SetWinEventHook(
