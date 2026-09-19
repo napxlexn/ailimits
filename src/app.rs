@@ -685,6 +685,10 @@ pub fn run() -> Result<()> {
     let mut config = runtime.block_on(storage::load_or_default())?;
     info!("Config loaded: {} providers", config.providers.len());
 
+    // Toasts carry the app's own name and icon; the identity is registered
+    // per user, before the first threshold alert can fire.
+    crate::platform::register_toast_identity();
+
     // Rescue a saved position that now lands on no monitor (a display was
     // unplugged/resized since last run): a borderless, taskbar-skipped overlay
     // off every screen is invisible and un-draggable. Snap it back on-screen.

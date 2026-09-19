@@ -31,6 +31,30 @@ pub fn is_packaged() -> bool {
     }
 }
 
+/// The identity toasts are shown under: the package's own inside the Store
+/// build, the registered `napxlexn.AILimits` everywhere else. Empty off
+/// Windows, where toasts are only logged.
+pub fn toast_app_id() -> String {
+    #[cfg(target_os = "windows")]
+    {
+        win::toast_app_id()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        String::new()
+    }
+}
+
+/// Register the unpackaged identity's display name and icon with the
+/// notification platform, so a toast is attributed to AI Limits. No-op in a
+/// package (the Store registered it) and off Windows.
+pub fn register_toast_identity() {
+    #[cfg(target_os = "windows")]
+    {
+        win::register_toast_identity()
+    }
+}
+
 /// Pin this exe's tray icons to the visible taskbar corner (Windows 11
 /// hides new ones in the overflow). Returns how many icons were promoted.
 pub fn promote_tray_icons() -> u32 {

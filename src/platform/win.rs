@@ -965,6 +965,105 @@ pub fn is_packaged() -> bool {
     err != APPMODEL_ERROR_NO_PACKAGE && len > 0
 }
 
+/// The AppUserModelID the unpackaged builds notify under. The Store package
+/// has its own (see `toast_app_id`); this one is registered per user by
+/// `register_toast_identity` and carried by the installer's Start menu
+/// shortcut, so a toast shows "AI Limits" and the icon, not the identity of
+/// whichever app happened to lend its ID.
+pub const APP_USER_MODEL_ID: &str = "napxlexn.AILimits";
+
+/// The identity toasts are shown under. Inside an MSIX package it is the
+/// package's own application id, which the Store registered along with the
+/// display name and logo; anywhere else it is `APP_USER_MODEL_ID`.
+pub fn toast_app_id() -> String {
+    use windows::Win32::Storage::Packaging::Appx::GetCurrentApplicationUserModelId;
+    if is_packaged() {
+        let mut len = 0u32;
+        // The first call only sizes the buffer; the second fills it.
+        let _ = unsafe { GetCurrentApplicationUserModelId(&mut len, windows::core::PWSTR::null()) };
+        if len > 0 {
+            let mut buf = vec![0u16; len as usize];
+            let err = unsafe {
+                GetCurrentApplicationUserModelId(
+                    &mut len,
+                    windows::core::PWSTR::from_raw(buf.as_mut_ptr()),
+                )
+            };
+            if err.is_ok() {
+                let s = String::from_utf16_lossy(&buf[..len.saturating_sub(1) as usize]);
+                if !s.is_empty() {
+                    return s;
+                }
+            }
+        }
+    }
+    APP_USER_MODEL_ID.to_string()
+}
+
+/// Tell the notification platform who `APP_USER_MODEL_ID` is: the display
+/// name and the icon a toast shows come from
+/// `HKCU\Software\Classes\AppUserModelId\<id>`, the registration Windows
+/// accepts from a desktop app that has no Start menu shortcut (a portable
+/// copy, a Scoop install). The icon is the app's own, written once beside
+/// the config since the exe carries it only as a resource. Best-effort and
+/// idempotent; a packaged copy never gets here (the Store did this).
+pub fn register_toast_identity() {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegCreateKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+        REG_OPTION_NON_VOLATILE, REG_SZ,
+    };
+
+    if is_packaged() {
+        return;
+    }
+    let icon = crate::config::storage::config_path().with_file_name("icon.png");
+    const ICON: &[u8] = include_bytes!("../../assets/icon.png");
+    let icon_is_current = std::fs::metadata(&icon)
+        .map(|m| m.len() == ICON.len() as u64)
+        .unwrap_or(false);
+    if !icon_is_current {
+        if let Some(parent) = icon.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&icon, ICON) {
+            tracing::debug!("toast icon not written ({e}); the toast shows without one");
+        }
+    }
+
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let set = |key: HKEY, name: windows::core::PCWSTR, value: &str| unsafe {
+        let v = wide(value);
+        let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
+        RegSetValueExW(key, name, 0, REG_SZ, Some(bytes))
+    };
+    unsafe {
+        let mut key = HKEY::default();
+        let path = wide(&format!(
+            "Software\\Classes\\AppUserModelId\\{APP_USER_MODEL_ID}"
+        ));
+        if RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            windows::core::PCWSTR::from_raw(path.as_ptr()),
+            0,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        )
+        .is_err()
+        {
+            tracing::debug!("toast identity not registered; toasts fall back to a borrowed one");
+            return;
+        }
+        let _ = set(key, w!("DisplayName"), "AI Limits");
+        let _ = set(key, w!("IconUri"), &icon.to_string_lossy());
+        let _ = RegCloseKey(key);
+    }
+}
+
 /// Promote this exe's notification icons onto the always-visible taskbar
 /// corner. Windows 11 hides new tray icons behind the overflow chevron;
 /// the per-icon "always show" toggle is just `IsPromoted=1` under the

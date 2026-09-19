@@ -51,14 +51,20 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\TRADEMARKS.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+; The AppUserModelID is what toasts are attributed to; the app registers the
+; same id per user, so this is the belt to that braces.
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExe}"; AppUserModelID: "napxlexn.AILimits"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon; AppUserModelID: "napxlexn.AILimits"
 
 [Registry]
 ; Autostart via HKCU Run — removed by the uninstaller.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
     ValueName: "AiLimits"; ValueData: """{app}\{#AppExe}"""; Tasks: autostart; \
     Flags: uninsdeletevalue
+; The toast identity the app registers on first run (display name + icon);
+; written here too so the uninstaller knows to remove the key.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\napxlexn.AILimits"; ValueType: string; \
+    ValueName: "DisplayName"; ValueData: "{#AppName}"; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:RunApp}"; \

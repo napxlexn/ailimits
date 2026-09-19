@@ -20,6 +20,12 @@ Notable, user-visible changes. Dates are release dates.
   no stderr to say so. It is now handled like an unparseable file: one retry
   for a passing lock, then the file is set aside as `config.toml.corrupt`,
   the reason is logged and the widget runs on defaults.
+- **Toasts are attributed to AI Limits.** Threshold alerts and menu feedback
+  were shown under "Windows PowerShell", the identity a desktop app without
+  one of its own borrows. The app now registers its own per user (name and
+  icon; the installer's shortcut carries the same id), and the Store build
+  notifies under the package's identity. Settings > Notifications lists
+  "AI Limits" as a result, so its toasts can be muted on their own.
 - **The opt-in diagnostic log rotates at 5 MB** (`ailimits.log` ->
   `ailimits.log.1`, one predecessor kept) instead of growing without bound
   for as long as `AILIMITS_LOG` stays set.
