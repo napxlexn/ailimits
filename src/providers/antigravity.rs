@@ -27,7 +27,7 @@ const MODELS_URL: &str =
 /// synthetic "All Models" group with everything full.
 const SUMMARY_URL: &str =
     "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
-/// Antigravity Windows credential target (ціль запису Antigravity у Windows Credential Manager).
+/// The Windows Credential Manager target Antigravity keeps its token under.
 const ANTIGRAVITY_CREDENTIAL_TARGET: &str = "gemini:antigravity";
 
 pub struct AntigravityProvider {
