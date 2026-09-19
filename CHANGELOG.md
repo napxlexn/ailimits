@@ -30,6 +30,16 @@ Notable, user-visible changes. Dates are release dates.
   window change nudged it - a laggy panel drawn over a hidden bar and vice
   versa. The hook is now re-scoped to the new process the moment the new
   taskbar is seen.
+- **A secondary taskbar is found even while the shell holds it in its raised
+  band.** After a Start menu cycle that catches an auto-hide bar open, the
+  shell keeps that bar above every ordinary topmost window until the next
+  cycle. `EnumWindows` does not walk that band, so in that state the widget
+  saw no secondary taskbar at all: the Display submenu vanished and a panel
+  set to that bar fell back to the primary one on the next start. The bars
+  are now found by class, which sees them in either band. (While the bar is
+  raised the panel cannot draw over it and the tray rings stand in, as for
+  the cursor-edge peek; the panel returns when the shell lets the bar back
+  down, which a Start open and close with the cursor off the bar does.)
 - **A config file that cannot be read no longer ends the widget silently.**
   A read error (permissions, a scanner's lock, bytes that are not UTF-8) was
   the one config failure that propagated out of startup, and a GUI app has

@@ -331,7 +331,14 @@ impl TaskbarPanel {
             return false;
         };
         let owner = crate::platform::point_owner(x + w as i32 / 2, y + h as i32 / 2);
-        owner != 0 && owner != self.hwnd()
+        let covered = owner != 0 && owner != self.hwnd();
+        if covered {
+            tracing::trace!(
+                "panel at {x},{y} {w}x{h} covered by {}",
+                crate::platform::describe_window(owner)
+            );
+        }
+        covered
     }
 
     /// Restart the panel: forget every cached judgement and place it again.

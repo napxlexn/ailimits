@@ -101,18 +101,31 @@ pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<Taskb
 /// Windows creates one per display when "show my taskbar on all displays" is
 /// on; there are none when it is off, which is why callers must tolerate an
 /// empty result rather than treating it as an error.
+///
+/// Found by class with `FindWindowExW`, not `EnumWindows`. The shell lifts an
+/// auto-hide bar into a higher z-band after a Start menu cycle that caught it
+/// open (it then sits above every ordinary topmost window until the next
+/// cycle), and `EnumWindows` only walks the desktop band: in that state the
+/// bar was simply not there for us, the Display submenu vanished and a panel
+/// set to that bar quietly fell back to the primary one. `FindWindowExW`
+/// walks by class across bands and finds it either way.
 pub fn secondary_taskbars() -> Vec<isize> {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, RECT};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindowRect};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowRect};
 
-    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let out = &mut *(lparam.0 as *mut Vec<(isize, i32)>);
-        let mut cls = [0u16; 32];
-        let n = GetClassNameW(hwnd, &mut cls);
-        if n > 0 && String::from_utf16_lossy(&cls[..n as usize]) == "Shell_SecondaryTrayWnd" {
+    let mut found: Vec<(isize, i32)> = Vec::new();
+    unsafe {
+        let mut prev = HWND::default();
+        while let Ok(hwnd) =
+            FindWindowExW(HWND::default(), prev, w!("Shell_SecondaryTrayWnd"), None)
+        {
+            if hwnd.0.is_null() {
+                break;
+            }
             let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             let mut mi = MONITORINFO {
                 cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -125,14 +138,9 @@ pub fn secondary_taskbars() -> Vec<isize> {
                 let _ = GetWindowRect(hwnd, &mut r);
                 r.left
             };
-            out.push((hwnd.0 as isize, left));
+            found.push((hwnd.0 as isize, left));
+            prev = hwnd;
         }
-        BOOL(1)
-    }
-
-    let mut found: Vec<(isize, i32)> = Vec::new();
-    unsafe {
-        let _ = EnumWindows(Some(cb), LPARAM(&mut found as *mut _ as isize));
     }
     crate::platform::taskbar_geom::order_bars(&mut found);
     found.into_iter().map(|(hwnd, _)| hwnd).collect()
@@ -317,6 +325,27 @@ pub fn point_owner(x: i32, y: i32) -> isize {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::WindowFromPoint;
     unsafe { WindowFromPoint(POINT { x, y }).0 as isize }
+}
+
+/// A window's class name and screen rectangle, for the log.
+pub fn describe_window(hwnd: isize) -> String {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect};
+    unsafe {
+        let h = HWND(hwnd as _);
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(h, &mut cls);
+        let mut r = RECT::default();
+        let _ = GetWindowRect(h, &mut r);
+        format!(
+            "{} [{},{} {}x{}]",
+            String::from_utf16_lossy(&cls[..n.max(0) as usize]),
+            r.left,
+            r.top,
+            r.right - r.left,
+            r.bottom - r.top
+        )
+    }
 }
 
 /// The system mouse-hover time in ms — how long Windows waits before showing a
