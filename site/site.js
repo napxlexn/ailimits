@@ -1643,7 +1643,7 @@ if (typeof gsap !== "undefined" && !reduced) {
      every size the page is later given. */
   const heroChars = split($(".hero-copy .manifesto"));
   gsap.set("#aw-hero", { xPercent: -50, yPercent: -50 });
-  gsap.timeline({ defaults: { ease: "power3.out" } })
+  const intro = gsap.timeline({ defaults: { ease: "power3.out" } })
     .from(".top", { y: -24, opacity: 0, duration: 0.7, clearProps: SETTLE }, 0.1)
     .from(".rail", { x: 26, opacity: 0, duration: 0.8, clearProps: SETTLE }, 0.9)
     .from(heroChars, { yPercent: 118, duration: 0.9, stagger: 0.016, ease: "power4.out",
@@ -1656,13 +1656,24 @@ if (typeof gsap !== "undefined" && !reduced) {
     .from(".stage-cap", { opacity: 0, duration: 0.7, clearProps: SETTLE }, 1.2)
     .add(() => typeInto($(".hero-copy .typed"), 0), 0.7);
 
-  /* gentle pointer parallax on the constellation */
+  /* gentle pointer parallax on the constellation, moved as a LAYOUT offset
+     (the margins), not a transform. Each widget is a composited layer for its
+     backdrop blur, and a layer carried by a changing transform is composited
+     against a backdrop it was not rasterised over: one pixel of the bright
+     blurred backdrop shows past the dark fill along the edges — the faint rim
+     seen while the cursor drove them. A margin moves the box through layout
+     and the layer is rasterised in place each frame, edges and all, exactly
+     as it is at rest. Three small boxes, only while the pointer moves. */
   {
     const q = [];
-    [[".sat-a", 18], [".sat-b", -22], ["#aw-hero", 8]].forEach(([sel, k]) => {
+    /* a box anchored to the right and bottom edges only answers to the margins
+       on those sides, with the sign turned round */
+    [[".sat-a", 18, 1], [".sat-b", -22, -1], ["#aw-hero", 8, 1]].forEach(([sel, k, side]) => {
       const el = $(sel);
-      if (el) q.push([gsap.quickTo(el, "x", { duration: 0.7, ease: "power2.out" }),
-                      gsap.quickTo(el, "y", { duration: 0.7, ease: "power2.out" }), k]);
+      if (!el) return;
+      const [mx, my] = side > 0 ? ["marginLeft", "marginTop"] : ["marginRight", "marginBottom"];
+      q.push([gsap.quickTo(el, mx, { duration: 0.7, ease: "power2.out" }),
+              gsap.quickTo(el, my, { duration: 0.7, ease: "power2.out" }), k * side]);
     });
     addEventListener("pointermove", (e) => {
       const mx = e.clientX / innerWidth - 0.5, my = e.clientY / innerHeight - 0.5;
