@@ -158,7 +158,7 @@ itself, because an OAuth refresh rotates it and would log the CLI out.
 
 | Provider | Live data lasts | After that |
 |---|---|---|
-| **Claude** | ~8 hours after your last Claude Code session (the token's real lifetime) | falls back to `statusline.jsonl`, else shows the last value greyed |
+| **Claude** | ~8 hours after your last Claude Code session (the token's real lifetime) | shows the last value greyed, with its age |
 | **Codex** | while you actively use Codex CLI (its token is shorter-lived) | the last value greyed, with its age |
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
 | **Antigravity** | while Antigravity CLI refreshes its keyring token, or a supported Gemini CLI flow refreshes `oauth_creds.json` | the last value greyed, with its age |

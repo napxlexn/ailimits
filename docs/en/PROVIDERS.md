@@ -26,10 +26,11 @@ Ground rules that apply to every provider:
    (menu: *Paste usage token*; CLI: `ailimits-auth set-usage-token claude`).
 2. **Claude Code OAuth token** — `%USERPROFILE%\.claude\.credentials.json`
    → `claudeAiOauth.accessToken` (skipped when `expiresAt` is in the past).
-3. **statusline.jsonl** — Claude Code status bar snapshots (tolerant field
-   name search).
-4. A source exists but gave no data → `NetworkError("token expired")`.
-5. No sources at all → `NotConfigured` (the row is hidden).
+3. A source exists but gave no data → `NetworkError("token expired")`.
+4. No sources at all → `NotConfigured` (the row is hidden).
+
+(`statusline.jsonl` snapshots were a source until 0.7.0; Claude Code no
+longer writes that file.)
 
 Both token sources call the undocumented usage endpoint
 (verified 2026-06-10, HTTP 200):

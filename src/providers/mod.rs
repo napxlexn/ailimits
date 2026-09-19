@@ -191,8 +191,8 @@ pub struct ProviderData {
     /// intentionally NOT serialized (`#[serde(skip)]` ⇒ `None` after a disk
     /// round-trip). When `Some`, staleness is gated on this monotonic clock so a
     /// wall-clock jump (NTP, VM resume, DST) cannot falsely age fresh data;
-    /// when `None` (a statusline snapshot or a disk-cache entry, which carry
-    /// their own intrinsic `updated_at` age) staleness falls back to wall time.
+    /// when `None` (a disk-cache entry, which carries its own intrinsic
+    /// `updated_at` age) staleness falls back to wall time.
     #[serde(skip)]
     pub received_at: Option<Instant>,
 }
@@ -248,7 +248,7 @@ impl ProviderData {
 
     /// Data age in seconds, if stale. The staleness DECISION is monotonic for
     /// live data (immune to wall-clock jumps); data with no monotonic anchor
-    /// (a statusline snapshot or a disk-cache entry, `received_at == None`)
+    /// (a disk-cache entry, `received_at == None`)
     /// falls back to its intrinsic wall-clock age. The returned NUMBER is always
     /// the wall-clock age, for an honest "x ago" label.
     pub fn stale_age_secs(&self) -> Option<i64> {

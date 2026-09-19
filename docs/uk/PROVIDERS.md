@@ -26,10 +26,11 @@
    (меню: *Paste usage token*; CLI: `ailimits-auth set-usage-token claude`).
 2. **OAuth-токен Claude Code** — `%USERPROFILE%\.claude\.credentials.json`
    → `claudeAiOauth.accessToken` (пропускається, якщо `expiresAt` у минулому).
-3. **statusline.jsonl** — знімки статус-бару Claude Code (толерантний пошук
-   назв полів).
-4. Джерело є, але даних не дало → `NetworkError("token expired")`.
-5. Джерел немає взагалі → `NotConfigured` (рядок ховається).
+3. Джерело є, але даних не дало → `NetworkError("token expired")`.
+4. Джерел немає взагалі → `NotConfigured` (рядок ховається).
+
+(Знімки `statusline.jsonl` були джерелом до 0.7.0; Claude Code більше не
+пише цей файл.)
 
 Обидва токени звертаються до недокументованого usage-endpoint'а
 (звірено 2026-06-10, HTTP 200):

@@ -112,10 +112,9 @@ fn status() -> Result<()> {
         println!("Claude OAuth: no (.credentials.json missing — run Claude Code once)");
     }
 
-    // Claude Code local files.
-    let statusline = claude_dir.join("statusline.jsonl").exists();
+    // Claude Code's local stats file: a sign Claude Code has run here, not a
+    // limit source (it holds no limits).
     let stats = claude_dir.join("stats-cache.json").exists();
-    println!("statusline.jsonl: {}", if statusline { "OK" } else { "no" });
     println!("stats-cache.json: {}", if stats { "OK" } else { "no" });
 
     // Manual usage tokens.

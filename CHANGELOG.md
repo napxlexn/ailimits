@@ -11,6 +11,15 @@ Notable, user-visible changes. Dates are release dates.
   marks it as leaving the app, and a click opens the GitHub page in the
   default browser. It used to be a greyed-out label.
 
+### Removed
+
+- **The `statusline.jsonl` fallback for Claude.** Claude Code stopped
+  writing that file, so the reader between the OAuth request and the
+  honest "token expired" state could never fire again; it is gone, along
+  with the `statusline.jsonl: no` line in `ailimits-auth status`. The
+  source chain is now: manual usage token, Claude Code's OAuth token, then
+  the greyed last value.
+
 ### Fixed
 
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer

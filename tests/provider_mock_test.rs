@@ -538,8 +538,8 @@ fn live_data_survives_a_wall_clock_jump() {
 #[test]
 fn data_without_monotonic_anchor_uses_wall_age() {
     use chrono::Duration;
-    // A statusline snapshot / disk-cache entry (received_at None) is staled by
-    // its own wall-clock age: a fresh snapshot is live, an old one is stale.
+    // A disk-cache entry (received_at None) is staled by its own wall-clock
+    // age: a fresh entry is live, an old one is stale.
     let mk = |age_secs: i64| ProviderData {
         id: ProviderId::Codex,
         status: ProviderStatus::Ok,

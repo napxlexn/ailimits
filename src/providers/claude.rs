@@ -133,15 +133,15 @@ impl ClaudeProvider {
     ///
     /// 0. manual usage token from Credential Manager
     /// 1. OAuth /api/oauth/usage with the Claude Code token — live server-side %
-    /// 2. statusline.jsonl — Claude Code status bar snapshots
-    /// 3. an honest NetworkError when a source exists but has no fresh data
-    /// 4. NotConfigured — "run Claude Code at least once"
+    /// 2. an honest NetworkError when a source exists but has no fresh data
+    /// 3. NotConfigured — "run Claude Code at least once"
+    ///
+    /// (A statusline.jsonl snapshot used to sit between 1 and 2. Claude Code
+    /// stopped writing that file in 2026; the reader went with 0.7.0.)
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        let claude_dir = claude_dir();
-        let credentials_path = claude_dir.join(".credentials.json");
-        let statusline_path = claude_dir.join("statusline.jsonl");
-        // Real limit sources; stats-cache holds no limits and does not count.
-        let has_source = credentials_path.exists() || statusline_path.exists();
+        let credentials_path = claude_dir().join(".credentials.json");
+        // The one limit source; stats-cache holds no limits and does not count.
+        let has_source = credentials_path.exists();
 
         // Whether a usage request bounced off the endpoint's rate limiter
         // this cycle — only to word the error honestly below (a 429 is not
@@ -170,14 +170,7 @@ impl ClaudeProvider {
             Err(e) => warn!(".credentials.json parse error: {e}"),
         }
 
-        // 2. statusline.jsonl — server-side % from snapshots.
-        match read_statusline(&statusline_path).await {
-            Ok(Some(data)) => return Ok(self.finish_statusline(data)),
-            Ok(None) => { /* file missing — fall back */ }
-            Err(e) => warn!("statusline.jsonl parse error: {e}"),
-        }
-
-        // 3. A source exists but there is no fresh data right now — an HONEST
+        // 2. A source exists but there is no fresh data right now — an HONEST
         // error instead of invented numbers. app.rs keeps the last real data
         // on screen; the renderer greys it out with its age.
         // On HTTP 429 (the usage endpoint's per-token bucket is shared with
@@ -194,7 +187,7 @@ impl ClaudeProvider {
             return Ok(self.data(ProviderStatus::NetworkError(msg.to_string()), vec![]));
         }
 
-        // 4. No sources at all — hint to run Claude Code.
+        // 3. No sources at all — hint to run Claude Code.
         Ok(self.data(ProviderStatus::NotConfigured, vec![]))
     }
 
@@ -218,7 +211,7 @@ impl ClaudeProvider {
                 let body = resp.text().await?;
                 let metrics = parse_oauth_usage(&body)?;
                 if metrics.is_empty() {
-                    // Schema changed — falling back to statusline is more honest.
+                    // Schema changed — an honest error beats invented numbers.
                     return Ok(None);
                 }
                 Ok(Some(self.data(ProviderStatus::Ok, metrics)))
@@ -244,19 +237,6 @@ impl ClaudeProvider {
             updated_at: Utc::now(),
             // Live fetch — monotonically anchored against wall-clock jumps.
             received_at: Some(std::time::Instant::now()),
-        }
-    }
-
-    /// Finalize statusline data: keep the snapshot time so the UI can show its age.
-    fn finish_statusline(&self, parsed: StatuslineSnapshot) -> ProviderData {
-        ProviderData {
-            id: self.id(),
-            status: ProviderStatus::Ok,
-            metrics: parsed.metrics,
-            updated_at: parsed.taken_at.unwrap_or_else(Utc::now),
-            // A snapshot read from a file: its staleness is the snapshot's own
-            // wall-clock age, not the read time — leave received_at None.
-            received_at: None,
         }
     }
 }
@@ -333,75 +313,6 @@ pub fn parse_oauth_usage(body: &str) -> Result<Vec<Metric>> {
     Ok(metrics)
 }
 
-/// Parsed statusline snapshot.
-struct StatuslineSnapshot {
-    metrics: Vec<Metric>,
-    taken_at: Option<DateTime<Utc>>,
-}
-
-/// Read the last valid line of statusline.jsonl; Ok(None) if the file is missing.
-async fn read_statusline(path: &PathBuf) -> Result<Option<StatuslineSnapshot>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = tokio::fs::read_to_string(path).await?;
-
-    // The last non-empty line that parses as JSON — lines may be truncated.
-    let snapshot: serde_json::Value = content
-        .lines()
-        .rev()
-        .filter(|l| !l.trim().is_empty())
-        .find_map(|l| serde_json::from_str(l).ok())
-        .ok_or_else(|| anyhow::anyhow!("no valid JSON line in statusline.jsonl"))?;
-
-    // The schema is undocumented — search known field names tolerantly.
-    let mut metrics = Vec::new();
-
-    // 5-hour session percentage.
-    if let Some(pct) = find_pct(
-        &snapshot,
-        &[
-            "session_pct",
-            "five_hour_pct",
-            "session_percent",
-            "sessionUsedPct",
-        ],
-    ) {
-        metrics.push(pct_metric(
-            "Session",
-            pct,
-            find_reset(
-                &snapshot,
-                &["session_reset", "session_reset_at", "sessionResetAt"],
-            ),
-            MetricWindow::Session,
-        ));
-    }
-    // Weekly limit percentage.
-    if let Some(pct) = find_pct(
-        &snapshot,
-        &["weekly_pct", "week_pct", "weekly_percent", "weeklyUsedPct"],
-    ) {
-        metrics.push(pct_metric(
-            "Weekly",
-            pct,
-            find_reset(
-                &snapshot,
-                &["weekly_reset", "week_reset_at", "weeklyResetAt"],
-            ),
-            MetricWindow::Long,
-        ));
-    }
-
-    if metrics.is_empty() {
-        anyhow::bail!("statusline.jsonl has no recognizable limit fields");
-    }
-
-    let taken_at = find_reset(&snapshot, &["timestamp", "time", "taken_at", "ts"]);
-
-    Ok(Some(StatuslineSnapshot { metrics, taken_at }))
-}
-
 /// Percentage metric.
 fn pct_metric(
     label: &str,
@@ -417,54 +328,6 @@ fn pct_metric(
         reset_at,
         window,
     }
-}
-
-/// Find a numeric field by candidate names, recursing one nesting level.
-fn find_pct(value: &serde_json::Value, names: &[&str]) -> Option<u64> {
-    let obj = value.as_object()?;
-    for name in names {
-        if let Some(v) = obj.get(*name).and_then(json_as_u64) {
-            return Some(v);
-        }
-    }
-    // One level deep: {"limits": {...}} and the like.
-    for nested in obj.values().filter(|v| v.is_object()) {
-        for name in names {
-            if let Some(v) = nested
-                .as_object()
-                .and_then(|o| o.get(*name))
-                .and_then(json_as_u64)
-            {
-                return Some(v);
-            }
-        }
-    }
-    None
-}
-
-/// A number from JSON: int, float, or string ("83%" included).
-fn json_as_u64(v: &serde_json::Value) -> Option<u64> {
-    v.as_u64()
-        .or_else(|| v.as_f64().map(|f| f.round().max(0.0) as u64))
-        .or_else(|| {
-            v.as_str()
-                .and_then(|s| s.trim_end_matches('%').parse().ok())
-        })
-}
-
-/// Find an RFC3339 time by candidate names.
-fn find_reset(value: &serde_json::Value, names: &[&str]) -> Option<DateTime<Utc>> {
-    let obj = value.as_object()?;
-    for name in names {
-        if let Some(dt) = obj
-            .get(*name)
-            .and_then(|v| v.as_str())
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        {
-            return Some(dt.with_timezone(&Utc));
-        }
-    }
-    None
 }
 
 /// Header as Option<u64>.
