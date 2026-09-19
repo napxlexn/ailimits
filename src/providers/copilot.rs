@@ -171,10 +171,13 @@ async fn gh_cli_token() -> Option<String> {
     {
         // CREATE_NO_WINDOW: no console flash from a GUI app.
         cmd.creation_flags(0x0800_0000);
-        // Run from the system dir so a "gh.exe" planted in an attacker-
-        // controlled working directory cannot be invoked instead (CreateProcess
-        // searches the current directory before PATH) — it would receive the
-        // live gh token on stdout.
+        // "gh" is resolved by std, not by CreateProcess: since Rust 1.58 the
+        // lookup covers the widget's own directory, System32, the Windows
+        // directory and PATH — never the working directory — so a "gh.exe"
+        // planted in a launch folder cannot receive the live token on stdout.
+        // The working directory is still pinned to the system directory so
+        // gh itself (config discovery, its own child processes) never runs
+        // relative to wherever the widget happened to be started from.
         if let Some(root) = std::env::var_os("SystemRoot") {
             cmd.current_dir(std::path::Path::new(&root).join("System32"));
         }

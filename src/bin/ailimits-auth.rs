@@ -143,8 +143,10 @@ fn status() -> Result<()> {
         }
     );
 
-    // gh CLI for Copilot. Run from the system dir so a planted gh.exe in the
-    // current directory cannot be invoked instead (CWD-first search order).
+    // gh CLI for Copilot. std resolves "gh" without ever looking in the working
+    // directory (Rust 1.58+), so a planted gh.exe cannot be picked up; the
+    // system directory is set as the working directory only so gh itself does
+    // not run relative to wherever this tool was launched from.
     let mut gh_cmd = std::process::Command::new("gh");
     gh_cmd.args(["auth", "token"]);
     if let Some(root) = std::env::var_os("SystemRoot") {
