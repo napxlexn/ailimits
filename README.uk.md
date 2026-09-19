@@ -10,6 +10,7 @@
 <a href="https://github.com/microsoft/winget-pkgs/tree/master/manifests/n/napxlexn/AILimits"><img alt="winget" src="https://img.shields.io/winget/v/napxlexn.AILimits?style=flat-square"></a>
 <a href="https://community.chocolatey.org/packages/ailimits"><img alt="Chocolatey" src="https://img.shields.io/chocolatey/v/ailimits?style=flat-square"></a>
 <a href="https://github.com/napxlexn/scoop-ailimits"><img alt="Scoop" src="https://img.shields.io/scoop/v/ailimits?bucket=https%3A%2F%2Fgithub.com%2Fnapxlexn%2Fscoop-ailimits&style=flat-square"></a>
+<a href="https://apps.microsoft.com/detail/9P2B0J1VWPWH"><img alt="Microsoft Store" src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fdisplaycatalog.mp.microsoft.com%2Fv7.0%2Fproducts%3FbigIds%3D9P2B0J1VWPWH%26market%3DUS%26languages%3Den-us&search=AILimits_(%5Cd%2B%5C.%5Cd%2B%5C.%5Cd%2B)&replace=v%241&label=Microsoft%20Store&style=flat-square"></a>
 </p>
 
 Маленький нативний floating-віджет для Windows 11, що показує ліміти
@@ -103,7 +104,14 @@ scoop install ailimits
 
 # Chocolatey
 choco install ailimits
+
+# Microsoft Store (підписано й оновлюється магазином), або https://apps.microsoft.com/detail/9P2B0J1VWPWH
+winget install --id 9P2B0J1VWPWH --source msstore
 ```
+
+Або встанови з [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH):
+той самий віджет, підписаний і оновлюваний магазином (після релізу може
+відставати на кілька днів, поки новий пакет проходить сертифікацію).
 
 Або завантаж `AiLimits-Setup-<версія>.exe` зі сторінки
 [Releases](https://github.com/napxlexn/ailimits/releases) і запусти.

@@ -10,6 +10,7 @@
 <a href="https://github.com/microsoft/winget-pkgs/tree/master/manifests/n/napxlexn/AILimits"><img alt="winget" src="https://img.shields.io/winget/v/napxlexn.AILimits?style=flat-square"></a>
 <a href="https://community.chocolatey.org/packages/ailimits"><img alt="Chocolatey" src="https://img.shields.io/chocolatey/v/ailimits?style=flat-square"></a>
 <a href="https://github.com/napxlexn/scoop-ailimits"><img alt="Scoop" src="https://img.shields.io/scoop/v/ailimits?bucket=https%3A%2F%2Fgithub.com%2Fnapxlexn%2Fscoop-ailimits&style=flat-square"></a>
+<a href="https://apps.microsoft.com/detail/9P2B0J1VWPWH"><img alt="Microsoft Store" src="https://img.shields.io/badge/dynamic/regex?url=https%3A%2F%2Fdisplaycatalog.mp.microsoft.com%2Fv7.0%2Fproducts%3FbigIds%3D9P2B0J1VWPWH%26market%3DUS%26languages%3Den-us&search=AILimits_(%5Cd%2B%5C.%5Cd%2B%5C.%5Cd%2B)&replace=v%241&label=Microsoft%20Store&style=flat-square"></a>
 </p>
 
 A tiny native Windows 11 floating overlay that shows your AI provider usage
@@ -101,7 +102,14 @@ scoop install ailimits
 
 # Chocolatey
 choco install ailimits
+
+# Microsoft Store (signed and updated by the Store), or https://apps.microsoft.com/detail/9P2B0J1VWPWH
+winget install --id 9P2B0J1VWPWH --source msstore
 ```
+
+Or get it from the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH):
+the same widget, signed and kept up to date by the Store (it may trail a
+release by a few days while a new package is certified).
 
 Or download `AiLimits-Setup-<version>.exe` from
 [Releases](https://github.com/napxlexn/ailimits/releases) and run it.

@@ -4,6 +4,14 @@ Notable, user-visible changes. Dates are release dates.
 
 ## Unreleased
 
+### Added
+
+- **The Microsoft Store listing** is linked from the site (hero, download
+  row, structured data) and both READMEs (a badge that reads the Store's
+  own version, the `winget --source msstore` line, the listing link). The
+  Store carried 0.6.3 when this was written; it follows each release after
+  certification.
+
 ### Changed
 
 - **The version line in the menu opens the project.** "AI Limits v0.7.0 -
