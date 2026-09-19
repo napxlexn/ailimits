@@ -28,11 +28,11 @@ path = "src/lib.rs"
 [dependencies]
 # --- Window and UI ---
 # Cross-platform event loop and windows.
-tao = { version = "0.31", features = ["rwh_06"] }
+tao = { version = "0.37", features = ["rwh_06"] }
 # Native context menu.
-muda = "0.15"
+muda = "0.20"
 # System tray icon (same tauri ecosystem as muda/tao — minimal added weight).
-tray-icon = "0.19"
+tray-icon = "0.25"
 # CPU rendering into the window.
 softbuffer = "0.4"
 # 2D vector graphics.
@@ -101,7 +101,7 @@ windows-sys = { version = "0.59.0", features = [
 # Windows toast notifications via WinRT.
 tauri-winrt-notification = "0.8"
 # Win32 API.
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     # DWM: DWMWA_WINDOW_CORNER_PREFERENCE for rounded corners.
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",

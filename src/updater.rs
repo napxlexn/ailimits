@@ -206,7 +206,7 @@ fn inno_install_location() -> Option<PathBuf> {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}_is1"),
-            0,
+            None,
             KEY_QUERY_VALUE,
             &mut key,
         )

@@ -22,6 +22,15 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **Pressing the Windows key with the widget focused no longer freezes the
+  app.** Click the widget, press Win: the event loop deadlocked inside the
+  window library's keyboard handling (a lock held across a message peek that
+  re-entered the same handler), and from then on nothing updated, the menu
+  never opened and the taskbar panel stood still until the process was
+  killed. The window, menu and tray libraries are updated (tao 0.31 to 0.37,
+  muda 0.15 to 0.20, tray-icon 0.19 to 0.25); the new tao releases that lock
+  before peeking. The update also collapses the two copies of the Windows
+  bindings the app carried into one.
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer
   restarts.** The move/auto-hide watch is a WinEvent hook scoped to
   Explorer's process; when Explorer is killed and started again (or crashes

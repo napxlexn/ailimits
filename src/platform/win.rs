@@ -29,7 +29,7 @@ pub struct TaskbarSlot {
 /// requested display does not exist (see `secondary_taskbars`).
 pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<TaskbarSlot> {
     use windows::core::w;
-    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
@@ -64,7 +64,7 @@ pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<Taskb
             true
         };
         let (tray_left, tray_found) =
-            match FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None) {
+            match FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), None) {
                 Ok(tray) => {
                     let mut r = RECT::default();
                     if GetWindowRect(tray, &mut r).is_ok() {
@@ -120,9 +120,7 @@ pub fn secondary_taskbars() -> Vec<isize> {
     let mut found: Vec<(isize, i32)> = Vec::new();
     unsafe {
         let mut prev = HWND::default();
-        while let Ok(hwnd) =
-            FindWindowExW(HWND::default(), prev, w!("Shell_SecondaryTrayWnd"), None)
-        {
+        while let Ok(hwnd) = FindWindowExW(None, Some(prev), w!("Shell_SecondaryTrayWnd"), None) {
             if hwnd.0.is_null() {
                 break;
             }
@@ -187,7 +185,7 @@ pub fn present_layered(
         );
 
         let screen_dc = GetDC(None);
-        let mem_dc = CreateCompatibleDC(screen_dc);
+        let mem_dc = CreateCompatibleDC(Some(screen_dc));
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -202,7 +200,7 @@ pub fn present_layered(
         };
         let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
         let result = if let Ok(dib) =
-            CreateDIBSection(screen_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+            CreateDIBSection(Some(screen_dc), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
         {
             if !bits.is_null() {
                 std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, (w * h * 4) as usize);
@@ -219,10 +217,10 @@ pub fn present_layered(
             };
             let ok = UpdateLayeredWindow(
                 hwnd,
-                screen_dc,
+                Some(screen_dc),
                 Some(&dst),
                 Some(&size),
-                mem_dc,
+                Some(mem_dc),
                 Some(&src),
                 COLORREF(0),
                 Some(&blend),
@@ -245,7 +243,7 @@ pub fn present_layered(
         // Keep it topmost and visible without activating (ULW set geometry).
         let _ = SetWindowPos(
             hwnd,
-            HWND_TOPMOST,
+            Some(HWND_TOPMOST),
             0,
             0,
             0,
@@ -384,7 +382,7 @@ pub fn raise_panel_topmost(hwnd: isize) {
     unsafe {
         let _ = SetWindowPos(
             HWND(hwnd as _),
-            HWND_TOPMOST,
+            Some(HWND_TOPMOST),
             0,
             0,
             0,
@@ -406,7 +404,7 @@ pub fn bring_to_front(hwnd: isize) {
     unsafe {
         let _ = SetWindowPos(
             HWND(hwnd as _),
-            HWND_TOP,
+            Some(HWND_TOP),
             0,
             0,
             0,
@@ -424,7 +422,7 @@ pub fn bring_to_front(hwnd: isize) {
 /// foreground window's host process (Start/Search are served by these on
 /// Win11; the exact host varies by build, so several are accepted).
 pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> bool {
-    use windows::Win32::Foundation::{CloseHandle, FALSE};
+    use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
@@ -441,7 +439,7 @@ pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> b
         if pid == 0 {
             return false;
         }
-        let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) else {
+        let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
             return false;
         };
         let mut buf = [0u16; 260];
@@ -594,10 +592,10 @@ unsafe extern "system" fn tip_wndproc(
 /// content/position is set on each show. Returns 0 on failure.
 pub fn create_tooltip_window() -> isize {
     use windows::core::w;
-    use windows::Win32::Foundation::{HINSTANCE, HWND};
+    use windows::Win32::Foundation::HINSTANCE;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, RegisterClassW, HMENU, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+        CreateWindowExW, RegisterClassW, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
         WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
     };
     unsafe {
@@ -620,9 +618,9 @@ pub fn create_tooltip_window() -> isize {
             0,
             10,
             10,
-            HWND::default(),
-            HMENU::default(),
-            hinst,
+            None,
+            None,
+            Some(hinst.into()),
             None,
         ) else {
             return 0;
@@ -717,7 +715,7 @@ fn resolve_taskbar(
                 let cached = LAST_SECONDARY.load(Relaxed);
                 if cached != 0
                     && LAST_SECONDARY_IDX.load(Relaxed) == i as i32
-                    && IsWindow(HWND(cached as _)).as_bool()
+                    && IsWindow(Some(HWND(cached as _))).as_bool()
                 {
                     return Some(HWND(cached as _));
                 }
@@ -733,12 +731,11 @@ fn resolve_taskbar(
 /// Store the handles the hook compares against.
 fn arm_watch(taskbar: windows::Win32::Foundation::HWND) {
     use windows::core::w;
-    use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::FindWindowExW;
     unsafe {
         TASKBAR.store(taskbar.0 as isize, std::sync::atomic::Ordering::Relaxed);
         TRAY.store(
-            FindWindowExW(taskbar, HWND::default(), w!("TrayNotifyWnd"), None)
+            FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), None)
                 .map(|t| t.0 as isize)
                 .unwrap_or(0),
             std::sync::atomic::Ordering::Relaxed,
@@ -990,7 +987,7 @@ pub fn is_packaged() -> bool {
     use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
     let mut len = 0u32;
     // A zero-length buffer only asks for the size; the answer is in the code.
-    let err = unsafe { GetCurrentPackageFullName(&mut len, windows::core::PWSTR::null()) };
+    let err = unsafe { GetCurrentPackageFullName(&mut len, None) };
     err != APPMODEL_ERROR_NO_PACKAGE && len > 0
 }
 
@@ -1009,13 +1006,13 @@ pub fn toast_app_id() -> String {
     if is_packaged() {
         let mut len = 0u32;
         // The first call only sizes the buffer; the second fills it.
-        let _ = unsafe { GetCurrentApplicationUserModelId(&mut len, windows::core::PWSTR::null()) };
+        let _ = unsafe { GetCurrentApplicationUserModelId(&mut len, None) };
         if len > 0 {
             let mut buf = vec![0u16; len as usize];
             let err = unsafe {
                 GetCurrentApplicationUserModelId(
                     &mut len,
-                    windows::core::PWSTR::from_raw(buf.as_mut_ptr()),
+                    Some(windows::core::PWSTR::from_raw(buf.as_mut_ptr())),
                 )
             };
             if err.is_ok() {
@@ -1088,7 +1085,7 @@ pub fn register_toast_identity() {
     let set = |key: HKEY, name: windows::core::PCWSTR, value: &str| unsafe {
         let v = wide(value);
         let bytes = std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2);
-        RegSetValueExW(key, name, 0, REG_SZ, Some(bytes))
+        RegSetValueExW(key, name, None, REG_SZ, Some(bytes))
     };
     unsafe {
         let mut key = HKEY::default();
@@ -1098,7 +1095,7 @@ pub fn register_toast_identity() {
         if RegCreateKeyExW(
             HKEY_CURRENT_USER,
             windows::core::PCWSTR::from_raw(path.as_ptr()),
-            0,
+            None,
             None,
             REG_OPTION_NON_VOLATILE,
             KEY_SET_VALUE,
@@ -1150,7 +1147,7 @@ pub fn promote_tray_icons() -> u32 {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Control Panel\\NotifyIconSettings"),
-            0,
+            None,
             KEY_ENUMERATE_SUB_KEYS,
             &mut root,
         )
@@ -1166,10 +1163,10 @@ pub fn promote_tray_icons() -> u32 {
             if RegEnumKeyExW(
                 root,
                 index,
-                windows::core::PWSTR(name.as_mut_ptr()),
+                Some(windows::core::PWSTR(name.as_mut_ptr())),
                 &mut name_len,
                 None,
-                windows::core::PWSTR::null(),
+                None,
                 None,
                 None,
             )
@@ -1183,7 +1180,7 @@ pub fn promote_tray_icons() -> u32 {
             if RegOpenKeyExW(
                 root,
                 windows::core::PCWSTR(name.as_ptr()),
-                0,
+                None,
                 KEY_QUERY_VALUE | KEY_SET_VALUE,
                 &mut sub,
             )
@@ -1215,7 +1212,7 @@ pub fn promote_tray_icons() -> u32 {
 
             if matches {
                 let one = 1u32.to_le_bytes();
-                if RegSetValueExW(sub, w!("IsPromoted"), 0, REG_DWORD, Some(&one)).is_ok() {
+                if RegSetValueExW(sub, w!("IsPromoted"), None, REG_DWORD, Some(&one)).is_ok() {
                     promoted += 1;
                 }
             }
@@ -1240,7 +1237,7 @@ pub fn system_uses_light_theme() -> bool {
         if RegOpenKeyExW(
             HKEY_CURRENT_USER,
             w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
-            0,
+            None,
             KEY_QUERY_VALUE,
             &mut key,
         )
