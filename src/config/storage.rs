@@ -35,20 +35,34 @@ pub async fn load_or_default() -> Result<Config> {
         return Ok(default);
     }
 
-    let content = tokio::fs::read_to_string(&path).await?;
-
-    // On a parse error: preserve the unparseable file for manual repair (a
-    // single bad line shouldn't be silently overwritten with defaults on the
-    // next save), log, and fall back to defaults — never crash.
-    let mut config: Config = match toml::from_str(&content) {
+    // A file that exists but cannot be read (permissions, a lock held by a
+    // scanner, bytes that are not UTF-8) is handled like one that cannot be
+    // parsed: the widget is a GUI app, so an error out of here would end it
+    // with nothing on screen and nothing in the log. A lock is usually gone
+    // within moments, so the read gets one retry; after that the file is set
+    // aside for repair, logged, and the widget runs on defaults — never crash.
+    let mut content = tokio::fs::read_to_string(&path).await;
+    if content.is_err() {
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        content = tokio::fs::read_to_string(&path).await;
+    }
+    let parsed = match content {
+        Ok(content) => toml::from_str::<Config>(&content).map_err(|e| ("parse", e.to_string())),
+        Err(e) => Err(("read", e.to_string())),
+    };
+    let mut config = match parsed {
         Ok(cfg) => cfg,
-        Err(e) => {
-            tracing::warn!("Config parse error: {e}, using defaults");
+        Err((what, e)) => {
+            tracing::warn!("Config {what} error: {e}, using defaults");
+            // Preserve the file: a single bad line must not be silently
+            // overwritten with defaults by the save on exit.
             let backup = path.with_extension("toml.corrupt");
             if let Err(re) = tokio::fs::rename(&path, &backup).await {
-                tracing::warn!("could not back up the unparseable config: {re}");
+                tracing::warn!(
+                    "could not set the unusable config aside ({re}); the save on exit will replace it"
+                );
             } else {
-                tracing::warn!("backed up the unparseable config to {}", backup.display());
+                tracing::warn!("set the unusable config aside as {}", backup.display());
             }
             Config::default()
         }
