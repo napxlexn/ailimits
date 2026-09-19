@@ -5,29 +5,41 @@ use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
 
 /// Where the mini panel sits: an always-on-top overlay OVER the taskbar,
-/// left of the notification area, in SCREEN coordinates. A plain child of
-/// `Shell_TrayWnd` is invisible on Win11 — the taskbar's XAML composition
-/// layer paints over every classic child HWND regardless of z-order — so
-/// the panel floats above instead (the approach XMeters/TrafficMonitor
-/// converged on for Win11).
+/// before the notification area along the bar's axis, in SCREEN coordinates.
+/// A plain child of `Shell_TrayWnd` is invisible on Win11 — the taskbar's
+/// XAML composition layer paints over every classic child HWND regardless of
+/// z-order — so the panel floats above instead (the approach
+/// XMeters/TrafficMonitor converged on for Win11).
 pub struct TaskbarSlot {
-    /// Screen X of the tray's left edge (the panel goes left of it).
-    pub tray_left: i32,
-    /// Taskbar top in screen coordinates.
-    pub top: i32,
-    /// Taskbar height.
-    pub height: i32,
+    /// The monitor edge the bar sits on.
+    pub edge: Edge,
+    /// The bar's window rectangle (left, top, right, bottom).
+    pub bar: Rect,
+    /// Where the notification area starts along the bar's axis: its left edge
+    /// on a horizontal bar, its top on a side bar. The panel goes before it.
+    pub tray_start: i32,
     /// False while the auto-hidden taskbar is slid off-screen.
     pub visible: bool,
-    /// False when `TrayNotifyWnd` could not be found and `tray_left` is an
+    /// False when `TrayNotifyWnd` could not be found and `tray_start` is an
     /// estimate. Secondary Win11 taskbars have no notification area window.
     pub tray_found: bool,
+    /// Where the row of app buttons ends along the axis, read off the bar's
+    /// pixels (`band_end`); None when the bar is hidden or the read failed.
+    pub band_end: Option<i32>,
 }
+
+use crate::platform::taskbar_geom::{Edge, Rect};
 
 /// Locate the target taskbar and its notification area (screen coords).
 /// `PanelDisplay::Secondary` falls back to the primary taskbar when the
-/// requested display does not exist (see `secondary_taskbars`).
-pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<TaskbarSlot> {
+/// requested display does not exist (see `secondary_taskbars`). `own` is
+/// the panel's current footprint along the bar's axis, left out of the
+/// band scan so the panel does not count itself as an icon.
+pub fn taskbar_slot(
+    target: crate::config::schema::PanelDisplay,
+    own: Option<(i32, i32)>,
+) -> Option<TaskbarSlot> {
+    use crate::platform::taskbar_geom::{bar_visible, edge_of, estimated_tray_start};
     use windows::core::w;
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
@@ -46,55 +58,226 @@ pub fn taskbar_slot(target: crate::config::schema::PanelDisplay) -> Option<Taskb
         // against. Re-point it here rather than waiting for the user to switch
         // displays: this is the only code path that runs regularly.
         rearm_if_stale(taskbar);
-        let mut bar = RECT::default();
-        if GetWindowRect(taskbar, &mut bar).is_err() {
+        let mut r = RECT::default();
+        if GetWindowRect(taskbar, &mut r).is_err() {
             return None;
         }
-        // Auto-hide detection: when slid away, only a sliver of the bar
-        // remains on the monitor (bottom taskbar assumed — the Win11 default
-        // and the only position Win11 supports).
+        let bar: Rect = (r.left, r.top, r.right, r.bottom);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
         let monitor = MonitorFromWindow(taskbar, MONITOR_DEFAULTTONEAREST);
-        let visible = if GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            (mi.rcMonitor.bottom - bar.top) > (bar.bottom - bar.top) / 2
+        let mon: Rect = if GetMonitorInfoW(monitor, &mut mi).as_bool() {
+            let m = mi.rcMonitor;
+            (m.left, m.top, m.right, m.bottom)
         } else {
-            true
+            // No monitor to judge against: take the bar as lying at the foot
+            // of a screen of its own width.
+            (bar.0, bar.3 - 1440, bar.2, bar.3)
         };
-        let (tray_left, tray_found) =
-            match FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), None) {
-                Ok(tray) => {
-                    let mut r = RECT::default();
-                    if GetWindowRect(tray, &mut r).is_ok() {
-                        (r.left, true)
-                    } else {
-                        (
-                            crate::platform::taskbar_geom::estimated_tray_left(
-                                bar.right,
-                                bar.bottom - bar.top,
-                            ),
-                            false,
-                        )
-                    }
-                }
-                Err(_) => (
-                    crate::platform::taskbar_geom::estimated_tray_left(
-                        bar.right,
-                        bar.bottom - bar.top,
-                    ),
-                    false,
-                ),
-            };
+        let edge = edge_of(bar, mon);
+        let visible = bar_visible(edge, bar, mon);
+        let tray = FindWindowExW(Some(taskbar), None, w!("TrayNotifyWnd"), None)
+            .ok()
+            .filter(|h| !h.0.is_null())
+            .and_then(|tray| {
+                let mut t = RECT::default();
+                GetWindowRect(tray, &mut t)
+                    .is_ok()
+                    .then_some(if edge.vertical() { t.top } else { t.left })
+            });
+        // With no tray window the scan of the bar's pixels places the tray
+        // too (the busy cluster at the far end); the DIP reserve is the last
+        // resort, for a hidden bar or an unreadable screen.
+        let scan = if visible {
+            scan_bar(edge, bar, tray, own)
+        } else {
+            BandScan::default()
+        };
+        let (tray_start, tray_found) = match tray.or(scan.tray_start) {
+            Some(start) => (start, tray.is_some()),
+            None => (estimated_tray_start(edge, bar), false),
+        };
+        let band_end = scan.band_end;
         Some(TaskbarSlot {
-            tray_left,
-            top: bar.top,
-            height: bar.bottom - bar.top,
+            edge,
+            bar,
+            tray_start,
             visible,
             tray_found,
+            band_end,
         })
     }
+}
+
+/// What a scan of the bar's pixels found: where the notification area
+/// starts (only asked for when the bar has no tray window) and where the
+/// row of app buttons ends, both along the bar's axis.
+#[derive(Clone, Copy, Default)]
+struct BandScan {
+    tray_start: Option<i32>,
+    band_end: Option<i32>,
+}
+
+/// Read the bar off the screen: its strip is copied out of the desktop DC,
+/// every column along the axis is scored by how far its farthest pixel
+/// strays from the strip's median colour (icons high, the acrylic low), and
+/// `taskbar_geom` turns the scores into the tray's start — when
+/// `tray_window` is None — and the buttons' end. The shell exposes nothing
+/// better: the XAML buttons of a secondary bar are not in UI Automation at
+/// all, and the classic child windows span the whole bar.
+///
+/// Cost: one BitBlt of a 48-pixel strip and a pass over it, well under a
+/// millisecond; the result is kept for a second so a slide's burst of move
+/// events reads it once.
+fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i32)>) -> BandScan {
+    use crate::platform::taskbar_geom::{
+        band_end_from_scores, bar_scale, thickness, tray_start_from_scores,
+    };
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    use windows::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+        SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+    };
+
+    /// Below this a column is the bar's own acrylic; icons score in the
+    /// hundreds. Measured on dark and light bars over a moving wallpaper.
+    const THRESHOLD: u32 = 28;
+    /// The last answer: what it was read for (the bar, the tray window, the
+    /// span left out - a scan without the panel's footprint left out is a
+    /// different answer, not a fresher one), when, and the result.
+    struct Last {
+        bar: Rect,
+        tray_window: Option<i32>,
+        own: Option<(i32, i32)>,
+        at: Instant,
+        scan: BandScan,
+    }
+    static CACHE: Mutex<Option<Last>> = Mutex::new(None);
+    if let Ok(c) = CACHE.lock() {
+        if let Some(l) = c.as_ref() {
+            if l.bar == bar
+                && l.tray_window == tray_window
+                && l.own == own
+                && l.at.elapsed() < Duration::from_secs(1)
+            {
+                return l.scan;
+            }
+        }
+    }
+    let (w, h) = (bar.2 - bar.0, bar.3 - bar.1);
+    if w <= 0 || h <= 0 || w * h > 4_000_000 {
+        return BandScan::default();
+    }
+    let mut px: Vec<u32> = Vec::new();
+    unsafe {
+        let screen = GetDC(None);
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
+        if let Ok(dib) = CreateDIBSection(Some(screen), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            let old = SelectObject(mem, HGDIOBJ(dib.0));
+            if BitBlt(mem, 0, 0, w, h, Some(screen), bar.0, bar.1, SRCCOPY).is_ok()
+                && !bits.is_null()
+            {
+                px = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize).to_vec();
+            }
+            SelectObject(mem, old);
+            let _ = DeleteObject(HGDIOBJ(dib.0));
+        }
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+    }
+    let scan = if px.is_empty() {
+        BandScan::default()
+    } else {
+        // One score per column along the axis, over the inner rows (the bar's
+        // edge rows carry its own border): the farthest pixel from the median.
+        let (len, thick) = if edge.vertical() { (h, w) } else { (w, h) };
+        let at = |i: i32, j: i32| -> [i32; 3] {
+            let p = if edge.vertical() {
+                px[(i * w + j) as usize]
+            } else {
+                px[(j * w + i) as usize]
+            };
+            [
+                ((p >> 16) & 255) as i32,
+                ((p >> 8) & 255) as i32,
+                (p & 255) as i32,
+            ]
+        };
+        let inner = 6.min(thick / 4);
+        let mut chan: [Vec<i32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        for i in (0..len).step_by(4) {
+            for j in inner..thick - inner {
+                let c = at(i, j);
+                for k in 0..3 {
+                    chan[k].push(c[k]);
+                }
+            }
+        }
+        let median = |v: &mut Vec<i32>| -> i32 {
+            if v.is_empty() {
+                return 0;
+            }
+            let m = v.len() / 2;
+            *v.select_nth_unstable(m).1
+        };
+        let bg = [
+            median(&mut chan[0]),
+            median(&mut chan[1]),
+            median(&mut chan[2]),
+        ];
+        let scores: Vec<u32> = (0..len)
+            .map(|i| {
+                (inner..thick - inner)
+                    .map(|j| {
+                        let c = at(i, j);
+                        ((c[0] - bg[0]).abs() + (c[1] - bg[1]).abs() + (c[2] - bg[2]).abs()) as u32
+                    })
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let origin = if edge.vertical() { bar.1 } else { bar.0 };
+        // A quiet stretch this long separates the buttons from the tray
+        // cluster; the gaps inside the cluster are a third of it.
+        let gap = (20.0 * bar_scale(thickness(edge, bar))).round() as usize;
+        let tray_start = match tray_window {
+            Some(_) => None,
+            None => tray_start_from_scores(&scores, origin, own, gap, THRESHOLD),
+        };
+        let band_end = tray_window
+            .or(tray_start)
+            .and_then(|t| band_end_from_scores(&scores, origin, t, own, THRESHOLD));
+        BandScan {
+            tray_start,
+            band_end,
+        }
+    };
+    if let Ok(mut c) = CACHE.lock() {
+        *c = Some(Last {
+            bar,
+            tray_window,
+            own,
+            at: Instant::now(),
+            scan,
+        });
+    }
+    scan
 }
 
 /// Every `Shell_SecondaryTrayWnd`, ordered left to right by monitor.
@@ -161,13 +344,14 @@ pub fn present_layered(
     use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-        SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-        BLENDFUNCTION, DIB_RGB_COLORS, HGDIOBJ,
+        SelectObject, SetWindowRgn, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HGDIOBJ,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, UpdateLayeredWindow, GWL_EXSTYLE,
-        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA,
-        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        GWL_STYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA,
+        WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU,
+        WS_THICKFRAME,
     };
     if w <= 0 || h <= 0 || bgra.len() < (w * h * 4) as usize {
         return Err(0);
@@ -183,6 +367,19 @@ pub fn present_layered(
                 | WS_EX_NOACTIVATE.0 as isize
                 | WS_EX_TOOLWINDOW.0 as isize,
         );
+        // A plain popup, no caption. The window library leaves WS_CAPTION on
+        // an undecorated window, and Windows 11 rounds a captioned window's
+        // corners with a WINDOW REGION sized at its last framed resize: a
+        // layered update that makes the window taller (the stacked panel on a
+        // side bar, 48x64 after 119x48) left everything past the old region
+        // unpainted and unhittable. The region is dropped as well, in case one
+        // was set before the style changed.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let caption = (WS_CAPTION.0 | WS_THICKFRAME.0 | WS_SYSMENU.0) as isize;
+        if style & caption != 0 {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !caption) | WS_POPUP.0 as isize);
+            let _ = SetWindowRgn(hwnd, None, false);
+        }
 
         let screen_dc = GetDC(None);
         let mem_dc = CreateCompatibleDC(Some(screen_dc));
@@ -467,10 +664,11 @@ pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> b
             return false;
         }
         // Same shell process, different screen: the panel is not obstructed.
-        let Some(slot) = taskbar_slot(target) else {
+        let Some(slot) = taskbar_slot(target, None) else {
             return true;
         };
-        let panel_monitor = monitor_at(slot.tray_left - 1, slot.top + slot.height / 2);
+        let panel_monitor =
+            monitor_at((slot.bar.0 + slot.bar.2) / 2, (slot.bar.1 + slot.bar.3) / 2);
         let scrim_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST).0 as isize;
         panel_monitor == scrim_monitor
     }
@@ -551,12 +749,12 @@ fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay
         // every presentation path (suppress_for_fullscreen) until an explicit
         // restore, hiding the panel indefinitely on a spurious query failure
         // rather than just skipping one obstruction check.
-        let Some(slot) = taskbar_slot(target) else {
+        let Some(slot) = taskbar_slot(target, None) else {
             return false;
         };
         let bar_monitor = windows::Win32::Graphics::Gdi::HMONITOR(monitor_at(
-            slot.tray_left - 1,
-            slot.top + slot.height / 2,
+            (slot.bar.0 + slot.bar.2) / 2,
+            (slot.bar.1 + slot.bar.3) / 2,
         ) as _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,

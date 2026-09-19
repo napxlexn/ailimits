@@ -6,6 +6,16 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Added
 
+- **The taskbar panel on a bar at any edge of the screen.** Windows 11 is
+  bringing the taskbar's position back (top, left, right); the panel used
+  to assume a bottom bar and refused a side one. It now reads the bar's
+  edge, hides with an auto-hide bar sliding off any side, sits before the
+  tray along the bar's axis, stacks the two providers on a side bar
+  (percent over bar, the bar's full width), and opens its tooltip away
+  from the bar. And it no longer sits on the app buttons: the stretch
+  between the last button and the tray is read off the bar's own pixels
+  (the shell offers nothing better for a secondary bar), and a bar with no
+  room for the panel gets the tray rings instead until room appears.
 - **The Microsoft Store listing** is linked from the site (hero, download
   row, structured data) and both READMEs (a badge that reads the Store's
   own version, the `winget --source msstore` line, the listing link). The

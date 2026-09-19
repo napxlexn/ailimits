@@ -249,7 +249,11 @@ readout stays visible. Right-click → **Indicator**:
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with
   every provider. If Start, Search or the auto-hide bar covers it, it hands
   over to the tray rings and comes back on its own. If a fullscreen app takes
-  the screen, it hides with the taskbar and returns when you alt-tab out.
+  the screen, it hides with the taskbar and returns when you alt-tab out. It
+  works on a taskbar at any edge of the screen: on a side bar the two
+  providers stack, percent over bar, above the tray. A bar with no free
+  stretch between its last app button and the tray gets no panel; the tray
+  rings stand in until room appears, so the panel never sits on the buttons.
 - **Off.** No indicator.
 
 If Windows shows the taskbar on more than one display, **Indicator → Display**

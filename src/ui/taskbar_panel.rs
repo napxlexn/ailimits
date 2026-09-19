@@ -20,6 +20,7 @@
 // SetWinEventHook (UserEvent::TaskbarMoved) — slides away with the bar.
 
 use crate::config::schema::IndicatorKind;
+use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
 use crate::ui::tray::{color, draw_digits_fit, fill_round_rect, provider_pct};
 use anyhow::{Context as AnyhowContext, Result};
@@ -32,6 +33,9 @@ const PAD_X: f32 = 8.0;
 const NUM_W: f32 = 34.0;
 const NUM_GAP: f32 = 7.0;
 const BAR_W: f32 = 62.0;
+/// The stacked layout's length along a side bar at 100% DPI: two rows of a
+/// clock-sized percent over a short bar, with the clock's own breathing room.
+const STACK_H: f32 = 64.0;
 /// Gap between the overlay and the notification area.
 const TRAY_MARGIN: i32 = 10;
 /// Initial (hidden) window size; reposition() sizes it to the real taskbar.
@@ -88,6 +92,80 @@ fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
     bgra
 }
 
+/// Paint the rows into the panel's pixmap: the layout lying down (rows of
+/// "percent + bar" across, digits sized from the height) or standing up
+/// (a stack of percent-over-bar, digits sized from the width), in the given
+/// ink over the transparent fill. Free of the window so a test can look.
+fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color, track: Color) {
+    let (fw, fh) = (pm.width() as f32, pm.height() as f32);
+    let label_of = |data: &ProviderData| match provider_pct(data) {
+        Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
+        None => "—".to_string(),
+    };
+    // A bar with a sliver kept visible at low usage, so it never looks absent.
+    let bar_fill =
+        |pm: &mut Pixmap, data: &ProviderData, bx: f32, by: f32, bar_w: f32, bar_h: f32| {
+            let rad = bar_h / 2.0;
+            fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
+            if let Some(p) = provider_pct(data) {
+                let frac = (p / 100.0).clamp(0.0, 1.0);
+                let fwid = (bar_w * frac).max(bar_h);
+                fill_round_rect(pm, bx, by, fwid, bar_h, rad, fg);
+            }
+        };
+    if vertical {
+        // Standing up: the digits are sized from the bar's WIDTH (the
+        // thickness, as the height is lying down), each provider a percent
+        // centred over its own short bar, the two stacked like the clock's
+        // lines with the same breathing room between them.
+        let n = top.len().max(1) as f32;
+        let digit_h = fw * 0.225;
+        let bar_h = digit_h * 0.50;
+        let under = digit_h * 0.35;
+        let row_h = digit_h + under + bar_h;
+        let row_gap = digit_h * 0.6;
+        let block_h = n * row_h + (n - 1.0) * row_gap;
+        let top0 = (fh - block_h) / 2.0;
+        let pad_x = fw * 0.10;
+        let inner = fw - 2.0 * pad_x;
+        for (i, data) in top.iter().enumerate() {
+            let ry = top0 + i as f32 * (row_h + row_gap);
+            draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, fg);
+            bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h);
+        }
+    } else {
+        // Digit ink height matched to the taskbar clock: the user tuned it
+        // to Segoe UI 13px (== 9px ink), which is 0.225 of this taskbar's
+        // height. draw_digits_fit fits the ink to digit_h, so digit_h IS
+        // the ink height and stays constant regardless of the row count.
+        // The tight centered block mirrors the clock's time-over-date stack.
+        let n = top.len().max(1) as f32;
+        let digit_h = fh * 0.225;
+        let row_gap = digit_h * 0.40;
+        let bar_h = digit_h * 0.50;
+        let block_h = n * digit_h + (n - 1.0) * row_gap;
+        let top0 = (fh - block_h) / 2.0;
+        let pad_x = fw * 0.06;
+        let num_w = fw * 0.30;
+        let num_gap = fw * 0.05;
+        let bx = pad_x + num_w + num_gap;
+        let bar_w = fw - bx - pad_x;
+        for (i, data) in top.iter().enumerate() {
+            let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
+            draw_digits_fit(
+                pm,
+                &label_of(data),
+                pad_x,
+                cy - digit_h / 2.0,
+                num_w,
+                digit_h,
+                fg,
+            );
+            bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h);
+        }
+    }
+}
+
 pub struct TaskbarPanel {
     window: Rc<Window>,
     pixmap: Pixmap,
@@ -123,6 +201,10 @@ pub struct TaskbarPanel {
     offset: (i32, i32),
     /// Which taskbar the panel attaches to.
     display: crate::config::schema::PanelDisplay,
+    /// The monitor edge of the bar the panel was last placed on: it decides
+    /// the layout (rows lying down, a stack standing up) and which side the
+    /// tooltip opens on.
+    edge: Edge,
 }
 
 /// The tooltip window is ours, created with CreateWindowExW; nothing else owns
@@ -186,6 +268,7 @@ impl TaskbarPanel {
             last_present_error: None,
             offset: (0, 0),
             display: crate::config::schema::PanelDisplay::Primary,
+            edge: Edge::Bottom,
         })
     }
 
@@ -268,11 +351,19 @@ impl TaskbarPanel {
             let pm = crate::ui::tray::render_tooltip(&text, self.size.1 as f32, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
             // The pixmap carries the drop shadow around the box, so the box's
-            // own bottom edge sits `shadow` above the pixmap's — add it back or
-            // the gap to the bar comes out short by that much.
+            // edge facing the bar sits `shadow` inside the pixmap's — add it
+            // back or the gap to the bar comes out short by that much. The
+            // tooltip opens away from the bar: above a bottom bar, below a top
+            // one, beside a side one, centred on the panel either way.
             let shadow = crate::ui::tray::tip_shadow_inset(self.size.1 as f32);
-            let tx = px + (pw as i32 - w) / 2;
-            let ty = py - crate::ui::tray::TIP_GAP - h + shadow;
+            let gap = crate::ui::tray::TIP_GAP;
+            let (pw, ph) = (pw as i32, _ph as i32);
+            let (tx, ty) = match self.edge {
+                Edge::Bottom => (px + (pw - w) / 2, py - gap - h + shadow),
+                Edge::Top => (px + (pw - w) / 2, py + ph + gap - shadow),
+                Edge::Left => (px + pw + gap - shadow, py + (ph - h) / 2),
+                Edge::Right => (px - gap - w + shadow, py + (ph - h) / 2),
+            };
             let bgra = pixmap_to_bgra(&pm);
             let _ = crate::platform::present_layered(self.tip_hwnd, &bgra, tx, ty, w, h);
             self.tip_shown = true;
@@ -398,15 +489,22 @@ impl TaskbarPanel {
         self.redraw(providers);
     }
 
-    /// The overlay size: a two-row width and a height fit to the taskbar,
-    /// both scaled by the taskbar's DPI so digits stay clock-sized.
-    fn desired_size(&self, slot_h: i32) -> (u32, u32) {
-        let scale = (slot_h as f32 / 48.0).clamp(1.0, 3.0);
-        // Full taskbar height: the two rows must hold clock-sized digits, so
-        // the panel needs the same vertical room the clock's two lines use.
-        let h = slot_h.max(1) as u32;
-        let w = ((PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale).round() as u32;
-        (w, h)
+    /// The overlay size, from the bar's thickness (its height lying down, its
+    /// width standing up), scaled so digits stay clock-sized. On a horizontal
+    /// bar: two "percent + bar" rows across, the bar's full height. On a side
+    /// bar: the bar's full width, and the two providers stacked, each a
+    /// percent over its own short bar — the way the clock stacks its lines.
+    fn desired_size(&self, edge: Edge, thickness: i32) -> (u32, u32) {
+        let scale = (thickness as f32 / 48.0).clamp(1.0, 3.0);
+        let thick = thickness.max(1) as u32;
+        if edge.vertical() {
+            (thick, (STACK_H * scale).round() as u32)
+        } else {
+            (
+                ((PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale).round() as u32,
+                thick,
+            )
+        }
     }
 
     fn hide(&mut self) {
@@ -423,13 +521,24 @@ impl TaskbarPanel {
         }
     }
 
-    /// Track the taskbar: hide with it (auto-hide), or float just left of the
-    /// notification area, vertically centered in the bar.
+    /// Track the taskbar: hide with it (auto-hide), or float just before the
+    /// notification area along the bar's axis, centred across its thickness,
+    /// on whichever monitor edge the bar sits.
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
+            use crate::platform::taskbar_geom::{panel_origin, room_for, thickness};
             let before = self.rect;
-            let Some(slot) = crate::platform::taskbar_slot(self.display) else {
+            // The panel's own footprint along the axis, so the scan for the
+            // row of app buttons does not take the panel for one of them.
+            let own = before.map(|(x, y, w, h)| {
+                if self.edge.vertical() {
+                    (y, y + h as i32)
+                } else {
+                    (x, x + w as i32)
+                }
+            });
+            let Some(slot) = crate::platform::taskbar_slot(self.display, own) else {
                 // No taskbar at all: the panel has nowhere to live, and the tray
                 // has nowhere either — but say so, so the indicator can degrade
                 // instead of silently showing nothing.
@@ -440,6 +549,7 @@ impl TaskbarPanel {
                 self.hide();
                 return;
             };
+            self.edge = slot.edge;
             if !slot.visible {
                 // The bar slid away (auto-hide). NOT unavailable: the tray icon
                 // sits in that same bar and is hidden with it, so substituting
@@ -447,33 +557,16 @@ impl TaskbarPanel {
                 // slide.
                 if before.is_some() {
                     tracing::debug!(
-                        "panel hidden: bar auto-hidden (top {}, height {})",
-                        slot.top,
-                        slot.height
+                        "panel hidden: bar auto-hidden ({:?} edge, bar {:?})",
+                        slot.edge,
+                        slot.bar
                     );
                 }
                 self.unavailable = false;
                 self.hide();
                 return;
             }
-            // The panel only supports a bottom taskbar. A left/right (vertical)
-            // taskbar reports a full-screen-tall slot; sizing the panel to it
-            // would draw a screen-height strip off the edge. Bail out (the tray
-            // indicator still works) rather than misrender. A 200%-DPI bottom
-            // bar is ~96px, so anything taller than this is not a bottom bar.
-            const MAX_BAR_HEIGHT: i32 = 200;
-            if slot.height > MAX_BAR_HEIGHT {
-                // A vertical taskbar: we refuse to draw on it. The tray icon
-                // still works there, so this IS a case for the substitute.
-                if before.is_some() {
-                    tracing::debug!("panel hidden: bar height {} looks vertical", slot.height);
-                }
-                self.unavailable = true;
-                self.hide();
-                return;
-            }
-            self.unavailable = false;
-            let (w, h) = self.desired_size(slot.height);
+            let (w, h) = self.desired_size(slot.edge, thickness(slot.edge, slot.bar));
             // An estimated tray edge is a guess at where the clock starts, so
             // keep a little more air than when the edge was measured.
             let margin = if slot.tray_found {
@@ -481,8 +574,32 @@ impl TaskbarPanel {
             } else {
                 TRAY_MARGIN * 2
             };
-            let x = slot.tray_left - w as i32 - margin;
-            let y = slot.top + (slot.height - h as i32) / 2;
+            // A bar with no room between its last app button and the tray gets
+            // no panel: drawn there it would sit on the buttons. The tray icon
+            // stands in, and the panel returns when room appears (a window
+            // closes, the bar grows) — the scan runs on every placement.
+            let along = if slot.edge.vertical() { h } else { w } as i32;
+            if !room_for(slot.band_end, slot.tray_start, along, margin) {
+                if before.is_some() || !self.unavailable {
+                    tracing::debug!(
+                        "panel hidden: no room on the bar ({:?} edge, buttons end at {:?}, tray at {})",
+                        slot.edge,
+                        slot.band_end,
+                        slot.tray_start
+                    );
+                }
+                self.unavailable = true;
+                self.hide();
+                return;
+            }
+            self.unavailable = false;
+            let (x, y) = panel_origin(
+                slot.edge,
+                slot.bar,
+                slot.tray_start,
+                (w as i32, h as i32),
+                margin,
+            );
             if self.size != (w, h) {
                 self.resize_pixmap(w, h);
                 self.last.clear();
@@ -493,13 +610,15 @@ impl TaskbarPanel {
             }
             let x = x + self.offset.0;
             let y = y + self.offset.1;
-            if before.map(|(bx, _, _, _)| bx) != Some(x) {
+            if before.map(|(bx, by, _, _)| (bx, by)) != Some((x, y)) {
                 tracing::debug!(
-                    "panel placed at {x},{y} (target {:?}, bar top {}, tray_left {}, measured {})",
+                    "panel placed at {x},{y} {w}x{h} (target {:?}, {:?} edge, bar {:?}, tray at {}, measured {}, buttons end at {:?})",
                     self.display,
-                    slot.top,
-                    slot.tray_left,
-                    slot.tray_found
+                    slot.edge,
+                    slot.bar,
+                    slot.tray_start,
+                    slot.tray_found,
+                    slot.band_end
                 );
             }
             self.rect = Some((x, y, w, h));
@@ -516,7 +635,6 @@ impl TaskbarPanel {
             return;
         };
         let (fg, track) = theme_ink(crate::platform::system_uses_light_theme());
-        let (fw, fh) = (w as f32, h as f32);
         let pm = &mut self.pixmap;
         // A per-pixel-alpha layered window passes mouse clicks THROUGH any
         // fully transparent (alpha 0) pixel to the window beneath — here the
@@ -527,41 +645,7 @@ impl TaskbarPanel {
         // visually transparent (≈0.4% — imperceptible over the bar).
         pm.fill(color(0, 0, 0, HIT_ALPHA));
 
-        let top = first_two(providers);
-        // Digit ink height matched to the taskbar clock: the user tuned it to
-        // Segoe UI 13px (== 9px ink), which is 0.225 of this taskbar's height.
-        // draw_digits_fit fits the ink to digit_h, so digit_h IS the ink
-        // height and stays constant regardless of the row count. The tight
-        // centered block mirrors the clock's time-over-date stack.
-        let n = top.len().max(1) as f32;
-        let digit_h = fh * 0.225;
-        let row_gap = digit_h * 0.40;
-        let bar_h = digit_h * 0.50;
-        let block_h = n * digit_h + (n - 1.0) * row_gap;
-        let top0 = (fh - block_h) / 2.0;
-        let pad_x = fw * 0.06;
-        let num_w = fw * 0.30;
-        let num_gap = fw * 0.05;
-        let bx = pad_x + num_w + num_gap;
-        let bar_w = fw - bx - pad_x;
-
-        for (i, data) in top.iter().enumerate() {
-            let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
-            let label = match provider_pct(data) {
-                Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
-                None => "—".to_string(),
-            };
-            draw_digits_fit(pm, &label, pad_x, cy - digit_h / 2.0, num_w, digit_h, fg);
-            let by = cy - bar_h / 2.0;
-            let rad = bar_h / 2.0;
-            fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
-            if let Some(p) = provider_pct(data) {
-                let frac = (p / 100.0).clamp(0.0, 1.0);
-                // Keep a sliver visible at low usage so the bar never looks absent.
-                let fwid = (bar_w * frac).max(bar_h);
-                fill_round_rect(pm, bx, by, fwid, bar_h, rad, fg);
-            }
-        }
+        paint_rows(pm, self.edge.vertical(), &first_two(providers), fg, track);
 
         // Premultiplied RGBA (tiny-skia) → premultiplied BGRA (top-down) for
         // UpdateLayeredWindow.
@@ -592,5 +676,74 @@ impl TaskbarPanel {
         {
             let _ = (&bgra, x, y);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderId, ProviderStatus};
+    use chrono::Utc;
+
+    fn data(id: ProviderId, pct: u64) -> ProviderData {
+        ProviderData {
+            id,
+            status: ProviderStatus::Ok,
+            metrics: vec![Metric {
+                label: "Session".into(),
+                used: pct,
+                limit: Some(100),
+                unit: MetricUnit::Percent,
+                reset_at: None,
+                window: MetricWindow::Session,
+            }],
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    /// Both layouts over the bar's dark grey, at the 100% bar size, to
+    /// %TEMP%: `cargo test preview_panel -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_panel() {
+        let rows = [data(ProviderId::Claude, 16), data(ProviderId::Codex, 0)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = theme_ink(false);
+        for (name, vertical, w, h) in [("rows", false, 119, 48), ("stack", true, 48, 64)] {
+            let mut pm = Pixmap::new(w, h).unwrap();
+            pm.fill(color(32, 32, 32, 255));
+            paint_rows(&mut pm, vertical, &top, fg, track);
+            let path = std::env::temp_dir().join(format!("ailimits_panel_{name}.png"));
+            std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+            println!("{}", path.display());
+        }
+    }
+
+    /// Every painted row must land inside the pixmap: with two providers the
+    /// stacked layout paints two bars, and the lower one is not lost off the
+    /// bottom edge.
+    #[test]
+    fn the_stacked_layout_paints_both_bars_inside_the_pixmap() {
+        let rows = [data(ProviderId::Claude, 16), data(ProviderId::Codex, 0)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = theme_ink(false);
+        let mut pm = Pixmap::new(48, 64).unwrap();
+        pm.fill(color(0, 0, 0, 255));
+        paint_rows(&mut pm, true, &top, fg, track);
+        // rows with ink, top to bottom; a bar is a run of lit rows after a
+        // gap below the digits
+        let lit: Vec<bool> = (0..64)
+            .map(|y| (0..48).any(|x| pm.pixel(x, y).map(|p| p.red() > 40).unwrap_or(false)))
+            .collect();
+        let runs = lit
+            .iter()
+            .enumerate()
+            .filter(|(i, &l)| l && (*i == 0 || !lit[i - 1]))
+            .count();
+        assert!(
+            runs >= 4,
+            "digits, bar, digits, bar: {runs} runs of ink in {lit:?}"
+        );
     }
 }
