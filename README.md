@@ -260,7 +260,7 @@ is persisted there. Format reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
 
 Set `AILIMITS_LOG=ailimits=debug` or `RUST_LOG=ailimits=debug` to write a
 diagnostic log to `%APPDATA%\AiLimits\ailimits.log` (stderr is invisible in a
-GUI app).
+GUI app). The file rotates at 5 MB: the previous one is kept as `ailimits.log.1`.
 
 ## Build from source
 

@@ -14,6 +14,15 @@ Notable, user-visible changes. Dates are release dates.
   window change nudged it - a laggy panel drawn over a hidden bar and vice
   versa. The hook is now re-scoped to the new process the moment the new
   taskbar is seen.
+- **A config file that cannot be read no longer ends the widget silently.**
+  A read error (permissions, a scanner's lock, bytes that are not UTF-8) was
+  the one config failure that propagated out of startup, and a GUI app has
+  no stderr to say so. It is now handled like an unparseable file: one retry
+  for a passing lock, then the file is set aside as `config.toml.corrupt`,
+  the reason is logged and the widget runs on defaults.
+- **The opt-in diagnostic log rotates at 5 MB** (`ailimits.log` ->
+  `ailimits.log.1`, one predecessor kept) instead of growing without bound
+  for as long as `AILIMITS_LOG` stays set.
 
 ## 0.6.4 - 2026-09-12
 

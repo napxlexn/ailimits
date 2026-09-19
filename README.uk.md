@@ -263,7 +263,8 @@ Display** вибирає, до якого таскбару кріпиться п
 
 Задай `AILIMITS_LOG=ailimits=debug` або `RUST_LOG=ailimits=debug`, і
 діагностичний лог писатиметься у `%APPDATA%\AiLimits\ailimits.log` (stderr у
-GUI-застосунку невидимий).
+GUI-застосунку невидимий). Файл ротується на 5 МБ: попередній зберігається як
+`ailimits.log.1`.
 
 ## Збірка з джерел
 
