@@ -1000,6 +1000,30 @@ pub fn toast_app_id() -> String {
     APP_USER_MODEL_ID.to_string()
 }
 
+/// Hand a URL to the default browser through the shell, the same path a
+/// double-clicked .url file takes; no console, no child to wait on.
+pub fn open_url(url: &str) {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let wide = |s: &str| -> Vec<u16> { s.encode_utf16().chain(std::iter::once(0)).collect() };
+    let (verb, target) = (wide("open"), wide(url));
+    let h = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR::from_raw(verb.as_ptr()),
+            PCWSTR::from_raw(target.as_ptr()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecute reports failure as a value at or below 32.
+    if (h.0 as isize) <= 32 {
+        tracing::warn!("could not open {url} (shell code {})", h.0 as isize);
+    }
+}
+
 /// Tell the notification platform who `APP_USER_MODEL_ID` is: the display
 /// name and the icon a toast shows come from
 /// `HKCU\Software\Classes\AppUserModelId\<id>`, the registration Windows

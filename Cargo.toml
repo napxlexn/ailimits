@@ -121,6 +121,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_Accessibility",
     # GetCurrentPackageFullName — is this copy running inside an MSIX package?
     "Win32_Storage_Packaging_Appx",
+    # ShellExecuteW — the version line opens the project page in the browser.
+    "Win32_UI_Shell",
 ] }
 
 [build-dependencies]

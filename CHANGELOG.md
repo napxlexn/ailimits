@@ -4,6 +4,13 @@ Notable, user-visible changes. Dates are release dates.
 
 ## Unreleased
 
+### Changed
+
+- **The version line in the menu opens the project.** "AI Limits v0.6.5 -
+  GitHub" at the foot of the context menu is a live item now: the arrow
+  marks it as leaving the app, and a click opens the GitHub page in the
+  default browser. It used to be a greyed-out label.
+
 ### Fixed
 
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer

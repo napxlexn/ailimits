@@ -55,6 +55,18 @@ pub fn register_toast_identity() {
     }
 }
 
+/// Hand a URL to the default browser. Logged only off Windows.
+pub fn open_url(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        win::open_url(url)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        tracing::info!("open: {url}");
+    }
+}
+
 /// Pin this exe's tray icons to the visible taskbar corner (Windows 11
 /// hides new ones in the overflow). Returns how many icons were promoted.
 pub fn promote_tray_icons() -> u32 {

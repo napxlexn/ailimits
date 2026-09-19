@@ -1437,6 +1437,9 @@ pub fn run() -> Result<()> {
 
                 UserEvent::Menu(id) => match menu.action_for(&id) {
                     Some(MenuAction::Quit) => *control_flow = ControlFlow::Exit,
+                    Some(MenuAction::OpenProjectPage) => {
+                        crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);
+                    }
                     Some(MenuAction::TogglePin) => {
                         win_state.pinned = !win_state.pinned;
                         window.set_always_on_top(win_state.pinned);

@@ -64,8 +64,13 @@ pub enum MenuAction {
     PasteUsageToken(String),
     /// Remove the manual usage token.
     RemoveUsageToken(String),
+    /// Open the project's GitHub page in the browser.
+    OpenProjectPage,
     Quit,
 }
+
+/// The project page the version line opens.
+pub const PROJECT_URL: &str = "https://github.com/napxlexn/ailimits";
 
 /// The step closest to a value.
 fn closest_step(steps: &[u8], value: u8) -> u8 {
@@ -126,6 +131,8 @@ pub struct ContextMenu {
     paste_usage_items: Vec<(MenuItem, String)>,
     remove_usage_items: Vec<(MenuItem, String)>,
     quit_item: MenuItem,
+    /// The version line; opens the project page.
+    version_item: MenuItem,
 }
 
 impl ContextMenu {
@@ -400,6 +407,17 @@ impl ContextMenu {
         }
 
         let quit_item = MenuItem::new("Quit", true, None);
+        // The version line doubles as the way to the project: the trailing
+        // arrow is the one cue a native menu offers for "this leaves the app"
+        // (no underline, no colour - a Win32 menu paints neither).
+        let version_item = MenuItem::new(
+            format!(
+                "AI Limits v{} \u{2014} GitHub \u{2197}",
+                env!("CARGO_PKG_VERSION")
+            ),
+            true,
+            None,
+        );
 
         // Order: detail / layout / behavior / appearance / providers / actions.
         for (item, _) in &detail_items {
@@ -427,12 +445,7 @@ impl ContextMenu {
         menu.append(&providers_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
-        // Version — a disabled info line.
-        menu.append(&MenuItem::new(
-            format!("AI Limits v{}", env!("CARGO_PKG_VERSION")),
-            false,
-            None,
-        ))?;
+        menu.append(&version_item)?;
 
         Ok(Self {
             menu,
@@ -459,6 +472,7 @@ impl ContextMenu {
             paste_usage_items,
             remove_usage_items,
             quit_item,
+            version_item,
         })
     }
 
@@ -565,6 +579,8 @@ impl ContextMenu {
             Some(MenuAction::TogglePin)
         } else if *event_id == self.quit_item.id() {
             Some(MenuAction::Quit)
+        } else if *event_id == self.version_item.id() {
+            Some(MenuAction::OpenProjectPage)
         } else {
             None
         }
