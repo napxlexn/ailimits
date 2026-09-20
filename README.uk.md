@@ -17,8 +17,9 @@
 використання AI-провайдерів прямо на робочому столі: **Claude**,
 **OpenAI Codex**, **GitHub Copilot**, **Google Antigravity**.
 
-🇬🇧 [English version](README.md) ·
-[Сайт](https://napxlexn.github.io/ailimits/)
+<p align="center"><a href="README.md">English version / Англійська версія</a></p>
+
+<p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Сайт: napxlexn.github.io/ailimits" src="https://img.shields.io/badge/САЙТ-napxlexn.github.io%2Failimits-0078d4?style=for-the-badge"></a></p>
 
 Є в [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH) (підписаний і оновлюваний магазином) і в каталозі [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — якщо застосунок корисний, вподобання там допомагає іншим його знайти.
 

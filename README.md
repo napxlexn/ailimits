@@ -17,8 +17,9 @@ A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 **Google Antigravity**.
 
-🇺🇦 [Українська версія / Ukrainian version](README.uk.md) ·
-[Website](https://napxlexn.github.io/ailimits/)
+<p align="center"><a href="README.uk.md">Українська версія / Ukrainian version</a></p>
+
+<p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Website: napxlexn.github.io/ailimits" src="https://img.shields.io/badge/WEBSITE-napxlexn.github.io%2Failimits-0078d4?style=for-the-badge"></a></p>
 
 Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH), signed and updated by the Store, and listed on [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — if it helps you, a like there helps others find it.
 
