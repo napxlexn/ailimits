@@ -20,7 +20,11 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 🇺🇦 [Українська версія / Ukrainian version](README.uk.md) ·
 [Website](https://napxlexn.github.io/ailimits/)
 
-Listed on [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — if it helps you, a like there helps others find it.
+Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH), signed and updated by the Store, and listed on [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — if it helps you, a like there helps others find it.
+
+<p align="center">
+<a href="https://apps.microsoft.com/detail/9P2B0J1VWPWH"><img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="52"></a>
+</p>
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="The floating widget switching live between the Compact, Medium and Expanded detail levels, with horizontal progress bars">

@@ -20,7 +20,11 @@
 🇬🇧 [English version](README.md) ·
 [Сайт](https://napxlexn.github.io/ailimits/)
 
-Є в каталозі [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — якщо застосунок корисний, вподобання там допомагає іншим його знайти.
+Є в [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH) (підписаний і оновлюваний магазином) і в каталозі [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — якщо застосунок корисний, вподобання там допомагає іншим його знайти.
+
+<p align="center">
+<a href="https://apps.microsoft.com/detail/9P2B0J1VWPWH"><img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="52"></a>
+</p>
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="Floating-віджет наживо перемикається між рівнями деталізації Compact, Medium і Expanded з горизонтальними смужками">
