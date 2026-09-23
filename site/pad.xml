@@ -34,9 +34,9 @@
   </Company_Info>
   <Program_Info>
     <Program_Name>AI Limits</Program_Name>
-    <Program_Version>0.6.4</Program_Version>
+    <Program_Version>0.7.0</Program_Version>
     <Program_Release_Month>09</Program_Release_Month>
-    <Program_Release_Day>12</Program_Release_Day>
+    <Program_Release_Day>23</Program_Release_Day>
     <Program_Release_Year>2026</Program_Release_Year>
     <Program_Cost_Dollars>0</Program_Cost_Dollars>
     <Program_Cost_Other_Code></Program_Cost_Other_Code>
@@ -92,8 +92,8 @@ Three detail levels, several layouts, nine palettes; opacity, brightness and sat
       <Application_XML_File_URL>https://napxlexn.github.io/ailimits/pad.xml</Application_XML_File_URL>
     </Application_URLs>
     <Download_URLs>
-      <Primary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.6.4/AiLimits-Portable-0.6.4.zip</Primary_Download_URL>
-      <Secondary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.6.4/AiLimits-Setup-0.6.4.exe</Secondary_Download_URL>
+      <Primary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Portable-0.7.0.zip</Primary_Download_URL>
+      <Secondary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Setup-0.7.0.exe</Secondary_Download_URL>
       <Additional_Download_URL_1></Additional_Download_URL_1>
       <Additional_Download_URL_2></Additional_Download_URL_2>
     </Download_URLs>
