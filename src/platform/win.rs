@@ -101,7 +101,8 @@ pub fn taskbar_slot(
                 taskbar.0 as isize,
                 bar,
                 edge.vertical(),
-                read_screen && at_rest,
+                read_screen,
+                at_rest,
             )
         } else {
             BandScan::default()
@@ -148,20 +149,79 @@ struct BandScan {
     band_end: Option<i32>,
 }
 
+/// Which bar an answer belongs to: its axis, and the span along it. Not the
+/// whole rectangle - an auto-hidden bar has a different rectangle in every
+/// frame of its slide, and keying on that missed on every frame, which asked
+/// on every frame: 26 ms of cross-process call each, answered from the
+/// middle of an animation where the shell's elements are mid-flight. The
+/// span across the bar is what moves in a slide; the span ALONG it does not,
+/// and it changes the moment the bar is put on another edge - which is
+/// exactly when the old answer must be thrown away, because "where the tray
+/// starts" was an x on a bottom bar and is a y on a side one. Used as an x
+/// for a y, it put the panel 4000 px off the bottom of the screen.
+#[derive(Clone, Copy, PartialEq)]
+struct BarKey {
+    vertical: bool,
+    from: i32,
+    to: i32,
+}
+
+fn bar_key(bar: Rect, vertical: bool) -> BarKey {
+    let (from, to) = if vertical {
+        (bar.1, bar.3)
+    } else {
+        (bar.0, bar.2)
+    };
+    BarKey { vertical, from, to }
+}
+
 /// Ask UI Automation, or hand back the last answer for this bar. See
 /// `win_uia` for why the shell is asked rather than the screen read.
-fn scan_bar_for(taskbar: isize, bar: Rect, vertical: bool, read: bool) -> BandScan {
+///
+/// The handle is kept beside the key for the one case the key cannot tell
+/// apart: Explorer restarts, builds the same bar in the same place with a
+/// new handle, AND STOPS ANSWERING. Measured after a restart, from this
+/// process and from a separate one alike: the taskbar's UI Automation tree
+/// comes back empty (0 elements, not an error) and stays empty until the
+/// next restart. The last answer for a bar of that shape is the honest thing
+/// to keep using; the alternative is to forget where the buttons end and go
+/// back to sitting on them.
+fn scan_bar_for(taskbar: isize, bar: Rect, vertical: bool, read: bool, at_rest: bool) -> BandScan {
     use std::sync::Mutex;
-    static LAST: Mutex<Option<(Rect, BandScan)>> = Mutex::new(None);
-    let cached = LAST
+    use std::time::{Duration, Instant};
+    /// After a failure, how long before the shell is asked again. Without it
+    /// an Explorer that has stopped answering is asked on every re-check -
+    /// measured at a hundred failures in ten seconds, which is the lag.
+    const RETRY: Duration = Duration::from_secs(30);
+    static LAST: Mutex<Option<(isize, BarKey, BandScan)>> = Mutex::new(None);
+    static NEXT_TRY: Mutex<Option<Instant>> = Mutex::new(None);
+
+    let key = bar_key(bar, vertical);
+    let last = LAST.lock().ok().and_then(|c| *c);
+    // An answer is for THIS bar when the shape matches; it is fresh when the
+    // handle matches too.
+    let cached = last.filter(|(_, k, _)| *k == key).map(|(_, _, s)| s);
+    let same_bar = last.is_some_and(|(h, k, _)| h == taskbar && k == key);
+    let waiting = NEXT_TRY
         .lock()
         .ok()
-        .and_then(|c| *c)
-        .and_then(|(b, s)| (b == bar).then_some(s));
-    if !read {
+        .and_then(|t| *t)
+        .is_some_and(|t| Instant::now() < t);
+    // Asked for, or nothing known about a bar of this shape - one the panel
+    // has just been pointed at, one Explorer rebuilt, one the user moved to
+    // another edge. Never in flight: an answer taken mid-slide would be
+    // cached and believed for a minute.
+    if !at_rest || waiting || (!read && same_bar) {
         return cached.unwrap_or_default();
     }
     let Some(room) = crate::platform::win_uia::bar_room(taskbar, vertical) else {
+        tracing::debug!("the shell would not say what the bar is made of; asking again in 30s");
+        // The client goes with it: the likeliest reason is that Explorer is
+        // not the process it was talking to any more.
+        crate::platform::win_uia::forget_client();
+        if let Ok(mut t) = NEXT_TRY.lock() {
+            *t = Some(Instant::now() + RETRY);
+        }
         return cached.unwrap_or_default();
     };
     let scan = BandScan {
@@ -169,7 +229,10 @@ fn scan_bar_for(taskbar: isize, bar: Rect, vertical: bool, read: bool) -> BandSc
         band_end: room.band_end,
     };
     if let Ok(mut c) = LAST.lock() {
-        *c = Some((bar, scan));
+        *c = Some((taskbar, key, scan));
+    }
+    if let Ok(mut t) = NEXT_TRY.lock() {
+        *t = None;
     }
     scan
 }
@@ -599,6 +662,78 @@ pub fn foreground_scrim_active(
             return true;
         }
         r.left < pr && r.right > pl && r.top < pb && r.bottom > pt
+    }
+}
+
+/// How much processor time this process has used, kernel and user together.
+/// For measuring our own work when the machine is busy with someone else's.
+pub fn process_cpu_time() -> std::time::Duration {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let (mut create, mut exit, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    unsafe {
+        if GetProcessTimes(
+            GetCurrentProcess(),
+            &mut create,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+        .is_err()
+        {
+            return std::time::Duration::ZERO;
+        }
+    }
+    let ticks = |t: FILETIME| ((t.dwHighDateTime as u64) << 32) | t.dwLowDateTime as u64;
+    // FILETIME counts 100-nanosecond intervals.
+    std::time::Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
+
+/// Ask the loop to look again in `ms`. For the one caller that has to wait
+/// for something the shell will not announce - the bar being DRAWN on its
+/// new edge, which moves no window and fires no event. One wake at a time:
+/// the thread is cheap but a pile of them would not be.
+pub fn wake_in(ms: u64) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static PENDING: AtomicBool = AtomicBool::new(false);
+    if PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        PENDING.store(false, Ordering::SeqCst);
+        if let Some(proxy) = PROXY.get() {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(crate::app::UserEvent::TaskbarMoved);
+            }
+        }
+    });
+}
+
+/// Whether the taskbar itself is what the compositor shows at a point. Used
+/// before the panel appears somewhere new: the shell moves its bar's window
+/// to another edge long before it draws it there (measured at a taskbar
+/// position change: the rectangle moved in 41 ms, the bar was drawn 828 ms
+/// later), and a panel that arrives first hangs over the bare desktop.
+pub fn taskbar_drawn_at(x: i32, y: i32) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClassNameW, WindowFromPoint, GA_ROOT,
+    };
+    unsafe {
+        let hwnd = WindowFromPoint(POINT { x, y });
+        if hwnd.0.is_null() {
+            return false;
+        }
+        let mut cls = [0u16; 48];
+        let n = GetClassNameW(GetAncestor(hwnd, GA_ROOT), &mut cls);
+        let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+        cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd"
     }
 }
 

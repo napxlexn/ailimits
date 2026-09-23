@@ -78,6 +78,16 @@ exact kernel accounting, not sampling. Report:
 beside it as `perf-audit-published-2026-07-08.json`, read 0.024% of one core
 and 61 MB — the same window on the same machine, five releases earlier.
 
+**Re-measure before publishing 0.7.0.** The figures below were taken on an
+idle machine; the 0.7.0 work was measured on a working one, where the
+ambient foreground churn dwarfs the widget (the same build read 0.0000% and
+0.84% of a core twenty minutes apart). What IS comparable, measured in
+isolation: the panel's UI Automation query costs 7.5 ms of CPU and 26 ms of
+wall time (`cargo test uia_query_cost -- --ignored --nocapture`), the client
+it needs adds ~5 MB and 2-3 threads, and the query runs once a minute with
+the panel placed, at most once every 5 s while it stands down for want of
+room on the bar.
+
 | Metric | Measured |
 |---|---|
 | CPU (exact accounting) | 0.016 CPU-s per 327 s = **0.005% of one core** (0.0002% of the machine) |

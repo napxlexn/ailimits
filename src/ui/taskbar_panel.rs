@@ -201,6 +201,14 @@ pub struct TaskbarPanel {
     /// the layout (rows lying down, a stack standing up) and which side the
     /// tooltip opens on.
     edge: Edge,
+    /// When the bar was last put on another edge, while the panel waits for
+    /// it to actually be drawn there.
+    #[cfg(target_os = "windows")]
+    moved_at: Option<std::time::Instant>,
+    /// How many more times to come back and re-assert the panel after such a
+    /// move, while the shell finishes arranging the bar.
+    #[cfg(target_os = "windows")]
+    moved_settle: u8,
     /// When the shell was last asked where the bar's buttons end and its
     /// tray begins. Once a minute while the panel is placed, every two
     /// seconds while it is standing down - that is what it is waiting for.
@@ -265,6 +273,8 @@ impl TaskbarPanel {
             offset: (0, 0),
             display: crate::config::schema::PanelDisplay::Primary,
             edge: Edge::Bottom,
+            moved_at: None,
+            moved_settle: 0,
             room_read: None,
         })
     }
@@ -279,6 +289,8 @@ impl TaskbarPanel {
     /// Point the panel at a taskbar. The caller re-positions afterwards.
     pub fn set_display(&mut self, target: crate::config::schema::PanelDisplay) {
         self.display = target;
+        // Another bar, so what was asked about the old one says nothing.
+        self.room_read = None;
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -345,14 +357,20 @@ impl TaskbarPanel {
             };
             let text = crate::ui::tray::tooltip(providers);
             let light = crate::platform::system_uses_light_theme();
-            let pm = crate::ui::tray::render_tooltip(&text, self.size.1 as f32, light);
+            // The tooltip is sized from the BAR's thickness, which is the
+            // only DPI signal here - not from the panel's height, which is
+            // the thickness lying down and the stacked layout's 64px
+            // standing up. Taking the height made a side bar's tooltip a
+            // third too big, while the tray icon's was right.
+            let bar_thickness = self.bar_thickness() as f32;
+            let pm = crate::ui::tray::render_tooltip(&text, bar_thickness, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
             // The pixmap carries the drop shadow around the box, so the box's
             // edge facing the bar sits `shadow` inside the pixmap's — add it
             // back or the gap to the bar comes out short by that much. The
             // tooltip opens away from the bar: above a bottom bar, below a top
             // one, beside a side one, centred on the panel either way.
-            let shadow = crate::ui::tray::tip_shadow_inset(self.size.1 as f32);
+            let shadow = crate::ui::tray::tip_shadow_inset(bar_thickness);
             let gap = crate::ui::tray::TIP_GAP;
             let (pw, ph) = (pw as i32, _ph as i32);
             let (tx, ty) = match self.edge {
@@ -367,6 +385,18 @@ impl TaskbarPanel {
         }
         #[cfg(not(target_os = "windows"))]
         let _ = providers;
+    }
+
+    /// The bar's thickness, taken from the panel's own size: the panel spans
+    /// the bar across it, so that is its height lying down and its width
+    /// standing up.
+    #[cfg(target_os = "windows")]
+    fn bar_thickness(&self) -> u32 {
+        if self.edge.vertical() {
+            self.size.0
+        } else {
+            self.size.1
+        }
     }
 
     /// Hide the hover tooltip (cursor left the overlay, or the panel is hiding).
@@ -486,6 +516,7 @@ impl TaskbarPanel {
         self.suppressed = false;
         self.unavailable = false;
         self.last.clear();
+        self.room_read = None;
         if !Self::is_panel_mode(self.mode) {
             self.hide();
             return;
@@ -568,14 +599,15 @@ impl TaskbarPanel {
         {
             use crate::platform::taskbar_geom::{panel_origin, room_for, thickness};
             let before = self.rect;
-            // Asking the shell costs a cross-process call, so a placed panel
-            // asks once a minute. One that is NOT on screen asks far more
-            // often, because what it is waiting for is room appearing - but
-            // still not on every event: hidden means `before` is None on
-            // every re-check, and the bar's slides and every foreground
-            // change come through here.
+            // Asking the shell is the dearest thing this function does, so a
+            // placed panel asks once a minute. One that is standing down asks
+            // often enough to notice room appearing - but not on every event:
+            // hidden means `before` is None on every re-check, and every
+            // foreground change and every slide of the bar comes through
+            // here. Measured while standing down: 5s costs 0.03% of a core,
+            // 2s cost 0.07%, and asking on every event cost 0.26%.
             let every = if before.is_none() {
-                std::time::Duration::from_secs(2)
+                std::time::Duration::from_secs(5)
             } else {
                 std::time::Duration::from_secs(60)
             };
@@ -591,7 +623,12 @@ impl TaskbarPanel {
                 self.hide();
                 return;
             };
-            self.edge = slot.edge;
+            if self.edge != slot.edge {
+                // The bar has been moved to another edge. The shell moves its
+                // window there long before it draws it: see `moved_at`.
+                self.moved_at = Some(std::time::Instant::now());
+                self.edge = slot.edge;
+            }
             if !slot.visible {
                 // The bar slid away (auto-hide). NOT unavailable: the tray icon
                 // sits in that same bar and is hidden with it, so substituting
@@ -661,6 +698,36 @@ impl TaskbarPanel {
             }
             let x = x + self.offset.0;
             let y = y + self.offset.1;
+            // A taskbar put on another edge moves its window there at once
+            // and is drawn there much later - measured at a position change:
+            // the rectangle moved in 41 ms, the bar appeared 828 ms after
+            // that. A panel placed on the rectangle alone hangs over the bare
+            // desktop for most of a second. So it waits until the bar is what
+            // the screen shows where it is about to be, and gives up waiting
+            // after a second in case that test is ever wrong.
+            if let Some(since) = self.moved_at {
+                let centre = (x + w as i32 / 2, y + h as i32 / 2);
+                if !crate::platform::taskbar_drawn_at(centre.0, centre.1) {
+                    if since.elapsed() < std::time::Duration::from_secs(1) {
+                        // Being drawn moves no window and fires no event, so
+                        // the loop has to be asked to look again.
+                        crate::platform::wake_in(120);
+                        self.hide();
+                        return;
+                    }
+                    tracing::debug!("the bar never appeared on its new edge; placing anyway");
+                }
+                self.moved_at = None;
+                // The shell goes on arranging its bar for a while after it
+                // draws it, and lands it over the panel: measured at 343 ms
+                // of the bar owning the panel's own pixels. Each of these
+                // passes re-presents, which re-asserts the z-order.
+                self.moved_settle = 4;
+            }
+            if self.moved_settle > 0 {
+                self.moved_settle -= 1;
+                crate::platform::wake_in(150);
+            }
             if before.map(|(bx, by, _, _)| (bx, by)) != Some((x, y)) {
                 tracing::debug!(
                     "panel placed at {x},{y} {w}x{h} (target {:?}, {:?} edge, bar {:?}, tray at {}, measured {}, buttons end at {:?})",

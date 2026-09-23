@@ -14,8 +14,9 @@ pub use win::{
     bring_to_front, create_tooltip_window, describe_window, destroy_window, ensure_on_screen,
     foreground_scrim_active, fullscreen_foreground_active, fullscreen_hold_remaining, hide_window,
     install_taskbar_watch, mouse_hover_time_ms, place_below, point_owner, popup_menu_over,
-    present_layered, raise_panel_topmost, register_fullscreen_watch, secondary_taskbars,
-    taskbar_slot, watch_taskbar, window_is_popup_menu, TaskbarSlot,
+    present_layered, process_cpu_time, raise_panel_topmost, register_fullscreen_watch,
+    secondary_taskbars, taskbar_drawn_at, taskbar_slot, wake_in, watch_taskbar,
+    window_is_popup_menu, TaskbarSlot,
 };
 
 /// Whether this copy runs inside an MSIX package — the Microsoft Store

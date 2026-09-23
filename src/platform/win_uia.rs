@@ -25,8 +25,10 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationCondition, TreeScope_Descendants,
-    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
+    AutomationElementMode_None, CUIAutomation, IUIAutomation, IUIAutomation2,
+    IUIAutomationCacheRequest, IUIAutomationCondition, TreeScope_Descendants,
+    UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId, UIA_ClassNamePropertyId,
+    UIA_ControlTypePropertyId,
 };
 
 /// The automation client and the one question it asks, kept for the life of
@@ -37,6 +39,11 @@ use windows::Win32::UI::Accessibility::{
 struct Asker {
     automation: IUIAutomation,
     buttons: IUIAutomationCondition,
+    /// The two properties the answer needs, fetched WITH the elements.
+    /// Without this every element costs two more cross-process calls to read
+    /// its rectangle and its class - 42 elements became some ninety round
+    /// trips, and the widget's idle CPU went from 0.005% of a core to 0.26%.
+    cache: IUIAutomationCacheRequest,
 }
 
 impl Asker {
@@ -61,9 +68,16 @@ impl Asker {
                     &VARIANT::from(UIA_ButtonControlTypeId.0),
                 )
                 .ok()?;
+            let cache = automation.CreateCacheRequest().ok()?;
+            let _ = cache.AddProperty(UIA_BoundingRectanglePropertyId);
+            let _ = cache.AddProperty(UIA_ClassNamePropertyId);
+            // Nothing is asked of these elements afterwards, so no live
+            // references are needed - only what the cache carries.
+            let _ = cache.SetAutomationElementMode(AutomationElementMode_None);
             Some(Self {
                 automation,
                 buttons,
+                cache,
             })
         }
     }
@@ -71,6 +85,18 @@ impl Asker {
 
 thread_local! {
     static ASKER: std::cell::RefCell<Option<Asker>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Drop the client, so the next question builds a fresh one. Called when a
+/// query fails: Explorer restarting is the likeliest reason, and the client
+/// costs 47 ms to rebuild against a question that would otherwise keep
+/// failing.
+pub(crate) fn forget_client() {
+    ASKER.with(|a| {
+        if let Ok(mut a) = a.try_borrow_mut() {
+            *a = None;
+        }
+    });
 }
 
 /// What the bar is made of, along its axis: where the run of buttons ends,
@@ -91,7 +117,8 @@ pub(crate) fn bar_room(bar: isize, vertical: bool) -> Option<BarRoom> {
                 None => a.insert(Asker::new()?),
             };
             let root = asker.automation.ElementFromHandle(HWND(bar as _)).ok()?;
-            root.FindAll(TreeScope_Descendants, &asker.buttons).ok()
+            root.FindAllBuildCache(TreeScope_Descendants, &asker.buttons, &asker.cache)
+                .ok()
         })?;
 
         let mut band_end: Option<i32> = None;
@@ -100,7 +127,7 @@ pub(crate) fn bar_room(bar: isize, vertical: bool) -> Option<BarRoom> {
             let Ok(el) = found.GetElement(i) else {
                 continue;
             };
-            let Ok(r) = el.CurrentBoundingRectangle() else {
+            let Ok(r) = el.CachedBoundingRectangle() else {
                 continue;
             };
             // Elements that are not on the screen come back as an empty
@@ -114,7 +141,7 @@ pub(crate) fn bar_room(bar: isize, vertical: bool) -> Option<BarRoom> {
                 (r.left, r.right)
             };
             let tray = el
-                .CurrentClassName()
+                .CachedClassName()
                 .map(|c| c.to_string().starts_with("SystemTray."))
                 .unwrap_or(false);
             if tray {
@@ -127,5 +154,78 @@ pub(crate) fn bar_room(bar: isize, vertical: bool) -> Option<BarRoom> {
             band_end,
             tray_start,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A dead bar is what an Explorer restart leaves behind: the handle the
+    /// panel was following is gone, and the client may be talking to a
+    /// process that no longer exists. The query must fail rather than hang
+    /// or lie, and the next good one must still work - `forget_client` is
+    /// what stands between those two.
+    /// Run: `cargo test uia_survives_a_dead_bar -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn uia_survives_a_dead_bar() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+        let bar = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.unwrap();
+        assert!(
+            bar_room(bar.0 as isize, false).is_some(),
+            "the live bar should answer"
+        );
+        let at = std::time::Instant::now();
+        assert!(
+            bar_room(0xDEAD_BEEF, false).is_none(),
+            "a dead handle must not produce an answer"
+        );
+        println!("a dead bar failed in {:?}", at.elapsed());
+        forget_client();
+        assert!(
+            bar_room(bar.0 as isize, false).is_some(),
+            "the live bar should answer again after the client is dropped"
+        );
+    }
+
+    /// What one question costs, away from whatever else the machine is
+    /// doing: the load audit cannot tell our work from a browser's. Prints
+    /// the wall and CPU time of 50 queries against the primary taskbar.
+    /// Run: `cargo test uia_query_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn uia_query_cost() {
+        use windows::core::w;
+        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
+        let bar = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.unwrap();
+        let vertical = {
+            use windows::Win32::Foundation::RECT;
+            use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+            let mut r = RECT::default();
+            unsafe { GetWindowRect(bar, &mut r) }.unwrap();
+            (r.bottom - r.top) > (r.right - r.left)
+        };
+        // One warm-up: the first call builds the automation client.
+        let first = std::time::Instant::now();
+        let room = bar_room(bar.0 as isize, vertical);
+        println!("first call (builds the client): {:?}", first.elapsed());
+        assert!(room.is_some(), "the shell said nothing about its own bar");
+
+        let cpu_before = crate::platform::process_cpu_time();
+        let at = std::time::Instant::now();
+        for _ in 0..50 {
+            let _ = bar_room(bar.0 as isize, vertical);
+        }
+        let wall = at.elapsed();
+        let cpu = crate::platform::process_cpu_time() - cpu_before;
+        println!(
+            "50 queries: {:.1} ms wall ({:.2} ms each), {:.1} ms CPU ({:.2} ms each)",
+            wall.as_secs_f64() * 1000.0,
+            wall.as_secs_f64() * 1000.0 / 50.0,
+            cpu.as_secs_f64() * 1000.0,
+            cpu.as_secs_f64() * 1000.0 / 50.0
+        );
     }
 }

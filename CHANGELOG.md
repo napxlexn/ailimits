@@ -15,7 +15,10 @@ Notable, user-visible changes. Dates are release dates.
   from the bar. Where the buttons end and where the notification area
   starts are asked of the shell through UI Automation - on the primary bar
   and on a secondary one alike - so the panel lands in the gap between
-  them, and a bar with no room for it gets the tray icon instead.
+  them, and a bar with no room for it gets the tray icon instead. Moving
+  the bar to another edge is waited out rather than raced: the shell moves
+  its bar's window at once and draws it the better part of a second later,
+  and the panel holds back until the bar is really there.
 - **The Microsoft Store listing** is linked from the site (hero, download
   row, structured data) and both READMEs (a badge that reads the Store's
   own version, the `winget --source msstore` line, the listing link). The
@@ -32,7 +35,10 @@ Notable, user-visible changes. Dates are release dates.
   icon, the icon widened the tray, the stretch changed and the verdict
   flipped, twice a second - so it was withdrawn. It is the shell's own
   answer now (UI Automation), which our icon can only move one way: it
-  takes a little more room to come back than it took to leave.
+  takes a little more room to come back than it took to leave. It also
+  survives what the shell does to that answer: an Explorer restart leaves
+  the taskbar's automation tree empty until the next one, so the last
+  answer for a bar of that shape is kept and used.
 - **The panel and the tray icon are never on screen together.** The icon
   stands in for the panel; a user who sees both sees them swapping places.
   The panel goes first and the icon follows it down, the icon goes first

@@ -1294,6 +1294,42 @@ mod tests {
         }
     }
 
+    /// The tooltip is sized from the BAR's thickness, and from nothing else.
+    /// The panel's own height is not that thickness on a side bar - the
+    /// stacked layout stands 64px tall where the bar is 48 - and passing it
+    /// made the tooltip a third too big there while the tray icon's stayed
+    /// right. This pins what the difference was, so the wrong number cannot
+    /// come back unnoticed.
+    #[test]
+    fn the_tooltip_is_sized_by_the_bar_not_by_the_panel() {
+        let text = "Claude 68%  ·  Codex 100%";
+        let bar = render_tooltip(text, 48.0, false);
+        let panel_height_on_a_side_bar = render_tooltip(text, 64.0, false);
+        assert!(
+            panel_height_on_a_side_bar.height() as f32 / bar.height() as f32 > 1.25,
+            "the 64px reading should be visibly bigger: {} vs {}",
+            panel_height_on_a_side_bar.height(),
+            bar.height()
+        );
+        // And every bar of the same thickness gives the same tooltip,
+        // whichever edge it is on.
+        assert_eq!(
+            (bar.width(), bar.height()),
+            {
+                let again = render_tooltip(text, 48.0, false);
+                (again.width(), again.height())
+            },
+            "the same bar must give the same tooltip"
+        );
+        println!(
+            "48px bar: {}x{};  panel height on a side bar (64): {}x{}",
+            bar.width(),
+            bar.height(),
+            panel_height_on_a_side_bar.width(),
+            panel_height_on_a_side_bar.height()
+        );
+    }
+
     /// Both themes side by side over the backdrops each actually sits on, for
     /// the eye to confirm what the contrast test measures.
     /// Run: `cargo test preview_tooltip_themes -- --ignored`.
