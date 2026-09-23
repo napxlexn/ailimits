@@ -23,6 +23,6 @@ Installers:
     InstallerUrl: https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Setup-0.7.0.exe
     # From the v0.7.0 release asset's published digest, cross-checked against
     # the release build's "Installer SHA256" step.
-    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+    InstallerSha256: A4C2B8D07682C7F62D9B25A87CE51D3C4A7E400C86A662404769CD4C3BB41410
 ManifestType: installer
 ManifestVersion: 1.12.0
