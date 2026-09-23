@@ -25,9 +25,53 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Variant::VARIANT;
 use windows::Win32::UI::Accessibility::{
-    CUIAutomation, IUIAutomation, IUIAutomation2, TreeScope_Descendants, UIA_ButtonControlTypeId,
-    UIA_ControlTypePropertyId,
+    CUIAutomation, IUIAutomation, IUIAutomation2, IUIAutomationCondition, TreeScope_Descendants,
+    UIA_ButtonControlTypeId, UIA_ControlTypePropertyId,
 };
+
+/// The automation client and the one question it asks, kept for the life of
+/// the thread. Both are apartment-bound, which is why they live in a
+/// thread-local rather than a static: making them per call cost more than
+/// the query itself (0.16% of a core against a 0.005% budget, and four
+/// extra threads, when the panel was standing down and asking often).
+struct Asker {
+    automation: IUIAutomation,
+    buttons: IUIAutomationCondition,
+}
+
+impl Asker {
+    fn new() -> Option<Self> {
+        unsafe {
+            // An "already initialised" answer is not an error: the event
+            // loop's thread is an apartment before this runs (the tray and
+            // menu libraries see to that).
+            let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let automation: IUIAutomation =
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
+            // Cross-process calls with the shell on the other end: bounded,
+            // so a busy Explorer cannot hold the widget's loop. The default
+            // is two seconds, which is a freeze the user would see.
+            if let Ok(timed) = automation.cast::<IUIAutomation2>() {
+                let _ = timed.SetConnectionTimeout(500);
+                let _ = timed.SetTransactionTimeout(500);
+            }
+            let buttons = automation
+                .CreatePropertyCondition(
+                    UIA_ControlTypePropertyId,
+                    &VARIANT::from(UIA_ButtonControlTypeId.0),
+                )
+                .ok()?;
+            Some(Self {
+                automation,
+                buttons,
+            })
+        }
+    }
+}
+
+thread_local! {
+    static ASKER: std::cell::RefCell<Option<Asker>> = const { std::cell::RefCell::new(None) };
+}
 
 /// What the bar is made of, along its axis: where the run of buttons ends,
 /// and where the notification area starts. Both in screen pixels.
@@ -40,27 +84,15 @@ pub(crate) struct BarRoom {
 /// answer, which leaves the caller on its estimates.
 pub(crate) fn bar_room(bar: isize, vertical: bool) -> Option<BarRoom> {
     unsafe {
-        // The event loop's thread is already an apartment (the tray and menu
-        // libraries see to that); this is for any other caller, and an
-        // "already initialised" answer is not an error.
-        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-        let automation: IUIAutomation =
-            CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).ok()?;
-        // Cross-process calls with the shell on the other end: bounded, so a
-        // busy Explorer cannot hold the widget's loop. The default is two
-        // seconds, which is a freeze the user would see.
-        if let Ok(timed) = automation.cast::<IUIAutomation2>() {
-            let _ = timed.SetConnectionTimeout(500);
-            let _ = timed.SetTransactionTimeout(500);
-        }
-        let root = automation.ElementFromHandle(HWND(bar as _)).ok()?;
-        let buttons = automation
-            .CreatePropertyCondition(
-                UIA_ControlTypePropertyId,
-                &VARIANT::from(UIA_ButtonControlTypeId.0),
-            )
-            .ok()?;
-        let found = root.FindAll(TreeScope_Descendants, &buttons).ok()?;
+        let found = ASKER.with(|a| {
+            let mut a = a.borrow_mut();
+            let asker = match a.as_ref() {
+                Some(asker) => asker,
+                None => a.insert(Asker::new()?),
+            };
+            let root = asker.automation.ElementFromHandle(HWND(bar as _)).ok()?;
+            root.FindAll(TreeScope_Descendants, &asker.buttons).ok()
+        })?;
 
         let mut band_end: Option<i32> = None;
         let mut tray_start: Option<i32> = None;

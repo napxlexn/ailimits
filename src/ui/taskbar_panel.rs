@@ -1,23 +1,19 @@
 // ui/taskbar_panel.rs — the mini indicator painted OVER the taskbar.
 //
-// NOT a window with a background: a per-pixel-alpha layered overlay whose
-// transparent pixels let the taskbar show through, so only the painted digits
-// and bars are visible — exactly like a native tray glyph, with no pasted
-// rectangle. (TrafficMonitor takes the other route — a real SetParent child of
-// Shell_TrayWnd, guarded by a fallback flag for when the insert fails. We stay
-// a free-floating overlay: no dependency on the shell accepting a foreign
-// child window, and nothing to unwind when it does not.)
-// Content is presented with UpdateLayeredWindow, not softbuffer.
+// NOT a window with a background: a per-pixel-alpha layered overlay presented
+// with UpdateLayeredWindow, so only the painted digits and bars are visible —
+// like a native tray glyph, with no pasted rectangle. A free-floating overlay
+// rather than a SetParent child of Shell_TrayWnd: nothing depends on the shell
+// accepting a foreign child window.
 //
-// Design goal: look like a continuation of the taskbar. So it is MONOCHROME
-// and follows the SYSTEM theme — near-black ink on a light taskbar, near-white
-// on a dark one (read from the registry, repainted on WindowEvent::ThemeChanged)
-// — and the digits are rendered at the system-clock size, not blown up. Usage
-// is the bar's fill, never a hue. Layout (config `general.indicator`, both
-// PanelRows and PanelGrid map here): two clock-sized rows for the first two
-// providers in the WIDGET's order (not the busiest); each is "percent +
-// progress bar". The remaining providers stay in the tooltip. Auto-hide is tracked event-driven via
-// SetWinEventHook (UserEvent::TaskbarMoved) — slides away with the bar.
+// Design goal: look like a continuation of the taskbar. MONOCHROME, following
+// the SYSTEM theme (near-black ink on a light bar, near-white on a dark one,
+// read from the registry and repainted on WindowEvent::ThemeChanged), digits at
+// the system-clock size, usage as the bar's fill and never a hue. Layout
+// (`general.indicator`; PanelRows and PanelGrid both map here): two rows for
+// the first two providers in the WIDGET's order, each "percent + progress
+// bar"; the rest stay in the tooltip. Auto-hide is tracked event-driven via
+// SetWinEventHook (UserEvent::TaskbarMoved) — it slides away with the bar.
 
 use crate::config::schema::IndicatorKind;
 use crate::platform::taskbar_geom::Edge;
@@ -205,23 +201,18 @@ pub struct TaskbarPanel {
     /// the layout (rows lying down, a stack standing up) and which side the
     /// tooltip opens on.
     edge: Edge,
-    /// When the bar was last read off the screen. The read places the panel
-    /// on a bar whose notification area cannot be asked for its position; it
-    /// happens when the panel comes onto a bar and then once a minute, never
-    /// on the re-checks that follow every foreground change.
+    /// When the shell was last asked where the bar's buttons end and its
+    /// tray begins. Once a minute while the panel is placed, every two
+    /// seconds while it is standing down - that is what it is waiting for.
     room_read: Option<std::time::Instant>,
 }
 
-/// The tooltip window is ours, created with CreateWindowExW; nothing else owns
-/// it. Harmless to leak while exactly one panel lives for the whole process,
-/// but `restart()` already exists as the "rebuild the panel" path, and the day
-/// that becomes "make a new TaskbarPanel" the old window would outlive it.
+/// The tooltip window is ours and nothing else owns it, so it is destroyed
+/// here for the day a second `TaskbarPanel` is ever made.
 ///
-/// **This does not run on a normal exit.** `tao::EventLoop::run` is `-> !` and
-/// terminates the process from inside, so the closure holding the panel is
-/// never dropped. The window is reclaimed by the OS instead. This impl exists
-/// for the case above — a panel dropped while the process keeps running — and
-/// is deliberately a no-op today rather than a fix for a live leak.
+/// It does NOT run on a normal exit: `tao::EventLoop::run` is `-> !` and ends
+/// the process from inside, so the closure holding the panel is never dropped
+/// and the OS reclaims the window. No live leak is being fixed here.
 impl Drop for TaskbarPanel {
     fn drop(&mut self) {
         #[cfg(target_os = "windows")]
@@ -485,15 +476,12 @@ impl TaskbarPanel {
 
     /// Restart the panel: forget every cached judgement and place it again.
     ///
-    /// **Why switching displays was not enough.** `set_display` changed the
-    /// target but left `suppressed` alone, and `on_taskbar_moved` returns early
-    /// while suppressed — so a panel parked by a fullscreen app could not be
-    /// revived by moving it, toggling it, or anything else short of restarting
-    /// the whole application. That is what the user hit.
-    ///
-    /// Clearing `last` matters too: it is the "what did I draw" cache, and a
-    /// stale entry means the redraw is skipped as a no-op precisely when the
-    /// panel needs re-presenting.
+    /// Every field here has stranded the panel before. `suppressed` survived
+    /// `set_display` and `on_taskbar_moved` returns early while it is set, so
+    /// a panel parked by a fullscreen app could not be revived by moving it
+    /// or toggling it - only by restarting the app. `last` is the "what did I
+    /// draw" cache, and a stale entry skips the redraw as a no-op precisely
+    /// when the panel needs re-presenting.
     pub fn restart(&mut self, providers: &[ProviderData]) {
         self.suppressed = false;
         self.unavailable = false;
@@ -580,10 +568,18 @@ impl TaskbarPanel {
         {
             use crate::platform::taskbar_geom::{panel_origin, room_for, thickness};
             let before = self.rect;
-            let read_screen = before.is_none()
-                || self
-                    .room_read
-                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+            // Asking the shell costs a cross-process call, so a placed panel
+            // asks once a minute. One that is NOT on screen asks far more
+            // often, because what it is waiting for is room appearing - but
+            // still not on every event: hidden means `before` is None on
+            // every re-check, and the bar's slides and every foreground
+            // change come through here.
+            let every = if before.is_none() {
+                std::time::Duration::from_secs(2)
+            } else {
+                std::time::Duration::from_secs(60)
+            };
+            let read_screen = self.room_read.is_none_or(|t| t.elapsed() >= every);
             let Some(slot) = crate::platform::taskbar_slot(self.display, read_screen) else {
                 // No taskbar at all: the panel has nowhere to live, and the tray
                 // has nowhere either — but say so, so the indicator can degrade
@@ -620,10 +616,6 @@ impl TaskbarPanel {
             } else {
                 TRAY_MARGIN * 2
             };
-            // A bar with no room between its last app button and the tray gets
-            // no panel: drawn there it would sit on the buttons. The tray icon
-            // stands in, and the panel returns when room appears (a window
-            // closes, the bar grows) — the scan runs on every placement.
             if read_screen && slot.tray_start != 0 {
                 self.room_read = Some(std::time::Instant::now());
             }

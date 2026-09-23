@@ -270,14 +270,11 @@ fn running_from_managed_install() -> bool {
 /// actually exists on disk, else the exe that is currently running.
 ///
 /// `installed_exe_path()` is only correct for the default install location;
-/// for a custom install directory it names a path nothing ever wrote to, and
+/// for a custom directory it names a path nothing ever wrote to, and
 /// relaunching a path that does not exist silently loses the app — the
 /// update installs fine but AI Limits never reappears. Falling back to the
 /// running exe still fixes the reinstall-forever loop from the second update
-/// onward, because once the installer has written to the standard directory
-/// that path exists. Split out as a pure function so this fallback is
-/// testable without touching `dirs::data_local_dir()` or the real installer
-/// directory.
+/// onward, because by then the standard path exists.
 fn relaunch_target(standard: Option<PathBuf>, current: Option<PathBuf>) -> Option<PathBuf> {
     standard.filter(|p| p.exists()).or(current)
 }

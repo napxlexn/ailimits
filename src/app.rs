@@ -93,22 +93,15 @@ pub enum TrayKind {
     LeftClick,
 }
 
-/// Re-evaluate the Panel indicator's tray fallback: show a tray icon while the
-/// overlay cannot be seen — the Start/Search scrim occludes it (a protected
-/// z-band), the cursor-peek "rude topmost" taskbar covers it (a floating
-/// overlay cannot beat either), OR a fullscreen app owns the screen (the bar
-/// sits under it without moving, so geometry checks are blind; the topmost
-/// overlay would float over the game). Fullscreen also hides the panel window
-/// itself, and the next evaluation after the app is gone (alt-tab back — a
-/// foreground event) re-presents it, exactly like the taskbar reappears. When
-/// a non-fullscreen fallback clears, a redraw re-presents the still-positioned
-/// panel. No-op outside the Panel modes (every panel method guards on the mode).
+/// Re-evaluate the Panel indicator's tray fallback: a tray icon stands in
+/// while the overlay cannot be seen — under the Start/Search scrim, under the
+/// cursor-peek "rude topmost" taskbar, under a fullscreen app, or with no room
+/// on the bar at all. Each of the four is judged below, in its own comment.
+/// No-op outside the Panel modes (every panel method guards on the mode).
 ///
-/// `target` is the display the panel is currently attached to: the scrim and
-/// fullscreen signals are queried against that display specifically (a scrim
-/// or a fullscreen app on some OTHER display must not blank a panel that is
-/// plainly visible here), while the third signal, coverage, is read straight
-/// from the panel's own on-screen rect and needs no display of its own.
+/// `target` is the display the panel is attached to: the scrim and fullscreen
+/// signals are asked about that display in particular, so neither blanks a
+/// panel that is plainly visible on another.
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 fn eval_indicator_fallback(
@@ -193,24 +186,20 @@ fn eval_indicator_fallback(
             unavailable
         );
     }
-    // The tray icon stands in where the bar can be seen. It is NOT put up
-    // for a fullscreen app: the bar is buried then and the icon with it, so
-    // the only thing it achieves is widening the tray by its own 32 px -
-    // and when the game is left, the panel comes back at the wider tray's
-    // place and then steps sideways as the icon goes. The panel's own
-    // suppression for fullscreen is unchanged; this is only about the icon.
-    // The handover, in that order and never overlapping: the panel goes
-    // first and the icon follows it down, the icon goes first and the panel
-    // follows it up. Both on screen at once is what a user reads as a swap,
-    // and the icon is meant to stand in for the panel, not to join it.
+    // The handover, in that order and never overlapping: the panel goes down
+    // first and the icon follows, the icon goes first and the panel follows.
+    // Both at once is what a user reads as a swap.
     //
     // Only for the reasons that do not depend on the panel being there.
-    // `covered` is not one: the panel is invisible under whatever covers it,
-    // so nothing overlaps anyway, and hiding it would make `is_covered` read
-    // false on the next pass - which would take the fallback off, which would
-    // show it again. `unavailable` is not one either: the panel is already
-    // hidden, and standing it down would stop `reposition` running, so it
-    // would never learn that room came back.
+    // `covered` is not one: hiding it would make `is_covered` read false on
+    // the next pass, take the fallback off and show it again. `unavailable`
+    // is not one either: the panel is already hidden, and standing it down
+    // would stop `reposition` ever learning that room came back.
+    //
+    // No icon at all for a fullscreen app: the bar is buried then and the
+    // icon with it, so it achieves nothing but widening the tray by its own
+    // 32 px - and the panel then returns at the wider tray's place and steps
+    // sideways as the icon goes.
     let stand_down = fullscreen || (scrim && fallback);
     if stand_down {
         // Idempotent - also re-hides the panel if anything re-presented it
@@ -270,11 +259,7 @@ fn provider_cache_path() -> std::path::PathBuf {
 }
 
 fn cache_metric_is_valid(metric: &Metric) -> bool {
-    // Any metric whose window has not reset yet is still true and worth
-    // keeping: after a widget restart the row then shows the last real value
-    // (greyed, with its age) instead of an error text while the first cycles
-    // fight the flaky endpoints. Metrics past their reset are dropped — the
-    // window rolled over, the number is dead.
+    // Past its reset the number is dead: the window rolled over.
     metric
         .reset_at
         .is_some_and(|reset| reset + Duration::minutes(1) > Utc::now())
@@ -1052,17 +1037,13 @@ pub fn run() -> Result<()> {
                 if let Some(t) = recheck_at {
                     if now >= t {
                         recheck_at = None;
-                        // **Re-place before re-judging.** The taskbar SLIDES in
-                        // and out over ~200ms, and the move events arrive
-                        // during that slide: acting on the first one pins the
-                        // panel to a mid-animation position — measured at bar
-                        // top 1410 and 1413 while the settled bar is at 1392 —
-                        // which leaves it hanging below the bar, partly off the
-                        // screen edge, looking like it never appeared. Nothing
-                        // else re-runs placement afterwards: the fallback
-                        // evaluation only redraws into the rectangle it is
-                        // given, so the stale position survived until the next
-                        // slide or the 60-second provider tick.
+                        // Re-place before re-judging. The bar slides over
+                        // ~200ms and its move events arrive mid-slide, so
+                        // acting on the first pins the panel to an animation
+                        // frame (measured: bar top 1410, 1413, settling at
+                        // 1392) - hanging below the bar, half off the screen.
+                        // Nothing else re-runs placement: the evaluation below
+                        // only redraws into the rectangle it is given.
                         panel.on_taskbar_moved(&visible_data(&config, &display));
                         let verdict = eval_indicator_fallback(
                             &mut panel,

@@ -2,17 +2,17 @@
 //
 // Two modes (config `general.indicator`), both a SINGLE tray icon:
 //   Tray — two concentric rings, the busiest provider outside and the
-//          runner-up inside, each sweeping clockwise from 12 o'clock.
-//          Deliberately monochrome: it inks itself in the system taskbar
-//          theme rather than the widget palette, so it stays readable on a
-//          light or a dark bar and the shape alone carries the reading.
-//   Bars — horizontal progress bars stacked one above the other, one row
-//          per visible provider (the meter style competitors use); with a
-//          single provider the row gains its percent number on top.
-// Drawn with the same tiny-skia pipeline as the widget so colors match the
-// palette. Images are re-rendered only when an integer % changes, to stay
-// at ~0% idle CPU. The icon carries the same context menu as the widget;
-// a left-click toggles the overlay.
+//          runner-up inside, sweeping clockwise from 12 o'clock. Monochrome,
+//          inked in the system taskbar theme rather than the widget palette,
+//          so the shape alone carries the reading on a light or a dark bar.
+//   Bars — horizontal progress bars stacked, one row per visible provider;
+//          with a single provider the row gains its percent number on top.
+// A third icon lives here too: the stand-in the Panel modes raise while the
+// panel cannot be seen (`set_scrim_fallback`).
+//
+// Drawn with the widget's own tiny-skia pipeline. Re-rendered only when an
+// integer % changes, to stay at ~0% idle CPU. The icon carries the widget's
+// context menu; a left-click toggles the overlay.
 
 use crate::config::schema::IndicatorKind;
 use crate::providers::{ProviderData, ProviderStatus};

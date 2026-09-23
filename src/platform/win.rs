@@ -22,8 +22,8 @@ pub struct TaskbarSlot {
     pub tray_start: i32,
     /// False while the auto-hidden taskbar is slid off-screen.
     pub visible: bool,
-    /// False when `TrayNotifyWnd` could not be found and `tray_start` is an
-    /// estimate. Secondary Win11 taskbars have no notification area window.
+    /// False when neither the tray's window nor the shell's own elements
+    /// would say, and `tray_start` is the reserve that stands in for both.
     pub tray_found: bool,
     /// Where the run of app buttons ends along the axis; None when the bar
     /// is hidden or the shell would not say.
@@ -89,18 +89,13 @@ pub fn taskbar_slot(
                     .is_ok()
                     .then_some(if edge.vertical() { t.top } else { t.left })
             });
-        // With no tray window the scan of the bar's pixels places the tray
-        // too (the busy cluster at the far end); the DIP reserve is the last
-        // resort, for a hidden bar or an unreadable screen. Only a bar at
-        // rest is read, and only when the caller asks (`read_screen`): a
-        // screen read costs ~50 ms of the compositor's time, and a read on
-        // every re-check saw whatever happened to lie on the bar at that
-        // instant - a thumbnail's shadow, a tooltip - and flipped the room
-        // verdict back and forth, which showed as the panel blinking.
+        // A secondary bar has no tray window; the shell's own elements place
+        // it there (`win_uia`), and the DIP reserve is the last resort. Only
+        // a bar at rest is asked, and only when the caller says so: a bar in
+        // flight answers about where it is now, not where it will settle, so
+        // the last answer is used and the panel rides the slide to its place.
         let at_rest = crate::platform::taskbar_geom::bar_on_screen(edge, bar, mon)
             >= crate::platform::taskbar_geom::thickness(edge, bar);
-        // A bar in flight is never read, but the last read of it is used, so
-        // the panel rides the slide at the place it will end up.
         let scan = if visible {
             scan_bar_for(
                 taskbar.0 as isize,
@@ -111,8 +106,10 @@ pub fn taskbar_slot(
         } else {
             BandScan::default()
         };
+        // Either source is an answer, not a guess: the tray's own window
+        // where there is one, the shell's own elements where there is not.
         let (tray_start, tray_found) = match tray.or(scan.tray_start) {
-            Some(start) => (start, tray.is_some()),
+            Some(start) => (start, true),
             None => (estimated_tray_start(edge, bar), false),
         };
         let band_end = scan.band_end;
@@ -613,12 +610,9 @@ fn monitor_at(x: i32, y: i32) -> isize {
 }
 
 /// True while a fullscreen app (a game, a video, an F11 browser) owns the
-/// screen — the same shell state that suspends notification toasts. The
-/// taskbar sits UNDER such a window without moving, so the panel's geometric
-/// visibility check cannot see it; without this the topmost overlay floats
-/// over the game (and the foreground-raise would even re-assert it there).
-/// While true the indicator hides the panel, exactly like the taskbar; the
-/// next foreground change (alt-tab back to the desktop) restores it.
+/// screen. The taskbar sits UNDER such a window without moving, so coverage
+/// alone cannot see it and the topmost overlay would float over the game.
+/// While true the panel hides, exactly like the taskbar.
 pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay) -> bool {
     // The shell is asked, not guessed at. It already decides when to put its
     // own taskbar away for a fullscreen app, and it says so: an appbar gets
@@ -639,14 +633,10 @@ pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay)
     //   top at a sample point").
     //
     // The notification is machine-wide, so it is paired with the one thing
-    // geometry answers reliably: is anything actually covering the monitor
-    // the panel lives on? A game on the other display then leaves this one
-    // alone, which is the scoping the panel gained in 0.6.1.
-    // Two ways to know, and either will do, because each has a blind spot:
-    // the shell dips its own signal for a second or more while a game is
-    // plainly still there, and the bar's z-order flickers under a game that
-    // flips its stacking. What they agree on is the monitor being covered,
-    // which is asked first and answered by geometry alone.
+    // geometry answers reliably: is anything covering the monitor the panel
+    // lives on? A game on the other display then leaves this one alone. And
+    // either witness will do, because each has its blind spot - the shell
+    // dips its word for a second at a time, the z-order flickers for a frame.
     let cover = monitor_cover(target);
     let raw = cover.is_some()
         && (FULLSCREEN_APP.lock().map(|s| s.on).unwrap_or(false) || taskbar_is_buried(target));
@@ -655,16 +645,11 @@ pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay)
     // word (dips of a second, covered by the bar being buried) nor the
     // z-order (a frame or two, covered by the shell's word) does on its own.
     //
-    // And it is not paid at all on the way OUT of a game, which is the delay
-    // anyone actually sees. A third witness tells the two cases apart: the
-    // window covering the monitor is still the one in FRONT while the game is
-    // being played - a flicker does not change that - and it is not the
-    // moment the user alt-tabs away, which is the only moment the panel is
-    // waited for. So a quiet verdict with the cover no longer in front is
-    // believed at once, and the hold is left for the flicker it was written
-    // for. (The reverse - alt-tab INTO a game whose window is not in front -
-    // stays covered by the witnesses themselves: the bar is buried under it,
-    // which is raw, not this.)
+    // And it is not paid on the way OUT of a game, which is the delay anyone
+    // sees. A third witness tells the cases apart: the window covering the
+    // monitor is still the one in FRONT while the game is played, and it is
+    // not the moment the user alt-tabs away. So a quiet verdict with the
+    // cover no longer in front is believed at once.
     const HOLD: std::time::Duration = std::time::Duration::from_millis(80);
     let Ok(mut until) = FULLSCREEN_UNTIL.lock() else {
         return raw;
