@@ -78,23 +78,18 @@ exact kernel accounting, not sampling. Report:
 beside it as `perf-audit-published-2026-07-08.json`, read 0.024% of one core
 and 61 MB — the same window on the same machine, five releases earlier.
 
-**Re-measure before publishing 0.7.0.** The figures below were taken on an
-idle machine; the 0.7.0 work was measured on a working one, where the
-ambient foreground churn dwarfs the widget (the same build read 0.0000% and
-0.84% of a core twenty minutes apart). What IS comparable, measured in
-isolation: the panel's UI Automation query costs 7.5 ms of CPU and 26 ms of
-wall time (`cargo test uia_query_cost -- --ignored --nocapture`), the client
-it needs adds ~5 MB and 2-3 threads, and the query runs once a minute with
-the panel placed, at most once every 5 s while it stands down for want of
-room on the bar.
+Re-measured 2026-09-23 for 0.7.0, 255 s on a quiet machine (a video playing,
+nothing else; unelevated, so the timer-resolution and SRUM rows are carried
+from the August run). The panel had asked the shell for the bar's room at
+least once, which is the state it is in whenever it is on screen.
 
-| Metric | Measured |
-|---|---|
-| CPU (exact accounting) | 0.016 CPU-s per 327 s = **0.005% of one core** (0.0002% of the machine) |
-| GPU | **0%** — the process owns no GPU-engine counter instances at all (CPU rendering) |
-| Working set | 37 MB avg / 40 MB peak |
-| Threads | ~10 avg / 13 peak |
-| Handles | ~377 |
+| Metric | Measured (0.7.0) | 0.6.3 (2026-08-23) |
+|---|---|---|
+| CPU (exact accounting) | 0.031 CPU-s per 255 s = **0.012% of one core** (0.0004% of the machine) | 0.005% of one core |
+| GPU | **0%** — the process owns no GPU-engine counter instances at all (CPU rendering) | 0% |
+| Memory | 45 MB private / 67 MB working set | 37 MB working set |
+| Threads | ~13 avg / 16 peak | ~10 avg / 13 peak |
+| Handles | ~360 | ~377 |
 | I/O | 184 B/s avg; spikes are the update-cycle HTTPS (3 requests / cycle, < 5 KB each) |
 | Context switches (idle-wakeup proxy) | ~0.9/s whole-window average |
 | Platform timer resolution | **not raised** (`powercfg /energy`: no request from ailimits) |
