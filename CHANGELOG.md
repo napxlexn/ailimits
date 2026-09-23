@@ -71,6 +71,16 @@ Notable, user-visible changes. Dates are release dates.
   verdict flipped - twice a second, over anything on screen. Nothing is
   withheld now; a bar packed to its end has the panel over the last button
   instead, which is the smaller fault and a steady one.
+- **Unplugging a monitor no longer strands the widget or the panel until
+  the next start.** A position that lands on no screen was rescued at
+  startup only, so a display removed while the app ran left the overlay
+  invisible and un-draggable (it is borderless and skips the taskbar), and
+  the panel kept following a taskbar that no longer existed until some
+  other event happened by. The app now hears the display change itself:
+  the overlay is put back on the primary work area and the new position is
+  saved, the taskbar watch is re-pointed, and the panel is placed again -
+  on the bar it was set to if it is back, on the primary bar while it is
+  not.
 - **The taskbar's context menu is drawn over the panel, not under it.**
   Right-click the bar beside the panel and the menu opened behind it. The
   Windows 11 menu is a XAML popup, not the classic menu a menu hook

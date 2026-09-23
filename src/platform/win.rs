@@ -1078,13 +1078,28 @@ fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
     }
 }
 
-/// Minimal window procedure for the tooltip window — everything defaults.
+/// Window procedure for the tooltip window. It defaults on everything but one
+/// message, and it is here for that one: WM_DISPLAYCHANGE is BROADCAST to
+/// every top-level window, and this is the only top-level window in the
+/// process whose procedure is ours (the overlay's belongs to the window
+/// library, the appbar's is message-only and message-only windows are left
+/// out of broadcasts). A monitor unplugged or re-arranged moves the ground
+/// under both surfaces at once: the overlay can be left at coordinates that
+/// are on no screen, and the bar the panel follows can be destroyed.
 unsafe extern "system" fn tip_wndproc(
     hwnd: windows::Win32::Foundation::HWND,
     msg: u32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
+    if msg == windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE {
+        tracing::debug!("the displays changed; re-placing the overlay and the panel");
+        if let Some(proxy) = PROXY.get() {
+            if let Ok(proxy) = proxy.lock() {
+                let _ = proxy.send_event(crate::app::UserEvent::DisplaysChanged);
+            }
+        }
+    }
     windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 

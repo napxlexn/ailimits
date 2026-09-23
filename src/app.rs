@@ -78,6 +78,12 @@ pub enum UserEvent {
     /// the panel under it; when it goes, the panel comes back on top.
     #[cfg(target_os = "windows")]
     PanelMenu,
+    /// A monitor was unplugged, added or re-arranged (WM_DISPLAYCHANGE). Both
+    /// surfaces have to be found a place again: the overlay may be left on no
+    /// screen at all, and the taskbar the panel follows may have been the one
+    /// on the monitor that went.
+    #[cfg(target_os = "windows")]
+    DisplaysChanged,
 }
 
 /// Tray interactions we care about.
@@ -1447,6 +1453,36 @@ pub fn run() -> Result<()> {
                     // instead of fronting it, so this one call serves both the
                     // menu opening and its closing.
                     panel.raise();
+                }
+
+                // A monitor came, went or moved. Two things can be left
+                // stranded, and both are fixed here rather than at the next
+                // start: the overlay, which is borderless and skips the
+                // taskbar, so a position on no screen makes it invisible AND
+                // un-draggable; and the panel, whose bar may have been on the
+                // monitor that went (`resolve_taskbar` then falls back to the
+                // primary bar, but only when something asks it to).
+                #[cfg(target_os = "windows")]
+                UserEvent::DisplaysChanged => {
+                    if let Ok(wp) = window.outer_position() {
+                        let (nx, ny) = crate::platform::ensure_on_screen(wp.x, wp.y);
+                        if (nx, ny) != (wp.x, wp.y) {
+                            window.set_outer_position(PhysicalPosition::new(nx, ny));
+                            win_state.pos = (nx as f64, ny as f64);
+                            config.window.pos_x = nx;
+                            config.window.pos_y = ny;
+                            save_config(config.clone());
+                            info!("the overlay was on no monitor; moved to {nx},{ny}");
+                            apply_windows_glass(&window);
+                            window.request_redraw();
+                        }
+                    }
+                    // Re-point the watch: the bar it compares against may be a
+                    // destroyed window now, and a dead handle fires nothing.
+                    crate::platform::watch_taskbar(config.general.panel_display);
+                    panel.on_taskbar_moved(&visible_data(&config, &display));
+                    recheck_at =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
                 }
 
                 // The shell re-stacked the taskbar (it may have fronted the bar
