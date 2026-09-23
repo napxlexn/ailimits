@@ -50,14 +50,9 @@ pub fn taskbar_slot(
     use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GetWindowRect};
 
     unsafe {
-        // Resolved fresh every call — see `resolve_taskbar`. A missing secondary
-        // display is expected, not exceptional: it falls back to the primary
-        // bar there, because an indicator on the wrong screen is recoverable
-        // and a vanished one looks like a crash.
+        // Resolved fresh every call — see `resolve_taskbar`.
         let taskbar = resolve_taskbar(target)?;
-        // Explorer recreates the bars on restart, so the handle we just found
-        // may differ from the one the move/auto-hide hook is comparing events
-        // against. Re-point it here rather than waiting for the user to switch
+        // Re-point the watch here rather than waiting for the user to switch
         // displays: this is the only code path that runs regularly.
         rearm_if_stale(taskbar);
         let mut r = RECT::default();
@@ -908,8 +903,6 @@ fn taskbar_is_buried(target: crate::config::schema::PanelDisplay) -> bool {
 }
 
 /// Set from the shell's ABN_FULLSCREENAPP notifications.
-/// What the shell has said about fullscreen apps: the state, when it last
-/// said the state had ended, and which process was in front when it began.
 struct FullscreenSignal {
     on: bool,
 }
@@ -1245,8 +1238,7 @@ static PROXY: std::sync::OnceLock<
 /// the Start menu is up — measured, not assumed. Without this cache the
 /// enumeration comes back empty for those few hundred milliseconds, the
 /// primary-bar fallback fires, and the panel JUMPS TO THE OTHER DISPLAY every
-/// time the user presses the Windows key. It then looks like the panel
-/// "disappeared" from the display it was configured for.
+/// time the user presses the Windows key.
 static LAST_SECONDARY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static LAST_SECONDARY_IDX: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
@@ -1547,9 +1539,8 @@ unsafe extern "system" fn on_event(
                 return;
             }
         }
-        // Some window came to the foreground (the tray overflow flyout, the
-        // Start menu, an app) — it may have covered the overlay, which only
-        // re-asserts topmost on a present. Re-raise it (cheap, no repaint).
+        // Some window came to the foreground and may have covered the overlay
+        // — re-raise it, cheaply and with no repaint (`raise_panel_topmost`).
         EVENT_SYSTEM_FOREGROUND => crate::app::UserEvent::PanelRaise,
         // A popup menu opened or closed. The taskbar's own context menu can
         // reach down over the panel, and a topmost overlay would be drawn on
@@ -1666,8 +1657,6 @@ pub fn install_taskbar_watch(
             return;
         };
         let _ = PROXY.set(Mutex::new(proxy));
-        // Scoped to the Explorer process; only the taskbar hwnd passes the
-        // callback filter. Lives until Explorer is replaced (`rearm_if_stale`).
         hook_location_changes(window_pid(taskbar));
         // A second, GLOBAL hook for foreground changes so the panel can re-raise
         // itself above whatever just covered it (the tray overflow flyout etc.).
@@ -1685,11 +1674,9 @@ pub fn install_taskbar_watch(
                 "foreground watch hook failed — panel may stay covered by the tray overflow"
             );
         }
-        // A third, GLOBAL hook for top-level z-order RE-STACKS. The auto-hide bar
-        // peeking back fronts itself above the floating overlay as a pure z
-        // change (no move/foreground), which a topmost overlay cannot beat — so
-        // re-check coverage and fall back to a tray icon. SKIPOWNPROCESS so our
-        // own window ops do not echo back into the hook.
+        // A third, GLOBAL hook for top-level z-order RE-STACKS: see the reorder
+        // branch of `on_event`. SKIPOWNPROCESS so our own window ops do not
+        // echo back into the hook.
         let reorder_hook = SetWinEventHook(
             EVENT_OBJECT_REORDER,
             EVENT_OBJECT_REORDER,
@@ -1699,10 +1686,8 @@ pub fn install_taskbar_watch(
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
-        // A fourth GLOBAL hook for popup menus: the taskbar's context menu
-        // opens over the bar, and the panel must sit under it rather than be
-        // painted on top of it. Not SKIPOWNPROCESS - our own context menu is
-        // a popup menu too, and it deserves the same.
+        // A fourth GLOBAL hook for popup menus. Not SKIPOWNPROCESS - our own
+        // context menu is a popup menu too, and it deserves the same.
         let menu_hook = SetWinEventHook(
             EVENT_SYSTEM_MENUPOPUPSTART,
             EVENT_SYSTEM_MENUPOPUPEND,

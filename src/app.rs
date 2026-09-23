@@ -96,7 +96,7 @@ pub enum TrayKind {
 /// Re-evaluate the Panel indicator's tray fallback: a tray icon stands in
 /// while the overlay cannot be seen — under the Start/Search scrim, under the
 /// cursor-peek "rude topmost" taskbar, under a fullscreen app, or with no room
-/// on the bar at all. Each of the four is judged below, in its own comment.
+/// on the bar at all.
 /// No-op outside the Panel modes (every panel method guards on the mode).
 ///
 /// `target` is the display the panel is attached to: the scrim and fullscreen
@@ -165,8 +165,7 @@ fn eval_indicator_fallback(
     };
     // Which of the four inputs decided it. Without this a stuck fallback is
     // indistinguishable from a correct one: the panel is simply absent and the
-    // tray icon is simply present, with nothing saying why. Logged on every
-    // change of verdict, and at trace level on every evaluation.
+    // tray icon is simply present, with nothing saying why.
     if fallback != *fallback_was_active {
         tracing::debug!(
             "indicator fallback {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
@@ -843,8 +842,6 @@ pub fn run() -> Result<()> {
         // No drop-shadow frame: the undecorated shadow keeps a 1px non-client
         // border (client offset 1px from the window rect) that surfaces as a
         // white seam on the bottom/right edges once the DWM border is removed.
-        // Dropping it makes the client fill the whole window so the edge is the
-        // widget's own translucent fill — truly borderless, seamless on any bg.
         builder = builder.with_undecorated_shadow(false);
     }
 
@@ -944,12 +941,10 @@ pub fn run() -> Result<()> {
     crate::platform::register_fullscreen_watch();
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
     let mut window_visible = true;
-    // The indicator falls back to a tray icon while a Panel overlay cannot be
-    // seen — the Start/Search scrim is up, OR the cursor-peek "rude topmost"
-    // taskbar covers it. `fallback_was_active` tracks the previous state so the
-    // panel is re-presented exactly when the fallback clears. The shell can
-    // cover the overlay with no move/foreground event, so a reorder cue arms a
-    // coalesced re-check; at idle no reorders fire, so CPU stays 0%.
+    // `fallback_was_active` tracks the previous state so the panel is
+    // re-presented exactly when the fallback clears. The shell can cover the
+    // overlay with no move/foreground event, so a reorder cue arms a coalesced
+    // re-check; at idle no reorders fire, so CPU stays 0%.
     #[cfg(target_os = "windows")]
     let mut fallback_was_active = false;
     // Whether the last evaluation saw a fullscreen app: the panel is hidden
@@ -1539,9 +1534,6 @@ pub fn run() -> Result<()> {
                     panel.raise();
                 }
 
-                // A popup menu opened or closed: the taskbar's own context
-                // menu reaches over the panel, and a topmost overlay would be
-                // painted on top of it.
                 #[cfg(target_os = "windows")]
                 UserEvent::PanelMenu => {
                     // `raise` steps under a menu that reaches over the panel
@@ -1550,13 +1542,12 @@ pub fn run() -> Result<()> {
                     panel.raise();
                 }
 
-                // A monitor came, went or moved. Two things can be left
-                // stranded, and both are fixed here rather than at the next
-                // start: the overlay, which is borderless and skips the
-                // taskbar, so a position on no screen makes it invisible AND
-                // un-draggable; and the panel, whose bar may have been on the
-                // monitor that went (`resolve_taskbar` then falls back to the
-                // primary bar, but only when something asks it to).
+                // Both are fixed here rather than at the next start: the
+                // overlay, which is borderless and skips the taskbar, so a
+                // position on no screen makes it invisible AND un-draggable;
+                // and the panel, whose bar may have been on the monitor that
+                // went (`resolve_taskbar` then falls back to the primary bar,
+                // but only when something asks it to).
                 #[cfg(target_os = "windows")]
                 UserEvent::DisplaysChanged => {
                     if let Ok(wp) = window.outer_position() {
@@ -1580,9 +1571,8 @@ pub fn run() -> Result<()> {
                         Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
                 }
 
-                // The shell re-stacked the taskbar (it may have fronted the bar
-                // above our overlay with no move/foreground event). Arm the
-                // coalesced re-check; a burst of reorders collapses to one.
+                // Arm the coalesced re-check; a burst of reorders collapses
+                // to one.
                 #[cfg(target_os = "windows")]
                 UserEvent::PanelRecheck => {
                     recheck_at =

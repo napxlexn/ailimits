@@ -87,7 +87,6 @@ impl Tray {
         let Some(icon) = self.icon.as_ref() else {
             return;
         };
-        // A Start-fallback icon renders the rings, exactly like Tray mode.
         let rings = self.fallback || matches!(self.mode, IndicatorKind::Tray);
         let state: Vec<Option<u8>> = if rings {
             // Both rings — see ring_cache_state.
@@ -227,7 +226,8 @@ pub(crate) fn two_busiest(providers: &[ProviderData]) -> (Option<u8>, Option<u8>
 }
 
 /// What the repaint cache must hold: BOTH rings. Caching only the busiest
-/// would freeze the icon whenever the second-place provider moved.
+/// would freeze the icon whenever the second-place provider moved - it
+/// compiles, looks right, and stops updating minutes later in normal use.
 pub(crate) fn ring_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
     let (first, second) = two_busiest(providers);
     vec![first, second]
@@ -247,7 +247,6 @@ pub(crate) fn tooltip(providers: &[ProviderData]) -> String {
         .join("  ·  ")
 }
 
-/// A neutral grey dot — used as the placeholder before the first data arrives.
 /// Tray-icon ink for the system taskbar's light/dark theme: near-black on a
 /// light taskbar, near-white on a dark one (mirrors the panel's `theme_ink`),
 /// so the indicator stays readable on either. `a` is the alpha — 255 for a
@@ -260,6 +259,7 @@ fn tray_ink(light: bool, a: u8) -> tiny_skia::Color {
     }
 }
 
+/// A neutral grey dot: the placeholder before the first data arrives.
 fn neutral_icon(light: bool) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
     pm.fill(tiny_skia::Color::TRANSPARENT);
@@ -607,7 +607,7 @@ pub(crate) fn draw_digits_fit(
 /// height (font `bar_h * 0.30`, padding `0.85`/`0.55` of the font, radius a
 /// third of the box), which on a stock 48px bar produced a 14.4px font in a
 /// fully rounded pill — noticeably larger and rounder than anything the shell
-/// shows. These match the shell instead.
+/// shows.
 const TIP_FONT_PX: f32 = 12.0;
 const TIP_PAD_X: f32 = 10.0;
 /// Vertically asymmetric, as the shell's is: 10 above the text, 8 below.
@@ -677,8 +677,6 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     let box_w = (tw + pad_x * 2.0).ceil().max(8.0);
     let box_h = (line_h + pad_top + pad_bottom).ceil().max(8.0);
     // The pixmap is bigger than the box: the shadow needs room around it.
-    // `TIP_SHADOW` is also the box's offset inside the pixmap, which the caller
-    // subtracts when positioning — see TaskbarPanel::show_tooltip.
     let inset = tip_shadow_inset(bar_h) as f32;
     let w = (box_w + inset * 2.0) as u32;
     let h = (box_h + inset * 2.0) as u32;
@@ -736,8 +734,6 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
             color(26, 26, 26, 255),
         )
     } else {
-        // Grey 46 is the body's true colour behind alpha 244; the measured 44
-        // over black is what that composites to.
         (color(46, 46, 46, TIP_FILL_ALPHA), color(255, 255, 255, 255))
     };
     if light {
@@ -1135,9 +1131,6 @@ mod tests {
 
     #[test]
     fn the_repaint_cache_tracks_both_rings() {
-        // Caching only the busiest would freeze the icon whenever the
-        // second-place provider moved - it compiles, looks right, and stops
-        // updating minutes later in normal use.
         let before = vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 30)];
         let after = vec![data(ProviderId::Claude, 90), data(ProviderId::Codex, 55)];
 
@@ -1428,9 +1421,6 @@ mod tests {
             // Re-draw through the public path: draw_stacked_icon returns an
             // Icon (no pixels back), so rebuild the pixmap the same way.
             let _ = draw_stacked_icon(&providers, &theme, false).unwrap();
-            // For the preview, replicate via the private painter into pm:
-            // simplest is to call draw_stacked_icon's body — instead just
-            // save what the icon would contain by re-running the painter.
             let png = render_preview(&providers, &theme);
             std::fs::write(dir.join(name), png).unwrap();
         }

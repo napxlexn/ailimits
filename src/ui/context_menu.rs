@@ -73,23 +73,22 @@ pub enum MenuAction {
 pub const PROJECT_URL: &str = "https://github.com/napxlexn/ailimits";
 
 /// The GitHub mark for the version line: Octicons' `mark-github` (MIT),
-/// rasterised to 16 px (32 px for a 200% menu) as straight RGBA, white ink,
-/// and quietened to 40% here so it sits back from the text. None if the
-/// bytes do not make an icon, in which case the line simply has no mark.
+/// rasterised to 16 px (32 px for a 200% menu) as straight RGBA, white ink.
+/// At full strength, because the label beside it is: Windows draws menu text
+/// at the theme's own colour and gives no way to quieten it, so a mark held
+/// back read as washed out next to it. Measured on the line itself, ink
+/// above the menu's background: the mark at 40% peaked 84 where the text
+/// peaks 211. None if the bytes do not make an icon, in which case the line
+/// simply has no mark.
 fn github_mark() -> Option<muda::Icon> {
     const MARK_16: &[u8] = include_bytes!("../../assets/github-mark-16.rgba");
     const MARK_32: &[u8] = include_bytes!("../../assets/github-mark-32.rgba");
-    const INK: u32 = 102; // 40% of 255
     let (bytes, size) = if crate::platform::menu_scale_is_200() {
         (MARK_32, 32)
     } else {
         (MARK_16, 16)
     };
-    let quiet: Vec<u8> = bytes
-        .chunks_exact(4)
-        .flat_map(|px| [px[0], px[1], px[2], (px[3] as u32 * INK / 255) as u8])
-        .collect();
-    muda::Icon::from_rgba(quiet, size, size).ok()
+    muda::Icon::from_rgba(bytes.to_vec(), size, size).ok()
 }
 
 /// The step closest to a value.

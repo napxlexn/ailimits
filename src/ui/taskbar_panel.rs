@@ -53,7 +53,7 @@ const HIT_ALPHA: u8 = 1;
 /// heavier and higher-contrast than everything else in the tray. Solving
 /// `median = ink*cov + bg*(1-cov)` at the measured coverage of 0.567 gives 36.
 ///
-/// Note this is a CONTRAST correction, not a weight one: our glyphs are not
+/// This is a CONTRAST correction, not a weight one: our glyphs are not
 /// thicker, they are inked harder. fontdue rasterises with crisper edges than
 /// DirectWrite (over the same string the shell lights 163 columns to our 118,
 /// at the same mean), so matching the shell's darkness is the closest we get
@@ -424,9 +424,7 @@ impl TaskbarPanel {
     /// Re-assert the overlay's topmost z-order after another window covered it
     /// (the tray overflow flyout, Start menu, …). Cheap: a single SetWindowPos,
     /// no reposition or repaint. No-op when hidden or not in a panel mode.
-    /// A popup menu that reaches over the panel is the one thing it does not
-    /// come back on top of: it steps under that menu instead, and the raise
-    /// that follows the menu closing lands as usual.
+    /// Not over an open popup menu: there it steps under instead.
     pub fn raise(&self) {
         if !Self::is_panel_mode(self.mode) || self.rect.is_none() {
             return;
@@ -474,7 +472,6 @@ impl TaskbarPanel {
     /// `is_covered` cannot answer this: with no rectangle it reads `false`,
     /// i.e. "not obstructed", so a panel that never made it onto the screen
     /// looked exactly like a healthy one and the tray substitute stayed hidden.
-    /// The user was left with no indicator at all and no way to tell why.
     pub fn is_unavailable(&self) -> bool {
         Self::is_panel_mode(self.mode) && self.unavailable
     }
@@ -758,15 +755,11 @@ impl TaskbarPanel {
         // fully transparent (alpha 0) pixel to the window beneath — here the
         // taskbar — so a right-click on the gaps between the digits/bars used
         // to open the taskbar's own menu instead of ours, and hover never
-        // reached the panel. Fill with a 1/255 alpha so every pixel of the
-        // window catches the cursor (clicks + the hover tooltip) while staying
-        // visually transparent (≈0.4% — imperceptible over the bar).
+        // reached the panel.
         pm.fill(color(0, 0, 0, HIT_ALPHA));
 
         paint_rows(pm, self.edge.vertical(), &first_two(providers), fg, track);
 
-        // Premultiplied RGBA (tiny-skia) → premultiplied BGRA (top-down) for
-        // UpdateLayeredWindow.
         let data = self.pixmap.data();
         let mut bgra = vec![0u8; data.len()];
         for (s, d) in data.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
