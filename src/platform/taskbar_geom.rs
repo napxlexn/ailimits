@@ -83,17 +83,22 @@ pub fn thickness(edge: Edge, bar: Rect) -> i32 {
     }
 }
 
-/// Whether the bar is on screen. Auto-hide slides it off its own edge and
-/// leaves a sliver; it counts as visible while more than half its thickness
-/// is still on the monitor.
-pub fn bar_visible(edge: Edge, bar: Rect, mon: Rect) -> bool {
-    let on = match edge {
+/// How much of the bar's thickness is on the monitor. Auto-hide slides it
+/// off its own edge and leaves a sliver.
+pub fn bar_on_screen(edge: Edge, bar: Rect, mon: Rect) -> i32 {
+    match edge {
         Edge::Bottom => mon.3 - bar.1,
         Edge::Top => bar.3 - mon.1,
         Edge::Left => bar.2 - mon.0,
         Edge::Right => mon.2 - bar.0,
-    };
-    on > thickness(edge, bar) / 2
+    }
+}
+
+/// Whether the bar is on screen: more than half its thickness is on the
+/// monitor. A bar sliding in passes this early and a bar sliding out fails
+/// it late, so the panel rides both slides with the bar, as it always has.
+pub fn bar_visible(edge: Edge, bar: Rect, mon: Rect) -> bool {
+    bar_on_screen(edge, bar, mon) > thickness(edge, bar) / 2
 }
 
 /// Where the notification area is taken to start when it cannot be found:
@@ -151,18 +156,23 @@ pub fn band_end_from_scores(
     scores: &[u32],
     origin: i32,
     tray_start: i32,
-    skip: Option<(i32, i32)>,
+    skip: [Option<(i32, i32)>; 2],
     threshold: u32,
 ) -> Option<i32> {
     let stop = (tray_start - origin - 4).clamp(0, scores.len() as i32) as usize;
     (0..stop)
         .rev()
-        .find(|&i| {
-            let at = origin + i as i32;
-            let skipped = skip.is_some_and(|(a, b)| at >= a && at < b);
-            !skipped && scores[i] > threshold
-        })
+        .find(|&i| !in_spans(origin + i as i32, skip) && scores[i] > threshold)
         .map(|i| origin + i as i32 + 1)
+}
+
+/// Whether a coordinate along the axis lies in any of the spans to leave
+/// out of a scan (the panel's footprint now, and where it stood when the
+/// scores were taken).
+fn in_spans(at: i32, spans: [Option<(i32, i32)>; 2]) -> bool {
+    spans
+        .iter()
+        .any(|s| s.is_some_and(|(a, b)| at >= a && at < b))
 }
 
 /// Where the notification area starts when the bar has no `TrayNotifyWnd`
@@ -174,14 +184,11 @@ pub fn band_end_from_scores(
 pub fn tray_start_from_scores(
     scores: &[u32],
     origin: i32,
-    skip: Option<(i32, i32)>,
+    skip: [Option<(i32, i32)>; 2],
     gap: usize,
     threshold: u32,
 ) -> Option<i32> {
-    let quiet = |i: usize| {
-        let at = origin + i as i32;
-        skip.is_some_and(|(a, b)| at >= a && at < b) || scores[i] <= threshold
-    };
+    let quiet = |i: usize| in_spans(origin + i as i32, skip) || scores[i] <= threshold;
     let n = scores.len();
     // past the far end's own quiet border, into the cluster
     let mut i = n;
@@ -336,7 +343,7 @@ mod tests {
         assert!(!bar_visible(Edge::Bottom, (3440, 1438, 6000, 1486), MON));
         assert!(
             bar_visible(Edge::Bottom, (3440, 1410, 6000, 1458), MON),
-            "mid-slide, more than half in"
+            "mid-slide, more than half in: the panel rides in with the bar"
         );
         assert!(bar_visible(Edge::Top, (3440, 0, 6000, 48), MON));
         assert!(!bar_visible(Edge::Top, (3440, -46, 6000, 2), MON));
@@ -401,32 +408,61 @@ mod tests {
         scores[478..540].fill(300); // the clock, 8px on
         scores[548..580].fill(300); // the bell
         assert_eq!(
-            tray_start_from_scores(&scores, 3440, None, 20, 28),
+            tray_start_from_scores(&scores, 3440, [None, None], 20, 28),
             Some(3440 + 400)
         );
         assert_eq!(
-            band_end_from_scores(&scores, 3440, 3440 + 400, None, 28),
+            band_end_from_scores(&scores, 3440, 3440 + 400, [None, None], 28),
             Some(3440 + 300)
         );
         scores[330..380].fill(200); // the panel already drawn in the gap
         assert_eq!(
-            tray_start_from_scores(&scores, 3440, None, 20, 28),
+            tray_start_from_scores(&scores, 3440, [None, None], 20, 28),
             Some(3440 + 400),
             "20px left of the panel"
         );
         assert_eq!(
-            tray_start_from_scores(&scores, 3440, Some((3440 + 330, 3440 + 380)), 20, 28),
+            tray_start_from_scores(
+                &scores,
+                3440,
+                [Some((3440 + 330, 3440 + 380)), None],
+                20,
+                28
+            ),
             Some(3440 + 400)
         );
         assert_eq!(
-            tray_start_from_scores(&[5u32; 100], 0, None, 20, 28),
+            tray_start_from_scores(&[5u32; 100], 0, [None, None], 20, 28),
             None,
             "an empty bar"
         );
         assert_eq!(
-            tray_start_from_scores(&[300u32; 100], 0, None, 20, 28),
+            tray_start_from_scores(&[300u32; 100], 0, [None, None], 20, 28),
             None,
             "a bar busy end to end"
+        );
+    }
+
+    /// The panel's own ink is in the scores when they are taken with the
+    /// panel on the bar. Left in, it read as the tray's start once the
+    /// panel moved on, and the panel walked left twenty pixels a placement.
+    #[test]
+    fn the_panels_ink_at_capture_never_becomes_the_tray() {
+        let mut scores = vec![5u32; 600];
+        scores[100..300].fill(300); // buttons
+        scores[450..560].fill(300); // the tray cluster
+        scores[325..444].fill(200); // the panel, drawn 6px before the cluster when read
+        let taken_with = Some((3440 + 325, 3440 + 444));
+        // the next placement, 20px further left: both footprints left out
+        let now = Some((3440 + 305, 3440 + 424));
+        assert_eq!(
+            tray_start_from_scores(&scores, 3440, [now, taken_with], 20, 28),
+            Some(3440 + 450)
+        );
+        assert_eq!(
+            tray_start_from_scores(&scores, 3440, [now, None], 20, 28),
+            Some(3440 + 424),
+            "the drift, without the capture footprint: the old ink reads as the tray"
         );
     }
 
@@ -438,16 +474,16 @@ mod tests {
         scores[100..180].fill(300); // the buttons
         scores[260..300].fill(200); // the panel, already drawn
         assert_eq!(
-            band_end_from_scores(&scores, 1000, 1000 + 360, None, 28),
+            band_end_from_scores(&scores, 1000, 1000 + 360, [None, None], 28),
             Some(1300),
             "the panel counts without a skip"
         );
         assert_eq!(
-            band_end_from_scores(&scores, 1000, 1000 + 360, Some((1260, 1300)), 28),
+            band_end_from_scores(&scores, 1000, 1000 + 360, [Some((1260, 1300)), None], 28),
             Some(1180)
         );
         assert_eq!(
-            band_end_from_scores(&[3u32; 100], 0, 90, None, 28),
+            band_end_from_scores(&[3u32; 100], 0, 90, [None, None], 28),
             None,
             "an empty bar has no band"
         );

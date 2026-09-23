@@ -55,6 +55,19 @@ pub fn register_toast_identity() {
     }
 }
 
+/// Whether menus are drawn at 200% or more (a 16 px menu icon would be
+/// upscaled there; the 32 px one is used instead). False off Windows.
+pub fn menu_scale_is_200() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::menu_scale_is_200()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Hand a URL to the default browser. Logged only off Windows.
 pub fn open_url(url: &str) {
     #[cfg(target_os = "windows")]

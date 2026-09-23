@@ -15,6 +15,8 @@ pub struct TaskbarSlot {
     pub edge: Edge,
     /// The bar's window rectangle (left, top, right, bottom).
     pub bar: Rect,
+    /// The monitor the bar sits on.
+    pub mon: Rect,
     /// Where the notification area starts along the bar's axis: its left edge
     /// on a horizontal bar, its top on a side bar. The panel goes before it.
     pub tray_start: i32,
@@ -89,8 +91,13 @@ pub fn taskbar_slot(
             });
         // With no tray window the scan of the bar's pixels places the tray
         // too (the busy cluster at the far end); the DIP reserve is the last
-        // resort, for a hidden bar or an unreadable screen.
-        let scan = if visible {
+        // resort, for a hidden bar or an unreadable screen. Only a bar at
+        // rest is read: a screen read costs ~50 ms of the compositor's time,
+        // and paid at every step of a slide it held the panel back from the
+        // bar it was meant to ride.
+        let at_rest = crate::platform::taskbar_geom::bar_on_screen(edge, bar, mon)
+            >= crate::platform::taskbar_geom::thickness(edge, bar);
+        let scan = if visible && at_rest {
             scan_bar(edge, bar, tray, own)
         } else {
             BandScan::default()
@@ -103,11 +110,25 @@ pub fn taskbar_slot(
         Some(TaskbarSlot {
             edge,
             bar,
+            mon,
             tray_start,
             visible,
             tray_found,
             band_end,
         })
+    }
+}
+
+/// The target bar's rectangle alone, for callers that only need to know
+/// which monitor it is on: no tray lookup, no screen read.
+pub fn taskbar_rect(target: crate::config::schema::PanelDisplay) -> Option<Rect> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let taskbar = resolve_taskbar(target)?;
+        let mut r = RECT::default();
+        GetWindowRect(taskbar, &mut r).ok()?;
+        Some((r.left, r.top, r.right, r.bottom))
     }
 }
 
@@ -145,25 +166,42 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
     /// Below this a column is the bar's own acrylic; icons score in the
     /// hundreds. Measured on dark and light bars over a moving wallpaper.
     const THRESHOLD: u32 = 28;
-    /// The last answer: what it was read for (the bar, the tray window, the
-    /// span left out - a scan without the panel's footprint left out is a
-    /// different answer, not a fresher one), when, and the result.
+    /// The last read: the bar it was taken of, when, its column scores, and
+    /// where the panel stood when they were taken. The scores are what is
+    /// kept, not the answer: the answer depends on the span left out (the
+    /// panel's own footprint), and that changes with every placement while
+    /// the screen does not. The footprint at capture is left out too: the
+    /// panel's ink is in the scores, and once the panel moved on, that ink
+    /// read as the tray's start and walked the panel left, twenty pixels a
+    /// placement.
     struct Last {
         bar: Rect,
-        tray_window: Option<i32>,
-        own: Option<(i32, i32)>,
         at: Instant,
-        scan: BandScan,
+        scores: Vec<u32>,
+        own: Option<(i32, i32)>,
     }
     static CACHE: Mutex<Option<Last>> = Mutex::new(None);
+    let origin = if edge.vertical() { bar.1 } else { bar.0 };
+    // A quiet stretch this long separates the buttons from the tray cluster;
+    // the gaps inside the cluster are a third of it.
+    let gap = (20.0 * bar_scale(thickness(edge, bar))).round() as usize;
+    let answer = |scores: &[u32], skips: [Option<(i32, i32)>; 2]| -> BandScan {
+        let tray_start = match tray_window {
+            Some(_) => None,
+            None => tray_start_from_scores(scores, origin, skips, gap, THRESHOLD),
+        };
+        let band_end = tray_window
+            .or(tray_start)
+            .and_then(|t| band_end_from_scores(scores, origin, t, skips, THRESHOLD));
+        BandScan {
+            tray_start,
+            band_end,
+        }
+    };
     if let Ok(c) = CACHE.lock() {
         if let Some(l) = c.as_ref() {
-            if l.bar == bar
-                && l.tray_window == tray_window
-                && l.own == own
-                && l.at.elapsed() < Duration::from_secs(1)
-            {
-                return l.scan;
+            if l.bar == bar && l.at.elapsed() < Duration::from_secs(1) {
+                return answer(&l.scores, [own, l.own]);
             }
         }
     }
@@ -201,9 +239,10 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
         let _ = DeleteDC(mem);
         ReleaseDC(None, screen);
     }
-    let scan = if px.is_empty() {
-        BandScan::default()
-    } else {
+    if px.is_empty() {
+        return BandScan::default();
+    }
+    let scores: Vec<u32> = {
         // One score per column along the axis, over the inner rows (the bar's
         // edge rows carry its own border): the farthest pixel from the median.
         let (len, thick) = if edge.vertical() { (h, w) } else { (w, h) };
@@ -241,7 +280,7 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
             median(&mut chan[1]),
             median(&mut chan[2]),
         ];
-        let scores: Vec<u32> = (0..len)
+        (0..len)
             .map(|i| {
                 (inner..thick - inner)
                     .map(|j| {
@@ -251,30 +290,15 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
                     .max()
                     .unwrap_or(0)
             })
-            .collect();
-        let origin = if edge.vertical() { bar.1 } else { bar.0 };
-        // A quiet stretch this long separates the buttons from the tray
-        // cluster; the gaps inside the cluster are a third of it.
-        let gap = (20.0 * bar_scale(thickness(edge, bar))).round() as usize;
-        let tray_start = match tray_window {
-            Some(_) => None,
-            None => tray_start_from_scores(&scores, origin, own, gap, THRESHOLD),
-        };
-        let band_end = tray_window
-            .or(tray_start)
-            .and_then(|t| band_end_from_scores(&scores, origin, t, own, THRESHOLD));
-        BandScan {
-            tray_start,
-            band_end,
-        }
+            .collect()
     };
+    let scan = answer(&scores, [own, None]);
     if let Ok(mut c) = CACHE.lock() {
         *c = Some(Last {
             bar,
-            tray_window,
-            own,
             at: Instant::now(),
-            scan,
+            scores,
+            own,
         });
     }
     scan
@@ -664,11 +688,10 @@ pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> b
             return false;
         }
         // Same shell process, different screen: the panel is not obstructed.
-        let Some(slot) = taskbar_slot(target, None) else {
+        let Some(bar) = taskbar_rect(target) else {
             return true;
         };
-        let panel_monitor =
-            monitor_at((slot.bar.0 + slot.bar.2) / 2, (slot.bar.1 + slot.bar.3) / 2);
+        let panel_monitor = monitor_at((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
         let scrim_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST).0 as isize;
         panel_monitor == scrim_monitor
     }
@@ -749,12 +772,12 @@ fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay
         // every presentation path (suppress_for_fullscreen) until an explicit
         // restore, hiding the panel indefinitely on a spurious query failure
         // rather than just skipping one obstruction check.
-        let Some(slot) = taskbar_slot(target, None) else {
+        let Some(bar) = taskbar_rect(target) else {
             return false;
         };
         let bar_monitor = windows::Win32::Graphics::Gdi::HMONITOR(monitor_at(
-            (slot.bar.0 + slot.bar.2) / 2,
-            (slot.bar.1 + slot.bar.3) / 2,
+            (bar.0 + bar.2) / 2,
+            (bar.1 + bar.3) / 2,
         ) as _);
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
@@ -1222,6 +1245,13 @@ pub fn toast_app_id() -> String {
         }
     }
     APP_USER_MODEL_ID.to_string()
+}
+
+/// Whether the menu icon size the system asks for is 32 px or more, i.e.
+/// the primary display runs at 200%+ scaling (menus follow the system DPI).
+pub fn menu_scale_is_200() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSMICON};
+    unsafe { GetSystemMetrics(SM_CXSMICON) >= 32 }
 }
 
 /// Hand a URL to the default browser through the shell, the same path a

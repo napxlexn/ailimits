@@ -49,6 +49,14 @@ Notable, user-visible changes. Dates are release dates.
   muda 0.15 to 0.20, tray-icon 0.19 to 0.25); the new tao releases that lock
   before peeking. The update also collapses the two copies of the Windows
   bindings the app carried into one.
+- **The panel no longer flashes when Start closes on an auto-hide bar.**
+  While Start is up the shell holds the bar above every topmost window; as
+  Start closed the bar dropped back and the panel surfaced over it by
+  itself for the half second before the bar left. The panel is now put
+  under the bar while the Start or Search scrim is up and stays there for
+  0.7 s after it goes; a bar that stays gets the panel back after that, a
+  bar that leaves takes nothing with it. The slides themselves are as they
+  were: the panel rides the bar in and out.
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer
   restarts.** The move/auto-hide watch is a WinEvent hook scoped to
   Explorer's process; when Explorer is killed and started again (or crashes

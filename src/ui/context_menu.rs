@@ -9,7 +9,7 @@ use crate::config::schema::{
     WidthScale,
 };
 use anyhow::Result;
-use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 /// Background opacity steps, %.
 const OPACITY_STEPS: &[u8] = &[15, 25, 35, 50, 70, 85];
@@ -72,6 +72,26 @@ pub enum MenuAction {
 /// The project page the version line opens.
 pub const PROJECT_URL: &str = "https://github.com/napxlexn/ailimits";
 
+/// The GitHub mark for the version line: Octicons' `mark-github` (MIT),
+/// rasterised to 16 px (32 px for a 200% menu) as straight RGBA, white ink,
+/// and quietened to 40% here so it sits back from the text. None if the
+/// bytes do not make an icon, in which case the line simply has no mark.
+fn github_mark() -> Option<muda::Icon> {
+    const MARK_16: &[u8] = include_bytes!("../../assets/github-mark-16.rgba");
+    const MARK_32: &[u8] = include_bytes!("../../assets/github-mark-32.rgba");
+    const INK: u32 = 102; // 40% of 255
+    let (bytes, size) = if crate::platform::menu_scale_is_200() {
+        (MARK_32, 32)
+    } else {
+        (MARK_16, 16)
+    };
+    let quiet: Vec<u8> = bytes
+        .chunks_exact(4)
+        .flat_map(|px| [px[0], px[1], px[2], (px[3] as u32 * INK / 255) as u8])
+        .collect();
+    muda::Icon::from_rgba(quiet, size, size).ok()
+}
+
 /// The step closest to a value.
 fn closest_step(steps: &[u8], value: u8) -> u8 {
     steps
@@ -132,7 +152,7 @@ pub struct ContextMenu {
     remove_usage_items: Vec<(MenuItem, String)>,
     quit_item: MenuItem,
     /// The version line; opens the project page.
-    version_item: MenuItem,
+    version_item: IconMenuItem,
 }
 
 impl ContextMenu {
@@ -407,15 +427,14 @@ impl ContextMenu {
         }
 
         let quit_item = MenuItem::new("Quit", true, None);
-        // The version line doubles as the way to the project: the trailing
-        // arrow is the one cue a native menu offers for "this leaves the app"
-        // (no underline, no colour - a Win32 menu paints neither).
-        let version_item = MenuItem::new(
-            format!(
-                "AI Limits v{} \u{2014} GitHub \u{2197}",
-                env!("CARGO_PKG_VERSION")
-            ),
+        // The version line doubles as the way to the project. The GitHub mark
+        // in the icon column is the cue, drawn quiet (40% ink) so the line
+        // reads as information first; the words stay plain, since a native
+        // menu paints an item's text itself and dims only what it disables.
+        let version_item = IconMenuItem::new(
+            format!("AI Limits v{}", env!("CARGO_PKG_VERSION")),
             true,
+            github_mark(),
             None,
         );
 
