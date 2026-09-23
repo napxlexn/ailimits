@@ -171,7 +171,6 @@ fn palette_spec(palette: &Palette) -> PaletteSpec {
 /// 0% = greyscale, 100% = the full color.
 fn level_color(base: (f32, f32, f32), delta: (f32, f32, f32), sat: f32) -> Color {
     let (r, g, b) = (base.0 + delta.0, base.1 + delta.1, base.2 + delta.2);
-    // Rec. 709 luma — perceptual luminance.
     let lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     let mix = |v: f32| (lum + (v - lum) * sat).clamp(0.0, 255.0) as u8;
     Color {

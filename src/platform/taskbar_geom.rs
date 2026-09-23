@@ -213,9 +213,6 @@ mod tests {
         );
     }
 
-    /// The panel degrades to a tray icon whenever it cannot be seen. Each
-    /// input is already scoped to the panel's own monitor by the caller;
-    /// this is the rule that combines them.
     #[test]
     fn any_single_obstruction_forces_the_tray_icon() {
         assert!(

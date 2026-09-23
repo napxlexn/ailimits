@@ -67,8 +67,6 @@ pub fn run(
     let reset = reset_at.map(|r| r.to_rfc3339());
 
     runtime.spawn(async move {
-        // Absolute cmd.exe, not the bare name: a "cmd.exe" planted in the
-        // process's working directory must never run instead of the system one.
         let mut cmd = tokio::process::Command::new(system_cmd_exe());
         cmd.args(["/C", &command]);
         cmd.env("AILIMITS_EVENT", event_name);

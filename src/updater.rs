@@ -396,9 +396,6 @@ mod tests {
         assert!(p.ends_with("AiLimits/ailimits.exe") || p.ends_with(r"AiLimits\ailimits.exe"));
     }
 
-    /// The self-update guard: only a copy inside the installer-managed
-    /// directory may reinstall itself. A Scoop or portable copy running the
-    /// installer would create a second install and leave itself stale.
     #[test]
     fn a_copy_inside_the_managed_dir_is_recognised() {
         let dir = std::env::temp_dir().join("ailimits_managed_test");

@@ -270,7 +270,6 @@ impl ProviderData {
     /// Windows that have not reset yet keep their last value — actual usage
     /// is at least the last known one.
     pub fn aged_for_display(&self) -> ProviderData {
-        // Extrapolate only stale Ok data.
         if self.stale_age_secs().is_none() || !matches!(self.status, ProviderStatus::Ok) {
             return self.clone();
         }

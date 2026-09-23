@@ -216,9 +216,8 @@ impl ClaudeProvider {
                 }
                 Ok(Some(self.data(ProviderStatus::Ok, metrics)))
             }
-            // 401/403 → stale token; 429 → the shared per-token bucket is
-            // momentarily empty (see fetch_via_subscription). The endpoint is
-            // undocumented, so any non-200 falls back quietly.
+            // 401/403 → stale token. The endpoint is undocumented, so any
+            // non-200 falls back quietly.
             status => {
                 if status == 429 {
                     *rate_limited = true;

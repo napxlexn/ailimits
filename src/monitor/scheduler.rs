@@ -52,11 +52,7 @@ impl Scheduler {
     ///
     /// Adaptive, but conservative — it only ever polls LESS than the user's
     /// interval, never more (matching the project rule for undocumented
-    /// endpoints: "when unsure, poll less"):
-    ///   - Pause entirely when the user is idle / the workstation is locked,
-    ///     resuming immediately on activity.
-    ///   - Back off (up to MAX_BACKOFF_SECS) when a whole cycle yields no
-    ///     success, resetting to the baseline the moment anything succeeds.
+    /// endpoints: "when unsure, poll less").
     pub async fn run(self) {
         info!(
             "Scheduler started, interval {}s",
@@ -125,8 +121,7 @@ impl Scheduler {
         let mut handles = Vec::with_capacity(providers.len());
         for provider in providers {
             let tx = self.cmd_tx.clone();
-            // Each provider gets its own tokio task; the JoinHandle yields
-            // whether it succeeded so the loop can decide on backoff.
+            // Each provider gets its own tokio task.
             handles.push(tokio::spawn(async move {
                 match provider.fetch().await {
                     Ok(data) => {

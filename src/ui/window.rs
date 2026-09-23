@@ -82,8 +82,7 @@ pub const MAGNET_RANGE: f64 = 64.0;
 /// beyond `range` the position is left untouched. X and Y are handled
 /// independently so a corner snaps on both axes. `pos`/`size` are the window's
 /// top-left and size; `work` is (left, top, right, bottom) of the monitor work
-/// area. Nothing locks: as the cursor pulls away the distance grows and the pull
-/// fades, so the drag stays controllable.
+/// area.
 pub fn magnet_snap(
     pos: (f64, f64),
     size: (f64, f64),
@@ -165,8 +164,6 @@ mod tests {
 
     #[test]
     fn a_window_larger_than_the_screen_keeps_its_top_left_visible() {
-        // Clamping the far edge first would push the origin off-screen, which
-        // is worse: the corner that carries the first provider must stay put.
         assert_eq!(
             clamp_to_work_area((300.0, 200.0), (1200.0, 900.0), AREA),
             (0.0, 0.0)

@@ -105,9 +105,6 @@ fn row_tier(detail: &DetailLevel, row_w: f32) -> RowTier {
             }
         }
         DetailLevel::Medium | DetailLevel::Expanded => {
-            // Name (left) and percent (right) share the top line. Both are
-            // drawn with the row's full width as their box, so once they stop
-            // fitting side by side they overlap instead of truncating.
             if row_w >= NAME_WIDTH + PCT_WIDTH + ROW_GAP {
                 RowTier::Full
             } else if row_w >= PCT_WIDTH {
@@ -364,10 +361,6 @@ mod tests {
         );
     }
 
-    /// Side by side, a column is already fenced off by its own width: the bar
-    /// sits centred with the name under it, so a small gap is enough. Stacked,
-    /// one provider's name would otherwise sit directly against the next one's
-    /// percentage, so that direction needs a wider one.
     #[test]
     fn stacking_is_spaced_more_generously_than_a_row() {
         let row = arrangement_gap(&ColumnFlow::Row);
@@ -392,9 +385,6 @@ mod tests {
         }
     }
 
-    /// The columns layout draws nothing in its side margins, so they carry the
-    /// same small padding at every detail level. A bigger detail level means
-    /// bigger bars and text, not more empty background around them.
     #[test]
     fn side_margins_do_not_grow_with_the_detail_level() {
         let margin = |detail| {

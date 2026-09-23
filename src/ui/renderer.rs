@@ -32,8 +32,8 @@ pub(crate) const FONT_CANDIDATES: &[&str] = &[
     r"C:\Windows\Fonts\verdana.ttf",
 ];
 
-/// Load the first usable UI font from the candidate list. Returns None only
-/// if NONE of them can be read/parsed.
+/// Load the first usable UI font from the candidate list. None only when
+/// not one of them can be read and parsed.
 pub(crate) fn load_ui_font() -> Option<Font> {
     for path in FONT_CANDIDATES {
         if let Ok(data) = std::fs::read(path) {
@@ -435,7 +435,6 @@ impl Renderer {
                                 row.w / 2.0,
                             );
                         } else if let Some(label) = stale {
-                            // Show the age only when there is no future reset.
                             self.draw_text(
                                 pixmap,
                                 &label,
@@ -674,9 +673,8 @@ impl Renderer {
         );
 
         if let Some(reset_size) = reset_size {
-            // Same slot ownership as the vertical layout: the reset countdown
-            // first, the forecast only when there is no future reset — but the
-            // hover reason beats both (the user is asking "why").
+            // Same slot ownership as the vertical layout, but the hover reason
+            // beats both (the user is asking "why").
             if let Some(text) = hovered_reason {
                 self.draw_text(
                     pixmap,

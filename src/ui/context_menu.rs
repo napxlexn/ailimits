@@ -132,7 +132,7 @@ pub struct ContextMenu {
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
     /// Which taskbar the mini panel attaches to. Empty on a single-display
-    /// machine — see the "Only worth showing..." comment where it's built.
+    /// machine.
     display_items: Vec<(CheckMenuItem, PanelDisplay)>,
     forecast_item: CheckMenuItem,
     auto_update_item: CheckMenuItem,
@@ -184,8 +184,7 @@ impl ContextMenu {
         .collect();
 
         // Width steps. Only the rows layout can be narrowed: the columns
-        // layouts size themselves from the provider count, so their items are
-        // greyed rather than hidden - a missing menu entry reads as a bug.
+        // layouts size themselves from the provider count.
         let width_submenu = Submenu::new("Width", true);
         let width_items: Vec<(CheckMenuItem, WidthScale)> = [
             ("100%", WidthScale::Full),
@@ -230,10 +229,8 @@ impl ContextMenu {
         // "Indicator" submenu — radio-style choice of the secondary indicator.
         let indicator_submenu = Submenu::new("Indicator", true);
         // The legacy 16px "bars" tray icon stays config-only (too small to
-        // read). A single "Taskbar panel" entry: the transparent overlay
-        // renders identically for panel_rows and panel_grid (the grid layout
-        // was superseded by the top-2 design), so panel_grid in an old config
-        // is just an alias that checks this same item.
+        // read). A single "Taskbar panel" entry: the grid layout was
+        // superseded by the top-2 design.
         let indicator_items: Vec<(CheckMenuItem, IndicatorKind)> = [
             ("Tray icon", IndicatorKind::Tray),
             ("Taskbar panel", IndicatorKind::PanelRows),
@@ -427,10 +424,9 @@ impl ContextMenu {
         }
 
         let quit_item = MenuItem::new("Quit", true, None);
-        // The version line doubles as the way to the project. The GitHub mark
-        // in the icon column is the cue, drawn quiet (40% ink) so the line
-        // reads as information first; the words stay plain, since a native
-        // menu paints an item's text itself and dims only what it disables.
+        // The version line doubles as the way to the project. The words stay
+        // plain, since a native menu paints an item's text itself and dims
+        // only what it disables.
         let version_item = IconMenuItem::new(
             format!("AI Limits v{}", env!("CARGO_PKG_VERSION")),
             true,

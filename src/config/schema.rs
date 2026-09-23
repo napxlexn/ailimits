@@ -16,7 +16,6 @@ where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de> + Default,
 {
-    // Buffer the value, then try to interpret it as T; unknown → default.
     // Config is always TOML, so toml::Value is the right intermediate.
     let raw = toml::Value::deserialize(deserializer)?;
     Ok(T::deserialize(raw).unwrap_or_default())

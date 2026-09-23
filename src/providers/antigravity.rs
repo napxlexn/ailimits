@@ -139,9 +139,7 @@ impl AntigravityProvider {
     }
 
     /// Resolve the Code Assist project id (cached). Unusable/TokenRejected on
-    /// failure — callers must treat both as fatal, since every quota endpoint
-    /// answers a misleading "everything full" default view without the
-    /// project id, and a rejected token cannot succeed on any endpoint.
+    /// failure — callers must treat both as fatal.
     async fn resolve_project(&self, token: &str) -> ProjectResolution {
         if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
             return ProjectResolution::Project(p);
@@ -215,10 +213,8 @@ impl AntigravityProvider {
             }
         };
 
-        // The project id is REQUIRED. Every Code Assist quota endpoint answers
-        // a synthetic "everything full" default view when it is missing, which
-        // is indistinguishable from a genuinely unused account — so report an
-        // honest error instead of rendering numbers we know may be wrong.
+        // The project id is REQUIRED — report an honest error instead of
+        // rendering numbers we know may be wrong.
         let project = match self.resolve_project(&token).await {
             ProjectResolution::Project(p) => p,
             ProjectResolution::TokenRejected => return Ok(self.token_rejected()),

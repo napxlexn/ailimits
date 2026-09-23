@@ -23,8 +23,7 @@ pub async fn load_or_default() -> Result<Config> {
         // First-run persistence is BEST-EFFORT: an unwritable %APPDATA%
         // (full disk, locked-down/roaming profile, AV quarantine) must not
         // stop the widget — it runs fine in-memory on defaults and shows
-        // live data. Persistence everywhere else already only warns on
-        // failure; match that here instead of aborting the whole app.
+        // live data.
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -121,8 +120,8 @@ pub enum SaveMsg {
     Final(Config),
 }
 
-/// The single background config writer. Every write goes through one task, so
-/// two writes can never interleave or land out of order.
+/// The single background config writer. Every write goes through it, so two
+/// writes can never interleave or land out of order.
 pub struct ConfigSaver {
     tx: std::sync::Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
     task: tokio::task::JoinHandle<()>,
