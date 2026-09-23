@@ -1214,6 +1214,106 @@ mod tests {
         println!("{}", path.display());
     }
 
+    /// Composite a tooltip over one solid backdrop and hand back the pixels.
+    fn tooltip_over(text: &str, light: bool, back: (u8, u8, u8)) -> Pixmap {
+        let pm = render_tooltip(text, 48.0, light);
+        let mut out = Pixmap::new(pm.width(), pm.height()).unwrap();
+        out.fill(color(back.0, back.1, back.2, 255));
+        out.draw_pixmap(
+            0,
+            0,
+            pm.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            Transform::identity(),
+            None,
+        );
+        out
+    }
+
+    /// WCAG relative luminance of an 8-bit sRGB triple.
+    fn luminance(p: &[u8]) -> f64 {
+        let ch = |v: u8| {
+            let c = v as f64 / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(p[0]) + 0.7152 * ch(p[1]) + 0.0722 * ch(p[2])
+    }
+
+    fn contrast(a: f64, b: f64) -> f64 {
+        let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The pixel of the box body (above the text, clear of the corners) and the
+    /// most extreme ink pixel inside the box, as luminances.
+    fn body_and_ink(out: &Pixmap, light: bool) -> (f64, f64) {
+        let inset = tip_shadow_inset(48.0) as u32;
+        let px = |x: u32, y: u32| {
+            let i = ((y * out.width() + x) * 4) as usize;
+            luminance(&out.data()[i..i + 4])
+        };
+        let body = px(out.width() / 2, inset + 3);
+        let mut ink = body;
+        for y in (inset + 6)..(out.height() - inset - 4) {
+            for x in (inset + 4)..(out.width() - inset - 4) {
+                let l = px(x, y);
+                if (light && l < ink) || (!light && l > ink) {
+                    ink = l;
+                }
+            }
+        }
+        (body, ink)
+    }
+
+    /// The light theme's tooltip has to be as readable as the dark one. It is
+    /// the theme nobody here runs, so it is checked by measurement rather than
+    /// by looking: the body is near-white at alpha 219 over a light bar, the
+    /// ink is grey 26, and both themes must clear AAA (7:1) by a wide margin.
+    /// The numbers print with `cargo test tooltip_text_contrast -- --nocapture`.
+    #[test]
+    fn tooltip_text_contrast_clears_aaa_in_both_themes() {
+        let text = "Claude 68%  ·  Codex 100%";
+        for (light, back, label) in [
+            (true, (243, 243, 243), "light, over a light bar"),
+            (true, (255, 255, 255), "light, over a white window"),
+            (false, (32, 32, 32), "dark, over a dark bar"),
+            (false, (0, 0, 0), "dark, over black"),
+        ] {
+            let out = tooltip_over(text, light, back);
+            let (body, ink) = body_and_ink(&out, light);
+            let ratio = contrast(body, ink);
+            println!("{label}: text-on-body contrast {ratio:.1}:1");
+            assert!(
+                ratio >= 7.0,
+                "{label}: {ratio:.1}:1 is below AAA — the tooltip is hard to read"
+            );
+        }
+    }
+
+    /// Both themes side by side over the backdrops each actually sits on, for
+    /// the eye to confirm what the contrast test measures.
+    /// Run: `cargo test preview_tooltip_themes -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_tooltip_themes() {
+        let text = "Claude 68%  ·  Codex 100%";
+        for (light, back, name) in [
+            (true, (243, 243, 243), "light_on_bar"),
+            (true, (255, 255, 255), "light_on_white"),
+            (false, (32, 32, 32), "dark_on_bar"),
+            (false, (0, 0, 0), "dark_on_black"),
+        ] {
+            let out = tooltip_over(text, light, back);
+            let path = std::env::temp_dir().join(format!("ailimits_tooltip_{name}.png"));
+            std::fs::write(&path, out.encode_png().unwrap()).unwrap();
+            println!("{}", path.display());
+        }
+    }
+
     /// Design preview for the ring icon: the tray square is far too small to
     /// judge live, so write the states out to %TEMP% at 32px. The top of the
     /// scale (90/95/99/100) is the pair worth staring at.
