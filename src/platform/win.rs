@@ -398,9 +398,8 @@ pub fn present_layered(
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, UpdateLayeredWindow, GWL_EXSTYLE,
-        GWL_STYLE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA,
-        WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU,
-        WS_THICKFRAME,
+        GWL_STYLE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA, WS_CAPTION,
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     };
     if w <= 0 || h <= 0 || bgra.len() < (w * h * 4) as usize {
         return Err(0);
@@ -777,32 +776,70 @@ pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay)
     // plainly still there, and the bar's z-order flickers under a game that
     // flips its stacking. What they agree on is the monitor being covered,
     // which is asked first and answered by geometry alone.
-    let raw = monitor_is_covered(target)
+    let cover = monitor_cover(target);
+    let raw = cover.is_some()
         && (FULLSCREEN_APP.lock().map(|s| s.on).unwrap_or(false) || taskbar_is_buried(target));
-    // A trailing hold shorter than the re-check that follows it, so the
-    // panel is back on the first look after the game lets go rather than a
-    // beat later. It only has to outlast a moment where BOTH witnesses dip
-    // at once, which neither the shell's word (dips of a second, covered by
-    // the bar being buried) nor the z-order (a frame, covered by the shell's
-    // word) does on its own.
-    const HOLD: std::time::Duration = std::time::Duration::from_millis(120);
-    static UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let Ok(mut until) = UNTIL.lock() else {
+    // A trailing hold, and nothing more than that: it only has to outlast a
+    // moment where BOTH witnesses dip at once, which neither the shell's
+    // word (dips of a second, covered by the bar being buried) nor the
+    // z-order (a frame or two, covered by the shell's word) does on its own.
+    //
+    // And it is not paid at all on the way OUT of a game, which is the delay
+    // anyone actually sees. A third witness tells the two cases apart: the
+    // window covering the monitor is still the one in FRONT while the game is
+    // being played - a flicker does not change that - and it is not the
+    // moment the user alt-tabs away, which is the only moment the panel is
+    // waited for. So a quiet verdict with the cover no longer in front is
+    // believed at once, and the hold is left for the flicker it was written
+    // for. (The reverse - alt-tab INTO a game whose window is not in front -
+    // stays covered by the witnesses themselves: the bar is buried under it,
+    // which is raw, not this.)
+    const HOLD: std::time::Duration = std::time::Duration::from_millis(80);
+    let Ok(mut until) = FULLSCREEN_UNTIL.lock() else {
         return raw;
     };
     if raw {
         *until = Some(std::time::Instant::now() + HOLD);
+        HELD_BY_TIMER.store(false, std::sync::atomic::Ordering::Relaxed);
         return true;
     }
+    if !cover.map(cover_is_in_front).unwrap_or(false) {
+        *until = None;
+        HELD_BY_TIMER.store(false, std::sync::atomic::Ordering::Relaxed);
+        return false;
+    }
     match *until {
-        Some(t) if std::time::Instant::now() < t => true,
+        Some(t) if std::time::Instant::now() < t => {
+            HELD_BY_TIMER.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        }
         Some(_) => {
             *until = None;
+            HELD_BY_TIMER.store(false, std::sync::atomic::Ordering::Relaxed);
             false
         }
         None => false,
     }
 }
+
+/// When the trailing hold ends, if the verdict is resting on it: both
+/// witnesses have gone quiet and only the timer still says "fullscreen".
+/// That instant is when the panel may come back, so the loop schedules its
+/// next look for then rather than for a fixed beat that can fall either side
+/// of it. None while the verdict is the witnesses' own - scheduling a look
+/// then would be polling a running game a dozen times a second.
+pub fn fullscreen_hold_remaining() -> Option<std::time::Duration> {
+    if !HELD_BY_TIMER.load(std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    let until = (*FULLSCREEN_UNTIL.lock().ok()?)?;
+    until.checked_duration_since(std::time::Instant::now())
+}
+
+/// The end of the trailing hold on the fullscreen verdict, and whether the
+/// last answer came from it rather than from the witnesses.
+static FULLSCREEN_UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+static HELD_BY_TIMER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether something is drawn over the taskbar itself: three points along
 /// the bar, clear of the panel's own end, all answering with the same window
@@ -986,11 +1023,13 @@ pub fn register_fullscreen_watch() {
     }
 }
 
-/// Whether anything covers the monitor the panel's bar lives on: a visible
+/// What covers the monitor the panel's bar lives on, if anything: a visible
 /// window, not ours and not one of the shell's own surfaces, whose rectangle
 /// contains the monitor. Geometry only - no z-order, no focus - so it is
-/// steady while a game flips its own stacking about.
-fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
+/// steady while a game flips its own stacking about. The window itself is
+/// returned, not just the fact: whether it is still the one in front is what
+/// tells a user who has alt-tabbed away from a witness that merely blinked.
+fn monitor_cover(target: crate::config::schema::PanelDisplay) -> Option<isize> {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
     use windows::Win32::Graphics::Gdi::{
@@ -1051,9 +1090,7 @@ fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
     }
 
     unsafe {
-        let Some(bar) = taskbar_rect(target) else {
-            return false;
-        };
+        let bar = taskbar_rect(target)?;
         let mid = POINT {
             x: (bar.0 + bar.2) / 2,
             y: (bar.1 + bar.3) / 2,
@@ -1063,7 +1100,7 @@ fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
             ..Default::default()
         };
         if !GetMonitorInfoW(MonitorFromPoint(mid, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
-            return false;
+            return None;
         }
         let mut search = Search {
             mon: mi.rcMonitor,
@@ -1074,7 +1111,25 @@ fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
         if let Some(h) = search.found {
             tracing::trace!("monitor covered by {}", describe_window(h));
         }
-        search.found.is_some()
+        search.found
+    }
+}
+
+/// Whether the window covering the monitor still belongs to the process that
+/// is in front. By process, not by handle: a game may put a different window
+/// of its own in front (a launcher overlay, a borderless child), and that is
+/// still being in the game.
+fn cover_is_in_front(cover: isize) -> bool {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GetForegroundWindow, GA_ROOT};
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let fg = GetAncestor(fg, GA_ROOT);
+        let cover_pid = window_pid(HWND(cover as _));
+        cover_pid != 0 && window_pid(fg) == cover_pid
     }
 }
 
@@ -1318,6 +1373,14 @@ fn is_popup_class(hwnd: windows::Win32::Foundation::HWND) -> bool {
     matches!(cls.as_str(), "Xaml_WindowedPopupClass" | "#32768")
 }
 
+/// Whether a window is a popup menu. The panel is deliberately under one
+/// while it is open, and that is not the panel being obstructed: it is the
+/// panel behaving. Told apart by class, so it holds for the shell's menu and
+/// for our own alike.
+pub fn window_is_popup_menu(hwnd: isize) -> bool {
+    hwnd != 0 && is_popup_class(windows::Win32::Foundation::HWND(hwnd as _))
+}
+
 /// The popup menu currently over the given screen rectangle, if one is up.
 /// A menu that opens clear of the panel is left alone: stepping under it
 /// would be a z-order change for nothing.
@@ -1411,8 +1474,7 @@ fn hook_location_changes(pid: u32) {
     use std::sync::atomic::Ordering::Relaxed;
     use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
-        WINEVENT_OUTOFCONTEXT,
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE, WINEVENT_OUTOFCONTEXT,
     };
     unsafe {
         let old = SHOW_HOOK.swap(0, Relaxed);
@@ -1517,14 +1579,19 @@ unsafe extern "system" fn on_event(
             if !is_popup_class(hwnd) {
                 return;
             }
-            tracing::debug!("a shell popup came up: {}", describe_window(hwnd.0 as isize));
+            tracing::debug!(
+                "a shell popup came up: {}",
+                describe_window(hwnd.0 as isize)
+            );
             // Its place is set a moment later; see the location branch above.
             MENU_POPUP.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
             crate::app::UserEvent::PanelMenu
         }
         // Gone again, hidden or destroyed - a XAML popup does both, in that
         // order or neither, so whichever comes first releases the panel.
-        EVENT_OBJECT_HIDE | EVENT_OBJECT_DESTROY if id_object == OBJID_WINDOW.0 && id_child == 0 => {
+        EVENT_OBJECT_HIDE | EVENT_OBJECT_DESTROY
+            if id_object == OBJID_WINDOW.0 && id_child == 0 =>
+        {
             if MENU_POPUP.load(std::sync::atomic::Ordering::Relaxed) != hwnd.0 as isize {
                 return;
             }

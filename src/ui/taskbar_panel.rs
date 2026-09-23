@@ -459,7 +459,14 @@ impl TaskbarPanel {
             return false;
         };
         let owner = crate::platform::point_owner(x + w as i32 / 2, y + h as i32 / 2);
-        let covered = owner != 0 && owner != self.hwnd();
+        // A popup menu over the panel is not the panel being covered - the
+        // panel put itself under that menu on purpose, and it comes back the
+        // moment the menu goes. Counting it would raise the tray icon for as
+        // long as a right-click menu is open, which is not an indicator the
+        // user asked for and not one that helps: the panel is still there,
+        // under a menu, exactly as every other window is.
+        let covered =
+            owner != 0 && owner != self.hwnd() && !crate::platform::window_is_popup_menu(owner);
         if covered {
             tracing::trace!(
                 "panel at {x},{y} {w}x{h} covered by {}",

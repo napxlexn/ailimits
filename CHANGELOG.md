@@ -58,8 +58,17 @@ Notable, user-visible changes. Dates are release dates.
   the other screen leaves this one alone. The word alone flickers (it dips
   for a second at a time while a game is plainly still there), so a bar
   buried under one window at three points counts as well, and the verdict
-  holds for a further 120 ms. Coming back out of a game the panel returns
-  in one step: the tray icon is not put up while the verdict holds.
+  holds for a further 80 ms - four frames, enough to outlast the flicker
+  and no more. The way back out of a game is the part anyone waits for, so
+  it costs as little as it can: the tray icon is never put up while the
+  verdict holds, the hold is skipped outright when the window covering the
+  monitor is no longer the one in front (which is what alt-tab means, and
+  what a flicker never looks like), and the panel keeps lifting itself
+  until it is over the bar again - for a moment after a game lets go the
+  shell holds its bar in a band no ordinary window can beat. Measured on a
+  stand-in fullscreen window on the second monitor, sampling the panel's
+  own pixel every 10 ms: back on screen 25-27 ms after the alt-tab, where
+  it used to be 174-262 ms.
 - **The panel survives a taskbar thumbnail.** Hovering an app button on the
   bar raises its preview, and the shell clears every window off the
   monitor for it - Aero Peek - which took the panel with it. The panel is
@@ -87,7 +96,9 @@ Notable, user-visible changes. Dates are release dates.
   reports, so it is caught by class when the shell shows one and measured
   when it takes its place a moment later; while it reaches over the panel,
   every raise the panel would do puts it directly under the menu instead.
-  It returns on top when the menu goes.
+  It returns on top when the menu goes. A menu over the panel does not
+  raise the tray icon either: the panel is not obstructed there, it is
+  under a menu on purpose, as every other window is.
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer
   restarts.** The move/auto-hide watch is a WinEvent hook scoped to
   Explorer's process; when Explorer is killed and started again (or crashes

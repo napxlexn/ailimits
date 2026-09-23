@@ -120,7 +120,7 @@ fn eval_indicator_fallback(
     fallback_was_active: &mut bool,
     fullscreen_was_active: &mut bool,
     target: crate::config::schema::PanelDisplay,
-) {
+) -> bool {
     let scrim = crate::platform::foreground_scrim_active(target);
     let fullscreen = crate::platform::fullscreen_foreground_active(target);
     // While hidden for fullscreen the rect is None, so is_covered reads false —
@@ -192,13 +192,18 @@ fn eval_indicator_fallback(
         // since the last evaluation.
         panel.suppress_for_fullscreen();
     }
-    if *fullscreen_was_active && !fullscreen {
+    let left_fullscreen = *fullscreen_was_active && !fullscreen;
+    if left_fullscreen {
         panel.restore_from_fullscreen(providers);
     } else if *fallback_was_active && !fallback {
         panel.redraw(providers);
     }
     *fullscreen_was_active = fullscreen;
     *fallback_was_active = fallback;
+    // The caller wants to know: for a moment after a fullscreen app lets go
+    // the shell holds its bar in a band no ordinary topmost window can beat,
+    // and the panel is BEHIND the bar until that lapses. See `bounce_until`.
+    left_fullscreen
 }
 
 /// Loading placeholder before the first fetch.
@@ -925,6 +930,16 @@ pub fn run() -> Result<()> {
     let mut fullscreen_was_active = false;
     #[cfg(target_os = "windows")]
     let mut recheck_at: Option<std::time::Instant> = None;
+    // How long, and how often, the panel keeps trying to get back over the
+    // bar after a fullscreen app lets go. 500ms is generous for a band the
+    // shell drops within about 200; 24ms is a frame and a half, which is as
+    // often as the compositor can show a difference anyway.
+    #[cfg(target_os = "windows")]
+    const BOUNCE_FOR: std::time::Duration = std::time::Duration::from_millis(500);
+    #[cfg(target_os = "windows")]
+    const BOUNCE_EVERY: std::time::Duration = std::time::Duration::from_millis(24);
+    #[cfg(target_os = "windows")]
+    let mut bounce_until: Option<std::time::Instant> = None;
     // The hover tooltip appears only after the cursor lingers for the system
     // mouse-hover time (the same delay tray-icon tooltips use), tracked by this
     // deadline; it is cancelled the moment the cursor leaves.
@@ -1003,7 +1018,7 @@ pub fn run() -> Result<()> {
                         // given, so the stale position survived until the next
                         // slide or the 60-second provider tick.
                         panel.on_taskbar_moved(&visible_data(&config, &display));
-                        eval_indicator_fallback(
+                        if eval_indicator_fallback(
                             &mut panel,
                             &mut tray,
                             &menu.menu,
@@ -1012,7 +1027,36 @@ pub fn run() -> Result<()> {
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
                             config.general.panel_display,
-                        );
+                        ) {
+                            bounce_until = Some(now + BOUNCE_FOR);
+                        }
+                        // The verdict may now be resting on its trailing hold
+                        // alone - the game has let go and only the timer still
+                        // says otherwise. Look again exactly when it lapses;
+                        // without this the panel waits for whatever event
+                        // happens by next, which after an alt-tab can be a
+                        // while, and the screen sits there with no indicator.
+                        if let Some(rest) = crate::platform::fullscreen_hold_remaining() {
+                            recheck_at = Some(now + rest + std::time::Duration::from_millis(5));
+                        }
+                    }
+                }
+                // Straight after a fullscreen app lets go the shell keeps its
+                // bar in a band an ordinary topmost window cannot beat, and
+                // the panel - placed, painted, correct - is simply BEHIND the
+                // bar. Measured: the panel's own pixel showed the taskbar for
+                // 174 ms after the alt-tab, and what finally uncovered it was
+                // a raise on the next scheduled look. So it is lifted again
+                // every BOUNCE_EVERY until it shows, and given up on after
+                // BOUNCE_FOR - a few dozen cheap calls, once per game, and
+                // nothing at all in ordinary use.
+                if let Some(deadline) = bounce_until {
+                    if now >= deadline || !panel.is_covered() {
+                        bounce_until = None;
+                    } else {
+                        panel.raise();
+                        let next = now + BOUNCE_EVERY;
+                        recheck_at = Some(recheck_at.map_or(next, |t| t.min(next)));
                     }
                 }
                 if let Some(t) = tooltip_at {
@@ -1428,7 +1472,7 @@ pub fn run() -> Result<()> {
                     // fullscreen state) a moment later with no further event.
                     #[cfg(target_os = "windows")]
                     {
-                        eval_indicator_fallback(
+                        if eval_indicator_fallback(
                             &mut panel,
                             &mut tray,
                             &menu.menu,
@@ -1437,9 +1481,22 @@ pub fn run() -> Result<()> {
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
                             config.general.panel_display,
-                        );
-                        recheck_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
+                        ) {
+                            bounce_until = Some(std::time::Instant::now() + BOUNCE_FOR);
+                        }
+                        // 150ms for the bar's own settling, or sooner when the
+                        // fullscreen verdict is only resting on its hold: the
+                        // alt-tab out of a game is exactly this case, and the
+                        // panel should be back the moment the hold lapses.
+                        let now = std::time::Instant::now();
+                        let wait = if bounce_until.is_some() {
+                            BOUNCE_EVERY
+                        } else {
+                            crate::platform::fullscreen_hold_remaining()
+                                .map(|rest| rest + std::time::Duration::from_millis(5))
+                                .unwrap_or(std::time::Duration::from_millis(150))
+                        };
+                        recheck_at = Some(now + wait);
                     }
                     panel.raise();
                 }
