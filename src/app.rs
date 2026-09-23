@@ -165,7 +165,18 @@ fn eval_indicator_fallback(
             unavailable
         );
     }
-    tray.set_scrim_fallback(fallback, menu, providers, theme);
+    // The tray icon stands in where the bar can be seen. It is NOT put up
+    // for a fullscreen app: the bar is buried then and the icon with it, so
+    // the only thing it achieves is widening the tray by its own 32 px -
+    // and when the game is left, the panel comes back at the wider tray's
+    // place and then steps sideways as the icon goes. The panel's own
+    // suppression for fullscreen is unchanged; this is only about the icon.
+    tray.set_scrim_fallback(
+        (scrim || covered || unavailable) && !fullscreen,
+        menu,
+        providers,
+        theme,
+    );
     if fullscreen {
         // Idempotent — also re-hides the panel if anything re-presented it
         // since the last evaluation.
@@ -885,6 +896,9 @@ pub fn run() -> Result<()> {
     panel.set_display(config.general.panel_display);
     #[cfg(target_os = "windows")]
     crate::platform::install_taskbar_watch(proxy.clone(), config.general.panel_display);
+    // The shell's own word on fullscreen apps, for the panel's stand-down.
+    #[cfg(target_os = "windows")]
+    crate::platform::register_fullscreen_watch();
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
     let mut window_visible = true;
     // The indicator falls back to a tray icon while a Panel overlay cannot be

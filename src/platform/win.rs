@@ -40,6 +40,7 @@ use crate::platform::taskbar_geom::{Edge, Rect};
 pub fn taskbar_slot(
     target: crate::config::schema::PanelDisplay,
     own: Option<(i32, i32)>,
+    read_screen: bool,
 ) -> Option<TaskbarSlot> {
     use crate::platform::taskbar_geom::{bar_visible, edge_of, estimated_tray_start};
     use windows::core::w;
@@ -92,13 +93,17 @@ pub fn taskbar_slot(
         // With no tray window the scan of the bar's pixels places the tray
         // too (the busy cluster at the far end); the DIP reserve is the last
         // resort, for a hidden bar or an unreadable screen. Only a bar at
-        // rest is read: a screen read costs ~50 ms of the compositor's time,
-        // and paid at every step of a slide it held the panel back from the
-        // bar it was meant to ride.
+        // rest is read, and only when the caller asks (`read_screen`): a
+        // screen read costs ~50 ms of the compositor's time, and a read on
+        // every re-check saw whatever happened to lie on the bar at that
+        // instant - a thumbnail's shadow, a tooltip - and flipped the room
+        // verdict back and forth, which showed as the panel blinking.
         let at_rest = crate::platform::taskbar_geom::bar_on_screen(edge, bar, mon)
             >= crate::platform::taskbar_geom::thickness(edge, bar);
-        let scan = if visible && at_rest {
-            scan_bar(edge, bar, tray, own)
+        // A bar in flight is never read, but the last read of it is used, so
+        // the panel rides the slide at the place it will end up.
+        let scan = if visible {
+            scan_bar(edge, bar, tray, own, read_screen && at_rest)
         } else {
             BandScan::default()
         };
@@ -152,7 +157,13 @@ struct BandScan {
 /// Cost: one BitBlt of a 48-pixel strip and a pass over it, well under a
 /// millisecond; the result is kept for a second so a slide's burst of move
 /// events reads it once.
-fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i32)>) -> BandScan {
+fn scan_bar(
+    edge: Edge,
+    bar: Rect,
+    tray_window: Option<i32>,
+    own: Option<(i32, i32)>,
+    read_screen: bool,
+) -> BandScan {
     use crate::platform::taskbar_geom::{
         band_end_from_scores, bar_scale, thickness, tray_start_from_scores,
     };
@@ -175,13 +186,21 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
     /// read as the tray's start and walked the panel left, twenty pixels a
     /// placement.
     struct Last {
-        bar: Rect,
+        /// The bar's extent along its axis: a bar sliding in or out keeps
+        /// it, so the read taken at rest serves the whole slide and the
+        /// panel does not hop sideways when the bar arrives.
+        span: (i32, i32),
         at: Instant,
         scores: Vec<u32>,
         own: Option<(i32, i32)>,
     }
     static CACHE: Mutex<Option<Last>> = Mutex::new(None);
     let origin = if edge.vertical() { bar.1 } else { bar.0 };
+    let span = if edge.vertical() {
+        (bar.1, bar.3)
+    } else {
+        (bar.0, bar.2)
+    };
     // A quiet stretch this long separates the buttons from the tray cluster;
     // the gaps inside the cluster are a third of it.
     let gap = (20.0 * bar_scale(thickness(edge, bar))).round() as usize;
@@ -198,12 +217,18 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
             band_end,
         }
     };
+    // Without a fresh read the last read of this bar stands, however old:
+    // the answer must not move between a placement that read the screen and
+    // one that did not, or the panel steps sideways on every re-check.
     if let Ok(c) = CACHE.lock() {
         if let Some(l) = c.as_ref() {
-            if l.bar == bar && l.at.elapsed() < Duration::from_secs(1) {
+            if l.span == span && (!read_screen || l.at.elapsed() < Duration::from_secs(1)) {
                 return answer(&l.scores, [own, l.own]);
             }
         }
+    }
+    if !read_screen {
+        return BandScan::default();
     }
     let (w, h) = (bar.2 - bar.0, bar.3 - bar.1);
     if w <= 0 || h <= 0 || w * h > 4_000_000 {
@@ -295,7 +320,7 @@ fn scan_bar(edge: Edge, bar: Rect, tray_window: Option<i32>, own: Option<(i32, i
     let scan = answer(&scores, [own, None]);
     if let Ok(mut c) = CACHE.lock() {
         *c = Some(Last {
-            bar,
+            span,
             at: Instant::now(),
             scores,
             own,
@@ -403,6 +428,17 @@ pub fn present_layered(
         if style & caption != 0 {
             SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !caption) | WS_POPUP.0 as isize);
             let _ = SetWindowRgn(hwnd, None, false);
+            // Keep the overlay on screen while the shell peeks at a window
+            // (the cursor resting on a taskbar thumbnail): peek fades every
+            // other top-level window out, and took the panel with it.
+            // DWMWA_EXCLUDED_FROM_PEEK = 12.
+            let keep: u32 = 1;
+            let _ = windows::Win32::Graphics::Dwm::DwmSetWindowAttribute(
+                hwnd,
+                windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(12),
+                &keep as *const u32 as _,
+                std::mem::size_of::<u32>() as u32,
+            );
         }
 
         let screen_dc = GetDC(None);
@@ -712,86 +748,331 @@ fn monitor_at(x: i32, y: i32) -> isize {
 /// While true the indicator hides the panel, exactly like the taskbar; the
 /// next foreground change (alt-tab back to the desktop) restores it.
 pub fn fullscreen_foreground_active(target: crate::config::schema::PanelDisplay) -> bool {
-    // Deliberately NOT SHQueryUserNotificationState: that reports a
-    // machine-wide state which stays "busy" for as long as a fullscreen game
-    // is RUNNING, even while the user is back on the desktop with another
-    // window focused — the panel would then stay hidden exactly when it
-    // should be back (verified 2026-07-22: QUNS_BUSY with a maximized browser
-    // in the foreground). What matters is whether a fullscreen window is in
-    // FRONT of the taskbar right now, which the geometric check answers
-    // precisely, with no shell-update latency.
-    foreground_covers_taskbar_monitor(target)
+    // The shell is asked, not guessed at. It already decides when to put its
+    // own taskbar away for a fullscreen app, and it says so: an appbar gets
+    // ABN_FULLSCREENAPP when one opens and again when it goes (see
+    // `register_fullscreen_watch`). Everything tried before this read some
+    // consequence of that decision and got it wrong in both directions:
+    //
+    // - SHQueryUserNotificationState stays "busy" for as long as a game is
+    //   RUNNING, even with the user back on the desktop (2026-07-22);
+    // - the FOREGROUND window's geometry misses a game that is covering the
+    //   screen without focus - alt-tab into Anno 1800 and the panel was
+    //   drawn over it while focus sat elsewhere;
+    // - the window's style says nothing: a terminal sized to the screen
+    //   looks exactly like a game;
+    // - the z-order over the bar's own pixels flickers - Anno lets the bar
+    //   through for a frame every second or two, and the panel came back
+    //   over the game each time ("taskbar free again: the bar itself is on
+    //   top at a sample point").
+    //
+    // The notification is machine-wide, so it is paired with the one thing
+    // geometry answers reliably: is anything actually covering the monitor
+    // the panel lives on? A game on the other display then leaves this one
+    // alone, which is the scoping the panel gained in 0.6.1.
+    // Two ways to know, and either will do, because each has a blind spot:
+    // the shell dips its own signal for a second or more while a game is
+    // plainly still there, and the bar's z-order flickers under a game that
+    // flips its stacking. What they agree on is the monitor being covered,
+    // which is asked first and answered by geometry alone.
+    let raw = monitor_is_covered(target)
+        && (FULLSCREEN_APP.lock().map(|s| s.on).unwrap_or(false) || taskbar_is_buried(target));
+    // A trailing hold shorter than the re-check that follows it, so the
+    // panel is back on the first look after the game lets go rather than a
+    // beat later. It only has to outlast a moment where BOTH witnesses dip
+    // at once, which neither the shell's word (dips of a second, covered by
+    // the bar being buried) nor the z-order (a frame, covered by the shell's
+    // word) does on its own.
+    const HOLD: std::time::Duration = std::time::Duration::from_millis(120);
+    static UNTIL: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let Ok(mut until) = UNTIL.lock() else {
+        return raw;
+    };
+    if raw {
+        *until = Some(std::time::Instant::now() + HOLD);
+        return true;
+    }
+    match *until {
+        Some(t) if std::time::Instant::now() < t => true,
+        Some(_) => {
+            *until = None;
+            false
+        }
+        None => false,
+    }
 }
 
-/// Whether the current foreground window covers the ENTIRE monitor that hosts
-/// the taskbar (rcMonitor). The desktop itself (Progman/WorkerW), this
-/// process's own windows, and MAXIMIZED windows do not count: with an
-/// auto-hide taskbar the work area is the whole monitor, so a maximized
-/// window's rect (frame borders included) contains rcMonitor too — but it is
-/// an ordinary window the bar slides over, not a fullscreen app. Real games
-/// run as popup windows without WS_MAXIMIZE; F11 browser fullscreen is caught
-/// by the shell state either way.
-fn foreground_covers_taskbar_monitor(target: crate::config::schema::PanelDisplay) -> bool {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+/// Whether something is drawn over the taskbar itself: three points along
+/// the bar, clear of the panel's own end, all answering with the same window
+/// that is neither the bar nor ours. A browser gone fullscreen over a video
+/// is caught this way even when the shell says nothing.
+fn taskbar_is_buried(target: crate::config::schema::PanelDisplay) -> bool {
+    use crate::platform::taskbar_geom::{bar_visible, edge_of};
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
-        GetWindowThreadProcessId, GWL_STYLE, WS_MAXIMIZE,
+        GetAncestor, GetClassNameW, GetWindowThreadProcessId, WindowFromPoint, GA_ROOT,
     };
     unsafe {
-        let fg = GetForegroundWindow();
-        if fg.0.is_null() {
-            return false;
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(fg, Some(&mut pid));
-        if pid == GetCurrentProcessId() {
-            return false;
-        }
-        let style = GetWindowLongPtrW(fg, GWL_STYLE);
-        if style as u32 & WS_MAXIMIZE.0 != 0 {
-            return false;
-        }
-        let mut cls = [0u16; 32];
-        let n = GetClassNameW(fg, &mut cls);
-        if n > 0 {
-            let cls = String::from_utf16_lossy(&cls[..n as usize]);
-            // The desktop is monitor-sized by definition — not a fullscreen app.
-            if cls == "Progman" || cls == "WorkerW" {
-                return false;
-            }
-        }
-        // The panel's display, not the primary one. A game fullscreen on the
-        // secondary must hide a panel that lives there; a game on the primary
-        // must not.
-        //
-        // No taskbar slot to compare against: assume NOT fullscreen. `false`
-        // is the less destructive answer here — unlike the scrim check above,
-        // where an unresolved slot assumes obstruction, `true` would gate
-        // every presentation path (suppress_for_fullscreen) until an explicit
-        // restore, hiding the panel indefinitely on a spurious query failure
-        // rather than just skipping one obstruction check.
         let Some(bar) = taskbar_rect(target) else {
             return false;
         };
-        let bar_monitor = windows::Win32::Graphics::Gdi::HMONITOR(monitor_at(
-            (bar.0 + bar.2) / 2,
-            (bar.1 + bar.3) / 2,
-        ) as _);
+        let mid = POINT {
+            x: (bar.0 + bar.2) / 2,
+            y: (bar.1 + bar.3) / 2,
+        };
         let mut mi = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if !GetMonitorInfoW(bar_monitor, &mut mi).as_bool() {
-            return false;
-        }
-        let mut wr = RECT::default();
-        if GetWindowRect(fg, &mut wr).is_err() {
+        if !GetMonitorInfoW(MonitorFromPoint(mid, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
             return false;
         }
         let m = mi.rcMonitor;
-        wr.left <= m.left && wr.top <= m.top && wr.right >= m.right && wr.bottom >= m.bottom
+        let mon = (m.left, m.top, m.right, m.bottom);
+        let edge = edge_of(bar, mon);
+        if !bar_visible(edge, bar, mon) {
+            return false;
+        }
+        let ours = GetCurrentProcessId();
+        let mut over: Option<isize> = None;
+        for frac in [20, 50, 80] {
+            let p = if edge.vertical() {
+                POINT {
+                    x: (bar.0 + bar.2) / 2,
+                    y: bar.1 + (bar.3 - bar.1) * frac / 100,
+                }
+            } else {
+                POINT {
+                    x: bar.0 + (bar.2 - bar.0) * frac / 100,
+                    y: (bar.1 + bar.3) / 2,
+                }
+            };
+            let hwnd = WindowFromPoint(p);
+            if hwnd.0.is_null() {
+                return false;
+            }
+            let root = GetAncestor(hwnd, GA_ROOT);
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(root, Some(&mut pid));
+            if pid == ours {
+                return false;
+            }
+            let mut cls = [0u16; 48];
+            let n = GetClassNameW(root, &mut cls);
+            let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+            if cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd" {
+                return false;
+            }
+            match over {
+                None => over = Some(root.0 as isize),
+                Some(seen) if seen == root.0 as isize => {}
+                Some(_) => return false,
+            }
+        }
+        over.is_some()
+    }
+}
+
+/// Set from the shell's ABN_FULLSCREENAPP notifications.
+/// What the shell has said about fullscreen apps: the state, when it last
+/// said the state had ended, and which process was in front when it began.
+struct FullscreenSignal {
+    on: bool,
+}
+
+static FULLSCREEN_APP: std::sync::Mutex<FullscreenSignal> =
+    std::sync::Mutex::new(FullscreenSignal { on: false });
+
+/// What the shell has said about fullscreen apps. Taken as it comes: its
+/// dips - "gone" for a second or so every few seconds while a game is
+/// plainly still there (measured with Anno 1800: up, 3 s, gone, 1.2 s, up,
+/// over and over) - are covered by the other witness, the bar being buried,
+/// and the pair is held for a moment by the caller.
+/// Register a hidden window as an appbar so the shell tells us when a
+/// fullscreen app takes the screen and when it lets go. No space is
+/// reserved: that would need ABM_SETPOS, which is never sent. Called once,
+/// from the same thread as the rest of the window work.
+pub fn register_fullscreen_watch() {
+    use windows::core::w;
+    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::UI::Shell::{SHAppBarMessage, ABM_NEW, APPBARDATA};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, RegisterClassW, HWND_MESSAGE, WNDCLASSW, WS_POPUP,
+    };
+
+    /// The shell's callback message; any WM_APP value will do.
+    const WM_APPBAR: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+    /// wParam of the callback for the notification we care about.
+    const ABN_FULLSCREENAPP: usize = 0x0000_0002;
+
+    unsafe extern "system" fn appbar_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> windows::Win32::Foundation::LRESULT {
+        if msg == WM_APPBAR && wparam.0 == ABN_FULLSCREENAPP {
+            // lParam: TRUE when a fullscreen app opens, FALSE when it goes.
+            let on = lparam.0 != 0;
+            if let Ok(mut s) = FULLSCREEN_APP.lock() {
+                s.on = on;
+            }
+            // Act on it now, not at whatever event happens next: the shell
+            // said "up" and the panel was still over the game for another
+            // 475 ms while nothing woke the loop.
+            if let Some(proxy) = PROXY.get() {
+                if let Ok(proxy) = proxy.lock() {
+                    let _ = proxy.send_event(crate::app::UserEvent::PanelRaise);
+                }
+            }
+            tracing::debug!(
+                "shell says a fullscreen app is {}",
+                if on { "up" } else { "gone" }
+            );
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    unsafe {
+        let Ok(hinst) = GetModuleHandleW(None) else {
+            return;
+        };
+        let class = w!("AiLimitsAppBar");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(appbar_wndproc),
+            hInstance: hinst.into(),
+            lpszClassName: class,
+            ..Default::default()
+        };
+        RegisterClassW(&wc);
+        let Ok(hwnd) = CreateWindowExW(
+            Default::default(),
+            class,
+            w!("AI Limits appbar"),
+            WS_POPUP,
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            Some(hinst.into()),
+            None,
+        ) else {
+            tracing::warn!(
+                "fullscreen watch not registered; the panel will not stand down for a game"
+            );
+            return;
+        };
+        let mut abd = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: hwnd,
+            uCallbackMessage: WM_APPBAR,
+            ..Default::default()
+        };
+        if SHAppBarMessage(ABM_NEW, &mut abd) == 0 {
+            tracing::warn!(
+                "the shell refused the appbar; the panel will not stand down for a game"
+            );
+        }
+    }
+}
+
+/// Whether anything covers the monitor the panel's bar lives on: a visible
+/// window, not ours and not one of the shell's own surfaces, whose rectangle
+/// contains the monitor. Geometry only - no z-order, no focus - so it is
+/// steady while a game flips its own stacking about.
+fn monitor_is_covered(target: crate::config::schema::PanelDisplay) -> bool {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetClassNameW, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    };
+
+    struct Search {
+        mon: RECT,
+        ours: u32,
+        found: Option<isize>,
+    }
+
+    unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let s = &mut *(lparam.0 as *mut Search);
+        if s.found.is_some() || !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == s.ours {
+            return BOOL(1);
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return BOOL(1);
+        }
+        if r.left > s.mon.left
+            || r.top > s.mon.top
+            || r.right < s.mon.right
+            || r.bottom < s.mon.bottom
+        {
+            return BOOL(1);
+        }
+        let mut cls = [0u16; 48];
+        let n = GetClassNameW(hwnd, &mut cls);
+        let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+        // The shell's own monitor-sized surfaces: the desktop, the taskbar,
+        // the XAML island that hosts thumbnails and Task View.
+        if matches!(
+            cls.as_str(),
+            "Progman"
+                | "WorkerW"
+                | "Shell_TrayWnd"
+                | "Shell_SecondaryTrayWnd"
+                | "XamlExplorerHostIslandWindow"
+                | "ForegroundStaging"
+                | "MultitaskingViewFrame"
+                | "Windows.UI.Core.CoreWindow"
+        ) {
+            return BOOL(1);
+        }
+        s.found = Some(hwnd.0 as isize);
+        BOOL(0)
+    }
+
+    unsafe {
+        let Some(bar) = taskbar_rect(target) else {
+            return false;
+        };
+        let mid = POINT {
+            x: (bar.0 + bar.2) / 2,
+            y: (bar.1 + bar.3) / 2,
+        };
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(MonitorFromPoint(mid, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            return false;
+        }
+        let mut search = Search {
+            mon: mi.rcMonitor,
+            ours: GetCurrentProcessId(),
+            found: None,
+        };
+        let _ = EnumWindows(Some(cb), LPARAM(&mut search as *mut _ as isize));
+        if let Some(h) = search.found {
+            tracing::trace!("monitor covered by {}", describe_window(h));
+        }
+        search.found.is_some()
     }
 }
 

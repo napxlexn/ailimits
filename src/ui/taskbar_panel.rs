@@ -205,6 +205,11 @@ pub struct TaskbarPanel {
     /// the layout (rows lying down, a stack standing up) and which side the
     /// tooltip opens on.
     edge: Edge,
+    /// When the bar was last read off the screen. The read places the panel
+    /// on a bar whose notification area cannot be asked for its position; it
+    /// happens when the panel comes onto a bar and then once a minute, never
+    /// on the re-checks that follow every foreground change.
+    room_read: Option<std::time::Instant>,
 }
 
 /// The tooltip window is ours, created with CreateWindowExW; nothing else owns
@@ -269,6 +274,7 @@ impl TaskbarPanel {
             offset: (0, 0),
             display: crate::config::schema::PanelDisplay::Primary,
             edge: Edge::Bottom,
+            room_read: None,
         })
     }
 
@@ -527,7 +533,7 @@ impl TaskbarPanel {
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            use crate::platform::taskbar_geom::{panel_origin, room_for, thickness};
+            use crate::platform::taskbar_geom::{panel_origin, thickness};
             let before = self.rect;
             // The panel's own footprint along the axis, so the scan for the
             // row of app buttons does not take the panel for one of them.
@@ -538,7 +544,11 @@ impl TaskbarPanel {
                     (x, x + w as i32)
                 }
             });
-            let Some(slot) = crate::platform::taskbar_slot(self.display, own) else {
+            let read_screen = before.is_none()
+                || self
+                    .room_read
+                    .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
+            let Some(slot) = crate::platform::taskbar_slot(self.display, own, read_screen) else {
                 // No taskbar at all: the panel has nowhere to live, and the tray
                 // has nowhere either — but say so, so the indicator can degrade
                 // instead of silently showing nothing.
@@ -578,20 +588,17 @@ impl TaskbarPanel {
             // no panel: drawn there it would sit on the buttons. The tray icon
             // stands in, and the panel returns when room appears (a window
             // closes, the bar grows) — the scan runs on every placement.
-            let along = if slot.edge.vertical() { h } else { w } as i32;
-            if !room_for(slot.band_end, slot.tray_start, along, margin) {
-                if before.is_some() || !self.unavailable {
-                    tracing::debug!(
-                        "panel hidden: no room on the bar ({:?} edge, buttons end at {:?}, tray at {})",
-                        slot.edge,
-                        slot.band_end,
-                        slot.tray_start
-                    );
-                }
-                self.unavailable = true;
-                self.hide();
-                return;
+            if read_screen && slot.tray_start != 0 {
+                self.room_read = Some(std::time::Instant::now());
             }
+            // The panel used to stand down when the stretch before the tray
+            // was too short for it. That verdict drove itself: hiding the
+            // panel put the tray icon up, the tray icon widened the tray by
+            // its own 32 px, the stretch changed, and the verdict flipped -
+            // twice a second, the panel jumping between two places over
+            // whatever was on screen. Nothing is withheld now; a bar packed
+            // to its end will have the panel over the last button instead,
+            // which is the smaller fault and a steady one.
             self.unavailable = false;
             let (x, y) = panel_origin(
                 slot.edge,
