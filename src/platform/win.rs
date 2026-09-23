@@ -25,21 +25,20 @@ pub struct TaskbarSlot {
     /// False when `TrayNotifyWnd` could not be found and `tray_start` is an
     /// estimate. Secondary Win11 taskbars have no notification area window.
     pub tray_found: bool,
-    /// Where the row of app buttons ends along the axis, read off the bar's
-    /// pixels (`band_end`); None when the bar is hidden or the read failed.
+    /// Where the run of app buttons ends along the axis; None when the bar
+    /// is hidden or the shell would not say.
     pub band_end: Option<i32>,
 }
 
 use crate::platform::taskbar_geom::{Edge, Rect};
 
-/// Locate the target taskbar and its notification area (screen coords).
-/// `PanelDisplay::Secondary` falls back to the primary taskbar when the
-/// requested display does not exist (see `secondary_taskbars`). `own` is
-/// the panel's current footprint along the bar's axis, left out of the
-/// band scan so the panel does not count itself as an icon.
+/// Locate the target taskbar, its notification area and the end of its run
+/// of app buttons (screen coords). `PanelDisplay::Secondary` falls back to
+/// the primary taskbar when the requested display does not exist (see
+/// `secondary_taskbars`). `read_screen` asks the shell for the last two
+/// rather than reusing the previous answer.
 pub fn taskbar_slot(
     target: crate::config::schema::PanelDisplay,
-    own: Option<(i32, i32)>,
     read_screen: bool,
 ) -> Option<TaskbarSlot> {
     use crate::platform::taskbar_geom::{bar_visible, edge_of, estimated_tray_start};
@@ -103,7 +102,12 @@ pub fn taskbar_slot(
         // A bar in flight is never read, but the last read of it is used, so
         // the panel rides the slide at the place it will end up.
         let scan = if visible {
-            scan_bar(edge, bar, tray, own, read_screen && at_rest)
+            scan_bar_for(
+                taskbar.0 as isize,
+                bar,
+                edge.vertical(),
+                read_screen && at_rest,
+            )
         } else {
             BandScan::default()
         };
@@ -137,194 +141,38 @@ pub fn taskbar_rect(target: crate::config::schema::PanelDisplay) -> Option<Rect>
     }
 }
 
-/// What a scan of the bar's pixels found: where the notification area
-/// starts (only asked for when the bar has no tray window) and where the
-/// row of app buttons ends, both along the bar's axis.
+/// What the shell says the bar is made of, along its axis: where the run of
+/// buttons ends, and where the notification area starts. Kept between reads -
+/// asking costs a cross-process call, and a slide's burst of move events must
+/// not each make one.
 #[derive(Clone, Copy, Default)]
 struct BandScan {
     tray_start: Option<i32>,
     band_end: Option<i32>,
 }
 
-/// Read the bar off the screen: its strip is copied out of the desktop DC,
-/// every column along the axis is scored by how far its farthest pixel
-/// strays from the strip's median colour (icons high, the acrylic low), and
-/// `taskbar_geom` turns the scores into the tray's start — when
-/// `tray_window` is None — and the buttons' end. The shell exposes nothing
-/// better: the XAML buttons of a secondary bar are not in UI Automation at
-/// all, and the classic child windows span the whole bar.
-///
-/// Cost: one BitBlt of a 48-pixel strip and a pass over it, well under a
-/// millisecond; the result is kept for a second so a slide's burst of move
-/// events reads it once.
-fn scan_bar(
-    edge: Edge,
-    bar: Rect,
-    tray_window: Option<i32>,
-    own: Option<(i32, i32)>,
-    read_screen: bool,
-) -> BandScan {
-    use crate::platform::taskbar_geom::{
-        band_end_from_scores, bar_scale, thickness, tray_start_from_scores,
-    };
+/// Ask UI Automation, or hand back the last answer for this bar. See
+/// `win_uia` for why the shell is asked rather than the screen read.
+fn scan_bar_for(taskbar: isize, bar: Rect, vertical: bool, read: bool) -> BandScan {
     use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    use windows::Win32::Graphics::Gdi::{
-        BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-        SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+    static LAST: Mutex<Option<(Rect, BandScan)>> = Mutex::new(None);
+    let cached = LAST
+        .lock()
+        .ok()
+        .and_then(|c| *c)
+        .and_then(|(b, s)| (b == bar).then_some(s));
+    if !read {
+        return cached.unwrap_or_default();
+    }
+    let Some(room) = crate::platform::win_uia::bar_room(taskbar, vertical) else {
+        return cached.unwrap_or_default();
     };
-
-    /// Below this a column is the bar's own acrylic; icons score in the
-    /// hundreds. Measured on dark and light bars over a moving wallpaper.
-    const THRESHOLD: u32 = 28;
-    /// The last read: the bar it was taken of, when, its column scores, and
-    /// where the panel stood when they were taken. The scores are what is
-    /// kept, not the answer: the answer depends on the span left out (the
-    /// panel's own footprint), and that changes with every placement while
-    /// the screen does not. The footprint at capture is left out too: the
-    /// panel's ink is in the scores, and once the panel moved on, that ink
-    /// read as the tray's start and walked the panel left, twenty pixels a
-    /// placement.
-    struct Last {
-        /// The bar's extent along its axis: a bar sliding in or out keeps
-        /// it, so the read taken at rest serves the whole slide and the
-        /// panel does not hop sideways when the bar arrives.
-        span: (i32, i32),
-        at: Instant,
-        scores: Vec<u32>,
-        own: Option<(i32, i32)>,
-    }
-    static CACHE: Mutex<Option<Last>> = Mutex::new(None);
-    let origin = if edge.vertical() { bar.1 } else { bar.0 };
-    let span = if edge.vertical() {
-        (bar.1, bar.3)
-    } else {
-        (bar.0, bar.2)
+    let scan = BandScan {
+        tray_start: room.tray_start,
+        band_end: room.band_end,
     };
-    // A quiet stretch this long separates the buttons from the tray cluster;
-    // the gaps inside the cluster are a third of it.
-    let gap = (20.0 * bar_scale(thickness(edge, bar))).round() as usize;
-    let answer = |scores: &[u32], skips: [Option<(i32, i32)>; 2]| -> BandScan {
-        let tray_start = match tray_window {
-            Some(_) => None,
-            None => tray_start_from_scores(scores, origin, skips, gap, THRESHOLD),
-        };
-        let band_end = tray_window
-            .or(tray_start)
-            .and_then(|t| band_end_from_scores(scores, origin, t, skips, THRESHOLD));
-        BandScan {
-            tray_start,
-            band_end,
-        }
-    };
-    // Without a fresh read the last read of this bar stands, however old:
-    // the answer must not move between a placement that read the screen and
-    // one that did not, or the panel steps sideways on every re-check.
-    if let Ok(c) = CACHE.lock() {
-        if let Some(l) = c.as_ref() {
-            if l.span == span && (!read_screen || l.at.elapsed() < Duration::from_secs(1)) {
-                return answer(&l.scores, [own, l.own]);
-            }
-        }
-    }
-    if !read_screen {
-        return BandScan::default();
-    }
-    let (w, h) = (bar.2 - bar.0, bar.3 - bar.1);
-    if w <= 0 || h <= 0 || w * h > 4_000_000 {
-        return BandScan::default();
-    }
-    let mut px: Vec<u32> = Vec::new();
-    unsafe {
-        let screen = GetDC(None);
-        let mem = CreateCompatibleDC(Some(screen));
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut core::ffi::c_void = std::ptr::null_mut();
-        if let Ok(dib) = CreateDIBSection(Some(screen), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            let old = SelectObject(mem, HGDIOBJ(dib.0));
-            if BitBlt(mem, 0, 0, w, h, Some(screen), bar.0, bar.1, SRCCOPY).is_ok()
-                && !bits.is_null()
-            {
-                px = std::slice::from_raw_parts(bits as *const u32, (w * h) as usize).to_vec();
-            }
-            SelectObject(mem, old);
-            let _ = DeleteObject(HGDIOBJ(dib.0));
-        }
-        let _ = DeleteDC(mem);
-        ReleaseDC(None, screen);
-    }
-    if px.is_empty() {
-        return BandScan::default();
-    }
-    let scores: Vec<u32> = {
-        // One score per column along the axis, over the inner rows (the bar's
-        // edge rows carry its own border): the farthest pixel from the median.
-        let (len, thick) = if edge.vertical() { (h, w) } else { (w, h) };
-        let at = |i: i32, j: i32| -> [i32; 3] {
-            let p = if edge.vertical() {
-                px[(i * w + j) as usize]
-            } else {
-                px[(j * w + i) as usize]
-            };
-            [
-                ((p >> 16) & 255) as i32,
-                ((p >> 8) & 255) as i32,
-                (p & 255) as i32,
-            ]
-        };
-        let inner = 6.min(thick / 4);
-        let mut chan: [Vec<i32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        for i in (0..len).step_by(4) {
-            for j in inner..thick - inner {
-                let c = at(i, j);
-                for k in 0..3 {
-                    chan[k].push(c[k]);
-                }
-            }
-        }
-        let median = |v: &mut Vec<i32>| -> i32 {
-            if v.is_empty() {
-                return 0;
-            }
-            let m = v.len() / 2;
-            *v.select_nth_unstable(m).1
-        };
-        let bg = [
-            median(&mut chan[0]),
-            median(&mut chan[1]),
-            median(&mut chan[2]),
-        ];
-        (0..len)
-            .map(|i| {
-                (inner..thick - inner)
-                    .map(|j| {
-                        let c = at(i, j);
-                        ((c[0] - bg[0]).abs() + (c[1] - bg[1]).abs() + (c[2] - bg[2]).abs()) as u32
-                    })
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect()
-    };
-    let scan = answer(&scores, [own, None]);
-    if let Ok(mut c) = CACHE.lock() {
-        *c = Some(Last {
-            span,
-            at: Instant::now(),
-            scores,
-            own,
-        });
+    if let Ok(mut c) = LAST.lock() {
+        *c = Some((bar, scan));
     }
     scan
 }
@@ -679,14 +527,19 @@ pub fn bring_to_front(hwnd: isize) {
 /// tray icon, which the shell keeps visible, while this is true. Matched by the
 /// foreground window's host process (Start/Search are served by these on
 /// Win11; the exact host varies by build, so several are accepted).
-pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> bool {
-    use windows::Win32::Foundation::CloseHandle;
+pub fn foreground_scrim_active(
+    target: crate::config::schema::PanelDisplay,
+    panel: Option<Rect>,
+) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, RECT};
     use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+    };
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.0.is_null() {
@@ -730,7 +583,25 @@ pub fn foreground_scrim_active(target: crate::config::schema::PanelDisplay) -> b
         };
         let panel_monitor = monitor_at((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
         let scrim_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST).0 as isize;
-        panel_monitor == scrim_monitor
+        if panel_monitor != scrim_monitor {
+            return false;
+        }
+        // Same screen is not the same place. Start opens BESIDE a side bar,
+        // not over it - measured with the bar on the left: the menu stands at
+        // 3488..4358 where the bar ends at 3488 - and the panel it does not
+        // reach needs no stand-in. The scrim is in a z-band `is_covered`
+        // cannot see through, which is why it is asked about separately at
+        // all, so the question is answered by geometry: does it reach the
+        // panel? With the panel not on screen there is nothing to compare
+        // and the old answer - same screen, so covered - stands.
+        let Some((pl, pt, pr, pb)) = panel else {
+            return true;
+        };
+        let mut r = RECT::default();
+        if GetWindowRect(hwnd, &mut r).is_err() {
+            return true;
+        }
+        r.left < pr && r.right > pl && r.top < pb && r.bottom > pt
     }
 }
 

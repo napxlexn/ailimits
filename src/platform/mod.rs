@@ -2,6 +2,8 @@
 
 #[cfg(target_os = "windows")]
 mod win;
+#[cfg(target_os = "windows")]
+mod win_uia;
 
 pub mod taskbar_geom;
 

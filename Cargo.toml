@@ -123,6 +123,9 @@ windows = { version = "0.62", features = [
     "Win32_Storage_Packaging_Appx",
     # ShellExecuteW — the version line opens the project page in the browser.
     "Win32_UI_Shell",
+    # IUIAutomation — where the taskbar's buttons end and its tray begins.
+    "Win32_System_Com",
+    "Win32_System_Variant",
 ] }
 
 [build-dependencies]

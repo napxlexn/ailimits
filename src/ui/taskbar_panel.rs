@@ -387,6 +387,13 @@ impl TaskbarPanel {
         }
     }
 
+    /// Where the panel is on screen (left, top, right, bottom), or None when
+    /// it is not up. Callers ask so they can tell what actually reaches it.
+    pub fn screen_rect(&self) -> Option<(i32, i32, i32, i32)> {
+        self.rect
+            .map(|(x, y, w, h)| (x, y, x + w as i32, y + h as i32))
+    }
+
     /// Whether the hover tooltip is currently shown.
     #[cfg(target_os = "windows")]
     pub fn tooltip_shown(&self) -> bool {
@@ -514,7 +521,7 @@ impl TaskbarPanel {
     /// it) and gate every presentation path until restored — a provider
     /// update tick must not resurrect the overlay over a game. Idempotent.
     /// While hidden, `raise()` and `is_covered()` are no-ops (rect=None).
-    pub fn suppress_for_fullscreen(&mut self) {
+    pub fn stand_down(&mut self) {
         if !Self::is_panel_mode(self.mode) || self.suppressed {
             return;
         }
@@ -524,7 +531,7 @@ impl TaskbarPanel {
 
     /// The fullscreen app is gone (alt-tab back to the desktop) — return to
     /// the bar exactly like it does: re-measure the slot and re-present.
-    pub fn restore_from_fullscreen(&mut self, providers: &[ProviderData]) {
+    pub fn stand_up(&mut self, providers: &[ProviderData]) {
         self.suppressed = false;
         if !Self::is_panel_mode(self.mode) {
             return;
@@ -571,22 +578,13 @@ impl TaskbarPanel {
     fn reposition(&mut self) {
         #[cfg(target_os = "windows")]
         {
-            use crate::platform::taskbar_geom::{panel_origin, thickness};
+            use crate::platform::taskbar_geom::{panel_origin, room_for, thickness};
             let before = self.rect;
-            // The panel's own footprint along the axis, so the scan for the
-            // row of app buttons does not take the panel for one of them.
-            let own = before.map(|(x, y, w, h)| {
-                if self.edge.vertical() {
-                    (y, y + h as i32)
-                } else {
-                    (x, x + w as i32)
-                }
-            });
             let read_screen = before.is_none()
                 || self
                     .room_read
                     .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(60));
-            let Some(slot) = crate::platform::taskbar_slot(self.display, own, read_screen) else {
+            let Some(slot) = crate::platform::taskbar_slot(self.display, read_screen) else {
                 // No taskbar at all: the panel has nowhere to live, and the tray
                 // has nowhere either — but say so, so the indicator can degrade
                 // instead of silently showing nothing.
@@ -629,14 +627,30 @@ impl TaskbarPanel {
             if read_screen && slot.tray_start != 0 {
                 self.room_read = Some(std::time::Instant::now());
             }
-            // The panel used to stand down when the stretch before the tray
-            // was too short for it. That verdict drove itself: hiding the
-            // panel put the tray icon up, the tray icon widened the tray by
-            // its own 32 px, the stretch changed, and the verdict flipped -
-            // twice a second, the panel jumping between two places over
-            // whatever was on screen. Nothing is withheld now; a bar packed
-            // to its end will have the panel over the last button instead,
-            // which is the smaller fault and a steady one.
+            // A bar with no room between its last button and the tray gets no
+            // panel - drawn there it would sit on the buttons. The tray icon
+            // stands in until room appears.
+            //
+            // This verdict used to drive itself, because the stretch was read
+            // off the bar's pixels and the tray icon the panel raised on
+            // standing down was among those pixels. It is the shell's own
+            // answer now (see `win_uia`), which our icon moves in one
+            // direction only: it takes a little more room to come back than
+            // it took to leave, and it never flips on its own.
+            let along = if slot.edge.vertical() { h } else { w } as i32;
+            if !room_for(slot.band_end, slot.tray_start, along, margin) {
+                if before.is_some() || !self.unavailable {
+                    tracing::debug!(
+                        "panel hidden: no room on the bar ({:?} edge, buttons end at {:?}, tray at {})",
+                        slot.edge,
+                        slot.band_end,
+                        slot.tray_start
+                    );
+                }
+                self.unavailable = true;
+                self.hide();
+                return;
+            }
             self.unavailable = false;
             let (x, y) = panel_origin(
                 slot.edge,

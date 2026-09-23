@@ -119,9 +119,10 @@ fn eval_indicator_fallback(
     theme: &ComputedTheme,
     fallback_was_active: &mut bool,
     fullscreen_was_active: &mut bool,
+    covered_since: &mut Option<std::time::Instant>,
     target: crate::config::schema::PanelDisplay,
-) -> bool {
-    let scrim = crate::platform::foreground_scrim_active(target);
+) -> FallbackVerdict {
+    let scrim = crate::platform::foreground_scrim_active(target, panel.screen_rect());
     let fullscreen = crate::platform::fullscreen_foreground_active(target);
     // While hidden for fullscreen the rect is None, so is_covered reads false —
     // ordering matters: check coverage before this pass may hide the panel.
@@ -150,8 +151,25 @@ fn eval_indicator_fallback(
     // rectangle cannot be obstructed. Without this the user is left with no
     // indicator whatsoever and no hint why.
     let unavailable = panel.is_unavailable();
-    let fallback =
+    let wanted =
         crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen, unavailable);
+    // Out of sight, but for how long? A verdict that has not stood for
+    // HANDOVER_WAIT is not acted on, and the loop is told to ask again when
+    // it has - nothing else would wake it.
+    let mut look_again_in = None;
+    let fallback = if wanted {
+        let since = covered_since.get_or_insert_with(std::time::Instant::now);
+        match HANDOVER_WAIT.checked_sub(since.elapsed()) {
+            Some(rest) if !*fallback_was_active => {
+                look_again_in = Some(rest + std::time::Duration::from_millis(10));
+                false
+            }
+            _ => true,
+        }
+    } else {
+        *covered_since = None;
+        false
+    };
     // Which of the four inputs decided it. Without this a stuck fallback is
     // indistinguishable from a correct one: the panel is simply absent and the
     // tray icon is simply present, with nothing saying why. Logged on every
@@ -181,30 +199,55 @@ fn eval_indicator_fallback(
     // and when the game is left, the panel comes back at the wider tray's
     // place and then steps sideways as the icon goes. The panel's own
     // suppression for fullscreen is unchanged; this is only about the icon.
-    tray.set_scrim_fallback(
-        (scrim || covered || unavailable) && !fullscreen,
-        menu,
-        providers,
-        theme,
-    );
-    if fullscreen {
-        // Idempotent — also re-hides the panel if anything re-presented it
+    // The handover, in that order and never overlapping: the panel goes
+    // first and the icon follows it down, the icon goes first and the panel
+    // follows it up. Both on screen at once is what a user reads as a swap,
+    // and the icon is meant to stand in for the panel, not to join it.
+    //
+    // Only for the reasons that do not depend on the panel being there.
+    // `covered` is not one: the panel is invisible under whatever covers it,
+    // so nothing overlaps anyway, and hiding it would make `is_covered` read
+    // false on the next pass - which would take the fallback off, which would
+    // show it again. `unavailable` is not one either: the panel is already
+    // hidden, and standing it down would stop `reposition` running, so it
+    // would never learn that room came back.
+    let stand_down = fullscreen || (scrim && fallback);
+    if stand_down {
+        // Idempotent - also re-hides the panel if anything re-presented it
         // since the last evaluation.
-        panel.suppress_for_fullscreen();
+        panel.stand_down();
     }
+    tray.set_scrim_fallback(fallback && !fullscreen, menu, providers, theme);
     let left_fullscreen = *fullscreen_was_active && !fullscreen;
-    if left_fullscreen {
-        panel.restore_from_fullscreen(providers);
-    } else if *fallback_was_active && !fallback {
-        panel.redraw(providers);
+    if !stand_down && (left_fullscreen || (*fallback_was_active && !fallback)) {
+        panel.stand_up(providers);
     }
     *fullscreen_was_active = fullscreen;
     *fallback_was_active = fallback;
-    // The caller wants to know: for a moment after a fullscreen app lets go
-    // the shell holds its bar in a band no ordinary topmost window can beat,
-    // and the panel is BEHIND the bar until that lapses. See `bounce_until`.
-    left_fullscreen
+    FallbackVerdict {
+        left_fullscreen,
+        look_again_in,
+    }
 }
+
+/// What an evaluation leaves for the loop to act on.
+#[cfg(target_os = "windows")]
+struct FallbackVerdict {
+    /// A fullscreen app just let go: the panel has to fight its way back
+    /// over a bar the shell still holds in a raised band.
+    left_fullscreen: bool,
+    /// Ask again after this - a verdict is waiting out `HANDOVER_WAIT` and
+    /// no event is owed.
+    look_again_in: Option<std::time::Duration>,
+}
+
+/// How long the panel has to be out of sight before the tray icon stands in
+/// for it. Pressing Win and pressing it again puts the shell's bar over the
+/// panel for about a second: without this the user watches the panel go and
+/// an icon arrive for a blink, which reads as the indicator jumping between
+/// two places. The icon is for being without a panel, not for a flicker.
+#[cfg(target_os = "windows")]
+const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Loading placeholder before the first fetch.
 fn loading_data(id: ProviderId) -> ProviderData {
@@ -940,6 +983,9 @@ pub fn run() -> Result<()> {
     const BOUNCE_EVERY: std::time::Duration = std::time::Duration::from_millis(24);
     #[cfg(target_os = "windows")]
     let mut bounce_until: Option<std::time::Instant> = None;
+    // Since when the panel has been out of sight; the tray icon waits it out.
+    #[cfg(target_os = "windows")]
+    let mut covered_since: Option<std::time::Instant> = None;
     // The hover tooltip appears only after the cursor lingers for the system
     // mouse-hover time (the same delay tray-icon tooltips use), tracked by this
     // deadline; it is cancelled the moment the cursor leaves.
@@ -1018,7 +1064,7 @@ pub fn run() -> Result<()> {
                         // given, so the stale position survived until the next
                         // slide or the 60-second provider tick.
                         panel.on_taskbar_moved(&visible_data(&config, &display));
-                        if eval_indicator_fallback(
+                        let verdict = eval_indicator_fallback(
                             &mut panel,
                             &mut tray,
                             &menu.menu,
@@ -1026,9 +1072,14 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            &mut covered_since,
                             config.general.panel_display,
-                        ) {
+                        );
+                        if verdict.left_fullscreen {
                             bounce_until = Some(now + BOUNCE_FOR);
+                        }
+                        if let Some(rest) = verdict.look_again_in {
+                            recheck_at = Some(recheck_at.map_or(now + rest, |t| t.min(now + rest)));
                         }
                         // The verdict may now be resting on its trailing hold
                         // alone - the game has let go and only the timer still
@@ -1472,7 +1523,7 @@ pub fn run() -> Result<()> {
                     // fullscreen state) a moment later with no further event.
                     #[cfg(target_os = "windows")]
                     {
-                        if eval_indicator_fallback(
+                        let verdict = eval_indicator_fallback(
                             &mut panel,
                             &mut tray,
                             &menu.menu,
@@ -1480,9 +1531,15 @@ pub fn run() -> Result<()> {
                             &theme,
                             &mut fallback_was_active,
                             &mut fullscreen_was_active,
+                            &mut covered_since,
                             config.general.panel_display,
-                        ) {
-                            bounce_until = Some(std::time::Instant::now() + BOUNCE_FOR);
+                        );
+                        let now = std::time::Instant::now();
+                        if verdict.left_fullscreen {
+                            bounce_until = Some(now + BOUNCE_FOR);
+                        }
+                        if let Some(rest) = verdict.look_again_in {
+                            recheck_at = Some(recheck_at.map_or(now + rest, |t| t.min(now + rest)));
                         }
                         // 150ms for the bar's own settling, or sooner when the
                         // fullscreen verdict is only resting on its hold: the

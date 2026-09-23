@@ -12,10 +12,10 @@ Notable, user-visible changes. Dates are release dates.
   edge, hides with an auto-hide bar sliding off any side, sits before the
   tray along the bar's axis, stacks the two providers on a side bar
   (percent over bar, the bar's full width), and opens its tooltip away
-  from the bar. On a secondary bar, where the shell will not say where the
-  notification area begins, the strip is read off the screen once when the
-  panel lands and once a minute, so the panel sits just before the tray
-  rather than over it.
+  from the bar. Where the buttons end and where the notification area
+  starts are asked of the shell through UI Automation - on the primary bar
+  and on a secondary one alike - so the panel lands in the gap between
+  them, and a bar with no room for it gets the tray icon instead.
 - **The Microsoft Store listing** is linked from the site (hero, download
   row, structured data) and both READMEs (a badge that reads the Store's
   own version, the `winget --source msstore` line, the listing link). The
@@ -24,6 +24,22 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Changed
 
+- **The panel stands down when the bar has no room for it**, and the tray
+  icon stands in until room appears. It is a side bar that makes this
+  plain: buttons run top to bottom into the notification area and there is
+  nothing left for a panel. The stretch used to be read off the bar's own
+  pixels, and that verdict drove itself - standing down raised a tray
+  icon, the icon widened the tray, the stretch changed and the verdict
+  flipped, twice a second - so it was withdrawn. It is the shell's own
+  answer now (UI Automation), which our icon can only move one way: it
+  takes a little more room to come back than it took to leave.
+- **The panel and the tray icon are never on screen together.** The icon
+  stands in for the panel; a user who sees both sees them swapping places.
+  The panel goes first and the icon follows it down, the icon goes first
+  and the panel follows it up. And the icon no longer stands in for a
+  blink: pressing Windows puts the shell's bar over the panel for about a
+  second, so the icon waits until the panel has been out of sight for
+  700 ms. A quick press and press again shows nothing at all.
 - **The version line in the menu opens the project.** "AI Limits v0.7.0 -
   GitHub" at the foot of the context menu is a live item now: the arrow
   marks it as leaving the app, and a click opens the GitHub page in the
@@ -73,13 +89,13 @@ Notable, user-visible changes. Dates are release dates.
   bar raises its preview, and the shell clears every window off the
   monitor for it - Aero Peek - which took the panel with it. The panel is
   now excluded from peek, as the shell's own surfaces are.
-- **The panel no longer blinks between two places on a busy bar.** It used
-  to stand down when the stretch before the tray was too short for it, and
-  that verdict drove itself: standing down put the tray icon up, the tray
-  icon widened the tray by its own 32px, the stretch changed and the
-  verdict flipped - twice a second, over anything on screen. Nothing is
-  withheld now; a bar packed to its end has the panel over the last button
-  instead, which is the smaller fault and a steady one.
+- **The panel no longer blinks between two places on a busy bar.** The
+  verdict that withheld it for want of room drove itself: standing down
+  put the tray icon up, the tray icon widened the tray by its own 32px,
+  the stretch before the tray changed and the verdict flipped - twice a
+  second, over anything on screen. The stretch is the shell's own answer
+  now, not a reading of the bar's pixels, and our icon can only move it
+  one way. See the room rule under Changed.
 - **Unplugging a monitor no longer strands the widget or the panel until
   the next start.** A position that lands on no screen was rescued at
   startup only, so a display removed while the app ran left the overlay
