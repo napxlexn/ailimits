@@ -73,7 +73,7 @@ document.documentElement.classList.add("js");
     { "@type": "Question", "name": "Which AI providers are supported?",
       "acceptedAnswer": { "@type": "Answer", "text": "Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each one can be toggled from the context menu; disabled providers make no network requests." } },
     { "@type": "Question", "name": "Does it slow the PC down?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the release build records about 0.005% of one CPU core, no GPU engine time at all, a working set around 37 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the release build records about 0.012% of one CPU core, no GPU engine time at all, a working set around 67 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked." } },
     { "@type": "Question", "name": "Is AI Limits free?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. Open source under GPL-3.0; the code, releases and issue tracker live on GitHub." } },
     { "@type": "Question", "name": "Does it show GitHub Copilot premium requests?",
@@ -223,16 +223,16 @@ document.documentElement.classList.add("js");
 
 <!-- ════ 03 · TELEMETRY ════ -->
 <section class="scene telemetry" id="telemetry" aria-label="Measured footprint">
-  <p class="ghost" aria-hidden="true"><b data-count="0.005" data-decimals="3">0.005</b>%</p>
+  <p class="ghost" aria-hidden="true"><b data-count="0.012" data-decimals="3">0.012</b>%</p>
   <div class="tele-head">
     <p class="hud scene-tag">03 · TELEMETRY</p>
     <h2 class="manifesto"><span class="line">Measured.</span><span class="line dim">Not promised.</span></h2>
-    <p class="hud">AUDIT 2026-08-23 · RELEASE-MIN BUILD · ELEVATED</p>
+    <p class="hud">AUDIT 2026-09-23 · RELEASE-MIN BUILD · QUIET MACHINE</p>
   </div>
   <div class="numbers">
-    <div class="num"><b data-count="0.005" data-decimals="3">0.005</b><i>%</i><span>of one CPU core at idle</span></div>
+    <div class="num"><b data-count="0.012" data-decimals="3">0.012</b><i>%</i><span>of one CPU core at idle</span></div>
     <div class="num"><b data-count="0.00" data-decimals="2">0.00</b><i>%</i><span>GPU engine time — the UI is drawn on the CPU</span></div>
-    <div class="num"><b data-count="37" data-decimals="0">37</b><i>MB</i><span>working set</span></div>
+    <div class="num"><b data-count="67" data-decimals="0">67</b><i>MB</i><span>working set</span></div>
     <div class="num"><b data-count="3.7" data-decimals="1">3.7</b><i>MB</i><span>installer, no runtime dependencies</span></div>
   </div>
   <div class="honesty">
@@ -431,7 +431,7 @@ document.documentElement.classList.add("js");
     <details><summary>Which providers are supported?</summary>
       <p>Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each one can be toggled from the context menu; disabled providers make no network requests.</p></details>
     <details><summary>Does it slow the PC down?</summary>
-      <p>Measured, not estimated: an automated audit of the release build records about 0.005% of one CPU core, no GPU engine time at all, a working set around 37 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked.</p></details>
+      <p>Measured, not estimated: an automated audit of the release build records about 0.012% of one CPU core, no GPU engine time at all, a working set around 67 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked.</p></details>
     <details><summary>Is it free?</summary>
       <p>Yes. Open source under GPL-3.0; the code, releases and issue tracker live on <a href="https://github.com/napxlexn/ailimits">GitHub</a>.</p></details>
     <details><summary>Does it show GitHub Copilot premium requests?</summary>
