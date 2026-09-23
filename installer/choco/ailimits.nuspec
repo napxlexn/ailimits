@@ -24,7 +24,7 @@ A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits on the desktop: Claude, OpenAI Codex, GitHub Copilot, Google
 Antigravity. It reads the tokens the official CLI tools already store on the
 machine (read-only, never refreshes them), needs no login or configuration,
-and renders on the CPU with a measured idle load of 0.005% of one core.
+and renders on the CPU with a measured idle load of 0.012% of one core.
 
 The app updates itself silently from GitHub Releases by default (toggle in
 the context menu), so the installed version may run ahead of the package
