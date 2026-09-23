@@ -88,9 +88,15 @@ thread_local! {
 }
 
 /// Drop the client, so the next question builds a fresh one. Called when a
-/// query fails: Explorer restarting is the likeliest reason, and the client
-/// costs 47 ms to rebuild against a question that would otherwise keep
-/// failing.
+/// query fails: Explorer restarting is the likeliest reason.
+///
+/// It buys no memory back. Measured both ways with the panel on the second
+/// monitor: kept for the life of the process, private bytes go 24 -> 45 MB
+/// at the first query; dropped after every query, 24 -> 45 MB just the same.
+/// The twenty megabytes are UI Automation itself loading into the process,
+/// not the client object, and rebuilding the client costs about a
+/// millisecond (17.5 ms a query against 16.5 ms kept). So the client is kept
+/// and this exists for the failure path alone.
 pub(crate) fn forget_client() {
     ASKER.with(|a| {
         if let Ok(mut a) = a.try_borrow_mut() {
@@ -198,8 +204,20 @@ mod tests {
     #[ignore]
     fn uia_query_cost() {
         use windows::core::w;
-        use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
-        let bar = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.unwrap();
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, SetCursorPos};
+        // The SECOND monitor's bar, and held open first: a bar slid away for
+        // auto-hide has no elements to give - every rectangle comes back
+        // empty, which is a `None` answer, not a slow one.
+        let bar = unsafe { FindWindowExW(None, None, w!("Shell_SecondaryTrayWnd"), None) }
+            .ok()
+            .filter(|h| !h.0.is_null())
+            .unwrap_or_else(|| unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.unwrap());
+        unsafe {
+            let _ = SetCursorPos(5700, 1439);
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            let _ = SetCursorPos(5701, 1438);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1500));
         let vertical = {
             use windows::Win32::Foundation::RECT;
             use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
@@ -213,19 +231,26 @@ mod tests {
         println!("first call (builds the client): {:?}", first.elapsed());
         assert!(room.is_some(), "the shell said nothing about its own bar");
 
-        let cpu_before = crate::platform::process_cpu_time();
-        let at = std::time::Instant::now();
-        for _ in 0..50 {
-            let _ = bar_room(bar.0 as isize, vertical);
-        }
-        let wall = at.elapsed();
-        let cpu = crate::platform::process_cpu_time() - cpu_before;
-        println!(
-            "50 queries: {:.1} ms wall ({:.2} ms each), {:.1} ms CPU ({:.2} ms each)",
-            wall.as_secs_f64() * 1000.0,
-            wall.as_secs_f64() * 1000.0 / 50.0,
-            cpu.as_secs_f64() * 1000.0,
-            cpu.as_secs_f64() * 1000.0 / 50.0
-        );
+        let run = |label: &str, drop_each: bool| {
+            let cpu_before = crate::platform::process_cpu_time();
+            let at = std::time::Instant::now();
+            for _ in 0..50 {
+                let _ = bar_room(bar.0 as isize, vertical);
+                if drop_each {
+                    forget_client();
+                }
+            }
+            let wall = at.elapsed();
+            let cpu = crate::platform::process_cpu_time() - cpu_before;
+            println!(
+                "{label}: {:.1} ms wall ({:.2} ms each), {:.1} ms CPU ({:.2} ms each)",
+                wall.as_secs_f64() * 1000.0,
+                wall.as_secs_f64() * 1000.0 / 50.0,
+                cpu.as_secs_f64() * 1000.0,
+                cpu.as_secs_f64() * 1000.0 / 50.0
+            );
+        };
+        run("50 queries, client kept   ", false);
+        run("50 queries, client dropped", true);
     }
 }
