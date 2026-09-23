@@ -74,6 +74,10 @@ pub enum UserEvent {
     /// above the overlay. Re-check coverage and toggle the tray fallback.
     #[cfg(target_os = "windows")]
     PanelRecheck,
+    /// A popup menu opened or closed. One that reaches over the panel takes
+    /// the panel under it; when it goes, the panel comes back on top.
+    #[cfg(target_os = "windows")]
+    PanelMenu,
 }
 
 /// Tray interactions we care about.
@@ -1431,6 +1435,17 @@ pub fn run() -> Result<()> {
                         recheck_at =
                             Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
                     }
+                    panel.raise();
+                }
+
+                // A popup menu opened or closed: the taskbar's own context
+                // menu reaches over the panel, and a topmost overlay would be
+                // painted on top of it.
+                #[cfg(target_os = "windows")]
+                UserEvent::PanelMenu => {
+                    // `raise` steps under a menu that reaches over the panel
+                    // instead of fronting it, so this one call serves both the
+                    // menu opening and its closing.
                     panel.raise();
                 }
 

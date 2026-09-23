@@ -398,7 +398,7 @@ pub fn present_layered(
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, UpdateLayeredWindow, GWL_EXSTYLE,
-        GWL_STYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA,
+        GWL_STYLE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, ULW_ALPHA,
         WS_CAPTION, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP, WS_SYSMENU,
         WS_THICKFRAME,
     };
@@ -497,10 +497,11 @@ pub fn present_layered(
         let _ = DeleteDC(mem_dc);
         ReleaseDC(None, screen_dc);
 
-        // Keep it topmost and visible without activating (ULW set geometry).
+        // Keep it topmost and visible without activating (ULW set geometry),
+        // save for an open menu it has to stay under.
         let _ = SetWindowPos(
             hwnd,
-            Some(HWND_TOPMOST),
+            Some(panel_insert_after(hwnd)),
             0,
             0,
             0,
@@ -634,12 +635,13 @@ pub fn mouse_hover_time_ms() -> u64 {
 pub fn raise_panel_topmost(hwnd: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     };
     unsafe {
+        let hwnd = HWND(hwnd as _);
         let _ = SetWindowPos(
-            HWND(hwnd as _),
-            Some(HWND_TOPMOST),
+            hwnd,
+            Some(panel_insert_after(hwnd)),
             0,
             0,
             0,
@@ -1167,6 +1169,10 @@ static TRAY: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::ne
 /// process id never fires for the process that replaces it. See
 /// `rearm_if_stale`.
 static LOC_HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+/// The show/hide hook, scoped to the same Explorer process: it is what
+/// catches the shell's XAML popup menus, which the classic menu hook never
+/// reports.
+static SHOW_HOOK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 static HOOK_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static PROXY: std::sync::OnceLock<
     std::sync::Mutex<tao::event_loop::EventLoopProxy<crate::app::UserEvent>>,
@@ -1283,6 +1289,96 @@ fn rearm_if_stale(taskbar: windows::Win32::Foundation::HWND) {
     }
 }
 
+/// The popup menu that is up, if any, from the menu hooks.
+static MENU_POPUP: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
+/// The windows a menu is drawn in. Windows 11's own taskbar menu is a XAML
+/// popup, not the classic menu the menu hook reports, so it is recognised by
+/// class when the shell shows one.
+fn is_popup_class(hwnd: windows::Win32::Foundation::HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let mut cls = [0u16; 48];
+    let n = unsafe { GetClassNameW(hwnd, &mut cls) };
+    let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
+    matches!(cls.as_str(), "Xaml_WindowedPopupClass" | "#32768")
+}
+
+/// The popup menu currently over the given screen rectangle, if one is up.
+/// A menu that opens clear of the panel is left alone: stepping under it
+/// would be a z-order change for nothing.
+pub fn popup_menu_over(rect: (i32, i32, i32, i32)) -> Option<isize> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindowVisible};
+    let menu = MENU_POPUP.load(std::sync::atomic::Ordering::Relaxed);
+    if menu == 0 {
+        return None;
+    }
+    unsafe {
+        let h = HWND(menu as _);
+        if !IsWindowVisible(h).as_bool() {
+            return None;
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(h, &mut r).is_err() {
+            return None;
+        }
+        let (l, t, right, b) = rect;
+        let over = r.left < right && r.right > l && r.top < b && r.bottom > t;
+        tracing::trace!(
+            "popup [{},{} {},{}] vs panel [{},{} {},{}]: {}",
+            r.left,
+            r.top,
+            r.right,
+            r.bottom,
+            l,
+            t,
+            right,
+            b,
+            if over { "over it" } else { "clear of it" }
+        );
+        over.then_some(menu)
+    }
+}
+
+/// Put a window directly below another in z-order, without moving, resizing
+/// or activating it.
+pub fn place_below(hwnd: isize, other: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    unsafe {
+        let _ = SetWindowPos(
+            HWND(hwnd as _),
+            Some(HWND(other as _)),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// Where the panel belongs in the z-order at this moment: above everything,
+/// or directly under a popup menu that reaches over it. EVERY assertion of
+/// the panel's z-order asks this — the raise on a foreground change, the
+/// repaint at the end of a present, the reposition when the bar slides —
+/// because a single one of them going straight to HWND_TOPMOST puts the
+/// panel back over an open menu a frame later, which is exactly what the
+/// first attempt at this did.
+fn panel_insert_after(hwnd: windows::Win32::Foundation::HWND) -> windows::Win32::Foundation::HWND {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, HWND_TOPMOST};
+    let mut r = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut r) }.is_ok() {
+        if let Some(menu) = popup_menu_over((r.left, r.top, r.right, r.bottom)) {
+            return HWND(menu as _);
+        }
+    }
+    HWND_TOPMOST
+}
+
 /// The process id owning a window; 0 for a dead handle.
 fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
     use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
@@ -1291,16 +1387,37 @@ fn window_pid(hwnd: windows::Win32::Foundation::HWND) -> u32 {
     pid
 }
 
-/// Install (or replace) the move/auto-hide hook, scoped to one Explorer
-/// process. Any previous one is unhooked first, so there is exactly one and
-/// every event arrives once. Must run on the thread with the message loop.
+/// Install (or replace) the hooks scoped to one Explorer process: the
+/// move/auto-hide watch, and the show/hide watch that catches the shell's
+/// own popup menus. Any previous ones are unhooked first, so there is
+/// exactly one of each and every event arrives once. Must run on the thread
+/// with the message loop.
 fn hook_location_changes(pid: u32) {
     use std::sync::atomic::Ordering::Relaxed;
     use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EVENT_OBJECT_LOCATIONCHANGE, WINEVENT_OUTOFCONTEXT,
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+        WINEVENT_OUTOFCONTEXT,
     };
     unsafe {
+        let old = SHOW_HOOK.swap(0, Relaxed);
+        if old != 0 {
+            let _ = UnhookWinEvent(HWINEVENTHOOK(old as _));
+        }
+        let show = SetWinEventHook(
+            EVENT_OBJECT_DESTROY,
+            EVENT_OBJECT_HIDE,
+            None,
+            Some(on_event),
+            pid,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if show.is_invalid() {
+            tracing::warn!("popup watch hook failed — the panel may be drawn over a menu");
+        } else {
+            SHOW_HOOK.store(show.0 as isize, Relaxed);
+        }
         let old = LOC_HOOK.swap(0, Relaxed);
         if old != 0 {
             let _ = UnhookWinEvent(HWINEVENTHOOK(old as _));
@@ -1332,13 +1449,14 @@ unsafe extern "system" fn on_event(
     event: u32,
     hwnd: windows::Win32::Foundation::HWND,
     id_object: i32,
-    _id_child: i32,
+    id_child: i32,
     _thread: u32,
     _time: u32,
 ) {
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetDesktopWindow, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_REORDER,
-        EVENT_SYSTEM_FOREGROUND, OBJID_WINDOW,
+        GetDesktopWindow, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
+        EVENT_OBJECT_REORDER, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_MENUPOPUPEND, EVENT_SYSTEM_MENUPOPUPSTART, OBJID_WINDOW,
     };
     let ev = match event {
         // The taskbar itself moved/slid (auto-hide, resolution change), OR
@@ -1352,6 +1470,11 @@ unsafe extern "system" fn on_event(
             let tray = TRAY.load(std::sync::atomic::Ordering::Relaxed);
             if h == TASKBAR.load(std::sync::atomic::Ordering::Relaxed) || (tray != 0 && h == tray) {
                 crate::app::UserEvent::TaskbarMoved
+            } else if h == MENU_POPUP.load(std::sync::atomic::Ordering::Relaxed) {
+                // A popup is shown empty at 0,0 and given its place a moment
+                // later, so whether it reaches over the panel can only be
+                // answered now, not when it came up.
+                crate::app::UserEvent::PanelMenu
             } else {
                 return;
             }
@@ -1360,6 +1483,39 @@ unsafe extern "system" fn on_event(
         // Start menu, an app) — it may have covered the overlay, which only
         // re-asserts topmost on a present. Re-raise it (cheap, no repaint).
         EVENT_SYSTEM_FOREGROUND => crate::app::UserEvent::PanelRaise,
+        // A popup menu opened or closed. The taskbar's own context menu can
+        // reach down over the panel, and a topmost overlay would be drawn on
+        // top of it; the panel steps under the menu for as long as it is up.
+        EVENT_SYSTEM_MENUPOPUPSTART => {
+            MENU_POPUP.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
+            crate::app::UserEvent::PanelMenu
+        }
+        EVENT_SYSTEM_MENUPOPUPEND => {
+            MENU_POPUP.store(0, std::sync::atomic::Ordering::Relaxed);
+            crate::app::UserEvent::PanelMenu
+        }
+        // The shell showed or hid a top-level window. Only its popups are of
+        // interest, and only as menus to step under; everything else is left
+        // to the other hooks. The class is read at most once per shown
+        // window of Explorer's, which is a handful per interaction.
+        EVENT_OBJECT_SHOW if id_object == OBJID_WINDOW.0 && id_child == 0 => {
+            if !is_popup_class(hwnd) {
+                return;
+            }
+            tracing::debug!("a shell popup came up: {}", describe_window(hwnd.0 as isize));
+            // Its place is set a moment later; see the location branch above.
+            MENU_POPUP.store(hwnd.0 as isize, std::sync::atomic::Ordering::Relaxed);
+            crate::app::UserEvent::PanelMenu
+        }
+        // Gone again, hidden or destroyed - a XAML popup does both, in that
+        // order or neither, so whichever comes first releases the panel.
+        EVENT_OBJECT_HIDE | EVENT_OBJECT_DESTROY if id_object == OBJID_WINDOW.0 && id_child == 0 => {
+            if MENU_POPUP.load(std::sync::atomic::Ordering::Relaxed) != hwnd.0 as isize {
+                return;
+            }
+            MENU_POPUP.store(0, std::sync::atomic::Ordering::Relaxed);
+            crate::app::UserEvent::PanelMenu
+        }
         // The shell re-stacked top-level z-order (reported on the taskbar or
         // the DESKTOP). The auto-hide bar peeking back can front itself above
         // the floating overlay as a pure z change — no move/foreground event —
@@ -1406,8 +1562,8 @@ pub fn install_taskbar_watch(
     use windows::core::w;
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     use windows::Win32::UI::WindowsAndMessaging::{
-        FindWindowW, EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT,
-        WINEVENT_SKIPOWNPROCESS,
+        FindWindowW, EVENT_OBJECT_REORDER, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MENUPOPUPEND,
+        EVENT_SYSTEM_MENUPOPUPSTART, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
     };
 
     unsafe {
@@ -1470,6 +1626,22 @@ pub fn install_taskbar_watch(
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
+        // A fourth GLOBAL hook for popup menus: the taskbar's context menu
+        // opens over the bar, and the panel must sit under it rather than be
+        // painted on top of it. Not SKIPOWNPROCESS - our own context menu is
+        // a popup menu too, and it deserves the same.
+        let menu_hook = SetWinEventHook(
+            EVENT_SYSTEM_MENUPOPUPSTART,
+            EVENT_SYSTEM_MENUPOPUPEND,
+            None,
+            Some(on_event),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        );
+        if menu_hook.is_invalid() {
+            tracing::warn!("menu watch hook failed — the panel may be drawn over a popup menu");
+        }
         if reorder_hook.is_invalid() {
             tracing::warn!(
                 "reorder watch hook failed — panel may not fall back to a tray icon when covered"

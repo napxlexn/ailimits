@@ -396,12 +396,43 @@ impl TaskbarPanel {
     /// Re-assert the overlay's topmost z-order after another window covered it
     /// (the tray overflow flyout, Start menu, …). Cheap: a single SetWindowPos,
     /// no reposition or repaint. No-op when hidden or not in a panel mode.
+    /// A popup menu that reaches over the panel is the one thing it does not
+    /// come back on top of: it steps under that menu instead, and the raise
+    /// that follows the menu closing lands as usual.
     pub fn raise(&self) {
         if !Self::is_panel_mode(self.mode) || self.rect.is_none() {
             return;
         }
         #[cfg(target_os = "windows")]
-        crate::platform::raise_panel_topmost(self.hwnd());
+        {
+            if self.yield_to_menu() {
+                return;
+            }
+            crate::platform::raise_panel_topmost(self.hwnd());
+        }
+    }
+
+    /// Step under a popup menu that reaches over the panel, so the menu is
+    /// drawn on top of it as it would be over any other window. Nothing else
+    /// changes: the panel keeps its place and its picture, and the next
+    /// `raise` - sent when the menu closes - puts it back on top.
+    /// Answers whether it did step under one.
+    pub fn yield_to_menu(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            if !Self::is_panel_mode(self.mode) {
+                return false;
+            }
+            let Some((x, y, w, h)) = self.rect else {
+                return false;
+            };
+            if let Some(menu) = crate::platform::popup_menu_over((x, y, x + w as i32, y + h as i32))
+            {
+                crate::platform::place_below(self.hwnd(), menu);
+                return true;
+            }
+        }
+        false
     }
 
     /// True when the panel SHOULD be visible (a Panel mode, positioned) but the

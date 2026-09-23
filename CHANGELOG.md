@@ -12,10 +12,10 @@ Notable, user-visible changes. Dates are release dates.
   edge, hides with an auto-hide bar sliding off any side, sits before the
   tray along the bar's axis, stacks the two providers on a side bar
   (percent over bar, the bar's full width), and opens its tooltip away
-  from the bar. And it no longer sits on the app buttons: the stretch
-  between the last button and the tray is read off the bar's own pixels
-  (the shell offers nothing better for a secondary bar), and a bar with no
-  room for the panel gets the tray rings instead until room appears.
+  from the bar. On a secondary bar, where the shell will not say where the
+  notification area begins, the strip is read off the screen once when the
+  panel lands and once a minute, so the panel sits just before the tray
+  rather than over it.
 - **The Microsoft Store listing** is linked from the site (hero, download
   row, structured data) and both READMEs (a badge that reads the Store's
   own version, the `winget --source msstore` line, the listing link). The
@@ -49,14 +49,35 @@ Notable, user-visible changes. Dates are release dates.
   muda 0.15 to 0.20, tray-icon 0.19 to 0.25); the new tao releases that lock
   before peeking. The update also collapses the two copies of the Windows
   bindings the app carried into one.
-- **The panel no longer flashes when Start closes on an auto-hide bar.**
-  While Start is up the shell holds the bar above every topmost window; as
-  Start closed the bar dropped back and the panel surfaced over it by
-  itself for the half second before the bar left. The panel is now put
-  under the bar while the Start or Search scrim is up and stays there for
-  0.7 s after it goes; a bar that stays gets the panel back after that, a
-  bar that leaves takes nothing with it. The slides themselves are as they
-  were: the panel rides the bar in and out.
+- **The panel stands down for a fullscreen app on its monitor.** Alt-tab
+  into a game or a fullscreen video and the panel was drawn over it, since
+  the taskbar it follows is gone but the panel is a topmost window of its
+  own. It now takes the shell's own word for it - the notification an
+  appbar gets when a fullscreen app opens and when it goes - paired with a
+  geometric test that something really covers that monitor, so a game on
+  the other screen leaves this one alone. The word alone flickers (it dips
+  for a second at a time while a game is plainly still there), so a bar
+  buried under one window at three points counts as well, and the verdict
+  holds for a further 120 ms. Coming back out of a game the panel returns
+  in one step: the tray icon is not put up while the verdict holds.
+- **The panel survives a taskbar thumbnail.** Hovering an app button on the
+  bar raises its preview, and the shell clears every window off the
+  monitor for it - Aero Peek - which took the panel with it. The panel is
+  now excluded from peek, as the shell's own surfaces are.
+- **The panel no longer blinks between two places on a busy bar.** It used
+  to stand down when the stretch before the tray was too short for it, and
+  that verdict drove itself: standing down put the tray icon up, the tray
+  icon widened the tray by its own 32px, the stretch changed and the
+  verdict flipped - twice a second, over anything on screen. Nothing is
+  withheld now; a bar packed to its end has the panel over the last button
+  instead, which is the smaller fault and a steady one.
+- **The taskbar's context menu is drawn over the panel, not under it.**
+  Right-click the bar beside the panel and the menu opened behind it. The
+  Windows 11 menu is a XAML popup, not the classic menu a menu hook
+  reports, so it is caught by class when the shell shows one and measured
+  when it takes its place a moment later; while it reaches over the panel,
+  every raise the panel would do puts it directly under the menu instead.
+  It returns on top when the menu goes.
 - **The taskbar mini panel keeps following an auto-hide bar after Explorer
   restarts.** The move/auto-hide watch is a WinEvent hook scoped to
   Explorer's process; when Explorer is killed and started again (or crashes
