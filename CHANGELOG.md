@@ -2,6 +2,18 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## Unreleased
+
+### Added
+
+- **A reset countdown on the taskbar panel** (Indicator → Reset countdown,
+  `ui.panel_countdown`, off by default). Each provider's bar gives way to
+  the time left until its headline window resets, in the clock's terse
+  style (`45m`, `2h14`, `3d4h`), rounded up so it never reads a minute
+  early. The panel wakes once per minute change to repaint it, and only
+  while a countdown is on screen. A provider with no known reset keeps its
+  bar.
+
 ## 0.7.0 - 2026-09-23
 
 ### Added

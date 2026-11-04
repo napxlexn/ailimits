@@ -266,6 +266,12 @@ picks which taskbar the panel attaches to. The submenu only appears when a
 second taskbar exists; if the chosen display is later disconnected, the panel
 falls back to the primary taskbar.
 
+**Indicator → Reset countdown** prints the time left until each provider's
+reset where its bar would be, in the clock's style: `25%  2h14`. It is the
+reset of the window whose percentage is shown, ticks down every minute on its
+own, and falls back to the bar for a provider with no known reset. Off by
+default.
+
 Left-clicking the tray icon or the panel brings the widget to the front (or
 hides it if it is already there, on top); right-clicking **anywhere on the
 panel** opens this same menu.

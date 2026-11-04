@@ -20,6 +20,7 @@ use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
 use crate::ui::tray::{color, draw_digits_fit, fill_round_rect, provider_pct};
 use anyhow::{Context as AnyhowContext, Result};
+use chrono::Utc;
 use std::rc::Rc;
 use tao::window::{Window, WindowId};
 use tiny_skia::{Color, Pixmap};
@@ -88,12 +89,47 @@ fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
     bgra
 }
 
+/// Seconds until the provider's headline reset — the reset of the window
+/// whose percentage the panel shows — or None when the data is unusable or
+/// no future reset is known.
+fn countdown_secs(data: &ProviderData) -> Option<i64> {
+    provider_pct(data)?;
+    let t = data.headline_reset()?;
+    Some(t.signed_duration_since(Utc::now()).num_seconds().max(0))
+}
+
+/// The countdown as the panel prints it, in the clock's terse style: "45m",
+/// "2h14", "3d4h". Rounded UP to the minute, so it reads "0m" only once the
+/// window has actually reset, never a minute early.
+fn compact_countdown(secs: i64) -> String {
+    let mins = (secs.max(0) + 59) / 60;
+    let (d, h, m) = (mins / 1440, (mins % 1440) / 60, mins % 60);
+    if d > 0 {
+        format!("{d}d{h}h")
+    } else if h > 0 {
+        format!("{h}h{m:02}")
+    } else {
+        format!("{m}m")
+    }
+}
+
 /// Paint the rows into the panel's pixmap: the layout lying down (rows of
 /// "percent + bar" across, digits sized from the height) or standing up
 /// (a stack of percent-over-bar, digits sized from the width), in the given
 /// ink over the transparent fill. Free of the window so a test can look.
-fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color, track: Color) {
+///
+/// `countdowns` runs parallel to `top`: a provider with Some(seconds) gets
+/// its reset countdown printed where its bar would be; None keeps the bar.
+fn paint_rows(
+    pm: &mut Pixmap,
+    vertical: bool,
+    top: &[&ProviderData],
+    countdowns: &[Option<i64>],
+    fg: Color,
+    track: Color,
+) {
     let (fw, fh) = (pm.width() as f32, pm.height() as f32);
+    let countdown_of = |i: usize| countdowns.get(i).copied().flatten();
     let label_of = |data: &ProviderData| match provider_pct(data) {
         Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
         None => "—".to_string(),
@@ -118,7 +154,13 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         let digit_h = fw * 0.225;
         let bar_h = digit_h * 0.50;
         let under = digit_h * 0.35;
-        let row_h = digit_h + under + bar_h;
+        // A countdown under the percent needs more room than a bar: the
+        // second line of the clock's own stack, a little smaller than the
+        // first. Every row gets the same slot so the two stay aligned.
+        let cd_h = digit_h * 0.80;
+        let any_countdown = (0..top.len()).any(|i| countdown_of(i).is_some());
+        let low_h = if any_countdown { cd_h } else { bar_h };
+        let row_h = digit_h + under + low_h;
         let row_gap = digit_h * 0.6;
         let block_h = n * row_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
@@ -127,7 +169,16 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         for (i, data) in top.iter().enumerate() {
             let ry = top0 + i as f32 * (row_h + row_gap);
             draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, fg);
-            bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h);
+            let low_y = ry + digit_h + under;
+            match countdown_of(i) {
+                Some(secs) => {
+                    draw_digits_fit(pm, &compact_countdown(secs), pad_x, low_y, inner, cd_h, fg)
+                }
+                None => {
+                    let by = low_y + (low_h - bar_h) / 2.0;
+                    bar_fill(pm, data, pad_x, by, inner, bar_h);
+                }
+            }
         }
     } else {
         // Digit ink height matched to the taskbar clock: the user tuned it
@@ -157,7 +208,20 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
                 digit_h,
                 fg,
             );
-            bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h);
+            // The countdown takes the bar's place, at the percent's height,
+            // so the row reads "25%  2h14" like the clock reads its time.
+            match countdown_of(i) {
+                Some(secs) => draw_digits_fit(
+                    pm,
+                    &compact_countdown(secs),
+                    bx,
+                    cy - digit_h / 2.0,
+                    bar_w,
+                    digit_h,
+                    fg,
+                ),
+                None => bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h),
+            }
         }
     }
 }
@@ -166,8 +230,15 @@ pub struct TaskbarPanel {
     window: Rc<Window>,
     pixmap: Pixmap,
     mode: IndicatorKind,
-    /// Last drawn integer % per provider, to skip no-op redraws.
-    last: Vec<Option<u8>>,
+    /// Last drawn integer % and countdown label per provider, to skip no-op
+    /// redraws. The label is None while the countdown is off.
+    last: Vec<(Option<u8>, Option<String>)>,
+    /// Print the reset countdown in place of each provider's bar.
+    countdown: bool,
+    /// When the next printed countdown changes, set on every redraw that
+    /// prints one: the event loop wakes then and repaints, so the label
+    /// ticks down between provider refreshes. None when nothing would change.
+    countdown_next: Option<std::time::Instant>,
     size: (u32, u32),
     /// Current screen placement, or None while hidden (taskbar slid away).
     rect: Option<(i32, i32, u32, u32)>,
@@ -254,6 +325,8 @@ impl TaskbarPanel {
             pixmap,
             mode: IndicatorKind::Off,
             last: Vec::new(),
+            countdown: false,
+            countdown_next: None,
             size: (INIT_W, INIT_H),
             rect: None,
             suppressed: false,
@@ -291,6 +364,37 @@ impl TaskbarPanel {
         self.display = target;
         // Another bar, so what was asked about the old one says nothing.
         self.room_read = None;
+    }
+
+    /// Turn the reset countdown on or off. The caller redraws afterwards
+    /// with a forced update.
+    pub fn set_countdown(&mut self, on: bool) {
+        self.countdown = on;
+    }
+
+    /// When the event loop should wake to repaint a countdown that is about
+    /// to change, if the panel is showing one. The caller then runs a forced
+    /// `update`, whose redraw schedules the following change.
+    pub fn countdown_due(&self) -> Option<std::time::Instant> {
+        if !self.countdown || !Self::is_panel_mode(self.mode) || self.suppressed {
+            return None;
+        }
+        self.countdown_next
+    }
+
+    /// The countdown each provider would print right now, or None for all
+    /// of them while the countdown is off.
+    fn countdowns(&self, providers: &[&ProviderData]) -> Vec<Option<i64>> {
+        providers
+            .iter()
+            .map(|d| {
+                if self.countdown {
+                    countdown_secs(d)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     pub fn window_id(&self) -> WindowId {
@@ -332,9 +436,18 @@ impl TaskbarPanel {
             return;
         }
         self.reposition();
-        let state: Vec<Option<u8>> = providers
+        // The countdown is part of what is drawn, so it is part of the
+        // cache: a new minute repaints even when no percentage moved.
+        let refs: Vec<&ProviderData> = providers.iter().collect();
+        let state: Vec<(Option<u8>, Option<String>)> = providers
             .iter()
-            .map(|d| provider_pct(d).map(|p| p.round() as u8))
+            .zip(self.countdowns(&refs))
+            .map(|(d, cd)| {
+                (
+                    provider_pct(d).map(|p| p.round() as u8),
+                    cd.map(compact_countdown),
+                )
+            })
             .collect();
         if force || state != self.last {
             self.last = state;
@@ -579,6 +692,8 @@ impl TaskbarPanel {
         #[cfg(target_os = "windows")]
         crate::platform::hide_window(self.hwnd());
         self.rect = None;
+        // Nothing on screen to tick down: no wake-up until the next redraw.
+        self.countdown_next = None;
     }
 
     fn resize_pixmap(&mut self, w: u32, h: u32) {
@@ -743,6 +858,9 @@ impl TaskbarPanel {
     /// Paint (near-transparent background) and present via UpdateLayeredWindow:
     /// monochrome, system-theme-aware, two clock-sized "percent + bar" rows.
     pub fn redraw(&mut self, providers: &[ProviderData]) {
+        // Cleared first: a panel that does not paint now has no countdown on
+        // screen to keep ticking, and a stale deadline would spin the loop.
+        self.countdown_next = None;
         if !Self::is_panel_mode(self.mode) {
             return;
         }
@@ -750,6 +868,24 @@ impl TaskbarPanel {
             return;
         };
         let (fg, track) = theme_ink(crate::platform::system_uses_light_theme());
+        let top = first_two(providers);
+        let countdowns = self.countdowns(&top);
+        // The printed label rounds up to the minute, so it changes the moment
+        // the seconds left cross a whole minute: wake just after that.
+        self.countdown_next = countdowns
+            .iter()
+            .flatten()
+            .map(|&secs| match secs % 60 {
+                0 => 60,
+                r => r,
+            })
+            .min()
+            .map(|s| {
+                std::time::Instant::now()
+                    + std::time::Duration::from_secs(s as u64)
+                    + std::time::Duration::from_millis(250)
+            });
+
         let pm = &mut self.pixmap;
         // A per-pixel-alpha layered window passes mouse clicks THROUGH any
         // fully transparent (alpha 0) pixel to the window beneath — here the
@@ -758,7 +894,7 @@ impl TaskbarPanel {
         // reached the panel.
         pm.fill(color(0, 0, 0, HIT_ALPHA));
 
-        paint_rows(pm, self.edge.vertical(), &first_two(providers), fg, track);
+        paint_rows(pm, self.edge.vertical(), &top, &countdowns, fg, track);
 
         let data = self.pixmap.data();
         let mut bgra = vec![0u8; data.len()];
@@ -794,7 +930,6 @@ impl TaskbarPanel {
 mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderId, ProviderStatus};
-    use chrono::Utc;
 
     fn data(id: ProviderId, pct: u64) -> ProviderData {
         ProviderData {
@@ -821,10 +956,17 @@ mod tests {
         let rows = [data(ProviderId::Claude, 16), data(ProviderId::Codex, 0)];
         let top: Vec<&ProviderData> = rows.iter().collect();
         let (fg, track) = theme_ink(false);
-        for (name, vertical, w, h) in [("rows", false, 119, 48), ("stack", true, 48, 64)] {
+        let none: [Option<i64>; 0] = [];
+        let both = [Some(2 * 3600 + 14 * 60), Some(45 * 60)];
+        for (name, vertical, w, h, cds) in [
+            ("rows", false, 119, 48, &none[..]),
+            ("stack", true, 48, 64, &none[..]),
+            ("rows_countdown", false, 119, 48, &both[..]),
+            ("stack_countdown", true, 48, 64, &both[..]),
+        ] {
             let mut pm = Pixmap::new(w, h).unwrap();
             pm.fill(color(32, 32, 32, 255));
-            paint_rows(&mut pm, vertical, &top, fg, track);
+            paint_rows(&mut pm, vertical, &top, cds, fg, track);
             let path = std::env::temp_dir().join(format!("ailimits_panel_{name}.png"));
             std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
             println!("{}", path.display());
@@ -841,7 +983,7 @@ mod tests {
         let (fg, track) = theme_ink(false);
         let mut pm = Pixmap::new(48, 64).unwrap();
         pm.fill(color(0, 0, 0, 255));
-        paint_rows(&mut pm, true, &top, fg, track);
+        paint_rows(&mut pm, true, &top, &[], fg, track);
         // rows with ink, top to bottom; a bar is a run of lit rows after a
         // gap below the digits
         let lit: Vec<bool> = (0..64)
@@ -855,6 +997,82 @@ mod tests {
         assert!(
             runs >= 4,
             "digits, bar, digits, bar: {runs} runs of ink in {lit:?}"
+        );
+    }
+
+    #[test]
+    fn the_countdown_reads_like_the_clock_and_rounds_up() {
+        assert_eq!(compact_countdown(0), "0m");
+        assert_eq!(compact_countdown(1), "1m");
+        assert_eq!(compact_countdown(45 * 60), "45m");
+        assert_eq!(compact_countdown(3600), "1h00");
+        assert_eq!(compact_countdown(2 * 3600 + 14 * 60), "2h14");
+        assert_eq!(compact_countdown(2 * 3600 + 14 * 60 + 1), "2h15");
+        assert_eq!(compact_countdown(3 * 86_400 + 4 * 3600), "3d4h");
+        assert_eq!(compact_countdown(-5), "0m");
+    }
+
+    #[test]
+    fn the_countdown_is_the_headline_metrics_future_reset() {
+        let mut d = data(ProviderId::Claude, 25);
+        assert_eq!(countdown_secs(&d), None, "no reset known");
+
+        d.metrics[0].reset_at = Some(Utc::now() + chrono::Duration::minutes(90));
+        let secs = countdown_secs(&d).expect("a future reset");
+        assert!((5390..=5400).contains(&secs), "{secs}");
+
+        d.status = ProviderStatus::Loading;
+        assert_eq!(countdown_secs(&d), None, "unusable data shows no countdown");
+    }
+
+    /// Lying down, the countdown takes the bar's place: a full bar inks its
+    /// whole slot, the countdown's glyphs only part of it, and not nothing.
+    #[test]
+    fn the_countdown_replaces_the_bar_in_the_rows_layout() {
+        let rows = [data(ProviderId::Claude, 100)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = theme_ink(false);
+        let lit_in_bar_slot = |cds: &[Option<i64>]| {
+            let mut pm = Pixmap::new(119, 48).unwrap();
+            pm.fill(color(0, 0, 0, 255));
+            paint_rows(&mut pm, false, &top, cds, fg, track);
+            // the slot right of the percent: x from 0.41 of the width on
+            (49..112)
+                .flat_map(|x| (0..48).map(move |y| (x, y)))
+                .filter(|&(x, y)| pm.pixel(x, y).is_some_and(|p| p.red() > 120))
+                .count()
+        };
+        let bar = lit_in_bar_slot(&[]);
+        let countdown = lit_in_bar_slot(&[Some(2 * 3600 + 14 * 60)]);
+        assert!(countdown > 0, "the countdown is drawn");
+        assert!(
+            countdown < bar,
+            "the countdown ({countdown} px) replaces the full bar ({bar} px)"
+        );
+    }
+
+    /// Standing up, the countdown sits under each percent and both rows
+    /// still land inside the pixmap.
+    #[test]
+    fn the_stacked_layout_fits_two_countdowns_inside_the_pixmap() {
+        let rows = [data(ProviderId::Claude, 16), data(ProviderId::Codex, 0)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = theme_ink(false);
+        let mut pm = Pixmap::new(48, 64).unwrap();
+        pm.fill(color(0, 0, 0, 255));
+        paint_rows(&mut pm, true, &top, &[Some(45 * 60), Some(3600)], fg, track);
+        let lit: Vec<bool> = (0..64)
+            .map(|y| (0..48).any(|x| pm.pixel(x, y).map(|p| p.red() > 40).unwrap_or(false)))
+            .collect();
+        assert!(!lit[0] && !lit[63], "nothing clipped at the edges: {lit:?}");
+        let runs = lit
+            .iter()
+            .enumerate()
+            .filter(|(i, &l)| l && (*i == 0 || !lit[i - 1]))
+            .count();
+        assert!(
+            runs >= 4,
+            "digits, countdown, digits, countdown: {runs} runs of ink in {lit:?}"
         );
     }
 }

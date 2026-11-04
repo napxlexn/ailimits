@@ -39,6 +39,8 @@ pub enum MenuAction {
     SetPanelDisplay(PanelDisplay),
     /// Show/hide the burn-rate forecast.
     ToggleForecast,
+    /// Show/hide the reset countdown on the taskbar panel.
+    TogglePanelCountdown,
     /// Enable/disable silent background auto-updates.
     ToggleAutoUpdate,
     /// Pick a color palette — disables monochrome.
@@ -134,6 +136,8 @@ pub struct ContextMenu {
     /// Which taskbar the mini panel attaches to. Empty on a single-display
     /// machine.
     display_items: Vec<(CheckMenuItem, PanelDisplay)>,
+    /// The reset countdown in place of the bar on the taskbar panel.
+    countdown_item: CheckMenuItem,
     forecast_item: CheckMenuItem,
     auto_update_item: CheckMenuItem,
     monochrome_item: CheckMenuItem,
@@ -284,6 +288,12 @@ impl ContextMenu {
             }
             indicator_submenu.append(&display_submenu)?;
         }
+
+        // The panel's reset countdown, next to the panel's other settings.
+        indicator_submenu.append(&PredefinedMenuItem::separator())?;
+        let countdown_item =
+            CheckMenuItem::new("Reset countdown", true, config.ui.panel_countdown, None);
+        indicator_submenu.append(&countdown_item)?;
 
         let forecast_item = CheckMenuItem::new("Forecast", true, config.ui.show_forecast, None);
         let auto_update_item =
@@ -472,6 +482,7 @@ impl ContextMenu {
             pin_item,
             indicator_items,
             display_items,
+            countdown_item,
             forecast_item,
             auto_update_item,
             monochrome_item,
@@ -553,6 +564,9 @@ impl ContextMenu {
             if *event_id == item.id() {
                 return Some(MenuAction::SetPanelDisplay(*target));
             }
+        }
+        if *event_id == self.countdown_item.id() {
+            return Some(MenuAction::TogglePanelCountdown);
         }
         if *event_id == self.forecast_item.id() {
             return Some(MenuAction::ToggleForecast);
@@ -650,6 +664,7 @@ impl ContextMenu {
         for (item, target) in &self.display_items {
             item.set_checked(config.general.panel_display == *target);
         }
+        self.countdown_item.set_checked(config.ui.panel_countdown);
         self.forecast_item.set_checked(config.ui.show_forecast);
         self.auto_update_item
             .set_checked(config.general.auto_update);

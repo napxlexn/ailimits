@@ -192,6 +192,12 @@ pub struct UIConfig {
     /// users plan around, the projection is optional extra.
     #[serde(default)]
     pub show_forecast: bool,
+    /// Show the headline reset countdown ("2h14") on the taskbar panel in
+    /// place of each provider's bar. The bar comes back for a provider with
+    /// no known future reset. Off by default: the panel stays the compact
+    /// "percent + bar" it has always been.
+    #[serde(default)]
+    pub panel_countdown: bool,
 }
 
 impl Default for UIConfig {
@@ -206,6 +212,7 @@ impl Default for UIConfig {
             width_scale: WidthScale::Full,
             column_flow: ColumnFlow::Row,
             show_forecast: false,
+            panel_countdown: false,
         }
     }
 }

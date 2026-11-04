@@ -87,6 +87,9 @@ column_flow = "row"
 # Burn-rate forecast ("~Xh to limit" when usage is climbing; menu: Forecast).
 # Never replaces the reset countdown — shown only when no future reset is known.
 show_forecast = false
+# Taskbar panel: the reset countdown ("2h14") in place of each provider's bar
+# (menu: Indicator → Reset countdown). The bar stays when no reset is known.
+panel_countdown = false
 
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity ("gemini" is a legacy

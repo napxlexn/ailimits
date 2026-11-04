@@ -92,6 +92,10 @@ column_flow = "row"
 # Ніколи не замінює зворотний відлік до скидання — показується лише коли
 # майбутній reset невідомий.
 show_forecast = false
+# Панель на панелі задач: зворотний відлік до скидання ("2h14") замість смуги
+# кожного провайдера (меню: Indicator → Reset countdown). Смуга лишається,
+# коли reset невідомий.
+panel_countdown = false
 
 [[providers]]
 # Ідентифікатор: claude / codex / copilot / antigravity ("gemini" —

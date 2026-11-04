@@ -934,6 +934,7 @@ pub fn run() -> Result<()> {
     let mut panel = TaskbarPanel::new(&event_loop)?;
     panel.set_offset(config.general.panel_offset_x, config.general.panel_offset_y);
     panel.set_display(config.general.panel_display);
+    panel.set_countdown(config.ui.panel_countdown);
     #[cfg(target_os = "windows")]
     crate::platform::install_taskbar_watch(proxy.clone(), config.general.panel_display);
     // The shell's own word on fullscreen apps, for the panel's stand-down.
@@ -1011,7 +1012,10 @@ pub fn run() -> Result<()> {
     event_loop.run(move |event, _target, control_flow| {
         #[cfg(target_os = "windows")]
         {
-            let next = [recheck_at, tooltip_at].into_iter().flatten().min();
+            let next = [recheck_at, tooltip_at, panel.countdown_due()]
+                .into_iter()
+                .flatten()
+                .min();
             *control_flow = match next {
                 Some(t) => ControlFlow::WaitUntil(t),
                 None => ControlFlow::Wait,
@@ -1029,6 +1033,13 @@ pub fn run() -> Result<()> {
             #[cfg(target_os = "windows")]
             Event::NewEvents(_) => {
                 let now = std::time::Instant::now();
+                // The panel's countdown is about to read a minute less:
+                // repaint it. The redraw schedules the next change, so the
+                // label ticks down between provider refreshes and the loop
+                // sleeps when no countdown is shown.
+                if panel.countdown_due().is_some_and(|t| now >= t) {
+                    panel.update(&visible_data(&config, &display), true);
+                }
                 if let Some(t) = recheck_at {
                     if now >= t {
                         recheck_at = None;
@@ -1625,6 +1636,13 @@ pub fn run() -> Result<()> {
                                 std::time::Instant::now() + std::time::Duration::from_millis(150),
                             );
                         }
+                        menu.sync(&config, win_state.pinned);
+                        save_config(config.clone());
+                    }
+                    Some(MenuAction::TogglePanelCountdown) => {
+                        config.ui.panel_countdown = !config.ui.panel_countdown;
+                        panel.set_countdown(config.ui.panel_countdown);
+                        panel.update(&visible_data(&config, &display), true);
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
                     }
