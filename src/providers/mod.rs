@@ -312,6 +312,10 @@ impl ProviderData {
 }
 
 /// The trait every provider implements.
+// `async_trait` marks the boxed future it returns `#[must_use]`, which the
+// Future type already is: clippy 1.99's `double_must_use` flags the macro's
+// own expansion, not anything written here.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
