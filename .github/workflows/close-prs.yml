@@ -1,0 +1,25 @@
+# Pull requests from outside the project are closed with a thank-you: AI Limits
+# is single-author (CONTRIBUTING.md). pull_request_target runs this file from
+# master with a write token, which is safe here because nothing from the pull
+# request is checked out or executed - the job only calls the GitHub API.
+name: close-prs
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: github.event.pull_request.author_association != 'OWNER'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close with a note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr close "$PR" --repo "$REPO" --comment "hey, thanks for taking the time to put this together! heads-up though: AI Limits is a one-person project and I write all the code myself, so I don't merge pull requests (the why is in CONTRIBUTING.md). if there's an idea in here, please open an issue and describe it - that's where I pick up new stuff, and anything that ships gets credited in the changelog. thanks!"
