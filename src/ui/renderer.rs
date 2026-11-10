@@ -1063,8 +1063,9 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         .cloned()
         .unwrap_or_else(|| "no fresh data".to_string());
     // Some provider messages already carry their action ("… — run Codex CLI
-    // once"); a transient rate-limit needs no action at all.
-    if cause.contains("run ") || cause.starts_with("rate-limited") {
+    // once"); a transient error that retries by itself ("rate-limited,
+    // retrying", "state database busy, retrying") needs no action at all.
+    if cause.contains("run ") || cause.ends_with(", retrying") {
         return Some(cause);
     }
     let action = match data.id {
@@ -1073,6 +1074,7 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         ProviderId::Copilot => "check gh auth",
         ProviderId::Antigravity => "run Antigravity",
         ProviderId::Grok => "run Grok CLI",
+        ProviderId::Cursor => "open Cursor",
     };
     Some(format!("{cause} — {action}"))
 }
@@ -1315,6 +1317,11 @@ mod tests {
                 d.id = ProviderId::Grok;
                 d
             },
+            {
+                let mut d = data(vec![pct_metric("Pro", 37, MetricWindow::Session)]);
+                d.id = ProviderId::Cursor;
+                d
+            },
         ];
 
         let dir = std::env::temp_dir();
@@ -1345,6 +1352,100 @@ mod tests {
                     &HashMap::new(),
                 );
                 let path = dir.join(format!("ailimits_flow_{fname}_{dname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} {}x{}", path.display(), win.width, win.height);
+            }
+        }
+    }
+
+    /// Design preview for the rows layout with all five providers, Cursor in
+    /// each of its states (live, unlimited, a token that expired before any
+    /// data arrived). Run: `cargo test preview_five_providers -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_five_providers() {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let with_id = |id: ProviderId, mut d: ProviderData| {
+            d.id = id;
+            d
+        };
+        let others = vec![
+            with_id(
+                ProviderId::Claude,
+                data(vec![pct_metric("Session", 18, MetricWindow::Session)]),
+            ),
+            with_id(
+                ProviderId::Codex,
+                data(vec![pct_metric("Weekly", 100, MetricWindow::Long)]),
+            ),
+            with_id(
+                ProviderId::Copilot,
+                data(vec![pct_metric("Premium", 44, MetricWindow::Session)]),
+            ),
+            with_id(
+                ProviderId::Antigravity,
+                data(vec![pct_metric("Gemini", 61, MetricWindow::Long)]),
+            ),
+        ];
+        let live = {
+            let mut m = pct_metric("Pro", 37, MetricWindow::Session);
+            m.reset_at = Some(Utc::now() + chrono::Duration::days(18));
+            with_id(ProviderId::Cursor, data(vec![m]))
+        };
+        let unlimited = with_id(
+            ProviderId::Cursor,
+            data(vec![Metric {
+                label: "Unlimited".into(),
+                used: 0,
+                limit: None,
+                unit: MetricUnit::Percent,
+                reset_at: None,
+                window: MetricWindow::Session,
+            }]),
+        );
+        let expired = ProviderData {
+            status: ProviderStatus::NetworkError("token expired".into()),
+            ..with_id(ProviderId::Cursor, data(vec![]))
+        };
+
+        let dir = std::env::temp_dir();
+        for (cname, cursor) in [
+            ("live", live),
+            ("unlimited", unlimited),
+            ("expired", expired),
+        ] {
+            let mut providers = others.clone();
+            providers.push(cursor);
+            for (dname, detail) in [
+                ("compact", DetailLevel::Compact),
+                ("medium", DetailLevel::Medium),
+                ("expanded", DetailLevel::Expanded),
+            ] {
+                let win = layout::compute(
+                    &Layout::Vertical,
+                    &detail,
+                    &WidthScale::Full,
+                    &ColumnFlow::Row,
+                    providers.len(),
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_five_{cname}_{dname}.png"));
                 std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
                 println!("{} {}x{}", path.display(), win.width, win.height);
             }

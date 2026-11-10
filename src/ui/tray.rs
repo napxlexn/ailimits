@@ -1416,13 +1416,14 @@ mod tests {
                 ],
             ),
             (
-                "icon_5.png",
+                "icon_6.png",
                 vec![
                     data(ProviderId::Claude, 93),
                     data(ProviderId::Codex, 81),
                     data(ProviderId::Copilot, 40),
                     data(ProviderId::Antigravity, 7),
                     data(ProviderId::Grok, 1),
+                    data(ProviderId::Cursor, 55),
                 ],
             ),
         ] {

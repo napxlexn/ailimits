@@ -14,7 +14,14 @@ fn default_config_has_expected_providers() {
     let ids: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
     assert_eq!(
         ids,
-        vec!["claude", "codex", "copilot", "antigravity", "grok"]
+        vec![
+            "claude",
+            "codex",
+            "copilot",
+            "antigravity",
+            "grok",
+            "cursor"
+        ]
     );
 }
 

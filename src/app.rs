@@ -17,8 +17,9 @@ use crate::{
     notifications::toast::ToastNotifier,
     providers::{
         antigravity::AntigravityProvider, claude::ClaudeProvider, codex::CodexProvider,
-        copilot::CopilotProvider, grok::GrokProvider, key_label_for, usage_token_label_for, Metric,
-        MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus,
+        copilot::CopilotProvider, cursor::CursorProvider, grok::GrokProvider, key_label_for,
+        usage_token_label_for, Metric, MetricWindow, Provider, ProviderData, ProviderId,
+        ProviderStatus,
     },
     ui::{
         context_menu::{ContextMenu, MenuAction},
@@ -391,6 +392,7 @@ async fn save_provider_cache(cache: HashMap<ProviderId, ProviderData>) -> Result
         ProviderId::Copilot => 2,
         ProviderId::Antigravity => 3,
         ProviderId::Grok => 4,
+        ProviderId::Cursor => 5,
     });
     let content = serde_json::to_string_pretty(&items)?;
     storage::atomic_write(&path, content.as_bytes()).await?;
@@ -421,6 +423,10 @@ fn build_providers(config: &Config) -> (Vec<Arc<dyn Provider>>, HashMap<Provider
                 ProviderId::Antigravity,
             ),
             "grok" => (Arc::new(GrokProvider::new(pc.clone())), ProviderId::Grok),
+            "cursor" => (
+                Arc::new(CursorProvider::new(pc.clone())),
+                ProviderId::Cursor,
+            ),
             other => {
                 warn!("unknown provider '{other}' in config, skipping");
                 continue;

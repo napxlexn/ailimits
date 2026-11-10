@@ -66,7 +66,8 @@ fn print_usage() {
     println!();
     println!("By default everything works through subscriptions, no keys needed:");
     println!("  Claude — Claude Code token, Codex — Codex CLI token, Copilot — gh CLI token,");
-    println!("  Antigravity — Antigravity CLI token, Grok — Grok CLI login.");
+    println!("  Antigravity — Antigravity CLI token, Grok — Grok CLI login,");
+    println!("  Cursor — the Cursor editor's session.");
 }
 
 /// Key label for a provider.
@@ -205,6 +206,24 @@ fn status() -> Result<()> {
         }
         Err(_) => println!("Grok auth.json: no (unreadable)"),
     }
+
+    // Cursor: the editor's session token in its state database, read the
+    // same read-only way the provider reads it. No request is sent.
+    use ailimits::providers::cursor::{session_state, SessionState};
+    let cursor = match session_state() {
+        SessionState::NotInstalled => "no (state.vscdb missing — Cursor not installed)".to_string(),
+        SessionState::SignedOut => "no (sign in to Cursor)".to_string(),
+        SessionState::Valid(Some(exp)) => {
+            format!("OK, token valid until {} UTC", exp.format("%Y-%m-%d %H:%M"))
+        }
+        SessionState::Valid(None) => "OK".to_string(),
+        SessionState::Expired(exp) => format!(
+            "no (token expired {} UTC — open Cursor, it refreshes the token)",
+            exp.format("%Y-%m-%d %H:%M")
+        ),
+        SessionState::Unreadable(e) => format!("no ({e})"),
+    };
+    println!("Cursor session (state.vscdb): {cursor}");
 
     // Stored keys.
     println!();

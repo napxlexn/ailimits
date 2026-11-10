@@ -958,3 +958,262 @@ fn antigravity_models_quota_treats_a_missing_fraction_as_exhausted() {
     assert_eq!(metrics.len(), 1, "one shared pool, deduped");
     assert_eq!(metrics[0].used, 100);
 }
+
+// ─── Cursor ───────────────────────────────────────────────────────
+
+/// The usage-summary body verified live on a free account, 2026-11-10.
+const CURSOR_FREE_BODY: &str = r#"{"billingCycleStart":"2026-10-28T20:49:51.046Z","billingCycleEnd":"2026-11-28T20:49:51.046Z","membershipType":"free","limitType":"user","isUnlimited":false,"autoModelSelectedDisplayMessage":"You've used 0% of your included total usage","namedModelSelectedDisplayMessage":"You've used 0% of your included API usage","individualUsage":{"plan":{"enabled":true,"used":0,"limit":0,"remaining":0,"breakdown":{"included":0,"bonus":0,"total":0},"autoPercentUsed":0,"apiPercentUsed":0,"totalPercentUsed":0},"onDemand":{"enabled":false,"used":0,"limit":null,"remaining":null}},"teamUsage":{}}"#;
+
+#[test]
+fn cursor_usage_summary_parses_the_verified_free_body() {
+    use ailimits::providers::cursor::parse_usage_summary;
+    use chrono::{TimeZone, Timelike};
+
+    let metrics = parse_usage_summary(CURSOR_FREE_BODY).expect("should parse");
+    assert_eq!(metrics.len(), 1, "one monthly window");
+    let m = &metrics[0];
+    assert_eq!(m.label, "Free", "membershipType labels the window");
+    assert_eq!(m.used, 0);
+    assert_eq!(m.limit, Some(100));
+    assert!(matches!(m.unit, MetricUnit::Percent));
+    assert_eq!(m.window, MetricWindow::Session);
+    let reset = m.reset_at.expect("billingCycleEnd is the reset");
+    assert_eq!(
+        reset.with_nanosecond(0).unwrap(),
+        Utc.with_ymd_and_hms(2026, 11, 28, 20, 49, 51).unwrap()
+    );
+}
+
+#[test]
+fn cursor_usage_summary_parses_a_paid_body_with_usage() {
+    use ailimits::providers::cursor::parse_usage_summary;
+    // The same shape filled in the way a paid plan fills it: amounts in cents,
+    // percentages 0–100, a fractional total.
+    let body = r#"{"billingCycleStart":"2026-11-02T09:00:00.000Z","billingCycleEnd":"2026-12-02T09:00:00.000Z",
+        "membershipType":"pro","limitType":"user","isUnlimited":false,
+        "individualUsage":{"plan":{"enabled":true,"used":1450,"limit":2000,"remaining":550,
+            "breakdown":{"included":2000,"bonus":0,"total":2000},
+            "autoPercentUsed":31.5,"apiPercentUsed":88.2,"totalPercentUsed":72.5},
+          "onDemand":{"enabled":true,"used":0,"limit":5000,"remaining":5000}},
+        "teamUsage":{}}"#;
+    let metrics = parse_usage_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].label, "Pro");
+    // 72.5 rounds half away from zero.
+    assert_eq!(metrics[0].used, 73);
+    assert_eq!(metrics[0].percentage(), Some(73.0));
+    assert!(metrics[0].reset_at.is_some());
+}
+
+#[test]
+fn cursor_usage_summary_falls_back_to_used_over_limit() {
+    use ailimits::providers::cursor::parse_usage_summary;
+    let body = r#"{"membershipType":"pro","billingCycleEnd":"2026-12-02T09:00:00Z",
+        "individualUsage":{"plan":{"enabled":true,"used":500,"limit":2000}}}"#;
+    let metrics = parse_usage_summary(body).expect("should parse");
+    assert_eq!(metrics[0].used, 25);
+}
+
+#[test]
+fn cursor_usage_summary_clamps_overage_to_the_limit() {
+    use ailimits::providers::cursor::parse_usage_summary;
+    let body = r#"{"membershipType":"pro","individualUsage":{"plan":{"enabled":true,"totalPercentUsed":134.0}}}"#;
+    let metrics = parse_usage_summary(body).expect("should parse");
+    assert_eq!(metrics[0].used, 100);
+    assert_eq!(metrics[0].label, "Pro");
+    assert!(
+        metrics[0].reset_at.is_none(),
+        "no billingCycleEnd, no reset"
+    );
+}
+
+#[test]
+fn cursor_unlimited_plan_is_an_unlimited_row_not_zero_percent() {
+    use ailimits::providers::cursor::parse_usage_summary;
+
+    let body = r#"{"billingCycleEnd":"2026-11-28T20:49:51.046Z","membershipType":"enterprise",
+        "isUnlimited":true,
+        "individualUsage":{"plan":{"enabled":true,"totalPercentUsed":0}}}"#;
+    let metrics = parse_usage_summary(body).expect("should parse");
+    assert_eq!(metrics.len(), 1);
+    assert_eq!(metrics[0].label, "Unlimited");
+    assert_eq!(metrics[0].limit, None);
+    // No percentage: every surface shows a status, never a 0% bar.
+    assert_eq!(metrics[0].percentage(), None);
+    // No reset: the hint line must not quote the row against a countdown.
+    assert!(metrics[0].reset_at.is_none());
+
+    let data = ProviderData {
+        id: ProviderId::Cursor,
+        status: ProviderStatus::Ok,
+        metrics,
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(data.primary_percentage(), None);
+}
+
+#[test]
+fn cursor_usage_summary_refuses_malformed_and_unknown_bodies() {
+    use ailimits::providers::cursor::parse_usage_summary;
+    // Not JSON at all (an HTML error page answered with 200).
+    assert!(parse_usage_summary("<!DOCTYPE html><html></html>").is_err());
+    // JSON of another shape.
+    assert!(parse_usage_summary(r#"{"foo": 1}"#).unwrap().is_empty());
+    assert!(parse_usage_summary("[]").unwrap().is_empty());
+    // The plan object without any usable number.
+    assert!(
+        parse_usage_summary(r#"{"individualUsage":{"plan":{"enabled":true,"limit":0}}}"#)
+            .unwrap()
+            .is_empty()
+    );
+    // A disabled individual plan says nothing about this account.
+    assert!(parse_usage_summary(
+        r#"{"individualUsage":{"plan":{"enabled":false,"totalPercentUsed":0}}}"#
+    )
+    .unwrap()
+    .is_empty());
+}
+
+#[test]
+fn cursor_answers_map_to_honest_statuses() {
+    use ailimits::providers::cursor::interpret_usage_summary;
+
+    let (status, metrics) = interpret_usage_summary(200, CURSOR_FREE_BODY);
+    assert!(matches!(status, ProviderStatus::Ok));
+    assert_eq!(metrics.len(), 1);
+
+    // 200 with a body we cannot read: an error, never a guessed number.
+    for body in ["not json", r#"{"foo": 1}"#] {
+        let (status, metrics) = interpret_usage_summary(200, body);
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized usage schema"),
+            "{body}: {status:?}"
+        );
+        assert!(metrics.is_empty());
+    }
+
+    // The session is no longer accepted.
+    for code in [401, 403] {
+        let (status, metrics) = interpret_usage_summary(code, "");
+        assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "token rejected"));
+        assert!(metrics.is_empty());
+    }
+
+    // Anything else, a redirect included, is the bare status.
+    for code in [302, 429, 500, 503] {
+        let (status, metrics) = interpret_usage_summary(code, CURSOR_FREE_BODY);
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if *m == format!("HTTP {code}")),
+            "{code}: {status:?}"
+        );
+        assert!(metrics.is_empty(), "a non-200 body is never parsed");
+    }
+}
+
+#[test]
+fn cursor_session_claims_come_from_the_token_payload() {
+    use ailimits::providers::cursor::parse_session_claims;
+    use chrono::TimeZone;
+
+    // Fake JWT-shaped tokens. Payloads, in order:
+    // {"sub":"github|user_01TESTFIXTURE","exp":4102444800,"iss":…,"aud":…}
+    let valid = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJ8dXNlcl8wMVRFU1RGSVhUVVJFIiwiZXhwIjo0MTAyNDQ0ODAwLCJpc3MiOiJodHRwczovL2F1dGhlbnRpY2F0aW9uLmN1cnNvci5zaCIsImF1ZCI6Imh0dHBzOi8vY3Vyc29yLmNvbSJ9.c2ln";
+    // {"sub":"github|user_01TESTFIXTURE","exp":1759104000} (2025-09-29)
+    let expired = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJ8dXNlcl8wMVRFU1RGSVhUVVJFIiwiZXhwIjoxNzU5MTA0MDAwfQ.c2ln";
+    // {"sub":"user_01PLAIN","exp":4102444800}
+    let no_provider = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyXzAxUExBSU4iLCJleHAiOjQxMDI0NDQ4MDB9.c2ln";
+    // {"exp":4102444800}
+    let no_sub = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjQxMDI0NDQ4MDB9.c2ln";
+    // {"sub":"auth0|user_01NOEXP"}
+    let no_exp = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhdXRoMHx1c2VyXzAxTk9FWFAifQ.c2ln";
+
+    let claims = parse_session_claims(valid).expect("valid claims");
+    assert_eq!(claims.user_id, "user_01TESTFIXTURE");
+    assert_eq!(
+        claims.expires_at,
+        Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
+    );
+    assert!(!claims.is_expired(Utc::now()));
+
+    let claims = parse_session_claims(expired).expect("expired claims still parse");
+    assert!(
+        claims.is_expired(Utc::now()),
+        "an expired token is never sent"
+    );
+
+    assert_eq!(
+        parse_session_claims(no_provider).unwrap().user_id,
+        "user_01PLAIN"
+    );
+    assert!(parse_session_claims(no_sub).is_none());
+
+    let claims = parse_session_claims(no_exp).expect("no exp is fine");
+    assert_eq!(claims.user_id, "user_01NOEXP");
+    assert!(
+        !claims.is_expired(Utc::now()),
+        "the server judges a token without exp"
+    );
+
+    for junk in ["", "not-a-jwt", "a.b!c.d", "eyJ.e30.x"] {
+        assert!(parse_session_claims(junk).is_none(), "{junk}");
+    }
+}
+
+#[test]
+fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
+    use ailimits::ui::renderer::hover_reason;
+    use chrono::Duration;
+    use std::collections::HashMap;
+
+    let stale = |id: ProviderId| ProviderData {
+        id,
+        status: ProviderStatus::Ok,
+        metrics: vec![Metric {
+            label: "Pro".to_string(),
+            used: 40,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: Some(Utc::now() + Duration::days(10)),
+            window: MetricWindow::Session,
+        }],
+        updated_at: Utc::now() - Duration::hours(3),
+        received_at: None,
+    };
+
+    let mut errors = HashMap::new();
+    errors.insert(ProviderId::Cursor, "token expired".to_string());
+    assert_eq!(
+        hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
+        Some("token expired — open Cursor")
+    );
+
+    // A transient busy database retries by itself: no action appended.
+    errors.insert(
+        ProviderId::Cursor,
+        "state database busy, retrying".to_string(),
+    );
+    assert_eq!(
+        hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
+        Some("state database busy, retrying")
+    );
+    // Claude's rate-limit message keeps its behaviour.
+    errors.insert(ProviderId::Claude, "rate-limited, retrying".to_string());
+    assert_eq!(
+        hover_reason(&stale(ProviderId::Claude), &errors).as_deref(),
+        Some("rate-limited, retrying")
+    );
+}
+
+#[test]
+fn cursor_config_id_round_trips() {
+    assert_eq!(
+        ProviderId::from_config_id("cursor"),
+        Some(ProviderId::Cursor)
+    );
+    assert_eq!(ProviderId::Cursor.display_name(), "Cursor");
+    let json = serde_json::to_string(&ProviderId::Cursor).unwrap();
+    assert_eq!(json, "\"cursor\"");
+    let back: ProviderId = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, ProviderId::Cursor);
+}

@@ -4,6 +4,7 @@ pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod cursor;
 pub mod grok;
 
 use anyhow::Result;
@@ -26,6 +27,8 @@ pub enum ProviderId {
     Antigravity,
     /// xAI's Grok (the SuperGrok subscription, read through the Grok CLI).
     Grok,
+    /// The Cursor editor's subscription.
+    Cursor,
 }
 
 impl ProviderId {
@@ -36,6 +39,7 @@ impl ProviderId {
             ProviderId::Copilot => "Copilot",
             ProviderId::Antigravity => "Antigravity",
             ProviderId::Grok => "Grok",
+            ProviderId::Cursor => "Cursor",
         }
     }
 
@@ -49,6 +53,7 @@ impl ProviderId {
             // here so nothing breaks mid-migration.
             "antigravity" | "gemini" => Some(ProviderId::Antigravity),
             "grok" => Some(ProviderId::Grok),
+            "cursor" => Some(ProviderId::Cursor),
             _ => None,
         }
     }
