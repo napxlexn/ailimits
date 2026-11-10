@@ -5,6 +5,8 @@ mod win;
 #[cfg(target_os = "windows")]
 mod win_uia;
 
+// Read-only lookups in other apps' SQLite databases (winsqlite3.dll).
+pub mod sqlite;
 pub mod taskbar_geom;
 
 // Taskbar embedding for the mini panel (Windows-only by nature; the
