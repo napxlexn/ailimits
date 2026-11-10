@@ -35,6 +35,7 @@ pub struct AntigravityProvider {
     http: reqwest::Client,
     /// Code Assist project id from loadCodeAssist, cached after the first
     /// success — it is stable for the account, and quota queries need it.
+    /// Forgotten when the token is rejected (see `token_rejected`).
     project: std::sync::Mutex<Option<String>>,
 }
 
@@ -207,7 +208,15 @@ impl AntigravityProvider {
 
     /// The single message produced when Antigravity rejects the token — used
     /// at every request site so the wording never drifts.
+    ///
+    /// Also forgets the cached project id: after a switch to another Google
+    /// account the old account's project is what gets refused, and only a
+    /// fresh loadCodeAssist with the new token names the right one. Otherwise
+    /// every cycle would read "token rejected" until the widget restarts.
     fn token_rejected(&self) -> ProviderData {
+        if let Ok(mut guard) = self.project.lock() {
+            *guard = None;
+        }
         self.data(
             ProviderStatus::AuthError(
                 "Antigravity token rejected — run Antigravity CLI once".to_string(),
@@ -666,5 +675,31 @@ fn model_rank(label: &str) -> u8 {
         1
     } else {
         3
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rejected_token_forgets_the_cached_project() {
+        let provider = AntigravityProvider::new(ProviderConfig {
+            id: "antigravity".to_string(),
+            enabled: true,
+            auth_method: Default::default(),
+            credential_label: String::new(),
+            alert_threshold: 80,
+        });
+        // The project of the account signed in before the switch.
+        *provider.project.lock().unwrap() = Some("old-account-project".to_string());
+
+        let data = provider.token_rejected();
+        assert!(matches!(data.status, ProviderStatus::AuthError(_)));
+        assert_eq!(
+            *provider.project.lock().unwrap(),
+            None,
+            "the next cycle must ask loadCodeAssist again with the current token"
+        );
     }
 }

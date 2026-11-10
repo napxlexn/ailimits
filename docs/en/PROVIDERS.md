@@ -177,8 +177,10 @@ stores the consumer session under `gemini:antigravity`.
 Quota is a chain of sources (all verified live 2026-08-01):
 
 1. `loadCodeAssist` (empty body) → `cloudaicompanionProject`, cached per
-   session. It is returned ONLY to an identified client (`User-Agent:
-   antigravity/1.0` + `X-Goog-Api-Client: gl-go antigravity`); an anonymous
+   session until a 401/403 (another Google account signed in: the next
+   cycle asks again with the new token). It is returned ONLY to an
+   identified client (`User-Agent: antigravity/1.0` +
+   `X-Goog-Api-Client: gl-go antigravity`); an anonymous
    call still answers 200 but omits the field. Everything below needs the id,
    and without it the widget reports an honest error instead of quota — every
    endpoint answers an "everything full" default view when the project is
