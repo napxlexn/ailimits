@@ -16,10 +16,17 @@ use crate::{
     },
     notifications::toast::ToastNotifier,
     providers::{
-        antigravity::AntigravityProvider, claude::ClaudeProvider, codex::CodexProvider,
-        copilot::CopilotProvider, cursor::CursorProvider, grok::GrokProvider, key_label_for,
-        usage_token_label_for, Metric, MetricWindow, Provider, ProviderData, ProviderId,
-        ProviderStatus,
+        antigravity::AntigravityProvider,
+        claude::ClaudeProvider,
+        codex::CodexProvider,
+        copilot::CopilotProvider,
+        cursor::{
+            session::{self as cursor_session, SignInOutcome},
+            CursorProvider,
+        },
+        grok::GrokProvider,
+        key_label_for, usage_token_label_for, Metric, MetricWindow, Provider, ProviderData,
+        ProviderId, ProviderStatus,
     },
     ui::{
         context_menu::{ContextMenu, MenuAction},
@@ -53,6 +60,8 @@ use tracing::{info, warn};
 pub enum AppCommand {
     /// Update a single provider's data.
     UpdateProvider(ProviderData),
+    /// A Cursor sign-in from the menu has ended.
+    CursorSignIn(SignInOutcome),
     /// Quit the application.
     Quit,
 }
@@ -904,6 +913,10 @@ pub fn run() -> Result<()> {
 
     // 9. The context menu: events → proxy.
     let menu = ContextMenu::new(&config, config.window.pinned)?;
+    // One Credential Manager read: is there a Cursor session to sign out of.
+    menu.set_cursor_signed_in(cursor_session::is_stored());
+    // The Cursor sign-in waiting for the browser, if one is.
+    let mut cursor_sign_in: Option<tokio::task::JoinHandle<()>> = None;
     {
         let proxy = proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -1481,6 +1494,55 @@ pub fn run() -> Result<()> {
                         tray.update(&visible_data(&config, &display), &theme, false);
                         panel.update(&visible_data(&config, &display), false);
                     }
+                    AppCommand::CursorSignIn(outcome) => match outcome {
+                        SignInOutcome::SignedIn(_) => {
+                            let pid = "cursor";
+                            // Signing in says the user wants the row.
+                            if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
+                                pc.enabled = true;
+                            }
+                            // The new session may be another account: no
+                            // old numbers stand in for it.
+                            provider_cache.remove(&ProviderId::Cursor);
+                            save_cached_providers(provider_cache.clone());
+                            refresh_providers(
+                                &config,
+                                &providers,
+                                &mut thresholds,
+                                &mut display,
+                                pid,
+                            );
+                            visible_count = visible_data(&config, &display).len();
+                            apply_ui_change(
+                                &config,
+                                &mut win_layout,
+                                &mut theme,
+                                &mut pixmap,
+                                &mut surface,
+                                &window,
+                                &mut win_state,
+                                &menu,
+                                visible_count,
+                            );
+                            tray.sync_providers(
+                                &menu.menu,
+                                &visible_data(&config, &display),
+                                &theme,
+                            );
+                            panel.update(&visible_data(&config, &display), true);
+                            menu.set_cursor_signed_in(true);
+                            save_config(config.clone());
+                            fetch_one(&providers, &cmd_tx, &runtime, pid);
+                            feedback("AI Limits", "Signed in to Cursor");
+                        }
+                        SignInOutcome::TimedOut => {
+                            feedback("AI Limits", "Cursor sign-in timed out");
+                        }
+                        SignInOutcome::Failed(e) => {
+                            warn!("cursor sign-in failed: {e}");
+                            feedback("AI Limits", "Cursor sign-in failed");
+                        }
+                    },
                     AppCommand::Quit => *control_flow = ControlFlow::Exit,
                 },
 
@@ -1797,6 +1859,77 @@ pub fn run() -> Result<()> {
                             Err(e) => {
                                 warn!("keyring delete failed: {e}");
                                 feedback("AI Limits", "Failed to remove the usage token");
+                            }
+                        }
+                    }
+                    Some(MenuAction::SignInCursor) => match cursor_session::LoginRequest::new() {
+                        Ok(request) => {
+                            // A second click starts over: the first link may
+                            // have been closed unseen.
+                            if let Some(task) = cursor_sign_in.take() {
+                                task.abort();
+                            }
+                            // Opened from this thread, like the project page.
+                            crate::platform::open_url(&request.url());
+                            let tx = cmd_tx.clone();
+                            cursor_sign_in = Some(runtime.spawn(async move {
+                                let outcome = cursor_session::complete_sign_in(request).await;
+                                let _ = tx.send(AppCommand::CursorSignIn(outcome)).await;
+                            }));
+                        }
+                        Err(e) => {
+                            warn!("cursor sign-in: {e}");
+                            feedback("AI Limits", "Cursor sign-in failed");
+                        }
+                    },
+                    Some(MenuAction::SignOutCursor) => {
+                        if let Some(task) = cursor_sign_in.take() {
+                            task.abort();
+                        }
+                        match cursor_session::delete() {
+                            Ok(()) => {
+                                let pid = "cursor";
+                                // Nothing of the session stays on screen: the
+                                // row reloads from the editor's plain token,
+                                // or hides.
+                                provider_cache.remove(&ProviderId::Cursor);
+                                save_cached_providers(provider_cache.clone());
+                                refresh_providers(
+                                    &config,
+                                    &providers,
+                                    &mut thresholds,
+                                    &mut display,
+                                    pid,
+                                );
+                                let new_count = visible_data(&config, &display).len();
+                                if new_count != visible_count {
+                                    visible_count = new_count;
+                                    apply_ui_change(
+                                        &config,
+                                        &mut win_layout,
+                                        &mut theme,
+                                        &mut pixmap,
+                                        &mut surface,
+                                        &window,
+                                        &mut win_state,
+                                        &menu,
+                                        visible_count,
+                                    );
+                                }
+                                tray.sync_providers(
+                                    &menu.menu,
+                                    &visible_data(&config, &display),
+                                    &theme,
+                                );
+                                panel.update(&visible_data(&config, &display), true);
+                                menu.set_cursor_signed_in(false);
+                                fetch_one(&providers, &cmd_tx, &runtime, pid);
+                                window.request_redraw();
+                                feedback("AI Limits", "Signed out of Cursor");
+                            }
+                            Err(e) => {
+                                warn!("cursor sign-out failed: {e}");
+                                feedback("AI Limits", "Failed to sign out of Cursor");
                             }
                         }
                     }

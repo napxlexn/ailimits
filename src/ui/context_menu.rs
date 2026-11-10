@@ -64,6 +64,10 @@ pub enum MenuAction {
     PasteUsageToken(String),
     /// Remove the manual usage token.
     RemoveUsageToken(String),
+    /// Sign the widget in to Cursor in the browser (its own session).
+    SignInCursor,
+    /// Forget the widget's own Cursor session.
+    SignOutCursor,
     /// Open the project's GitHub page in the browser.
     OpenProjectPage,
     Quit,
@@ -152,6 +156,9 @@ pub struct ContextMenu {
     remove_key_items: Vec<(MenuItem, String)>,
     paste_usage_items: Vec<(MenuItem, String)>,
     remove_usage_items: Vec<(MenuItem, String)>,
+    /// Cursor's own sign-in and sign-out; None without a Cursor entry.
+    cursor_sign_in_item: Option<MenuItem>,
+    cursor_sign_out_item: Option<MenuItem>,
     quit_item: MenuItem,
     /// The version line; opens the project page.
     version_item: IconMenuItem,
@@ -364,6 +371,8 @@ impl ContextMenu {
         let mut remove_key_items = Vec::new();
         let mut paste_usage_items = Vec::new();
         let mut remove_usage_items = Vec::new();
+        let mut cursor_sign_in_item = None;
+        let mut cursor_sign_out_item = None;
 
         for pc in &config.providers {
             let display = crate::providers::ProviderId::from_config_id(&pc.id)
@@ -420,6 +429,19 @@ impl ContextMenu {
                 sub.append(&remove)?;
                 paste_usage_items.push((paste, pc.id.clone()));
                 remove_usage_items.push((remove, pc.id.clone()));
+            }
+
+            // Cursor: the widget signs in by itself, in the browser. Signing
+            // in again replaces the session (another account, or one Cursor
+            // ended); sign-out is greyed while there is none.
+            if pc.id == "cursor" {
+                sub.append(&PredefinedMenuItem::separator())?;
+                let sign_in = MenuItem::new("Sign in to Cursor...", true, None);
+                let sign_out = MenuItem::new("Sign out of Cursor", false, None);
+                sub.append(&sign_in)?;
+                sub.append(&sign_out)?;
+                cursor_sign_in_item = Some(sign_in);
+                cursor_sign_out_item = Some(sign_out);
             }
 
             providers_submenu.append(&sub)?;
@@ -488,9 +510,19 @@ impl ContextMenu {
             remove_key_items,
             paste_usage_items,
             remove_usage_items,
+            cursor_sign_in_item,
+            cursor_sign_out_item,
             quit_item,
             version_item,
         })
+    }
+
+    /// Whether a Cursor session of the widget's own is kept: sign-out is
+    /// offered only then.
+    pub fn set_cursor_signed_in(&self, signed_in: bool) {
+        if let Some(item) = &self.cursor_sign_out_item {
+            item.set_enabled(signed_in);
+        }
     }
 
     /// Map a menu event id to an action.
@@ -591,6 +623,20 @@ impl ContextMenu {
             if *event_id == item.id() {
                 return Some(MenuAction::RemoveUsageToken(id.clone()));
             }
+        }
+        if self
+            .cursor_sign_in_item
+            .as_ref()
+            .is_some_and(|item| *event_id == item.id())
+        {
+            return Some(MenuAction::SignInCursor);
+        }
+        if self
+            .cursor_sign_out_item
+            .as_ref()
+            .is_some_and(|item| *event_id == item.id())
+        {
+            return Some(MenuAction::SignOutCursor);
         }
         if *event_id == self.pin_item.id() {
             Some(MenuAction::TogglePin)
