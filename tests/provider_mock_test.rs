@@ -552,6 +552,40 @@ fn data_without_monotonic_anchor_uses_wall_age() {
 }
 
 #[test]
+fn healthy_data_on_a_long_update_interval_is_not_stale() {
+    use ailimits::providers::{stale_after_secs, STALE_AFTER_SECS};
+    use chrono::Duration;
+
+    let aged = |minutes: i64| ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![metric(10, Some(100))],
+        updated_at: Utc::now() - Duration::minutes(minutes),
+        received_at: None,
+    };
+
+    // Ten minutes after the last fetch on the 15-minute menu interval: the
+    // next refresh is still due, the value has not stopped updating.
+    assert!(aged(10)
+        .stale_age_secs_after(stale_after_secs(900))
+        .is_none());
+    // The same age on the 1-minute interval has missed several refreshes.
+    assert!(aged(10)
+        .stale_age_secs_after(stale_after_secs(60))
+        .is_some());
+    // A missed 15-minute refresh is stale too.
+    assert!(aged(17)
+        .stale_age_secs_after(stale_after_secs(900))
+        .is_some());
+
+    // Short intervals keep the five-minute floor; nothing overflows.
+    assert_eq!(stale_after_secs(0), STALE_AFTER_SECS);
+    assert_eq!(stale_after_secs(60), STALE_AFTER_SECS);
+    assert!(stale_after_secs(1800) > 1800);
+    assert_eq!(stale_after_secs(u64::MAX), i64::MAX);
+}
+
+#[test]
 fn marginally_past_reset_within_grace_is_not_extrapolated() {
     use chrono::Duration;
     // Stale data whose reset is only ~30s past — inside the grace window, so it

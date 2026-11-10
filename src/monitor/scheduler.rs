@@ -6,7 +6,7 @@
 use crate::{
     app::AppCommand,
     platform,
-    providers::{Provider, ProviderStatus},
+    providers::{self, Provider, ProviderStatus},
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -93,6 +93,10 @@ impl Scheduler {
                 .interval_secs
                 .load(Ordering::Relaxed)
                 .max(MIN_INTERVAL_SECS);
+            // Staleness is measured against the interval this sleep runs on —
+            // published here, not from the menu, because a menu change only
+            // takes effect once the current sleep has ended.
+            providers::set_update_interval_secs(base);
             let sleep = if any_ok {
                 backoff = base;
                 base

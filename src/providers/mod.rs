@@ -11,6 +11,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Provider identifiers.
@@ -174,8 +175,33 @@ pub enum ProviderStatus {
     NotConfigured,
 }
 
-/// Data older than this is considered stale (grey bar + age display).
+/// Data older than this is considered stale (grey bar + age display) — the
+/// floor; a longer update interval raises it (see `stale_after_secs`).
 pub const STALE_AFTER_SECS: i64 = 300;
+
+/// Headroom over the update interval before data counts as stale. The
+/// scheduler starts the next cycle only after every provider of this one has
+/// answered, so a slow provider (request timeouts, a gh.exe spawn) pushes the
+/// next refresh past the bare interval.
+pub const STALE_SLACK_SECS: i64 = 60;
+
+/// The update interval the scheduler sleeps on, as it last reported it (0
+/// before its first cycle — the floor then applies).
+static UPDATE_INTERVAL_SECS: AtomicU64 = AtomicU64::new(0);
+
+/// Tell the staleness rule which update interval the scheduler runs on.
+pub fn set_update_interval_secs(secs: u64) {
+    UPDATE_INTERVAL_SECS.store(secs, Ordering::Relaxed);
+}
+
+/// How old data may get before it is stale, under a given update interval.
+/// A value only stops updating once it has missed its next scheduled refresh:
+/// on a 15- or 30-minute interval healthy data is minutes old between fetches
+/// and must not grey out.
+pub fn stale_after_secs(update_interval_secs: u64) -> i64 {
+    let interval = i64::try_from(update_interval_secs).unwrap_or(i64::MAX);
+    STALE_AFTER_SECS.max(interval.saturating_add(STALE_SLACK_SECS))
+}
 
 /// A reset is only treated as "provably passed" (→ the `≈0%` estimate) once it
 /// is more than this far in the past. Small relative to STALE_AFTER_SECS and to
@@ -256,19 +282,28 @@ impl ProviderData {
             .or_else(|| self.next_reset())
     }
 
-    /// Data age in seconds, if stale. The staleness DECISION is monotonic for
-    /// live data (immune to wall-clock jumps); data with no monotonic anchor
-    /// (a disk-cache entry, `received_at == None`)
-    /// falls back to its intrinsic wall-clock age. The returned NUMBER is always
-    /// the wall-clock age, for an honest "x ago" label.
+    /// Data age in seconds, if stale — measured against the update interval
+    /// the app runs on (`stale_after_secs`).
     pub fn stale_age_secs(&self) -> Option<i64> {
+        self.stale_age_secs_after(stale_after_secs(
+            UPDATE_INTERVAL_SECS.load(Ordering::Relaxed),
+        ))
+    }
+
+    /// Data age in seconds, if older than `stale_after` seconds. The
+    /// staleness DECISION is monotonic for live data (immune to wall-clock
+    /// jumps); data with no monotonic anchor (a disk-cache entry,
+    /// `received_at == None`) falls back to its intrinsic wall-clock age. The
+    /// returned NUMBER is always the wall-clock age, for an honest "x ago"
+    /// label.
+    pub fn stale_age_secs_after(&self, stale_after: i64) -> Option<i64> {
         let wall_age = Utc::now()
             .signed_duration_since(self.updated_at)
             .num_seconds()
             .max(0);
         let is_stale = match self.received_at {
-            Some(inst) => inst.elapsed().as_secs() as i64 > STALE_AFTER_SECS,
-            None => wall_age > STALE_AFTER_SECS,
+            Some(inst) => inst.elapsed().as_secs() as i64 > stale_after,
+            None => wall_age > stale_after,
         };
         is_stale.then_some(wall_age)
     }

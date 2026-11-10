@@ -13,6 +13,8 @@ Ground rules that apply to every provider:
   `ailimits`. The config stores labels, never values. Tokens are never logged.
 - **Stale-data policy** (implemented in `app.rs` + `renderer.rs`): a transient
   error never wipes the last real data; it is shown greyed with its age.
+  Data counts as stale once it has missed its next scheduled refresh: the
+  update interval plus a minute, never under 5 minutes.
   Once a metric's reset time has provably passed, the display extrapolates
   to `≈0%` (`ProviderStatus::Estimated`).
 - Metrics whose reset is still in the future are persisted to
