@@ -150,24 +150,24 @@ impl ClaudeProvider {
         };
 
         // 0. Manual usage token: a minimal read-only usage request.
-        // Rejected → quietly fall back to the Claude Code sources.
+        // No data → quietly fall back to the Claude Code sources.
         if let Some(token) = usage_token {
-            match self.fetch_via_oauth(&token, &mut chain.rate_limited).await {
-                Ok(Some(data)) => return Ok(data),
-                Ok(None) => warn!("stored Claude usage token was rejected, falling back"),
-                Err(e) => warn!("stored Claude usage token fetch failed: {e}"),
+            if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
+                return Ok(data);
             }
+            warn!("stored Claude usage token gave no data, falling back");
         }
 
         // 1. OAuth: the Claude Code token is READ-ONLY — never refresh it,
         // refresh-token rotation would log Claude Code out.
         match read_oauth_token(&credentials_path).await {
-            Ok(Some(token)) => match self.fetch_via_oauth(&token, &mut chain.rate_limited).await {
-                Ok(Some(data)) => return Ok(data),
-                Ok(None) => { /* expired or 401 — fall back */ }
-                Err(e) => warn!("oauth usage fetch error: {e}"),
-            },
-            Ok(None) => { /* no file or token — fall back */ }
+            Ok(Some(token)) => {
+                // Rejected, unanswered or unreadable — fall back.
+                if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
+                    return Ok(data);
+                }
+            }
+            Ok(None) => { /* no file, or an expired token — fall back */ }
             Err(e) => warn!(".credentials.json parse error: {e}"),
         }
 
@@ -176,39 +176,59 @@ impl ClaudeProvider {
         Ok(self.data(chain.status(), vec![]))
     }
 
-    /// One usage request; Ok(None) = the token did not work, fall back.
-    /// Sets `rate_limited` on HTTP 429 so the caller can word its error honestly.
-    async fn fetch_via_oauth(
-        &self,
-        token: &str,
-        rate_limited: &mut bool,
-    ) -> Result<Option<ProviderData>> {
-        let resp = self
+    /// One usage request; None = no data from this token, fall back. Why is
+    /// noted in `chain`, so the caller can word its error honestly.
+    async fn fetch_via_oauth(&self, token: &str, chain: &mut ChainOutcome) -> Option<ProviderData> {
+        let resp = match self
             .http
             .get(OAUTH_USAGE_URL)
             .bearer_auth(token)
             .header("anthropic-beta", OAUTH_BETA_HEADER)
             .send()
-            .await?;
+            .await
+        {
+            Ok(r) => r,
+            // No answer at all, which says nothing about the token.
+            Err(e) => {
+                warn!("oauth usage request failed: {e}");
+                chain.offline = true;
+                return None;
+            }
+        };
 
         match resp.status().as_u16() {
             200 => {
-                let body = resp.text().await?;
-                let metrics = parse_oauth_usage(&body)?;
-                if metrics.is_empty() {
+                let body = match resp.text().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        warn!("oauth usage body read failed: {e}");
+                        chain.offline = true;
+                        return None;
+                    }
+                };
+                match parse_oauth_usage(&body) {
+                    Ok(metrics) if !metrics.is_empty() => {
+                        Some(self.data(ProviderStatus::Ok, metrics))
+                    }
                     // Schema changed — an honest error beats invented numbers.
-                    return Ok(None);
+                    parsed => {
+                        if let Err(e) = parsed {
+                            // serde names a position in the body, never its content.
+                            warn!("oauth usage body is not JSON: {e}");
+                        }
+                        chain.unrecognized = true;
+                        None
+                    }
                 }
-                Ok(Some(self.data(ProviderStatus::Ok, metrics)))
             }
             // 401/403 → stale token. The endpoint is undocumented, so any
             // non-200 falls back quietly.
             status => {
                 if status == 429 {
-                    *rate_limited = true;
+                    chain.rate_limited = true;
                 }
                 warn!("oauth usage endpoint returned HTTP {status}, falling back");
-                Ok(None)
+                None
             }
         }
     }
@@ -235,6 +255,10 @@ pub struct ChainOutcome {
     pub credentials_file: bool,
     /// A usage request bounced off the endpoint's rate limiter (HTTP 429).
     pub rate_limited: bool,
+    /// A usage request got no answer (offline, DNS, a timeout, a body cut off).
+    pub offline: bool,
+    /// A 200 carried a body the parser does not know.
+    pub unrecognized: bool,
 }
 
 impl ChainOutcome {
@@ -247,14 +271,21 @@ impl ChainOutcome {
     /// On HTTP 429 (the usage endpoint's per-token bucket is shared with
     /// Claude Code's own polling; verified 2026-07-09, `Retry-After: 0`) the
     /// next cycle usually gets through — say so instead of falsely blaming
-    /// the token.
+    /// the token. The same for a machine that is offline: a request that got
+    /// no answer says nothing about the token, and running Claude Code would
+    /// not help.
     pub fn status(self) -> ProviderStatus {
         if !self.usage_token && !self.credentials_file {
             return ProviderStatus::NotConfigured;
         }
-        // Short message — the renderer shows it instead of a generic "offline".
+        // Short messages: the row's hover shows them, and one that ends in
+        // ", retrying" gets no "run Claude Code" appended.
         let msg = if self.rate_limited {
             "rate-limited, retrying"
+        } else if self.offline {
+            "offline, retrying"
+        } else if self.unrecognized {
+            "unrecognized usage schema"
         } else {
             "token expired"
         };

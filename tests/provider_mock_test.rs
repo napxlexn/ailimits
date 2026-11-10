@@ -108,6 +108,61 @@ fn a_failing_claude_usage_token_keeps_the_row() {
 }
 
 #[test]
+fn an_offline_claude_is_not_an_expired_token() {
+    use ailimits::providers::claude::ChainOutcome;
+    use ailimits::ui::renderer::hover_reason;
+    use chrono::Duration;
+    use std::collections::HashMap;
+
+    // A valid Claude Code token, but no request got an answer.
+    let offline = ChainOutcome {
+        credentials_file: true,
+        offline: true,
+        ..ChainOutcome::default()
+    };
+    let status = offline.status();
+    let ProviderStatus::NetworkError(msg) = &status else {
+        panic!("offline must stay an honest error, got {status:?}");
+    };
+    assert_eq!(msg, "offline, retrying");
+
+    // The hover adds no "run Claude Code": it would not help.
+    let stale = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![metric(10, Some(100))],
+        updated_at: Utc::now() - Duration::hours(1),
+        received_at: None,
+    };
+    let errors = HashMap::from([(ProviderId::Claude, msg.clone())]);
+    assert_eq!(
+        hover_reason(&stale, &errors).as_deref(),
+        Some("offline, retrying")
+    );
+
+    // A 429 in the same cycle reached the server: the rate limit is the news.
+    let bounced = ChainOutcome {
+        rate_limited: true,
+        ..offline
+    };
+    assert!(matches!(
+        bounced.status(),
+        ProviderStatus::NetworkError(ref m) if m == "rate-limited, retrying"
+    ));
+
+    // A 200 the parser does not know is no expired token either.
+    let unknown = ChainOutcome {
+        credentials_file: true,
+        unrecognized: true,
+        ..ChainOutcome::default()
+    };
+    assert!(matches!(
+        unknown.status(),
+        ProviderStatus::NetworkError(ref m) if m == "unrecognized usage schema"
+    ));
+}
+
+#[test]
 fn a_failing_codex_usage_token_or_unreadable_auth_json_keeps_the_row() {
     use ailimits::providers::codex::status_without_cli_token;
 

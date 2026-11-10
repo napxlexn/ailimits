@@ -29,8 +29,10 @@
    → `claudeAiOauth.accessToken` (пропускається, якщо `expiresAt` у минулому).
 3. Джерело є (будь-який із токенів: збережений usage token важить стільки ж,
    скільки файл credentials), але даних не дало →
-   `NetworkError("token expired")`, або `"rate-limited, retrying"` після
-   HTTP 429.
+   `NetworkError("token expired")`, або те, що насправді зламалося:
+   `"rate-limited, retrying"` після HTTP 429, `"offline, retrying"`, коли
+   запит не отримав відповіді, `"unrecognized usage schema"` для 200, якого
+   парсер не знає.
 4. Джерел немає взагалі → `NotConfigured` (рядок ховається).
 
 (Знімки `statusline.jsonl` були джерелом до 0.7.0; Claude Code більше не

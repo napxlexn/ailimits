@@ -31,7 +31,9 @@ Ground rules that apply to every provider:
    → `claudeAiOauth.accessToken` (skipped when `expiresAt` is in the past).
 3. A source exists (either token: a stored usage token counts as much as
    the credentials file) but gave no data → `NetworkError("token expired")`,
-   or `"rate-limited, retrying"` after an HTTP 429.
+   or what actually failed: `"rate-limited, retrying"` after an HTTP 429,
+   `"offline, retrying"` when a request got no answer, or
+   `"unrecognized usage schema"` for a 200 the parser does not know.
 4. No sources at all → `NotConfigured` (the row is hidden).
 
 (`statusline.jsonl` snapshots were a source until 0.7.0; Claude Code no
