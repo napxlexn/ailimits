@@ -14,7 +14,13 @@ Ground rules that apply to every provider:
 - **Stale-data policy** (implemented in `app.rs` + `renderer.rs`): a transient
   error never wipes the last real data; it is shown greyed with its age.
   Data counts as stale once it has missed its next scheduled refresh: the
-  update interval plus a minute, never under 5 minutes.
+  update interval plus a minute, never under 5 minutes. Polling pauses while
+  the user is idle or locked (5 minutes without input), and that time does
+  not count: a row does not grey because the app stopped asking while the
+  user was away, and on return it stays live until the immediate resume fetch
+  lands. A provider that fails while the user is active still greys, and data
+  already stale before a pause stays stale after it. The displayed age is
+  still the plain wall-clock age.
   Once a metric's reset time has provably passed, the display extrapolates
   to `≈0%` (`ProviderStatus::Estimated`).
 - Metrics whose reset is still in the future are persisted to

@@ -77,6 +77,9 @@ impl Scheduler {
                 if !was_paused {
                     debug!("idle/locked — pausing polling");
                     was_paused = true;
+                    // The pause must not age what is on screen: the staleness
+                    // rule leaves this time out.
+                    providers::set_polling_paused(true);
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(PAUSE_RECHECK_SECS)).await;
                 continue;
@@ -84,6 +87,7 @@ impl Scheduler {
             if was_paused {
                 debug!("activity resumed — polling immediately");
                 was_paused = false;
+                providers::set_polling_paused(false);
             }
             first_run = false;
 

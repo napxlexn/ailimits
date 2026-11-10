@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Provider identifiers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -203,6 +204,75 @@ pub fn stale_after_secs(update_interval_secs: u64) -> i64 {
     STALE_AFTER_SECS.max(interval.saturating_add(STALE_SLACK_SECS))
 }
 
+/// The scheduler's idle pause, as the staleness rule sees it. Polling stops
+/// while the user is away (idle or locked), and the time spent there does not
+/// age live data: a value only goes stale once it has missed refreshes the
+/// scheduler actually tried to make. Without this every row greyed in the
+/// seconds between the user coming back and the resume fetch landing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PollingPause {
+    /// Since when polling is paused; `None` while it runs.
+    pub paused_since: Option<Instant>,
+    /// The most recent pause that has ended, as (start, end).
+    pub last: Option<(Instant, Instant)>,
+}
+
+impl PollingPause {
+    /// Record polling pausing (`true`) or resuming (`false`) at `now`. A
+    /// repeat of the current state changes nothing.
+    pub fn mark(&mut self, paused: bool, now: Instant) {
+        match (paused, self.paused_since) {
+            (true, None) => self.paused_since = Some(now),
+            (false, Some(since)) => {
+                self.last = Some((since, now));
+                self.paused_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether live data received at `received` is stale at `now`: older than
+    /// `stale_after` seconds once the paused time since it arrived is taken
+    /// out. Never stale while paused — nothing is being missed then, and the
+    /// resume fetch is about to replace it.
+    ///
+    /// Only the most recent pause is remembered. Between two pauses the
+    /// scheduler always runs a fetch cycle, so live data predates an older
+    /// pause only when that fetch failed for it; counting the older pause as
+    /// active time then greys it sooner, which is the honest direction.
+    pub fn is_stale(&self, received: Instant, now: Instant, stale_after: i64) -> bool {
+        if self.paused_since.is_some() {
+            return false;
+        }
+        let paused = self.last.map_or(Duration::ZERO, |(start, end)| {
+            end.min(now).saturating_duration_since(start.max(received))
+        });
+        let active = now
+            .saturating_duration_since(received)
+            .saturating_sub(paused);
+        i64::try_from(active.as_secs()).unwrap_or(i64::MAX) > stale_after
+    }
+}
+
+/// The scheduler's pause state, published from its loop.
+static POLLING_PAUSE: Mutex<PollingPause> = Mutex::new(PollingPause {
+    paused_since: None,
+    last: None,
+});
+
+/// Tell the staleness rule that polling has paused (`true`) or resumed.
+pub fn set_polling_paused(paused: bool) {
+    let now = Instant::now();
+    POLLING_PAUSE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .mark(paused, now);
+}
+
+fn polling_pause() -> PollingPause {
+    *POLLING_PAUSE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// A reset is only treated as "provably passed" (→ the `≈0%` estimate) once it
 /// is more than this far in the past. Small relative to STALE_AFTER_SECS and to
 /// real reset windows (5h / 7d), so it cannot mask a genuine rollover, but it
@@ -226,7 +296,8 @@ pub struct ProviderData {
     /// SESSION-LOCAL: it survives in-process moves (the mpsc channel) but is
     /// intentionally NOT serialized (`#[serde(skip)]` ⇒ `None` after a disk
     /// round-trip). When `Some`, staleness is gated on this monotonic clock so a
-    /// wall-clock jump (NTP, VM resume, DST) cannot falsely age fresh data;
+    /// wall-clock jump (NTP, VM resume, DST) cannot falsely age fresh data,
+    /// and the scheduler's idle pause is taken out of it (`PollingPause`);
     /// when `None` (a disk-cache entry, which carries its own intrinsic
     /// `updated_at` age) staleness falls back to wall time.
     #[serde(skip)]
@@ -292,17 +363,18 @@ impl ProviderData {
 
     /// Data age in seconds, if older than `stale_after` seconds. The
     /// staleness DECISION is monotonic for live data (immune to wall-clock
-    /// jumps); data with no monotonic anchor (a disk-cache entry,
-    /// `received_at == None`) falls back to its intrinsic wall-clock age. The
-    /// returned NUMBER is always the wall-clock age, for an honest "x ago"
-    /// label.
+    /// jumps) and leaves out the time polling spent paused while the user was
+    /// away (`PollingPause::is_stale`); data with no monotonic anchor (a
+    /// disk-cache entry, `received_at == None`) falls back to its intrinsic
+    /// wall-clock age. The returned NUMBER is always the wall-clock age, for
+    /// an honest "x ago" label.
     pub fn stale_age_secs_after(&self, stale_after: i64) -> Option<i64> {
         let wall_age = Utc::now()
             .signed_duration_since(self.updated_at)
             .num_seconds()
             .max(0);
         let is_stale = match self.received_at {
-            Some(inst) => inst.elapsed().as_secs() as i64 > stale_after,
+            Some(inst) => polling_pause().is_stale(inst, Instant::now(), stale_after),
             None => wall_age > stale_after,
         };
         is_stale.then_some(wall_age)

@@ -847,6 +847,96 @@ fn healthy_data_on_a_long_update_interval_is_not_stale() {
     assert_eq!(stale_after_secs(u64::MAX), i64::MAX);
 }
 
+// The idle-pause rule, on injected monotonic times (no sleeping): `t(s)` is
+// `s` seconds after a fixed origin.
+fn pause_clock() -> impl Fn(u64) -> std::time::Instant {
+    let origin = std::time::Instant::now();
+    move |secs| origin + std::time::Duration::from_secs(secs)
+}
+
+#[test]
+fn the_idle_pause_does_not_age_live_data() {
+    use ailimits::providers::PollingPause;
+    let t = pause_clock();
+    let mut pause = PollingPause::default();
+    // Fetched at 0; the user leaves and polling pauses a minute later.
+    pause.mark(true, t(60));
+    // Hours away: never stale while paused.
+    assert!(!pause.is_stale(t(0), t(4 * 3600), 300));
+    // Back: the seconds before the resume fetch lands are not stale either.
+    pause.mark(false, t(4 * 3600));
+    assert!(!pause.is_stale(t(0), t(4 * 3600 + 10), 300));
+    // Only active time counts: 60 s before the pause + 240 s after it is
+    // exactly the limit, one more second is over it.
+    assert!(!pause.is_stale(t(0), t(4 * 3600 + 240), 300));
+    assert!(pause.is_stale(t(0), t(4 * 3600 + 241), 300));
+}
+
+#[test]
+fn data_already_stale_before_the_pause_stays_stale_after_it() {
+    use ailimits::providers::PollingPause;
+    let t = pause_clock();
+    let mut pause = PollingPause::default();
+    // A failing provider: its last good data is from 0 and it was grey by
+    // the time the user left at 600.
+    assert!(pause.is_stale(t(0), t(600), 300));
+    pause.mark(true, t(600));
+    pause.mark(false, t(3600));
+    // The resume fetch fails again: the retained value must not turn live.
+    assert!(pause.is_stale(t(0), t(3601), 300));
+}
+
+#[test]
+fn without_a_pause_live_data_ages_as_before() {
+    use ailimits::providers::PollingPause;
+    let t = pause_clock();
+    let pause = PollingPause::default();
+    // A fetch that keeps failing while the user is active still greys.
+    assert!(!pause.is_stale(t(0), t(300), 300));
+    assert!(pause.is_stale(t(0), t(301), 300));
+    // Data fetched after the last pause ages by its full elapsed time.
+    let mut pause = PollingPause::default();
+    pause.mark(true, t(0));
+    pause.mark(false, t(1000));
+    assert!(pause.is_stale(t(1100), t(1401), 300));
+    assert!(!pause.is_stale(t(1100), t(1400), 300));
+}
+
+#[test]
+fn data_received_during_a_pause_ages_from_the_resume() {
+    use ailimits::providers::PollingPause;
+    let t = pause_clock();
+    let mut pause = PollingPause::default();
+    // An out-of-band fetch (a menu action) can land while the scheduler
+    // still counts the user as away.
+    pause.mark(true, t(0));
+    pause.mark(false, t(1000));
+    assert!(!pause.is_stale(t(500), t(1300), 300));
+    assert!(pause.is_stale(t(500), t(1301), 300));
+}
+
+#[test]
+fn pause_marks_keep_the_first_start_and_the_last_pause() {
+    use ailimits::providers::PollingPause;
+    let t = pause_clock();
+    let mut pause = PollingPause::default();
+    // Resuming without a pause changes nothing.
+    pause.mark(false, t(5));
+    assert_eq!(pause, PollingPause::default());
+    // A repeated pause keeps its first start.
+    pause.mark(true, t(10));
+    pause.mark(true, t(30));
+    assert_eq!(pause.paused_since, Some(t(10)));
+    pause.mark(false, t(100));
+    assert_eq!(pause.paused_since, None);
+    assert_eq!(pause.last, Some((t(10), t(100))));
+    // The next pause replaces the remembered one only when it ends.
+    pause.mark(true, t(500));
+    assert_eq!(pause.last, Some((t(10), t(100))));
+    pause.mark(false, t(900));
+    assert_eq!(pause.last, Some((t(500), t(900))));
+}
+
 #[test]
 fn marginally_past_reset_within_grace_is_not_extrapolated() {
     use chrono::Duration;

@@ -82,6 +82,14 @@ the scheduler), save the config, and request a redraw.
   an NTP/VM/DST time jump can't falsely grey fresh data or fabricate a reset.
   The wall clock still drives the displayed age and countdowns; the `≈0%`
   estimate also requires the reset to be past by a small grace window.
+- **The idle pause does not age data**: the scheduler publishes when it
+  pauses polling for an idle/locked user and when it resumes
+  (`providers::set_polling_paused` → `PollingPause`). Live data is never
+  stale while paused, and afterwards the most recent pause is subtracted
+  from its monotonic age. Only that one pause is remembered: a fetch cycle
+  always runs between two pauses, so live data older than an earlier pause
+  belongs to a provider that failed, and greying it sooner is honest. Disk
+  cache entries (no monotonic anchor) keep the wall-clock rule.
 
 ## Resource footprint (measured, not estimated)
 

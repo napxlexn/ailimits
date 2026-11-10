@@ -85,7 +85,8 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   in [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
 - **Stale data is marked as stale.** A value that stops updating greys out and
   shows its age. A limit window that has provably reset shows `≈0%`. The app
-  does not fill gaps with guesses.
+  does not fill gaps with guesses. Polling pauses while you are away, and that
+  time does not count: nothing greys just because you stepped out.
 - **Self-contained.** Statically linked, so no Visual C++ Redistributable and
   no bundled DLLs. The installer needs no admin rights.
 
