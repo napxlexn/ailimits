@@ -290,7 +290,7 @@ GUI app). The file rotates at 5 MB: the previous one is kept as `ailimits.log.1`
 ## Build from source
 
 ```
-# Rust 1.86+, Windows 11
+# Rust 1.90+, Windows 11
 cargo build --profile release-min     # ~3 MB exe in target/release-min/
 cargo test
 ```

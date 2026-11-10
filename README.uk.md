@@ -293,7 +293,7 @@ GUI-застосунку невидимий). Файл ротується на 5
 ## Збірка з джерел
 
 ```
-# Rust 1.86+, Windows 11
+# Rust 1.90+, Windows 11
 cargo build --profile release-min     # ~3 МБ exe у target/release-min/
 cargo test
 ```

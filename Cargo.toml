@@ -4,7 +4,7 @@ version = "0.7.0"
 edition = "2021"
 # Build-from-source floor. Driven by icu_* (via reqwest → url → idna); Cargo
 # emits a clear error on an older toolchain instead of a deep dependency error.
-rust-version = "1.86"
+rust-version = "1.90"
 description = "AI provider limits floating overlay widget for Windows 11"
 authors = ["napxlexn"]
 license = "GPL-3.0-or-later"
