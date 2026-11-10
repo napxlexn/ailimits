@@ -103,7 +103,8 @@ async fn check_and_install(client: &reqwest::Client) -> Result<()> {
 }
 
 /// Query the latest release; return Some only when it is strictly newer than the
-/// running build AND carries a `.exe` asset with a usable sha256 digest.
+/// running build AND carries an `AiLimits-Setup-*.exe` asset with a usable
+/// sha256 digest.
 async fn fetch_latest(client: &reqwest::Client) -> Result<Option<Update>> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body: serde_json::Value = client
@@ -125,17 +126,8 @@ async fn fetch_latest(client: &reqwest::Client) -> Result<Option<Update>> {
         return Ok(None);
     }
 
-    let asset = body
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .find(|a| {
-            a.get("name")
-                .and_then(|v| v.as_str())
-                .is_some_and(|n| n.to_ascii_lowercase().ends_with(".exe"))
-        })
-        .context("release has no .exe installer asset")?;
+    let asset =
+        installer_asset(&body).context("release has no AiLimits-Setup-*.exe installer asset")?;
 
     let asset_url = asset
         .get("browser_download_url")
@@ -155,6 +147,29 @@ async fn fetch_latest(client: &reqwest::Client) -> Result<Option<Update>> {
         asset_url,
         sha256,
     }))
+}
+
+/// The release's installer asset: the first one named like our installer.
+fn installer_asset(release: &serde_json::Value) -> Option<&serde_json::Value> {
+    release
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .find(|a| {
+            a.get("name")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_installer_name)
+        })
+}
+
+/// Whether an asset name is our installer's: `AiLimits-Setup-<version>.exe`
+/// (installer/ailimits.iss `OutputBaseFilename`), in any case. Any other
+/// `.exe` a release might carry is never run as the installer with
+/// `/VERYSILENT`, whatever its digest.
+fn is_installer_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("ailimits-setup-") && name.ends_with(".exe")
 }
 
 /// Download the installer, verify its SHA-256, and write it to a temp path.
@@ -367,6 +382,34 @@ mod tests {
         // Same or older must NOT trigger an update.
         assert!(parse_version("0.5.3").unwrap() <= cur);
         assert!(parse_version("0.5.2").unwrap() <= cur);
+    }
+
+    #[test]
+    fn only_the_setup_exe_is_taken_for_the_installer() {
+        assert!(is_installer_name("AiLimits-Setup-0.7.1.exe"));
+        assert!(is_installer_name("ailimits-setup-0.7.1.EXE"));
+        for name in [
+            "ailimits.exe",
+            "ailimits-auth.exe",
+            "AiLimits-Portable-0.7.1.exe",
+            "Setup-AiLimits-0.7.1.exe",
+            "evil-AiLimits-Setup-0.7.1.exe",
+            "AiLimits-Setup-0.7.1.exe.sha256",
+            "AiLimits-Setup-0.7.1.zip",
+        ] {
+            assert!(!is_installer_name(name), "{name} is not the installer");
+        }
+
+        // Another .exe listed first must not be picked over the installer.
+        let release = serde_json::json!({"tag_name": "v9.9.9", "assets": [
+            {"name": "ailimits-auth.exe", "browser_download_url": "https://example.invalid/a"},
+            {"name": "AiLimits-Setup-9.9.9.exe", "browser_download_url": "https://example.invalid/s"}
+        ]});
+        let asset = installer_asset(&release).expect("the setup asset");
+        assert_eq!(asset["name"], "AiLimits-Setup-9.9.9.exe");
+
+        let without = serde_json::json!({"assets": [{"name": "ailimits.exe"}]});
+        assert!(installer_asset(&without).is_none());
     }
 
     #[test]
