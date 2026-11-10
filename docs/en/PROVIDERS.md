@@ -307,15 +307,16 @@ cursor.com dashboard reads the same one):
 
 ```
 GET https://cursor.com/api/usage-summary
-Cookie: WorkosCursorSessionToken=<account id>%3A%3A<token>
+Cookie: WorkosCursorSessionToken=<sub>%3A%3A<token>
 Accept: application/json
 ```
 
 `sub` reads like `github|user_…`: the sign-in provider, then the account id.
-The cookie carries the account id (`user_…`), which is the form cursor.com
-sets in a browser; `%3A%3A` is a literal, already URL-encoded `::`. A request
-built from the editor's own token still awaits a live check: the token stored
-on the development machine expired 2026-09-29.
+The cookie carries it whole; `%3A%3A` is a literal, already URL-encoded `::`.
+Verified 2026-11-10 with a freshly issued token of the same account (a
+one-off sign-in by link; the editor's stored token had expired 2026-09-29).
+A request built from the editor's own stored token is the same request, but
+awaits a live check once the editor is signed in again.
 
 ```json
 {"billingCycleStart": "2026-10-28T20:49:51.046Z",

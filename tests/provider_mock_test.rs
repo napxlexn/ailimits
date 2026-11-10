@@ -1129,7 +1129,7 @@ fn cursor_session_claims_come_from_the_token_payload() {
     let no_exp = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhdXRoMHx1c2VyXzAxTk9FWFAifQ.c2ln";
 
     let claims = parse_session_claims(valid).expect("valid claims");
-    assert_eq!(claims.user_id, "user_01TESTFIXTURE");
+    assert_eq!(claims.subject, "github|user_01TESTFIXTURE");
     assert_eq!(
         claims.expires_at,
         Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
@@ -1143,13 +1143,13 @@ fn cursor_session_claims_come_from_the_token_payload() {
     );
 
     assert_eq!(
-        parse_session_claims(no_provider).unwrap().user_id,
+        parse_session_claims(no_provider).unwrap().subject,
         "user_01PLAIN"
     );
     assert!(parse_session_claims(no_sub).is_none());
 
     let claims = parse_session_claims(no_exp).expect("no exp is fine");
-    assert_eq!(claims.user_id, "user_01NOEXP");
+    assert_eq!(claims.subject, "auth0|user_01NOEXP");
     assert!(
         !claims.is_expired(Utc::now()),
         "the server judges a token without exp"

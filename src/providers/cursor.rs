@@ -91,7 +91,7 @@ impl CursorProvider {
         }
 
         let Ok(mut cookie) =
-            reqwest::header::HeaderValue::from_str(&session_cookie(&claims.user_id, &token))
+            reqwest::header::HeaderValue::from_str(&session_cookie(&claims.subject, &token))
         else {
             return Ok(self.error("unrecognized session token"));
         };
@@ -166,8 +166,9 @@ fn read_access_token(path: &Path) -> std::result::Result<Option<String>, SqliteE
 /// What the widget needs from the session token's claims. Holds no secret.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionClaims {
-    /// The account id the session cookie carries in front of the token.
-    pub user_id: String,
+    /// The token's `sub`, whole: the session cookie carries it in front of
+    /// the token.
+    pub subject: String,
     /// `exp`, when the token states one.
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -185,14 +186,13 @@ impl SessionClaims {
 /// not a JWT or carries no `sub`.
 ///
 /// `sub` looks like "github|user_01…" (the sign-in provider, then the
-/// account id); the account id is what the cursor.com session cookie carries.
+/// account id); the cookie carries it whole, the form verified live.
 pub fn parse_session_claims(token: &str) -> Option<SessionClaims> {
     let payload = token.split('.').nth(1)?;
     let bytes = base64url_decode(payload)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     let sub = value.get("sub")?.as_str()?.trim();
-    let user_id = sub.rsplit('|').next()?.trim();
-    if user_id.is_empty() {
+    if sub.is_empty() {
         return None;
     }
     let expires_at = value
@@ -200,15 +200,16 @@ pub fn parse_session_claims(token: &str) -> Option<SessionClaims> {
         .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
         .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0));
     Some(SessionClaims {
-        user_id: user_id.to_string(),
+        subject: sub.to_string(),
         expires_at,
     })
 }
 
-/// The cursor.com session cookie the dashboard itself uses:
-/// `<account id>%3A%3A<token>` (a literal, already URL-encoded "::").
-fn session_cookie(user_id: &str, token: &str) -> String {
-    format!("WorkosCursorSessionToken={user_id}%3A%3A{token}")
+/// The cursor.com session cookie: `<sub>%3A%3A<token>` (a literal, already
+/// URL-encoded "::"), with the token's `sub` whole - verified 2026-11-10,
+/// HTTP 200 with a freshly issued token.
+fn session_cookie(subject: &str, token: &str) -> String {
+    format!("WorkosCursorSessionToken={subject}%3A%3A{token}")
 }
 
 /// Unpadded base64url (the JWT segment alphabet); standard-alphabet input
@@ -441,11 +442,11 @@ mod tests {
         assert_eq!(token, FAKE_TOKEN);
 
         let claims = parse_session_claims(&token).expect("claims");
-        assert_eq!(claims.user_id, "user_01TESTFIXTURE");
+        assert_eq!(claims.subject, "github|user_01TESTFIXTURE");
         assert!(!claims.is_expired(Utc::now()));
         assert_eq!(
-            session_cookie(&claims.user_id, &token),
-            format!("WorkosCursorSessionToken=user_01TESTFIXTURE%3A%3A{FAKE_TOKEN}")
+            session_cookie(&claims.subject, &token),
+            format!("WorkosCursorSessionToken=github|user_01TESTFIXTURE%3A%3A{FAKE_TOKEN}")
         );
     }
 
