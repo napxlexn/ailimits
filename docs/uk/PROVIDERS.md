@@ -126,7 +126,10 @@ Authorization: token <token>
 
 → метрики `Premium`, `Chat`, `Completions` (used = entitlement − remaining;
 від'ємний `remaining` = перевитрата; `unlimited`-квоти пропускаються).
-`quota_reset_date` → скидання опівночі UTC.
+`quota_reset_date` → скидання опівночі UTC. Незнайома схема або тіло не в
+JSON → `NetworkError("unrecognized copilot_internal schema")`; 401/403/404 →
+`AuthError("token has no Copilot access")`; будь-який інший статус →
+`HTTP <code>`; тіло, обірване посеред передачі, → мережева помилка.
 
 ## Час життя токенів і вікно точності
 
@@ -290,7 +293,8 @@ Accept: application/json
 `productUsage` взагалі. Тож 200 з коректним `currentPeriod` і без відсотка —
 це 0%, і лише тоді; тіло без жодного з них — незнайома схема. Незнайома
 схема, тіло не в JSON або будь-який статус ≠ 200 — чесний `NetworkError`:
-`unrecognized billing schema`, `token rejected` (401/403) або `HTTP <code>`.
+`unrecognized billing schema`, `token rejected` (401/403) або `HTTP <code>`;
+тіло, обірване посеред передачі, — мережева помилка.
 
 Не плутати з:
 

@@ -98,30 +98,19 @@ impl CopilotProvider {
             Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
         };
 
-        match resp.status().as_u16() {
-            200 => {
-                let body = resp.text().await?;
-                let metrics = parse_copilot_quotas(&body)?;
-                if metrics.is_empty() {
-                    // The internal API schema changed — an honest signal.
-                    return Ok(self.data(
-                        ProviderStatus::NetworkError(
-                            "unrecognized copilot_internal schema".to_string(),
-                        ),
-                        vec![],
-                    ));
-                }
-                Ok(self.data(ProviderStatus::Ok, metrics))
+        let code = resp.status().as_u16();
+        // Only a 200 carries a body worth reading. One cut off mid-transfer
+        // is an honest error row, never an Err the scheduler would only log.
+        let body = if code == 200 {
+            match resp.text().await {
+                Ok(body) => body,
+                Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
             }
-            401 | 403 | 404 => Ok(self.data(
-                ProviderStatus::AuthError("token has no Copilot access".to_string()),
-                vec![],
-            )),
-            other => Ok(self.data(
-                ProviderStatus::NetworkError(format!("HTTP {other}")),
-                vec![],
-            )),
-        }
+        } else {
+            String::new()
+        };
+        let (status, metrics) = quota_outcome(code, &body);
+        Ok(self.data(status, metrics))
     }
 }
 
@@ -204,6 +193,38 @@ async fn gh_cli_token() -> Option<String> {
         None
     } else {
         Some(token)
+    }
+}
+
+/// One copilot_internal answer → status + metrics. Free of I/O so every
+/// branch is testable: any non-200 or unknown body is an honest error, never
+/// numbers.
+pub fn quota_outcome(code: u16, body: &str) -> (ProviderStatus, Vec<Metric>) {
+    // The internal API schema changed — an honest signal.
+    let unrecognized = || {
+        (
+            ProviderStatus::NetworkError("unrecognized copilot_internal schema".to_string()),
+            vec![],
+        )
+    };
+    match code {
+        200 => match parse_copilot_quotas(body) {
+            Ok(metrics) if !metrics.is_empty() => (ProviderStatus::Ok, metrics),
+            Ok(_) => unrecognized(),
+            Err(e) => {
+                // serde names a position in the body, never its content.
+                warn!("copilot_internal body is not JSON: {e}");
+                unrecognized()
+            }
+        },
+        401 | 403 | 404 => (
+            ProviderStatus::AuthError("token has no Copilot access".to_string()),
+            vec![],
+        ),
+        other => (
+            ProviderStatus::NetworkError(format!("HTTP {other}")),
+            vec![],
+        ),
     }
 }
 

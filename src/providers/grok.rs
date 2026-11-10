@@ -118,9 +118,13 @@ impl GrokProvider {
             Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
         };
         let code = resp.status().as_u16();
-        // Only a 200 carries a body worth reading.
+        // Only a 200 carries a body worth reading. One cut off mid-transfer
+        // is an honest error row, never an Err the scheduler would only log.
         let body = if code == 200 {
-            resp.text().await?
+            match resp.text().await {
+                Ok(body) => body,
+                Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
+            }
         } else {
             String::new()
         };

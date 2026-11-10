@@ -255,6 +255,44 @@ fn copilot_internal_quotas_parse_to_metrics() {
 }
 
 #[test]
+fn copilot_answers_map_to_honest_statuses() {
+    use ailimits::providers::copilot::quota_outcome;
+
+    let body = r#"{"quota_reset_date": "2026-07-01", "quota_snapshots": {
+        "premium_interactions": {"entitlement": 50, "remaining": 10, "unlimited": false}}}"#;
+    let (status, metrics) = quota_outcome(200, body);
+    assert!(matches!(status, ProviderStatus::Ok));
+    assert_eq!(metrics[0].used, 40);
+
+    // A 200 with a body we cannot read — an HTML page, another shape — is an
+    // honest row, never a dropped update.
+    for body in ["<html>oops</html>", r#"{"foo": 1}"#, ""] {
+        let (status, metrics) = quota_outcome(200, body);
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized copilot_internal schema"),
+            "{body}: {status:?}"
+        );
+        assert!(metrics.is_empty());
+    }
+
+    for code in [401, 403, 404] {
+        let (status, metrics) = quota_outcome(code, body);
+        assert!(
+            matches!(&status, ProviderStatus::AuthError(m) if m == "token has no Copilot access")
+        );
+        assert!(metrics.is_empty());
+    }
+    for code in [302, 429, 500] {
+        let (status, metrics) = quota_outcome(code, body);
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if *m == format!("HTTP {code}")),
+            "{code}: {status:?}"
+        );
+        assert!(metrics.is_empty(), "a non-200 body is never parsed");
+    }
+}
+
+#[test]
 fn copilot_zero_entitlement_quota_does_not_become_primary_metric() {
     use ailimits::providers::copilot::parse_copilot_quotas;
 

@@ -127,7 +127,10 @@ Authorization: token <token>
 
 → metrics `Premium`, `Chat`, `Completions` (used = entitlement − remaining;
 negative `remaining` = overage; `unlimited` snapshots are skipped).
-`quota_reset_date` → reset at midnight UTC.
+`quota_reset_date` → reset at midnight UTC. An unknown schema or a body that
+is not JSON → `NetworkError("unrecognized copilot_internal schema")`;
+401/403/404 → `AuthError("token has no Copilot access")`; any other status →
+`HTTP <code>`; a body cut off mid-transfer → the network error.
 
 ## Token lifetimes and accuracy window
 
@@ -287,7 +290,8 @@ same call answered with no `creditUsagePercent` and no `productUsage` at all.
 So a 200 with a well-formed `currentPeriod` and no percent is 0% — and only
 then; a body with neither is an unknown schema. An unknown schema, a body
 that is not JSON, or any non-200 is an honest `NetworkError`:
-`unrecognized billing schema`, `token rejected` (401/403) or `HTTP <code>`.
+`unrecognized billing schema`, `token rejected` (401/403) or `HTTP <code>`;
+a body cut off mid-transfer is the network error.
 
 Not to be confused with:
 
