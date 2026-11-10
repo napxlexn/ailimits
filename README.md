@@ -259,7 +259,9 @@ readout stays visible. Right-click → **Indicator**:
 - **Panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
-  providers in the widget's order, and tracks the taskbar as it moves
+  providers in the widget's order (a value that has stopped updating, or an
+  `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
+  taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with
   every provider. If Start, Search or the auto-hide bar covers it, it hands
   over to the tray rings and comes back on its own. If a fullscreen app takes

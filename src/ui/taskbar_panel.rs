@@ -9,11 +9,13 @@
 // Design goal: look like a continuation of the taskbar. MONOCHROME, following
 // the SYSTEM theme (near-black ink on a light bar, near-white on a dark one,
 // read from the registry and repainted on WindowEvent::ThemeChanged), digits at
-// the system-clock size, usage as the bar's fill and never a hue. Layout
-// (`general.indicator`; PanelRows and PanelGrid both map here): two rows for
-// the first two providers in the WIDGET's order, each "percent + progress
-// bar"; the rest stay in the tooltip. Auto-hide is tracked event-driven via
-// SetWinEventHook (UserEvent::TaskbarMoved) — it slides away with the bar.
+// the system-clock size, usage as the bar's fill and never a hue. A value
+// that is not live (stale, or an estimate) is inked dimmer, as the widget
+// greys it. Layout (`general.indicator`; PanelRows and PanelGrid both map
+// here): two rows for the first two providers in the WIDGET's order, each
+// "percent + progress bar"; the rest stay in the tooltip. Auto-hide is
+// tracked event-driven via SetWinEventHook (UserEvent::TaskbarMoved) — it
+// slides away with the bar.
 
 use crate::config::schema::IndicatorKind;
 use crate::platform::taskbar_geom::Edge;
@@ -66,11 +68,34 @@ fn theme_ink(light: bool) -> (Color, Color) {
     }
 }
 
+/// The ink of a row that is not live — stale, or an estimate: the live ink
+/// with its alpha halfway down to the track's. It reads dimmer at a glance
+/// yet stays legible on either bar (digits measured at 4:1 on the light one
+/// and 6:1 on the dark, where live digits are 12:1 and 13:1), and its bar
+/// fill still stands clear of the groove. Halfway is 62% on the light bar,
+/// the opacity WinUI gives its own secondary text there.
+fn aged_ink(ink: Color, track: Color) -> Color {
+    let mut aged = ink;
+    aged.set_alpha((ink.alpha() + track.alpha()) / 2.0);
+    aged
+}
+
 /// The first two providers in the widget's display order. The mini-panel mirrors
 /// the order shown in the main widget — it does NOT re-sort by who is busiest
 /// (`providers` already arrives in the widget's order, via `visible_data`).
 fn first_two(providers: &[ProviderData]) -> Vec<&ProviderData> {
     providers.iter().take(2).collect()
+}
+
+/// What the panel's picture depends on, for skipping no-op redraws: per
+/// painted row, the integer percent and whether the value is aged (not
+/// live). Only the first two providers are painted, so nobody further down
+/// the list can ask for a repaint; a row turning stale or fresh does.
+fn drawn_state(providers: &[ProviderData]) -> Vec<(Option<u8>, bool)> {
+    first_two(providers)
+        .into_iter()
+        .map(|d| (provider_pct(d).map(|p| p.round() as u8), d.is_aged()))
+        .collect()
 }
 
 /// Premultiplied RGBA (tiny-skia) → premultiplied BGRA (top-down) for
@@ -96,24 +121,32 @@ fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
 /// Paint the rows into the panel's pixmap: the layout lying down (rows of
 /// "percent + bar" across, digits sized from the height) or standing up
 /// (a stack of percent-over-bar, digits sized from the width), in the given
-/// ink over the transparent fill. Free of the window so a test can look.
+/// ink over the transparent fill — dimmed for a row that is not live. Free of
+/// the window so a test can look.
 fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color, track: Color) {
     let (fw, fh) = (pm.width() as f32, pm.height() as f32);
     let label_of = |data: &ProviderData| match provider_pct(data) {
         Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
         None => "—".to_string(),
     };
+    let aged = aged_ink(fg, track);
+    let ink_of = |data: &ProviderData| if data.is_aged() { aged } else { fg };
     // A bar with a sliver kept visible at low usage, so it never looks absent.
-    let bar_fill =
-        |pm: &mut Pixmap, data: &ProviderData, bx: f32, by: f32, bar_w: f32, bar_h: f32| {
-            let rad = bar_h / 2.0;
-            fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
-            if let Some(p) = provider_pct(data) {
-                let frac = (p / 100.0).clamp(0.0, 1.0);
-                let fwid = (bar_w * frac).max(bar_h);
-                fill_round_rect(pm, bx, by, fwid, bar_h, rad, fg);
-            }
-        };
+    let bar_fill = |pm: &mut Pixmap,
+                    data: &ProviderData,
+                    bx: f32,
+                    by: f32,
+                    bar_w: f32,
+                    bar_h: f32,
+                    ink: Color| {
+        let rad = bar_h / 2.0;
+        fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
+        if let Some(p) = provider_pct(data) {
+            let frac = (p / 100.0).clamp(0.0, 1.0);
+            let fwid = (bar_w * frac).max(bar_h);
+            fill_round_rect(pm, bx, by, fwid, bar_h, rad, ink);
+        }
+    };
     if vertical {
         // Standing up: the digits are sized from the bar's WIDTH (the
         // thickness, as the height is lying down), each provider a percent
@@ -131,8 +164,9 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         let inner = fw - 2.0 * pad_x;
         for (i, data) in top.iter().enumerate() {
             let ry = top0 + i as f32 * (row_h + row_gap);
-            draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, fg);
-            bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h);
+            let ink = ink_of(data);
+            draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, ink);
+            bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h, ink);
         }
     } else {
         // Digit ink height matched to the taskbar clock: the user tuned it
@@ -153,6 +187,7 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         let bar_w = fw - bx - pad_x;
         for (i, data) in top.iter().enumerate() {
             let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
+            let ink = ink_of(data);
             draw_digits_fit(
                 pm,
                 &label_of(data),
@@ -160,9 +195,9 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
                 cy - digit_h / 2.0,
                 num_w,
                 digit_h,
-                fg,
+                ink,
             );
-            bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h);
+            bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h, ink);
         }
     }
 }
@@ -171,8 +206,9 @@ pub struct TaskbarPanel {
     window: Rc<Window>,
     pixmap: Pixmap,
     mode: IndicatorKind,
-    /// Last drawn integer % per provider, to skip no-op redraws.
-    last: Vec<Option<u8>>,
+    /// Last drawn state per painted row (`drawn_state`), to skip no-op
+    /// redraws.
+    last: Vec<(Option<u8>, bool)>,
     size: (u32, u32),
     /// Current screen placement, or None while hidden (taskbar slid away).
     rect: Option<(i32, i32, u32, u32)>,
@@ -337,10 +373,7 @@ impl TaskbarPanel {
             return;
         }
         self.reposition();
-        let state: Vec<Option<u8>> = providers
-            .iter()
-            .map(|d| provider_pct(d).map(|p| p.round() as u8))
-            .collect();
+        let state = drawn_state(providers);
         if force || state != self.last {
             self.last = state;
             self.redraw(providers);
@@ -823,22 +856,145 @@ mod tests {
         }
     }
 
-    /// Both layouts over the bar's dark grey, at the 100% bar size, to
-    /// %TEMP%: `cargo test preview_panel -- --ignored`.
+    /// The same reading an hour old, from the disk cache: stale on its own
+    /// wall-clock age, whatever the scheduler is doing.
+    fn stale(id: ProviderId, pct: u64) -> ProviderData {
+        ProviderData {
+            updated_at: Utc::now() - chrono::Duration::hours(1),
+            received_at: None,
+            ..data(id, pct)
+        }
+    }
+
+    /// The light bar as measured under the shell's clock (see `theme_ink`)
+    /// and the dark bar's grey.
+    const LIGHT_BAR: (u8, u8, u8) = (228, 228, 228);
+    const DARK_BAR: (u8, u8, u8) = (32, 32, 32);
+
+    /// Both layouts over both system bars, a live row above a stale one, at
+    /// the 100% and 200% bar sizes, to %TEMP%:
+    /// `cargo test preview_panel -- --ignored --nocapture`.
     #[test]
     #[ignore]
     fn preview_panel() {
-        let rows = [data(ProviderId::Claude, 16), data(ProviderId::Codex, 0)];
+        let rows = [data(ProviderId::Claude, 16), stale(ProviderId::Codex, 64)];
         let top: Vec<&ProviderData> = rows.iter().collect();
-        let (fg, track) = theme_ink(false);
-        for (name, vertical, w, h) in [("rows", false, 119, 48), ("stack", true, 48, 64)] {
-            let mut pm = Pixmap::new(w, h).unwrap();
-            pm.fill(color(32, 32, 32, 255));
-            paint_rows(&mut pm, vertical, &top, fg, track);
-            let path = std::env::temp_dir().join(format!("ailimits_panel_{name}.png"));
-            std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
-            println!("{}", path.display());
+        for (theme, light, bar) in [("dark", false, DARK_BAR), ("light", true, LIGHT_BAR)] {
+            let (fg, track) = theme_ink(light);
+            for (name, vertical, w, h) in [("rows", false, 119, 48), ("stack", true, 48, 64)] {
+                for scale in [1, 2] {
+                    let mut pm = Pixmap::new(w * scale, h * scale).unwrap();
+                    pm.fill(color(bar.0, bar.1, bar.2, 255));
+                    paint_rows(&mut pm, vertical, &top, fg, track);
+                    let at = if scale == 1 {
+                        String::new()
+                    } else {
+                        format!("@{scale}x")
+                    };
+                    let path =
+                        std::env::temp_dir().join(format!("ailimits_panel_{theme}_{name}{at}.png"));
+                    std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                    println!("{}", path.display());
+                }
+            }
         }
+    }
+
+    /// WCAG relative luminance of an 8-bit sRGB pixel.
+    fn luminance(p: tiny_skia::PremultipliedColorU8) -> f64 {
+        let ch = |v: u8| {
+            let c = v as f64 / 255.0;
+            if c <= 0.040_45 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * ch(p.red()) + 0.7152 * ch(p.green()) + 0.0722 * ch(p.blue())
+    }
+
+    fn contrast(a: f64, b: f64) -> f64 {
+        let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// A stale row must read as not live next to a live one, and still be
+    /// read: over both bars, its digits are well under the live row's
+    /// contrast and still above 3:1, and its bar fill still stands out from
+    /// the groove. The numbers print with
+    /// `cargo test an_aged_row -- --nocapture`.
+    #[test]
+    fn an_aged_row_is_inked_dimmer_but_stays_legible() {
+        let rows = [data(ProviderId::Claude, 50), stale(ProviderId::Codex, 50)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        for (light, bar, label) in [
+            (true, LIGHT_BAR, "light bar"),
+            (true, (243, 243, 243), "light bar, untinted"),
+            (false, DARK_BAR, "dark bar"),
+        ] {
+            let (fg, track) = theme_ink(light);
+            let mut pm = Pixmap::new(119, 48).unwrap();
+            pm.fill(color(bar.0, bar.1, bar.2, 255));
+            paint_rows(&mut pm, false, &top, fg, track);
+            let lum = |x: u32, y: u32| luminance(pm.pixel(x, y).unwrap());
+            let back = lum(0, 0);
+            // The strongest digit ink in each row: the digits take the left
+            // 36% of the 119px panel, the live row is the top half and the
+            // stale one the bottom.
+            let digits = |ys: std::ops::Range<u32>| {
+                ys.flat_map(|y| (0..43).map(move |x| (x, y)))
+                    .map(|(x, y)| contrast(lum(x, y), back))
+                    .fold(1.0, f64::max)
+            };
+            let live = digits(0..24);
+            let aged = digits(24..48);
+            // The stale row's bar, through its middle (y 31): filled at x 60,
+            // the bare groove at x 105.
+            let fill_on_groove = contrast(lum(60, 31), lum(105, 31));
+            println!(
+                "{label}: digits live {live:.1}:1, stale {aged:.1}:1; \
+                 stale fill on groove {fill_on_groove:.1}:1"
+            );
+            assert!(
+                aged >= 3.0,
+                "{label}: stale digits at {aged:.1}:1 are too faint"
+            );
+            assert!(
+                aged < live * 0.6,
+                "{label}: stale {aged:.1}:1 vs live {live:.1}:1 does not read as dimmer"
+            );
+            assert!(
+                fill_on_groove >= 2.0,
+                "{label}: the stale fill at {fill_on_groove:.1}:1 melts into the groove"
+            );
+        }
+    }
+
+    /// The redraw cache holds what is painted: a row turning stale (or back)
+    /// repaints, while a provider below the two painted rows never does.
+    #[test]
+    fn the_redraw_cache_follows_staleness_of_the_painted_rows_only() {
+        let live = [data(ProviderId::Claude, 40), data(ProviderId::Codex, 10)];
+        let gone_stale = [data(ProviderId::Claude, 40), stale(ProviderId::Codex, 10)];
+        assert_ne!(drawn_state(&live), drawn_state(&gone_stale));
+        let estimated = [
+            data(ProviderId::Claude, 40),
+            ProviderData {
+                status: ProviderStatus::Estimated,
+                ..data(ProviderId::Codex, 10)
+            },
+        ];
+        assert_ne!(drawn_state(&live), drawn_state(&estimated));
+        assert_eq!(
+            drawn_state(&live),
+            vec![(Some(40), false), (Some(10), false)]
+        );
+
+        let third = |d: ProviderData| [live[0].clone(), live[1].clone(), d];
+        assert_eq!(
+            drawn_state(&third(data(ProviderId::Copilot, 5))),
+            drawn_state(&third(stale(ProviderId::Copilot, 90)))
+        );
     }
 
     /// Every painted row must land inside the pixmap: with two providers the

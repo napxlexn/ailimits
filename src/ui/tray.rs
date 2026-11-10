@@ -573,6 +573,10 @@ pub(crate) fn draw_digits_fit(
         (c.green() * 255.0) as u32,
         (c.blue() * 255.0) as u32,
     );
+    // The ink's own alpha scales the coverage, so a dimmed ink (the taskbar
+    // panel's stale rows) draws dimmer digits. An opaque ink — every tray
+    // icon's — leaves the coverage exactly as it was.
+    let alpha = (c.alpha() * 255.0).round() as u32;
     let w = pm.width() as i32;
     let h = pm.height() as i32;
     let data = pm.data_mut();
@@ -589,7 +593,7 @@ pub(crate) fn draw_digits_fit(
             }
             // Source-over onto the transparent canvas (premultiplied RGBA).
             let idx = ((py * w + px) * 4) as usize;
-            let a = cov as u32;
+            let a = cov as u32 * alpha / 255;
             let inv = 255 - a;
             data[idx] = ((cr * a) / 255 + data[idx] as u32 * inv / 255) as u8;
             data[idx + 1] = ((cg * a) / 255 + data[idx + 1] as u32 * inv / 255) as u8;

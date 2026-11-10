@@ -76,7 +76,11 @@ the scheduler), save the config, and request a redraw.
   busy timeout. Measured: ~0.6 ms per lookup; +0.2 MB private memory after
   the first one, levelling off under +0.5 MB over 21,000 lookups.
 - **Honest display states** (see PROVIDERS.md): retention → grey + age →
-  `≈0%` estimates after a provable reset.
+  `≈0%` estimates after a provable reset. One predicate,
+  `ProviderData::is_aged` (stale or estimated), drives the widget's grey
+  rows and the taskbar panel's dimmer ink; the panel's redraw cache holds it
+  per painted row, so a row repaints when it turns stale or fresh and at no
+  other extra moment.
 - **Monotonic staleness anchor**: whether live data is "stale" is decided on a
   monotonic clock (`ProviderData.received_at: Instant`), not the wall clock, so
   an NTP/VM/DST time jump can't falsely grey fresh data or fabricate a reset.

@@ -380,6 +380,13 @@ impl ProviderData {
         is_stale.then_some(wall_age)
     }
 
+    /// Whether this value is not live: stale, or an estimate. The widget
+    /// greys such a row, the taskbar panel inks it dimmer and its hover
+    /// explains why — all asking this one question.
+    pub fn is_aged(&self) -> bool {
+        matches!(self.status, ProviderStatus::Estimated) || self.stale_age_secs().is_some()
+    }
+
     /// Extrapolate stale data for display.
     ///
     /// When the source is down and a window's reset time has passed, that

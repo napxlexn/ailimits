@@ -12,7 +12,9 @@ Ground rules that apply to every provider:
 - **Secrets live only in the Windows Credential Manager**, service
   `ailimits`. The config stores labels, never values. Tokens are never logged.
 - **Stale-data policy** (implemented in `app.rs` + `renderer.rs`): a transient
-  error never wipes the last real data; it is shown greyed with its age.
+  error never wipes the last real data; it is shown greyed with its age. The
+  taskbar panel, which has no room for the age, draws such a row (and an
+  `≈` estimate) in a dimmer ink.
   Data counts as stale once it has missed its next scheduled refresh: the
   update interval plus a minute, never under 5 minutes. Polling pauses while
   the user is idle or locked (5 minutes without input), and that time does

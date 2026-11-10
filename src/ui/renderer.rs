@@ -60,8 +60,7 @@ pub(super) const ROW_GAP: f32 = 7.0;
 /// countdown keeps running beside it, but the value has stopped updating and
 /// must not read as live.
 fn row_colors(theme: &ComputedTheme, data: &ProviderData, pct: f32) -> (Color, Color) {
-    let estimated = matches!(data.status, ProviderStatus::Estimated);
-    if estimated || data.stale_age_secs().is_some() {
+    if data.is_aged() {
         (theme.meta, theme.meta)
     } else {
         let level = theme.level(UsageLevel::from_percentage(pct));
@@ -1055,8 +1054,7 @@ fn vertical_compact_bar_rect(row: &Rect, tier: RowTier) -> Option<Rect> {
 /// failure plus the action that fixes it. None while the data is live —
 /// hovering then keeps its usual meaning (the weekly metric).
 pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -> Option<String> {
-    let aged = data.stale_age_secs().is_some() || matches!(data.status, ProviderStatus::Estimated);
-    if !aged {
+    if !data.is_aged() {
         return None;
     }
     let cause = errors
