@@ -1,0 +1,872 @@
+// providers/cursor/session.rs — the widget's own Cursor session.
+// See docs/en/PROVIDERS.md, section "Cursor".
+//
+// AI Limits signs in to Cursor by itself, the way the editor does: a login
+// link the user approves in the browser, then a poll that hands the session
+// over. PKCE binds the two: the link carries only the challenge, and only
+// the holder of the verifier can collect the tokens. The session is kept in
+// Credential Manager and belongs to the widget, so it is the one Cursor
+// token the widget ever refreshes. The editor's session is never refreshed,
+// and never decrypted.
+
+use super::{base64url_encode, parse_session_claims};
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+use std::time::Duration as StdDuration;
+use tracing::{debug, warn};
+
+/// Credential Manager label (service `ailimits`) the session is kept under.
+pub const SESSION_LABEL: &str = "cursor_session";
+const KEYRING_SERVICE: &str = "ailimits";
+
+/// The page the user approves a sign-in on — verified 2026-11-10.
+const LOGIN_URL: &str = "https://cursor.com/loginDeepControl";
+/// Answers 404 until the sign-in is approved, then 200 with the session —
+/// verified 2026-11-10.
+const POLL_URL: &str = "https://api2.cursor.sh/auth/poll";
+/// Trades the refresh token for a new access token — verified 2026-11-10.
+const REFRESH_URL: &str = "https://api2.cursor.sh/oauth/token";
+/// The OAuth client a refresh is made for (the Cursor editor's own).
+const CLIENT_ID: &str = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
+
+/// How long a sign-in waits for the user to approve it in the browser.
+pub const SIGN_IN_TIMEOUT: StdDuration = StdDuration::from_secs(300);
+/// The pause before the first poll; each next pause is 1.2 times longer, up
+/// to `POLL_MAX`.
+const POLL_FIRST: StdDuration = StdDuration::from_secs(1);
+const POLL_MAX: StdDuration = StdDuration::from_secs(8);
+
+/// A session this close to its expiry is refreshed.
+const REFRESH_WITHIN_DAYS: i64 = 7;
+/// At most one refresh attempt per this many hours. A refresh that does not
+/// move the expiry (one right after a sign-in did not) would otherwise
+/// repeat on every update cycle.
+const REFRESH_EVERY_HOURS: i64 = 24;
+
+// ─── Sign-in by link ─────────────────────────────────────────────
+
+/// One sign-in attempt. The verifier stays here; only the poll request
+/// carries it, and the link the user opens carries its challenge instead.
+pub struct LoginRequest {
+    verifier: String,
+    challenge: String,
+    uuid: String,
+}
+
+// Written by hand so that no debug print can ever carry the verifier.
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("uuid", &self.uuid)
+            .finish_non_exhaustive()
+    }
+}
+
+impl LoginRequest {
+    /// A fresh attempt: 32 random bytes for the verifier, a random v4 uuid.
+    pub fn new() -> anyhow::Result<Self> {
+        use ring::rand::{SecureRandom, SystemRandom};
+        let rng = SystemRandom::new();
+        let mut verifier = [0u8; 32];
+        let mut uuid = [0u8; 16];
+        rng.fill(&mut verifier)
+            .and_then(|()| rng.fill(&mut uuid))
+            .map_err(|_| anyhow::anyhow!("no system randomness"))?;
+        Ok(Self::from_bytes(&verifier, uuid))
+    }
+
+    fn from_bytes(verifier: &[u8], uuid: [u8; 16]) -> Self {
+        let verifier = base64url_encode(verifier);
+        Self {
+            challenge: pkce_challenge(&verifier),
+            verifier,
+            uuid: uuid_v4(uuid),
+        }
+    }
+
+    /// The link the user opens to approve the sign-in.
+    pub fn url(&self) -> String {
+        format!(
+            "{LOGIN_URL}?challenge={}&uuid={}&mode=login",
+            self.challenge, self.uuid
+        )
+    }
+
+    /// The poll for this attempt. It carries the verifier, so it is never
+    /// logged.
+    fn poll_url(&self) -> String {
+        format!("{POLL_URL}?uuid={}&verifier={}", self.uuid, self.verifier)
+    }
+}
+
+/// The PKCE S256 challenge: unpadded base64url of the SHA-256 of the
+/// verifier's ASCII (RFC 7636).
+pub fn pkce_challenge(verifier: &str) -> String {
+    base64url_encode(ring::digest::digest(&ring::digest::SHA256, verifier.as_bytes()).as_ref())
+}
+
+/// 16 random bytes as a version-4 UUID: the version and variant bits set,
+/// lowercase hex in 8-4-4-4-12 groups.
+fn uuid_v4(mut b: [u8; 16]) -> String {
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// The tokens an approved sign-in hands over.
+pub struct Tokens {
+    pub access: String,
+    pub refresh: String,
+}
+
+// Written by hand so that no debug print can ever carry a token.
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Tokens { .. }")
+    }
+}
+
+/// What one poll answer means for the sign-in.
+#[derive(Debug)]
+pub enum PollAnswer {
+    /// Not approved yet (404), or an answer that may pass: poll again.
+    Pending,
+    /// Approved: the session.
+    Approved(Tokens),
+    /// A 200 this version cannot read; polling on would not change it.
+    Unrecognized,
+}
+
+/// Map one poll answer. Anything but a 200 is waited out, the deadline
+/// bounds it: the poll answers 404 until the user approves.
+pub fn interpret_poll(code: u16, body: &str) -> PollAnswer {
+    if code != 200 {
+        return PollAnswer::Pending;
+    }
+    match parse_tokens(body) {
+        Some(tokens) => PollAnswer::Approved(tokens),
+        None => PollAnswer::Unrecognized,
+    }
+}
+
+/// The approved poll's body, verified 2026-11-10:
+/// {"accessToken": "...", "refreshToken": "...", "authId": "...",
+///  "challenge": "...", "uuid": "..."}; the two tokens were the same JWT.
+/// A missing refresh token falls back to the access token, which is what
+/// it was.
+fn parse_tokens(body: &str) -> Option<Tokens> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let access = value
+        .get("accessToken")?
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    let refresh = value
+        .get("refreshToken")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(access);
+    Some(Tokens {
+        access: access.to_string(),
+        refresh: refresh.to_string(),
+    })
+}
+
+/// The pause before the next poll: 1.2 times the last one, at most
+/// `POLL_MAX`.
+fn next_poll_delay(prev: StdDuration) -> StdDuration {
+    prev.mul_f64(1.2).min(POLL_MAX)
+}
+
+/// How a sign-in ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SignInOutcome {
+    /// Approved and stored; the session's expiry when the token states one.
+    SignedIn(Option<DateTime<Utc>>),
+    /// Nobody approved the link within `SIGN_IN_TIMEOUT`.
+    TimedOut,
+    /// Approved but unusable, or not stored. The text names what failed,
+    /// never a token.
+    Failed(String),
+}
+
+/// Wait for the user to approve `request` in the browser, then keep the
+/// session in Credential Manager. Polls with a growing pause and gives up
+/// after `SIGN_IN_TIMEOUT`.
+pub async fn complete_sign_in(request: LoginRequest) -> SignInOutcome {
+    let http = match http_client() {
+        Ok(http) => http,
+        Err(e) => return SignInOutcome::Failed(format!("no HTTP client: {e}")),
+    };
+    let deadline = tokio::time::Instant::now() + SIGN_IN_TIMEOUT;
+    let mut delay = POLL_FIRST;
+    loop {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return SignInOutcome::TimedOut;
+        }
+        tokio::time::sleep(delay.min(deadline - now)).await;
+        match poll_once(&http, &request).await {
+            PollAnswer::Pending => {}
+            PollAnswer::Approved(tokens) => return keep(tokens),
+            PollAnswer::Unrecognized => {
+                warn!("cursor sign-in answered an unknown schema");
+                return SignInOutcome::Failed("unrecognized sign-in answer".to_string());
+            }
+        }
+        delay = next_poll_delay(delay);
+    }
+}
+
+async fn poll_once(http: &reqwest::Client, request: &LoginRequest) -> PollAnswer {
+    let resp = match http.get(request.poll_url()).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            // The error would quote the URL, and the URL carries the verifier.
+            debug!("cursor sign-in poll failed: {}", e.without_url());
+            return PollAnswer::Pending;
+        }
+    };
+    let code = resp.status().as_u16();
+    let body = if code == 200 {
+        match resp.text().await {
+            Ok(body) => body,
+            // Cut off mid-transfer: the next poll asks again.
+            Err(_) => return PollAnswer::Pending,
+        }
+    } else {
+        String::new()
+    };
+    interpret_poll(code, &body)
+}
+
+fn keep(tokens: Tokens) -> SignInOutcome {
+    let session = OwnSession::from_tokens(tokens);
+    match store(&session) {
+        Ok(()) => SignInOutcome::SignedIn(session.expires_at),
+        Err(e) => {
+            warn!("cursor session not stored: {e}");
+            SignInOutcome::Failed("could not store the session".to_string())
+        }
+    }
+}
+
+/// The client for the sign-in and the refresh. It never follows a
+/// redirect, so neither the verifier nor a token can reach another host.
+pub fn http_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(StdDuration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+}
+
+// ─── The kept session ────────────────────────────────────────────
+
+/// The widget's own session, as kept in Credential Manager.
+#[derive(Clone, PartialEq)]
+pub struct OwnSession {
+    pub access_token: String,
+    /// What a refresh sends; so far always the access token itself.
+    pub refresh_token: String,
+    /// The access token's `exp`, when it states one.
+    pub expires_at: Option<DateTime<Utc>>,
+    /// The last refresh attempt that got an answer.
+    pub refreshed_at: Option<DateTime<Utc>>,
+    /// The server ended the session: a refresh answered `shouldLogout`, or
+    /// the usage call refused it. A new sign-in is needed. Kept instead of
+    /// deleted, so the row can say so rather than disappear.
+    pub ended: bool,
+}
+
+// Written by hand so that no debug print can ever carry a token.
+impl std::fmt::Debug for OwnSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnSession")
+            .field("expires_at", &self.expires_at)
+            .field("refreshed_at", &self.refreshed_at)
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The record's JSON: epoch seconds for the instants, the refresh token
+/// only when it differs from the access token. Stored as UTF-8 bytes — the
+/// credential blob holds 2560 bytes, which a UTF-16 password would halve.
+#[derive(Serialize, Deserialize)]
+struct Record {
+    access_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refreshed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    ended: bool,
+}
+
+impl OwnSession {
+    /// A new session from a sign-in; its expiry is the access token's `exp`.
+    pub fn from_tokens(tokens: Tokens) -> Self {
+        Self {
+            expires_at: expiry_of(&tokens.access),
+            access_token: tokens.access,
+            refresh_token: tokens.refresh,
+            refreshed_at: None,
+            ended: false,
+        }
+    }
+
+    /// Past its expiry: never sent again.
+    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at.is_some_and(|exp| exp <= now)
+    }
+
+    /// Within `REFRESH_WITHIN_DAYS` of its expiry, or past it.
+    pub fn near_expiry(&self, now: DateTime<Utc>) -> bool {
+        self.expires_at
+            .is_some_and(|exp| exp - now <= Duration::days(REFRESH_WITHIN_DAYS))
+    }
+
+    /// Near its expiry, and no refresh attempt in the last
+    /// `REFRESH_EVERY_HOURS`. A token without an expiry is left to the
+    /// server to judge.
+    pub fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
+        self.near_expiry(now)
+            && self
+                .refreshed_at
+                .is_none_or(|t| now - t >= Duration::hours(REFRESH_EVERY_HOURS))
+    }
+
+    /// The session after a refresh answer received at `now`. A new token
+    /// replaces both tokens (the refresh token was the access token);
+    /// a logout ends the session; anything else only notes the attempt.
+    pub fn after_refresh(&self, answer: &RefreshAnswer, now: DateTime<Utc>) -> Self {
+        match answer {
+            RefreshAnswer::Renewed(token) => Self {
+                access_token: token.clone(),
+                refresh_token: token.clone(),
+                expires_at: expiry_of(token),
+                refreshed_at: Some(now),
+                ended: false,
+            },
+            RefreshAnswer::LoggedOut => Self {
+                ended: true,
+                refreshed_at: Some(now),
+                ..self.clone()
+            },
+            RefreshAnswer::Unrecognized | RefreshAnswer::Status(_) => Self {
+                refreshed_at: Some(now),
+                ..self.clone()
+            },
+        }
+    }
+
+    /// The record kept in Credential Manager.
+    pub fn encode(&self) -> String {
+        let record = Record {
+            access_token: self.access_token.clone(),
+            refresh_token: (self.refresh_token != self.access_token)
+                .then(|| self.refresh_token.clone()),
+            expires_at: self.expires_at.map(|t| t.timestamp()),
+            refreshed_at: self.refreshed_at.map(|t| t.timestamp()),
+            ended: self.ended,
+        };
+        // A struct of strings and numbers always serialises.
+        serde_json::to_string(&record).unwrap_or_default()
+    }
+
+    /// Read a kept record back. None for anything that is not one.
+    pub fn decode(text: &str) -> Option<Self> {
+        let record: Record = serde_json::from_str(text).ok()?;
+        let access = record.access_token.trim();
+        if access.is_empty() {
+            return None;
+        }
+        let instant = |secs: Option<i64>| secs.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
+        Some(Self {
+            refresh_token: record
+                .refresh_token
+                .map(|r| r.trim().to_string())
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| access.to_string()),
+            access_token: access.to_string(),
+            expires_at: instant(record.expires_at),
+            refreshed_at: instant(record.refreshed_at),
+            ended: record.ended,
+        })
+    }
+}
+
+/// A token's `exp`, when it is a JWT that states one.
+fn expiry_of(token: &str) -> Option<DateTime<Utc>> {
+    parse_session_claims(token).and_then(|claims| claims.expires_at)
+}
+
+// ─── Credential Manager ──────────────────────────────────────────
+
+/// Credential Manager could not be asked, or holds a record this version
+/// cannot read. Neither ever quotes the record.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoreError {
+    Unavailable(String),
+    Corrupt,
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreError::Unavailable(e) => write!(f, "Credential Manager unavailable: {e}"),
+            StoreError::Corrupt => f.write_str("the stored Cursor session is unreadable"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+/// The kept session; Ok(None) when there is none.
+pub fn load() -> Result<Option<OwnSession>, StoreError> {
+    load_at(SESSION_LABEL)
+}
+
+/// Keep `session`, replacing any earlier one.
+pub fn store(session: &OwnSession) -> Result<(), StoreError> {
+    store_at(SESSION_LABEL, session)
+}
+
+/// Forget the session. Nothing kept is not an error.
+pub fn delete() -> Result<(), StoreError> {
+    delete_at(SESSION_LABEL)
+}
+
+/// Whether a record is kept, readable or not — there is something to sign
+/// out of.
+pub fn is_stored() -> bool {
+    matches!(load(), Ok(Some(_)) | Err(StoreError::Corrupt))
+}
+
+fn entry(label: &str) -> Result<keyring::Entry, StoreError> {
+    keyring::Entry::new(KEYRING_SERVICE, label).map_err(|e| StoreError::Unavailable(e.to_string()))
+}
+
+fn load_at(label: &str) -> Result<Option<OwnSession>, StoreError> {
+    match entry(label)?.get_secret() {
+        Ok(bytes) => String::from_utf8(bytes)
+            .ok()
+            .and_then(|text| OwnSession::decode(&text))
+            .map(Some)
+            .ok_or(StoreError::Corrupt),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(StoreError::Unavailable(e.to_string())),
+    }
+}
+
+fn store_at(label: &str, session: &OwnSession) -> Result<(), StoreError> {
+    entry(label)?
+        .set_secret(session.encode().as_bytes())
+        .map_err(|e| StoreError::Unavailable(e.to_string()))
+}
+
+fn delete_at(label: &str) -> Result<(), StoreError> {
+    match entry(label)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(StoreError::Unavailable(e.to_string())),
+    }
+}
+
+// ─── Refresh (the own session only) ──────────────────────────────
+
+/// What a refresh answer means.
+pub enum RefreshAnswer {
+    /// A new access token.
+    Renewed(String),
+    /// The server ended the session.
+    LoggedOut,
+    /// A 200 this version cannot read.
+    Unrecognized,
+    /// Any other status.
+    Status(u16),
+}
+
+// Written by hand so that no debug print can ever carry a token.
+impl std::fmt::Debug for RefreshAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RefreshAnswer::Renewed(_) => f.write_str("Renewed(..)"),
+            RefreshAnswer::LoggedOut => f.write_str("LoggedOut"),
+            RefreshAnswer::Unrecognized => f.write_str("Unrecognized"),
+            RefreshAnswer::Status(code) => write!(f, "Status({code})"),
+        }
+    }
+}
+
+/// Map one refresh answer. Verified 2026-11-10 right after a sign-in: 200
+/// {"access_token": "...", "id_token": "...", "shouldLogout": false}, with
+/// a new token. `shouldLogout: true` ends the session; so does a refused
+/// refresh (401/403, not seen yet, and no other reading of it exists).
+pub fn interpret_refresh(code: u16, body: &str) -> RefreshAnswer {
+    match code {
+        200 => {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+                return RefreshAnswer::Unrecognized;
+            };
+            if value.get("shouldLogout").and_then(|v| v.as_bool()) == Some(true) {
+                return RefreshAnswer::LoggedOut;
+            }
+            match value
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                Some(token) => RefreshAnswer::Renewed(token.to_string()),
+                None => RefreshAnswer::Unrecognized,
+            }
+        }
+        401 | 403 => RefreshAnswer::LoggedOut,
+        other => RefreshAnswer::Status(other),
+    }
+}
+
+/// One refresh request for the widget's own session — never for any other
+/// app's token. None when no answer came at all (offline): nothing was
+/// learnt, a later cycle may try again.
+pub async fn request_refresh(
+    http: &reqwest::Client,
+    session: &OwnSession,
+) -> Option<RefreshAnswer> {
+    let body = serde_json::json!({
+        "grant_type": "refresh_token",
+        "client_id": CLIENT_ID,
+        "refresh_token": session.refresh_token,
+    });
+    let resp = match http.post(REFRESH_URL).json(&body).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            debug!("cursor refresh failed: {e}");
+            return None;
+        }
+    };
+    let code = resp.status().as_u16();
+    let text = if code == 200 {
+        match resp.text().await {
+            Ok(text) => text,
+            Err(_) => return None,
+        }
+    } else {
+        String::new()
+    };
+    let answer = interpret_refresh(code, &text);
+    match &answer {
+        RefreshAnswer::Unrecognized => warn!("cursor refresh answered an unknown schema"),
+        RefreshAnswer::Status(code) => warn!("cursor refresh returned HTTP {code}"),
+        _ => {}
+    }
+    Some(answer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    /// A fake JWT whose payload is
+    /// {"sub":"github|user_01TESTFIXTURE","exp":4102444800,…} (year 2100).
+    const FAKE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJ8dXNlcl8wMVRFU1RGSVhUVVJFIiwiZXhwIjo0MTAyNDQ0ODAwLCJpc3MiOiJodHRwczovL2F1dGhlbnRpY2F0aW9uLmN1cnNvci5zaCIsImF1ZCI6Imh0dHBzOi8vY3Vyc29yLmNvbSJ9.c2lnbmF0dXJl";
+
+    fn at(y: i32, mo: u32, d: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, mo, d, 12, 0, 0).unwrap()
+    }
+
+    fn session(expires_at: Option<DateTime<Utc>>) -> OwnSession {
+        OwnSession {
+            access_token: "a.b.c".to_string(),
+            refresh_token: "a.b.c".to_string(),
+            expires_at,
+            refreshed_at: None,
+            ended: false,
+        }
+    }
+
+    #[test]
+    fn the_pkce_pair_matches_the_rfc_7636_vector() {
+        // RFC 7636, appendix B: the verifier's 32 octets, its base64url form
+        // and its S256 challenge.
+        let octets = [
+            116, 24, 223, 180, 151, 153, 224, 37, 79, 250, 96, 125, 216, 173, 187, 186, 22, 212,
+            37, 77, 105, 214, 191, 240, 91, 88, 5, 88, 83, 132, 141, 121,
+        ];
+        let request = LoginRequest::from_bytes(&octets, [0; 16]);
+        assert_eq!(
+            request.verifier,
+            "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        );
+        assert_eq!(
+            request.challenge,
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        assert_eq!(
+            pkce_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn the_uuid_is_a_version_4_uuid() {
+        let id = uuid_v4([0xff; 16]);
+        assert_eq!(id, "ffffffff-ffff-4fff-bfff-ffffffffffff");
+        let id = uuid_v4([0; 16]);
+        assert_eq!(id, "00000000-0000-4000-8000-000000000000");
+    }
+
+    #[test]
+    fn a_fresh_request_is_random_and_well_formed() {
+        let a = LoginRequest::new().expect("randomness");
+        let b = LoginRequest::new().expect("randomness");
+        assert_ne!(a.verifier, b.verifier);
+        assert_ne!(a.uuid, b.uuid);
+        // 32 bytes → 43 unpadded base64url characters.
+        assert_eq!(a.verifier.len(), 43);
+        assert_eq!(a.challenge, pkce_challenge(&a.verifier));
+        assert_eq!(a.uuid.len(), 36);
+        assert_eq!(&a.uuid[14..15], "4");
+    }
+
+    #[test]
+    fn the_link_carries_the_challenge_and_never_the_verifier() {
+        let request = LoginRequest::new().expect("randomness");
+        let url = request.url();
+        assert!(url.starts_with("https://cursor.com/loginDeepControl?"));
+        assert!(url.contains(&format!("challenge={}", request.challenge)));
+        assert!(url.contains(&format!("uuid={}", request.uuid)));
+        assert!(url.ends_with("&mode=login"));
+        assert!(!url.contains(&request.verifier));
+
+        let poll = request.poll_url();
+        assert_eq!(
+            poll,
+            format!(
+                "https://api2.cursor.sh/auth/poll?uuid={}&verifier={}",
+                request.uuid, request.verifier
+            )
+        );
+        assert!(!format!("{request:?}").contains(&request.verifier));
+    }
+
+    #[test]
+    fn poll_answers_wait_until_the_session_arrives() {
+        assert!(matches!(interpret_poll(404, ""), PollAnswer::Pending));
+        // Anything else may pass too; the deadline bounds the wait.
+        for code in [429, 500, 502] {
+            assert!(matches!(interpret_poll(code, ""), PollAnswer::Pending));
+        }
+
+        let body = format!(
+            r#"{{"accessToken":"{FAKE_TOKEN}","refreshToken":"{FAKE_TOKEN}","authId":"github|user_01TESTFIXTURE","challenge":"c","uuid":"u"}}"#
+        );
+        match interpret_poll(200, &body) {
+            PollAnswer::Approved(tokens) => {
+                assert_eq!(tokens.access, FAKE_TOKEN);
+                assert_eq!(tokens.refresh, FAKE_TOKEN);
+                assert!(!format!("{tokens:?}").contains(FAKE_TOKEN));
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // No refresh token: the access token is what it would have been.
+        match interpret_poll(200, r#"{"accessToken":"x.y.z"}"#) {
+            PollAnswer::Approved(tokens) => assert_eq!(tokens.refresh, "x.y.z"),
+            other => panic!("{other:?}"),
+        }
+
+        for body in ["", "<html>", r#"{"foo":1}"#, r#"{"accessToken":""}"#, "[]"] {
+            assert!(
+                matches!(interpret_poll(200, body), PollAnswer::Unrecognized),
+                "{body}"
+            );
+        }
+    }
+
+    #[test]
+    fn polling_backs_off_to_a_ceiling() {
+        let mut delay = POLL_FIRST;
+        let mut waited = StdDuration::ZERO;
+        let mut polls = 0;
+        while waited < SIGN_IN_TIMEOUT {
+            waited += delay;
+            polls += 1;
+            let next = next_poll_delay(delay);
+            assert!(next >= delay && next <= POLL_MAX);
+            delay = next;
+        }
+        assert_eq!(delay, POLL_MAX);
+        // About a poll every 8 s once settled: a few dozen in five minutes.
+        assert!((30..60).contains(&polls), "{polls}");
+        assert_eq!(
+            next_poll_delay(StdDuration::from_secs(1)),
+            StdDuration::from_millis(1200)
+        );
+    }
+
+    #[test]
+    fn a_session_takes_its_expiry_from_the_token() {
+        let session = OwnSession::from_tokens(Tokens {
+            access: FAKE_TOKEN.to_string(),
+            refresh: FAKE_TOKEN.to_string(),
+        });
+        assert_eq!(
+            session.expires_at,
+            Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
+        );
+        assert!(!session.ended);
+        assert!(!format!("{session:?}").contains(FAKE_TOKEN));
+    }
+
+    #[test]
+    fn refresh_waits_for_the_last_week_and_then_once_a_day() {
+        let now = at(2026, 11, 10);
+        // Far from its expiry: nothing to do.
+        assert!(!session(Some(now + Duration::days(50))).needs_refresh(now));
+        // Within a week of it, or past it.
+        assert!(session(Some(now + Duration::days(6))).needs_refresh(now));
+        assert!(session(Some(now - Duration::days(1))).needs_refresh(now));
+        // No expiry stated: the server judges it.
+        assert!(!session(None).needs_refresh(now));
+
+        let mut s = session(Some(now + Duration::days(3)));
+        s.refreshed_at = Some(now - Duration::hours(2));
+        assert!(!s.needs_refresh(now), "tried two hours ago");
+        s.refreshed_at = Some(now - Duration::hours(25));
+        assert!(s.needs_refresh(now), "a day has passed");
+
+        assert!(session(Some(now)).is_expired(now));
+        assert!(!session(Some(now + Duration::seconds(1))).is_expired(now));
+        assert!(!session(None).is_expired(now));
+    }
+
+    #[test]
+    fn refresh_answers_renew_end_or_note_the_session() {
+        let now = at(2026, 11, 10);
+        let old = session(Some(now + Duration::days(2)));
+
+        // The verified shape: a new token, the session goes on.
+        let body =
+            format!(r#"{{"access_token":"{FAKE_TOKEN}","id_token":"x","shouldLogout":false}}"#);
+        let answer = interpret_refresh(200, &body);
+        assert!(matches!(&answer, RefreshAnswer::Renewed(t) if t == FAKE_TOKEN));
+        assert!(!format!("{answer:?}").contains(FAKE_TOKEN));
+        let renewed = old.after_refresh(&answer, now);
+        assert_eq!(renewed.access_token, FAKE_TOKEN);
+        assert_eq!(renewed.refresh_token, FAKE_TOKEN, "stored as both");
+        assert_eq!(
+            renewed.expires_at,
+            Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
+        );
+        assert_eq!(renewed.refreshed_at, Some(now));
+        assert!(!renewed.ended);
+
+        // shouldLogout: the session is over, whatever else the body says.
+        let answer = interpret_refresh(200, r#"{"access_token":"x.y.z","shouldLogout":true}"#);
+        assert!(matches!(answer, RefreshAnswer::LoggedOut));
+        let ended = old.after_refresh(&answer, now);
+        assert!(ended.ended);
+        assert_eq!(ended.access_token, old.access_token);
+        for code in [401, 403] {
+            assert!(matches!(
+                interpret_refresh(code, ""),
+                RefreshAnswer::LoggedOut
+            ));
+        }
+
+        // Unknown bodies and other statuses keep the session, noting the try.
+        for body in [
+            "",
+            "nope",
+            r#"{"shouldLogout":false}"#,
+            r#"{"access_token":""}"#,
+        ] {
+            let answer = interpret_refresh(200, body);
+            assert!(matches!(answer, RefreshAnswer::Unrecognized), "{body}");
+            let kept = old.after_refresh(&answer, now);
+            assert_eq!(kept.access_token, old.access_token);
+            assert_eq!(kept.refreshed_at, Some(now));
+            assert!(!kept.ended);
+        }
+        assert!(matches!(
+            interpret_refresh(500, "{}"),
+            RefreshAnswer::Status(500)
+        ));
+    }
+
+    #[test]
+    fn the_record_round_trips() {
+        let now = at(2026, 11, 10);
+        let mut s = session(Some(now + Duration::days(60)));
+        s.refreshed_at = Some(now);
+        let text = s.encode();
+        assert!(
+            !text.contains("refresh_token"),
+            "the same token is stored once: {text}"
+        );
+        assert!(!text.contains("ended"));
+        assert_eq!(OwnSession::decode(&text), Some(s.clone()));
+
+        s.refresh_token = "r.e.f".to_string();
+        s.ended = true;
+        assert_eq!(OwnSession::decode(&s.encode()), Some(s));
+
+        // A record from a later version with fields this one does not know.
+        let later = r#"{"access_token":"a.b.c","expires_at":4102444800,"kind":"v2"}"#;
+        let read = OwnSession::decode(later).expect("tolerated");
+        assert_eq!(read.refresh_token, "a.b.c");
+
+        for junk in ["", "{}", "[]", "a.b.c", r#"{"access_token":"  "}"#] {
+            assert!(OwnSession::decode(junk).is_none(), "{junk}");
+        }
+    }
+
+    /// A round trip through the real Credential Manager under a throwaway
+    /// label, removed again even when an assertion fails.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn the_session_round_trips_through_credential_manager() {
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = delete_at(&self.0);
+            }
+        }
+        let label = format!(
+            "cursor_session_test_{}_{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let _cleanup = Cleanup(label.clone());
+
+        assert_eq!(load_at(&label), Ok(None));
+        let mut s = session(Some(at(2027, 1, 9)));
+        // A realistic size: a JWT of this length twice, beside the instants.
+        s.access_token = "x".repeat(900);
+        s.refresh_token = "y".repeat(900);
+        store_at(&label, &s).expect("stored");
+        assert_eq!(load_at(&label), Ok(Some(s.clone())));
+
+        s.ended = true;
+        store_at(&label, &s).expect("replaced");
+        assert_eq!(load_at(&label), Ok(Some(s)));
+
+        delete_at(&label).expect("deleted");
+        assert_eq!(load_at(&label), Ok(None));
+        // Deleting what is not there is fine.
+        delete_at(&label).expect("nothing to delete");
+    }
+}

@@ -14,6 +14,8 @@ use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+pub mod session;
+
 /// Undocumented dashboard endpoint — response schema verified 2026-11-10, HTTP 200.
 const USAGE_SUMMARY_URL: &str = "https://cursor.com/api/usage-summary";
 
@@ -236,6 +238,26 @@ fn base64url_decode(input: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// Unpadded base64url (RFC 4648 §5), the alphabet of JWT segments and of
+/// the PKCE verifier and challenge.
+fn base64url_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        // Up to three bytes into the top of a 24-bit group, then one
+        // character per six bits the chunk actually covers.
+        let group = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..=chunk.len() {
+            let sextet = (group >> (18 - 6 * i)) & 0x3f;
+            out.push(char::from(ALPHABET[sextet as usize]));
+        }
+    }
+    out
 }
 
 /// Map one usage-summary answer to what the widget shows. Pure, so every
@@ -502,6 +524,28 @@ mod tests {
         assert_eq!(base64url_decode("aGk=").as_deref(), Some(&b"hi"[..]));
         assert_eq!(base64url_decode("_-8").as_deref(), Some(&[0xff, 0xef][..]));
         assert_eq!(base64url_decode("a b"), None);
+    }
+
+    #[test]
+    fn base64url_encodes_without_padding_and_round_trips() {
+        // RFC 4648 §10 vectors, in the url-safe alphabet and unpadded.
+        for (plain, encoded) in [
+            ("", ""),
+            ("f", "Zg"),
+            ("fo", "Zm8"),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg"),
+            ("fooba", "Zm9vYmE"),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64url_encode(plain.as_bytes()), encoded);
+        }
+        assert_eq!(base64url_encode(&[0xff, 0xef]), "_-8");
+        let bytes: Vec<u8> = (0..=255).collect();
+        assert_eq!(
+            base64url_decode(&base64url_encode(&bytes)).as_deref(),
+            Some(&bytes[..])
+        );
     }
 
     #[test]
