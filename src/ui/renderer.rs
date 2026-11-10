@@ -56,11 +56,12 @@ pub(super) const PCT_WIDTH: f32 = 30.0;
 pub(super) const ROW_GAP: f32 = 7.0;
 
 /// Bar and text colors, accounting for staleness and estimation —
-/// both render grey.
+/// both render grey. Stale data greys even while a reset is still ahead: the
+/// countdown keeps running beside it, but the value has stopped updating and
+/// must not read as live.
 fn row_colors(theme: &ComputedTheme, data: &ProviderData, pct: f32) -> (Color, Color) {
     let estimated = matches!(data.status, ProviderStatus::Estimated);
-    let stale_without_future_reset = data.stale_age_secs().is_some() && data.next_reset().is_none();
-    if estimated || stale_without_future_reset {
+    if estimated || data.stale_age_secs().is_some() {
         (theme.meta, theme.meta)
     } else {
         let level = theme.level(UsageLevel::from_percentage(pct));
@@ -1452,6 +1453,108 @@ mod tests {
         }
     }
 
+    /// Design preview for data that stopped updating: live rows beside stale
+    /// ones whose reset is still ahead, one with no reset at all and one whose
+    /// window provably reset (the `≈0%` estimate). Every layout and detail
+    /// level. Run: `cargo test preview_stale_rows -- --ignored`.
+    #[test]
+    #[ignore]
+    fn preview_stale_rows() {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        use crate::ui::layout;
+        use chrono::Duration;
+        use MetricWindow::{Long, Session};
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let renderer = Renderer::new().expect("a system font");
+        let metric = |label: &str, pct: u64, window, reset: Option<Duration>| Metric {
+            reset_at: reset.map(|d| Utc::now() + d),
+            ..pct_metric(label, pct, window)
+        };
+        let live = |id: ProviderId, m: Metric| ProviderData {
+            id,
+            ..data(vec![m])
+        };
+        // A disk-cache entry or retained data: no monotonic anchor, so the
+        // wall-clock age decides.
+        let stale = |id: ProviderId, m: Metric, age: Duration| ProviderData {
+            id,
+            updated_at: Utc::now() - age,
+            received_at: None,
+            ..data(vec![m])
+        };
+        let providers: Vec<ProviderData> = [
+            live(
+                ProviderId::Claude,
+                metric("Session", 18, Session, Some(Duration::hours(3))),
+            ),
+            // Stale with the reset still ahead: grey, the countdown still runs.
+            stale(
+                ProviderId::Codex,
+                metric("Session", 72, Session, Some(Duration::hours(2))),
+                Duration::minutes(40),
+            ),
+            stale(
+                ProviderId::Copilot,
+                metric("Premium", 91, Session, Some(Duration::days(12))),
+                Duration::hours(2),
+            ),
+            // Stale with no reset known: greyed before and after.
+            stale(
+                ProviderId::Antigravity,
+                metric("Gemini", 61, Long, None),
+                Duration::hours(5),
+            ),
+            // Stale with the window provably reset: the estimate.
+            stale(
+                ProviderId::Grok,
+                metric("Weekly", 64, Long, Some(-Duration::hours(1))),
+                Duration::hours(3),
+            ),
+            live(
+                ProviderId::Cursor,
+                metric("Pro", 37, Session, Some(Duration::days(18))),
+            ),
+        ]
+        .iter()
+        // What the app hands the renderer (app.rs `visible_data`).
+        .map(ProviderData::aged_for_display)
+        .collect();
+
+        let dir = std::env::temp_dir();
+        for (lname, arrangement) in [("rows", Layout::Vertical), ("cols", Layout::Horizontal)] {
+            for (dname, detail) in [
+                ("compact", DetailLevel::Compact),
+                ("medium", DetailLevel::Medium),
+                ("expanded", DetailLevel::Expanded),
+            ] {
+                let win = layout::compute(
+                    &arrangement,
+                    &detail,
+                    &WidthScale::Full,
+                    &ColumnFlow::Row,
+                    providers.len(),
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                renderer.draw(
+                    &mut pm,
+                    &win,
+                    &theme,
+                    &providers,
+                    0.85,
+                    &detail,
+                    None,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                );
+                let path = dir.join(format!("ailimits_stale_{lname}_{dname}.png"));
+                std::fs::write(&path, pm.encode_png().unwrap()).unwrap();
+                println!("{} {}x{}", path.display(), win.width, win.height);
+            }
+        }
+    }
+
     fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
             label: label.into(),
@@ -1480,6 +1583,37 @@ mod tests {
             w: 10.0,
             h: 10.0,
         }
+    }
+
+    #[test]
+    fn stale_data_greys_even_with_a_reset_ahead() {
+        use crate::config::schema::UIConfig;
+        use chrono::Duration;
+
+        let theme = ComputedTheme::compute(&UIConfig::default());
+        let mut session = pct_metric("Session", 72, MetricWindow::Session);
+        session.reset_at = Some(Utc::now() + Duration::hours(2));
+        let fresh = data(vec![session.clone()]);
+        // Retained data 40 minutes old, its window still two hours from reset.
+        let stale = ProviderData {
+            updated_at: Utc::now() - Duration::minutes(40),
+            received_at: None,
+            ..data(vec![session])
+        };
+        assert!(stale.next_reset().is_some());
+
+        assert_eq!(
+            row_colors(&theme, &stale, 72.0),
+            (theme.meta, theme.meta),
+            "a value that stopped updating must not keep its live colours"
+        );
+        let level = theme.level(UsageLevel::from_percentage(72.0));
+        assert_eq!(
+            row_colors(&theme, &fresh, 72.0),
+            (level.bar, level.text),
+            "fresh data keeps its level colours"
+        );
+        assert_ne!(level.bar, theme.meta);
     }
 
     #[test]
