@@ -387,14 +387,16 @@ impl ProviderData {
         matches!(self.status, ProviderStatus::Estimated) || self.stale_age_secs().is_some()
     }
 
-    /// Extrapolate stale data for display.
+    /// Extrapolate data for display.
     ///
-    /// When the source is down and a window's reset time has passed, that
-    /// window has rolled over: show used=0 with the Estimated status ("≈0%").
-    /// Windows that have not reset yet keep their last value — actual usage
-    /// is at least the last known one.
+    /// When a window's reset time has passed and no newer data has replaced
+    /// it, that window has rolled over: show used=0 with the Estimated status
+    /// ("≈0%"). This does not wait for the data to go stale - a reset that
+    /// passed during the idle pause, which does not age data, is still a fact
+    /// the row must show. Windows that have not reset yet keep their last
+    /// value: actual usage is at least the last known one.
     pub fn aged_for_display(&self) -> ProviderData {
-        if self.stale_age_secs().is_none() || !matches!(self.status, ProviderStatus::Ok) {
+        if !matches!(self.status, ProviderStatus::Ok) {
             return self.clone();
         }
 

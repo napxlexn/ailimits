@@ -969,6 +969,33 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
 }
 
 #[test]
+fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
+    use chrono::Duration;
+    // Live data received just now (so it is not stale - e.g. the idle pause
+    // kept it from ageing) whose session window provably reset 10 minutes
+    // ago: the row must show the ≈0% estimate, not the old 95% as live.
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![Metric {
+            label: "Session".to_string(),
+            used: 95,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: Some(Utc::now() - Duration::minutes(10)),
+            window: MetricWindow::Session,
+        }],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert!(data.stale_age_secs().is_none(), "fresh data is not stale");
+    let aged = data.aged_for_display();
+    assert!(matches!(aged.status, ProviderStatus::Estimated));
+    assert_eq!(aged.metrics[0].used, 0);
+    assert_eq!(aged.metrics[0].reset_at, None);
+}
+
+#[test]
 fn next_reset_skips_past_timestamps() {
     use chrono::{Duration, Utc};
 

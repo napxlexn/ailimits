@@ -474,7 +474,7 @@ fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> 
                 .is_some_and(|p| p.enabled);
             enabled && !matches!(d.status, ProviderStatus::NotConfigured)
         })
-        // Stale data is extrapolated: windows whose reset has passed → ≈0%.
+        // A window whose reset has provably passed is shown as ≈0%.
         .map(|d| d.aged_for_display())
         .collect()
 }
