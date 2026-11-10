@@ -86,7 +86,9 @@ fn github_mark() -> Option<muda::Icon> {
         (MARK_16, 16)
     };
     let quiet: Vec<u8> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .flat_map(|px| [px[0], px[1], px[2], (px[3] as u32 * INK / 255) as u8])
         .collect();
     muda::Icon::from_rgba(quiet, size, size).ok()

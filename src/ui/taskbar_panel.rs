@@ -79,7 +79,12 @@ fn first_two(providers: &[ProviderData]) -> Vec<&ProviderData> {
 fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
     let data = pm.data();
     let mut bgra = vec![0u8; data.len()];
-    for (s, d) in data.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
+    for (s, d) in data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(bgra.as_chunks_mut::<4>().0.iter_mut())
+    {
         d[0] = s[2];
         d[1] = s[1];
         d[2] = s[0];
@@ -762,7 +767,12 @@ impl TaskbarPanel {
 
         let data = self.pixmap.data();
         let mut bgra = vec![0u8; data.len()];
-        for (s, d) in data.chunks_exact(4).zip(bgra.chunks_exact_mut(4)) {
+        for (s, d) in data
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(bgra.as_chunks_mut::<4>().0.iter_mut())
+        {
             d[0] = s[2];
             d[1] = s[1];
             d[2] = s[0];
