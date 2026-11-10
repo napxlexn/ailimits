@@ -14,6 +14,7 @@ use ailimits::config::{
     schema::{AuthMethod, Config},
     storage,
 };
+use ailimits::providers::cursor::session;
 use ailimits::providers::grok::{self, GrokLogin};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -207,23 +208,33 @@ fn status() -> Result<()> {
         Err(_) => println!("Grok auth.json: no (unreadable)"),
     }
 
-    // Cursor: the editor's session token in its state database, read the
-    // same read-only way the provider reads it. No request is sent.
-    use ailimits::providers::cursor::{session_state, SessionState};
-    let cursor = match session_state() {
-        SessionState::NotInstalled => "no (state.vscdb missing — Cursor not installed)".to_string(),
-        SessionState::SignedOut => "no (sign in to Cursor)".to_string(),
-        SessionState::Valid(Some(exp)) => {
-            format!("OK, token valid until {} UTC", exp.format("%Y-%m-%d %H:%M"))
+    // Cursor: the widget's own session first, then the editor's token —
+    // the order the provider tries. Read the same way; no request is sent.
+    println!(
+        "Cursor session ({}): {}",
+        session::SESSION_LABEL,
+        own_cursor_session()
+    );
+    use ailimits::providers::cursor::{editor_token_state, EditorTokenState};
+    let editor = match editor_token_state() {
+        EditorTokenState::NotInstalled => {
+            "absent (state.vscdb missing — Cursor not installed)".to_string()
         }
-        SessionState::Valid(None) => "OK".to_string(),
-        SessionState::Expired(exp) => format!(
-            "no (token expired {} UTC — open Cursor, it refreshes the token)",
+        EditorTokenState::Absent => "absent (nobody signed in to the editor)".to_string(),
+        EditorTokenState::Encrypted => {
+            "encrypted (never read — sign in with ailimits-auth login cursor)".to_string()
+        }
+        EditorTokenState::Plain(Some(exp)) => format!(
+            "plain, valid until {} UTC (used only without the session above)",
             exp.format("%Y-%m-%d %H:%M")
         ),
-        SessionState::Unreadable(e) => format!("no ({e})"),
+        EditorTokenState::Plain(None) => "plain (used only without the session above)".to_string(),
+        EditorTokenState::Expired(exp) => {
+            format!("plain, expired {} UTC", exp.format("%Y-%m-%d %H:%M"))
+        }
+        EditorTokenState::Unreadable(e) => format!("unreadable ({e})"),
     };
-    println!("Cursor session (state.vscdb): {cursor}");
+    println!("Cursor editor token (state.vscdb): {editor}");
 
     // Stored keys.
     println!();
@@ -378,6 +389,25 @@ fn remove(provider: Option<&str>) -> Result<()> {
 
     println!("→ Restart the widget to apply");
     Ok(())
+}
+
+/// The widget's own Cursor session, as `status` shows it: its state and
+/// expiry, never the token.
+fn own_cursor_session() -> String {
+    let now = Utc::now();
+    match session::load() {
+        Ok(None) => "— (sign in with ailimits-auth login cursor, or from the menu)".to_string(),
+        Ok(Some(s)) if s.ended => "ended by Cursor — sign in again".to_string(),
+        Ok(Some(s)) => match s.expires_at {
+            Some(exp) if s.is_expired(now) => format!(
+                "expired {} UTC — sign in again",
+                exp.format("%Y-%m-%d %H:%M")
+            ),
+            Some(exp) => format!("OK, valid until {} UTC", exp.format("%Y-%m-%d %H:%M")),
+            None => "OK".to_string(),
+        },
+        Err(e) => format!("no ({e})"),
+    }
 }
 
 /// Read expiresAt and the subscription type from .credentials.json.

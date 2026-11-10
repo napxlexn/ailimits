@@ -443,6 +443,14 @@ pub fn store(session: &OwnSession) -> Result<(), StoreError> {
     store_at(SESSION_LABEL, session)
 }
 
+/// Keep `next` in place of the session whose access token was
+/// `previous_token`, but only while that session is still the one kept:
+/// a sign-out or a new sign-in made meanwhile wins over a fetch that began
+/// with the old session. `Ok(false)` when it was not the one kept.
+pub fn replace(previous_token: &str, next: &OwnSession) -> Result<bool, StoreError> {
+    replace_at(SESSION_LABEL, previous_token, next)
+}
+
 /// Forget the session. Nothing kept is not an error.
 pub fn delete() -> Result<(), StoreError> {
     delete_at(SESSION_LABEL)
@@ -474,6 +482,15 @@ fn store_at(label: &str, session: &OwnSession) -> Result<(), StoreError> {
     entry(label)?
         .set_secret(session.encode().as_bytes())
         .map_err(|e| StoreError::Unavailable(e.to_string()))
+}
+
+fn replace_at(label: &str, previous_token: &str, next: &OwnSession) -> Result<bool, StoreError> {
+    match load_at(label)? {
+        Some(current) if current.access_token == previous_token => {
+            store_at(label, next).map(|()| true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn delete_at(label: &str) -> Result<(), StoreError> {
@@ -854,16 +871,33 @@ mod tests {
 
         assert_eq!(load_at(&label), Ok(None));
         let mut s = session(Some(at(2027, 1, 9)));
-        // A realistic size: a JWT of this length twice, beside the instants.
+        // Room to spare: two different tokens of 900 characters each, more
+        // than a UTF-16 password could hold.
         s.access_token = "x".repeat(900);
         s.refresh_token = "y".repeat(900);
         store_at(&label, &s).expect("stored");
         assert_eq!(load_at(&label), Ok(Some(s.clone())));
 
-        s.ended = true;
-        store_at(&label, &s).expect("replaced");
-        assert_eq!(load_at(&label), Ok(Some(s)));
+        // A fetch that began with this session may end it...
+        let ended = OwnSession {
+            ended: true,
+            ..s.clone()
+        };
+        assert_eq!(replace_at(&label, &s.access_token, &ended), Ok(true));
+        assert_eq!(load_at(&label), Ok(Some(ended.clone())));
 
+        // ...but not once a new sign-in has replaced it.
+        let newer = session(Some(at(2027, 2, 1)));
+        store_at(&label, &newer).expect("signed in again");
+        assert_eq!(replace_at(&label, &s.access_token, &ended), Ok(false));
+        assert_eq!(load_at(&label), Ok(Some(newer.clone())));
+
+        // Nor resurrect a session the user signed out of.
+        delete_at(&label).expect("deleted");
+        assert_eq!(replace_at(&label, &newer.access_token, &newer), Ok(false));
+        assert_eq!(load_at(&label), Ok(None));
+
+        store_at(&label, &s).expect("stored");
         delete_at(&label).expect("deleted");
         assert_eq!(load_at(&label), Ok(None));
         // Deleting what is not there is fine.

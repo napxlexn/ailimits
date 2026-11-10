@@ -1062,9 +1062,10 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         .cloned()
         .unwrap_or_else(|| "no fresh data".to_string());
     // Some provider messages already carry their action ("… — run Codex CLI
-    // once"); a transient error that retries by itself ("rate-limited,
-    // retrying", "state database busy, retrying") needs no action at all.
-    if cause.contains("run ") || cause.ends_with(", retrying") {
+    // once", "sign in to Cursor again"); a transient error that retries by
+    // itself ("rate-limited, retrying", "state database busy, retrying")
+    // needs no action at all.
+    if cause.contains("run ") || cause.starts_with("sign in") || cause.ends_with(", retrying") {
         return Some(cause);
     }
     let action = match data.id {
@@ -1073,7 +1074,8 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         ProviderId::Copilot => "check gh auth",
         ProviderId::Antigravity => "run Antigravity",
         ProviderId::Grok => "run Grok CLI",
-        ProviderId::Cursor => "open Cursor",
+        // The menu's "Sign in to Cursor..." mends every Cursor session.
+        ProviderId::Cursor => "sign in to Cursor",
     };
     Some(format!("{cause} — {action}"))
 }

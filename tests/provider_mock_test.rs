@@ -1410,154 +1410,287 @@ fn antigravity_models_quota_treats_a_missing_fraction_as_exhausted() {
 
 // ─── Cursor ───────────────────────────────────────────────────────
 
-/// The usage-summary body verified live on a free account, 2026-11-10.
-const CURSOR_FREE_BODY: &str = r#"{"billingCycleStart":"2026-10-28T20:49:51.046Z","billingCycleEnd":"2026-11-28T20:49:51.046Z","membershipType":"free","limitType":"user","isUnlimited":false,"autoModelSelectedDisplayMessage":"You've used 0% of your included total usage","namedModelSelectedDisplayMessage":"You've used 0% of your included API usage","individualUsage":{"plan":{"enabled":true,"used":0,"limit":0,"remaining":0,"breakdown":{"included":0,"bonus":0,"total":0},"autoPercentUsed":0,"apiPercentUsed":0,"totalPercentUsed":0},"onDemand":{"enabled":false,"used":0,"limit":null,"remaining":null}},"teamUsage":{}}"#;
+/// GetCurrentPeriodUsage as verified live on a Premium plan, 2026-11-10
+/// (the display messages shortened, the model list cut).
+const CURSOR_USAGE_BODY: &str = r#"{"billingCycleStart":"1794265288407","billingCycleEnd":"1794870088407","planUsage":{"remainingBonus":false,"bonusTooltip":"...","autoPercentUsed":1.191765980498375,"totalPercentUsed":1.191765980498375},"spendLimitUsage":{"limitType":"user"},"displayThreshold":200,"enabled":true,"displayMessage":"You've used 1% of your included usage","autoModelSelectedDisplayMessage":"...","namedModelSelectedDisplayMessage":"...","autoBucketModels":["default","composer-2"]}"#;
+
+/// GetPlanInfo as verified live, 2026-11-10.
+const CURSOR_PLAN_BODY: &str = r#"{"planInfo":{"planName":"Premium","price":"","billingCycleEnd":"1796857287995","includedUsagePeriod":"INCLUDED_USAGE_PERIOD_WEEKLY","includedUsageResetsAt":"1794870088407"}}"#;
+
+/// GetSandUsageStatus (Grok Bot) as verified live, 2026-11-10.
+const CURSOR_SAND_BODY: &str = r#"{"currentPeriodStart":"2026-11-09T23:01:28.407Z","nextResetTimestampUtc":"2026-11-16T23:01:28.407Z","usagePercent":1.191765980498375,"hasAvailableUsage":true,"grokPlanLabel":"Grok Bot Plan","cursorPlanName":"Premium","isUnified":true,"billingBrand":"SAND_BILLING_BRAND_GROK"}"#;
+
+/// The verified answer to a request without a session (HTTP 401).
+const CURSOR_401_BODY: &str =
+    r#"{"code":"unauthenticated","debug":{"error":"ERROR_NOT_LOGGED_IN"}}"#;
+
+fn cursor_week_end() -> chrono::DateTime<Utc> {
+    use chrono::TimeZone;
+    Utc.with_ymd_and_hms(2026, 11, 16, 23, 1, 28).unwrap() + chrono::Duration::milliseconds(407)
+}
 
 #[test]
-fn cursor_usage_summary_parses_the_verified_free_body() {
-    use ailimits::providers::cursor::parse_usage_summary;
-    use chrono::{TimeZone, Timelike};
+fn cursor_period_usage_parses_the_verified_body() {
+    use ailimits::providers::cursor::{
+        interpret_period_usage, parse_plan_info, usage_metric, PlanInfo, UsagePeriod,
+    };
 
-    let metrics = parse_usage_summary(CURSOR_FREE_BODY).expect("should parse");
-    assert_eq!(metrics.len(), 1, "one monthly window");
-    let m = &metrics[0];
-    assert_eq!(m.label, "Free", "membershipType labels the window");
-    assert_eq!(m.used, 0);
+    let usage = interpret_period_usage(200, CURSOR_USAGE_BODY).expect("should parse");
+    assert_eq!(usage.used, 1, "1.19% rounds to 1");
+    assert_eq!(usage.end, Some(cursor_week_end()), "ms-epoch string");
+    assert_eq!(
+        usage.start,
+        Some(cursor_week_end() - chrono::Duration::days(7))
+    );
+
+    let plan = parse_plan_info(CURSOR_PLAN_BODY).expect("plan");
+    assert_eq!(
+        plan,
+        PlanInfo {
+            name: Some("Premium".to_string()),
+            period: Some(UsagePeriod::Weekly),
+        }
+    );
+
+    let m = usage_metric(&usage, Some(&plan));
+    assert_eq!(m.label, "Premium", "the plan names the row");
+    assert_eq!(m.used, 1);
     assert_eq!(m.limit, Some(100));
     assert!(matches!(m.unit, MetricUnit::Percent));
+    assert_eq!(m.reset_at, Some(cursor_week_end()), "billingCycleEnd");
     assert_eq!(m.window, MetricWindow::Session);
-    let reset = m.reset_at.expect("billingCycleEnd is the reset");
-    assert_eq!(
-        reset.with_nanosecond(0).unwrap(),
-        Utc.with_ymd_and_hms(2026, 11, 28, 20, 49, 51).unwrap()
-    );
+    assert!(!m.unified_pool);
 }
 
 #[test]
-fn cursor_usage_summary_parses_a_paid_body_with_usage() {
-    use ailimits::providers::cursor::parse_usage_summary;
-    // The same shape filled in the way a paid plan fills it: amounts in cents,
-    // percentages 0–100, a fractional total.
-    let body = r#"{"billingCycleStart":"2026-11-02T09:00:00.000Z","billingCycleEnd":"2026-12-02T09:00:00.000Z",
-        "membershipType":"pro","limitType":"user","isUnlimited":false,
-        "individualUsage":{"plan":{"enabled":true,"used":1450,"limit":2000,"remaining":550,
-            "breakdown":{"included":2000,"bonus":0,"total":2000},
-            "autoPercentUsed":31.5,"apiPercentUsed":88.2,"totalPercentUsed":72.5},
-          "onDemand":{"enabled":true,"used":0,"limit":5000,"remaining":5000}},
-        "teamUsage":{}}"#;
-    let metrics = parse_usage_summary(body).expect("should parse");
-    assert_eq!(metrics.len(), 1);
-    assert_eq!(metrics[0].label, "Pro");
-    // 72.5 rounds half away from zero.
-    assert_eq!(metrics[0].used, 73);
-    assert_eq!(metrics[0].percentage(), Some(73.0));
-    assert!(metrics[0].reset_at.is_some());
-}
+fn cursor_period_usage_reads_an_omitted_percent_as_zero_only_beside_a_cycle() {
+    use ailimits::providers::cursor::{interpret_period_usage, UsageError};
 
-#[test]
-fn cursor_usage_summary_falls_back_to_used_over_limit() {
-    use ailimits::providers::cursor::parse_usage_summary;
-    let body = r#"{"membershipType":"pro","billingCycleEnd":"2026-12-02T09:00:00Z",
-        "individualUsage":{"plan":{"enabled":true,"used":500,"limit":2000}}}"#;
-    let metrics = parse_usage_summary(body).expect("should parse");
-    assert_eq!(metrics[0].used, 25);
-}
+    // Protobuf JSON leaves the zero out: a fresh period.
+    let fresh = r#"{"billingCycleStart":"1794265288407","billingCycleEnd":"1794870088407",
+        "planUsage":{},"spendLimitUsage":{"limitType":"user"},"displayThreshold":200,"enabled":true}"#;
+    let usage = interpret_period_usage(200, fresh).expect("zero, not an error");
+    assert_eq!(usage.used, 0);
+    assert_eq!(usage.end, Some(cursor_week_end()));
 
-#[test]
-fn cursor_usage_summary_clamps_overage_to_the_limit() {
-    use ailimits::providers::cursor::parse_usage_summary;
-    let body = r#"{"membershipType":"pro","individualUsage":{"plan":{"enabled":true,"totalPercentUsed":134.0}}}"#;
-    let metrics = parse_usage_summary(body).expect("should parse");
-    assert_eq!(metrics[0].used, 100);
-    assert_eq!(metrics[0].label, "Pro");
-    assert!(
-        metrics[0].reset_at.is_none(),
-        "no billingCycleEnd, no reset"
-    );
-}
-
-#[test]
-fn cursor_unlimited_plan_is_an_unlimited_row_not_zero_percent() {
-    use ailimits::providers::cursor::parse_usage_summary;
-
-    let body = r#"{"billingCycleEnd":"2026-11-28T20:49:51.046Z","membershipType":"enterprise",
-        "isUnlimited":true,
-        "individualUsage":{"plan":{"enabled":true,"totalPercentUsed":0}}}"#;
-    let metrics = parse_usage_summary(body).expect("should parse");
-    assert_eq!(metrics.len(), 1);
-    assert_eq!(metrics[0].label, "Unlimited");
-    assert_eq!(metrics[0].limit, None);
-    // No percentage: every surface shows a status, never a 0% bar.
-    assert_eq!(metrics[0].percentage(), None);
-    // No reset: the hint line must not quote the row against a countdown.
-    assert!(metrics[0].reset_at.is_none());
-
-    let data = ProviderData {
-        id: ProviderId::Cursor,
-        status: ProviderStatus::Ok,
-        metrics,
-        updated_at: Utc::now(),
-        received_at: Some(std::time::Instant::now()),
-    };
-    assert_eq!(data.primary_percentage(), None);
-}
-
-#[test]
-fn cursor_usage_summary_refuses_malformed_and_unknown_bodies() {
-    use ailimits::providers::cursor::parse_usage_summary;
-    // Not JSON at all (an HTML error page answered with 200).
-    assert!(parse_usage_summary("<!DOCTYPE html><html></html>").is_err());
-    // JSON of another shape.
-    assert!(parse_usage_summary(r#"{"foo": 1}"#).unwrap().is_empty());
-    assert!(parse_usage_summary("[]").unwrap().is_empty());
-    // The plan object without any usable number.
-    assert!(
-        parse_usage_summary(r#"{"individualUsage":{"plan":{"enabled":true,"limit":0}}}"#)
-            .unwrap()
-            .is_empty()
-    );
-    // A disabled individual plan says nothing about this account.
-    assert!(parse_usage_summary(
-        r#"{"individualUsage":{"plan":{"enabled":false,"totalPercentUsed":0}}}"#
-    )
-    .unwrap()
-    .is_empty());
-}
-
-#[test]
-fn cursor_answers_map_to_honest_statuses() {
-    use ailimits::providers::cursor::interpret_usage_summary;
-
-    let (status, metrics) = interpret_usage_summary(200, CURSOR_FREE_BODY);
-    assert!(matches!(status, ProviderStatus::Ok));
-    assert_eq!(metrics.len(), 1);
-
-    // 200 with a body we cannot read: an error, never a guessed number.
-    for body in ["not json", r#"{"foo": 1}"#] {
-        let (status, metrics) = interpret_usage_summary(200, body);
-        assert!(
-            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized usage schema"),
-            "{body}: {status:?}"
+    // Without a cycle, a missing percent is not trusted as zero.
+    for body in [
+        r#"{"planUsage":{}}"#,
+        r#"{"billingCycleEnd":"1794870088407","planUsage":{}}"#,
+        // A cycle that ends before it starts is no cycle.
+        r#"{"billingCycleStart":"1794870088407","billingCycleEnd":"1794265288407","planUsage":{}}"#,
+    ] {
+        assert_eq!(
+            interpret_period_usage(200, body),
+            Err(UsageError::Unrecognized),
+            "{body}"
         );
-        assert!(metrics.is_empty());
     }
 
-    // The session is no longer accepted.
+    // A stated percent needs no cycle; strings and overage are tolerated.
+    let usage =
+        interpret_period_usage(200, r#"{"planUsage":{"totalPercentUsed":"37.6"}}"#).unwrap();
+    assert_eq!((usage.used, usage.end), (38, None));
+    let usage = interpret_period_usage(200, r#"{"planUsage":{"totalPercentUsed":134.0}}"#).unwrap();
+    assert_eq!(usage.used, 100);
+}
+
+#[test]
+fn cursor_period_usage_refuses_unknown_bodies() {
+    use ailimits::providers::cursor::{interpret_period_usage, UsageError};
+
+    for body in [
+        "<!DOCTYPE html><html></html>",
+        "",
+        "[]",
+        r#"{"foo": 1}"#,
+        // The old usage-summary shape is not this one.
+        r#"{"billingCycleEnd":"2026-11-28T20:49:51.046Z","individualUsage":{"plan":{"totalPercentUsed":5}}}"#,
+        r#"{"planUsage":"full"}"#,
+        r#"{"billingCycleStart":"1794265288407","billingCycleEnd":"1794870088407","planUsage":{"totalPercentUsed":"n/a"}}"#,
+    ] {
+        assert_eq!(
+            interpret_period_usage(200, body),
+            Err(UsageError::Unrecognized),
+            "{body}"
+        );
+    }
+}
+
+#[test]
+fn cursor_usage_answers_map_to_honest_statuses() {
+    use ailimits::providers::cursor::{interpret_period_usage, usage_error_status, UsageError};
+
+    // Refused: the verified 401, and a 403 alike.
     for code in [401, 403] {
-        let (status, metrics) = interpret_usage_summary(code, "");
-        assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "token rejected"));
-        assert!(metrics.is_empty());
+        assert_eq!(
+            interpret_period_usage(code, CURSOR_401_BODY),
+            Err(UsageError::Rejected)
+        );
     }
+    // The widget's own session asks for a new sign-in; the editor's token
+    // is only rejected (the editor owns it).
+    let (status, metrics) = usage_error_status(&UsageError::Rejected, true);
+    assert!(matches!(&status, ProviderStatus::AuthError(m) if m == "sign in to Cursor again"));
+    assert!(metrics.is_empty());
+    let (status, _) = usage_error_status(&UsageError::Rejected, false);
+    assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "token rejected"));
 
-    // Anything else, a redirect included, is the bare status.
+    let (status, _) = usage_error_status(&UsageError::Unrecognized, true);
+    assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized usage schema"));
+
+    // Anything else, a redirect included, is the bare status; a non-200
+    // body is never parsed.
     for code in [302, 429, 500, 503] {
-        let (status, metrics) = interpret_usage_summary(code, CURSOR_FREE_BODY);
+        assert_eq!(
+            interpret_period_usage(code, CURSOR_USAGE_BODY),
+            Err(UsageError::Status(code))
+        );
+        let (status, metrics) = usage_error_status(&UsageError::Status(code), true);
         assert!(
             matches!(&status, ProviderStatus::NetworkError(m) if *m == format!("HTTP {code}")),
             "{code}: {status:?}"
         );
-        assert!(metrics.is_empty(), "a non-200 body is never parsed");
+        assert!(metrics.is_empty());
     }
+}
+
+#[test]
+fn cursor_labels_come_from_the_plan_then_the_period() {
+    use ailimits::providers::cursor::{
+        parse_plan_info, usage_metric, PeriodUsage, PlanInfo, UsagePeriod,
+    };
+    use chrono::Duration;
+
+    let end = cursor_week_end();
+    let week = PeriodUsage {
+        used: 5,
+        start: Some(end - Duration::days(7)),
+        end: Some(end),
+    };
+    let month = PeriodUsage {
+        start: Some(end - Duration::days(30)),
+        ..week.clone()
+    };
+    let unknown = PeriodUsage {
+        start: None,
+        end: None,
+        used: 5,
+    };
+
+    // A plan without a name: its period names the row.
+    let nameless = PlanInfo {
+        name: None,
+        period: Some(UsagePeriod::Monthly),
+    };
+    assert_eq!(usage_metric(&week, Some(&nameless)).label, "Monthly");
+    // No plan answer at all: the cycle's length does.
+    assert_eq!(usage_metric(&week, None).label, "Weekly");
+    assert_eq!(usage_metric(&month, None).label, "Monthly");
+    assert_eq!(usage_metric(&unknown, None).label, "Included");
+    assert_eq!(usage_metric(&unknown, None).reset_at, None);
+
+    // An empty plan object is a plan with nothing to say.
+    assert_eq!(
+        parse_plan_info(r#"{"planInfo":{}}"#),
+        Some(PlanInfo {
+            name: None,
+            period: None,
+        })
+    );
+    for body in [
+        "",
+        "nope",
+        "[]",
+        r#"{"foo":1}"#,
+        r#"{"planInfo":"Premium"}"#,
+    ] {
+        assert_eq!(parse_plan_info(body), None, "{body}");
+    }
+}
+
+#[test]
+fn cursor_grok_bot_is_an_extra_that_never_takes_the_headline() {
+    use ailimits::providers::cursor::{
+        interpret_period_usage, parse_sand_usage, sand_metric, usage_metric,
+    };
+
+    let sand = parse_sand_usage(CURSOR_SAND_BODY).expect("should parse");
+    assert_eq!(sand.used, 1);
+    assert_eq!(
+        sand.reset_at,
+        Some(cursor_week_end()),
+        "the same weekly pool"
+    );
+    assert!(sand.unified);
+
+    let m = sand_metric(&sand);
+    assert_eq!(m.label, "Grok Bot");
+    assert_eq!(m.window, MetricWindow::Session);
+    assert!(m.unified_pool, "isUnified is carried for the display");
+
+    // Even a spent Grok Bot never takes over the row: the headline is the
+    // Cursor plan's usage.
+    let usage = interpret_period_usage(200, CURSOR_USAGE_BODY).unwrap();
+    let spent = sand_metric(&ailimits::providers::cursor::SandUsage {
+        used: 100,
+        ..sand.clone()
+    });
+    let data = ProviderData {
+        id: ProviderId::Cursor,
+        status: ProviderStatus::Ok,
+        metrics: vec![usage_metric(&usage, None), spent],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(data.headline_metric().unwrap().label, "Weekly");
+    assert_eq!(data.primary_percentage(), Some(1.0));
+
+    // The omitted zero, trusted beside a period and available usage.
+    let fresh = r#"{"currentPeriodStart":"2026-11-09T23:01:28.407Z","nextResetTimestampUtc":"2026-11-16T23:01:28.407Z","hasAvailableUsage":true,"isUnified":true}"#;
+    let sand = parse_sand_usage(fresh).expect("zero");
+    assert_eq!(sand.used, 0);
+    // Not unified: the flag stays off.
+    let separate = r#"{"nextResetTimestampUtc":"2026-11-12T00:00:00Z","usagePercent":40,"hasAvailableUsage":true}"#;
+    assert!(!parse_sand_usage(separate).unwrap().unified);
+
+    // Everything left out (an account without Grok Bot), or no available
+    // usage to back a missing percent, gives no metric at all.
+    for body in [
+        "{}",
+        r#"{"nextResetTimestampUtc":"2026-11-16T23:01:28.407Z"}"#,
+        r#"{"hasAvailableUsage":true}"#,
+        r#"{"usagePercent":"lots"}"#,
+        "not json",
+        "[]",
+    ] {
+        assert_eq!(parse_sand_usage(body), None, "{body}");
+    }
+}
+
+#[test]
+fn cursor_editor_values_are_classified_never_decrypted() {
+    use ailimits::providers::cursor::{classify_editor_value, EditorToken};
+
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln";
+    assert_eq!(classify_editor_value(None), EditorToken::Absent);
+    assert_eq!(classify_editor_value(Some("")), EditorToken::Absent);
+    assert_eq!(classify_editor_value(Some(" \"\" ")), EditorToken::Absent);
+    // The editor's at-rest encryption: left alone, whatever follows.
+    for value in [
+        "cursor-safe-storage:v1:djEwAAAA",
+        "\"cursor-safe-storage:v1:djEwAAAA\"",
+        "cursor-safe-storage:v2:anything",
+    ] {
+        assert_eq!(
+            classify_editor_value(Some(value)),
+            EditorToken::Encrypted,
+            "{value}"
+        );
+    }
+    let plain = classify_editor_value(Some(&format!("\"{jwt}\"")));
+    assert_eq!(plain, EditorToken::Plain(jwt.to_string()));
+    assert!(!format!("{plain:?}").contains(jwt), "Debug never shows it");
 }
 
 #[test]
@@ -1635,7 +1768,14 @@ fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
     errors.insert(ProviderId::Cursor, "token expired".to_string());
     assert_eq!(
         hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
-        Some("token expired — open Cursor")
+        Some("token expired — sign in to Cursor")
+    );
+
+    // An ended session already names its fix: nothing appended.
+    errors.insert(ProviderId::Cursor, "sign in to Cursor again".to_string());
+    assert_eq!(
+        hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
+        Some("sign in to Cursor again")
     );
 
     // A transient busy database retries by itself: no action appended.
