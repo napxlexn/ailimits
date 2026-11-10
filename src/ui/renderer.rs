@@ -1404,6 +1404,7 @@ mod tests {
                 unit: MetricUnit::Percent,
                 reset_at: None,
                 window: MetricWindow::Session,
+                unified_pool: false,
             }]),
         );
         let expired = ProviderData {
@@ -1561,6 +1562,7 @@ mod tests {
             unit: MetricUnit::Percent,
             reset_at: None,
             window,
+            unified_pool: false,
         }
     }
 

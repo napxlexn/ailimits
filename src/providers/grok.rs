@@ -308,6 +308,7 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
         // The subscription's only window, and its general limit: a spent
         // one must drive every surface.
         window: MetricWindow::Long,
+        unified_pool: false,
     }];
 
     if let Some(products) = config.get("productUsage").and_then(|v| v.as_array()) {
@@ -334,6 +335,7 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
                 unit: MetricUnit::Percent,
                 reset_at,
                 window: MetricWindow::Long,
+                unified_pool: false,
             });
         }
     }

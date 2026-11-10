@@ -1992,6 +1992,7 @@ mod tests {
             unit: MetricUnit::Percent,
             reset_at: None,
             window,
+            unified_pool: false,
         }
     }
 

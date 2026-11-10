@@ -14,6 +14,7 @@ fn metric(used: u64, limit: Option<u64>) -> Metric {
         unit: MetricUnit::Requests,
         reset_at: None,
         window: MetricWindow::Session,
+        unified_pool: false,
     }
 }
 
@@ -37,9 +38,29 @@ fn token_display_text_uses_short_format() {
         unit: MetricUnit::Tokens,
         reset_at: None,
         window: MetricWindow::Session,
+        unified_pool: false,
     };
     // 112000 → "112k", 1000000 → "1.0M".
     assert_eq!(m.display_text(), "112k / 1.0M");
+}
+
+#[test]
+fn the_unified_pool_flag_stays_out_of_the_cache_unless_set() {
+    // A metric of no shared pool serialises exactly as before the field.
+    let json = serde_json::to_string(&metric(1, Some(100))).unwrap();
+    assert!(!json.contains("unified_pool"), "{json}");
+
+    // A cache entry written before the field existed reads back unshared.
+    let old = r#"{"label":"Weekly","used":3,"limit":100,"unit":"Percent","reset_at":null,"window":"Long"}"#;
+    let m: Metric = serde_json::from_str(old).unwrap();
+    assert!(!m.unified_pool);
+
+    let shared = Metric {
+        unified_pool: true,
+        ..metric(1, Some(100))
+    };
+    let back: Metric = serde_json::from_str(&serde_json::to_string(&shared).unwrap()).unwrap();
+    assert!(back.unified_pool);
 }
 
 #[test]
@@ -479,6 +500,7 @@ fn hover_reason_explains_stale_rows_only() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now() - Duration::hours(10),
         received_at: None, // wall-age staleness (10 h)
@@ -556,6 +578,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -564,6 +587,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() + Duration::days(3)),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
         ],
         updated_at: Utc::now() - Duration::minutes(10),
@@ -599,6 +623,7 @@ fn fresh_data_is_not_extrapolated() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(10)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now() - Duration::seconds(30),
         received_at: Some(std::time::Instant::now()),
@@ -630,6 +655,7 @@ fn window_metric(label: &str, used: u64, window: MetricWindow) -> Metric {
         unit: MetricUnit::Percent,
         reset_at: None,
         window,
+        unified_pool: false,
     }
 }
 
@@ -712,6 +738,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(now + Duration::hours(1)),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -720,6 +747,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(now + Duration::days(5)),
                 window: MetricWindow::Long,
+                unified_pool: false,
             },
         ],
         updated_at: now,
@@ -752,6 +780,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(now + Duration::hours(1)),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -760,6 +789,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(now + Duration::days(5)),
                 window: MetricWindow::Long,
+                unified_pool: false,
             },
         ],
         updated_at: now,
@@ -786,6 +816,7 @@ fn live_data_survives_a_wall_clock_jump() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::hours(2)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now() - Duration::hours(1),
         received_at: Some(std::time::Instant::now()),
@@ -953,6 +984,7 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::seconds(30)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now() - Duration::minutes(10),
         received_at: None,
@@ -984,6 +1016,7 @@ fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::minutes(10)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now(),
         received_at: Some(std::time::Instant::now()),
@@ -1012,6 +1045,7 @@ fn next_reset_skips_past_timestamps() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -1020,6 +1054,7 @@ fn next_reset_skips_past_timestamps() {
                 unit: MetricUnit::Percent,
                 reset_at: Some(future),
                 window: MetricWindow::Session,
+                unified_pool: false,
             },
         ],
         updated_at: Utc::now(),
@@ -1035,6 +1070,7 @@ fn next_reset_skips_past_timestamps() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() - Duration::minutes(5)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         ..data
     };
@@ -1589,6 +1625,7 @@ fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
             unit: MetricUnit::Percent,
             reset_at: Some(Utc::now() + Duration::days(10)),
             window: MetricWindow::Session,
+            unified_pool: false,
         }],
         updated_at: Utc::now() - Duration::hours(3),
         received_at: None,

@@ -102,6 +102,7 @@ impl ClaudeProvider {
                 unit: MetricUnit::Requests,
                 reset_at: header_datetime(&resp, HEADER_REQUESTS_RESET),
                 window: MetricWindow::Session,
+                unified_pool: false,
             });
         }
 
@@ -116,6 +117,7 @@ impl ClaudeProvider {
                 unit: MetricUnit::Tokens,
                 reset_at: header_datetime(&resp, HEADER_TOKENS_RESET),
                 window: MetricWindow::Session,
+                unified_pool: false,
             });
         }
 
@@ -379,6 +381,7 @@ fn pct_metric(
         unit: MetricUnit::Percent,
         reset_at,
         window,
+        unified_pool: false,
     }
 }
 

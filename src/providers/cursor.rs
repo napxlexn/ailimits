@@ -294,6 +294,7 @@ pub fn parse_usage_summary(body: &str) -> Result<Vec<Metric>> {
             unit: MetricUnit::Percent,
             reset_at: None,
             window: MetricWindow::Session,
+            unified_pool: false,
         }]);
     }
 
@@ -337,6 +338,7 @@ pub fn parse_usage_summary(body: &str) -> Result<Vec<Metric>> {
         reset_at,
         // One monthly allowance, the same kind of window as Copilot's.
         window: MetricWindow::Session,
+        unified_pool: false,
     }])
 }
 

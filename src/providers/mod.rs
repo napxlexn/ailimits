@@ -118,6 +118,14 @@ pub struct Metric {
     /// never infer it from the label.
     #[serde(default)]
     pub window: MetricWindow,
+    /// This window and the provider's headline window are one pool, which
+    /// another provider meters as well: Cursor's Grok Bot on a unified
+    /// Grok/Cursor plan, where Cursor, Grok and Grok Bot draw on one weekly
+    /// allowance. Carried so the display can decide how to show a shared
+    /// pool; nothing reads it yet. Left out of the cache when false, so
+    /// every other metric serialises as before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unified_pool: bool,
 }
 
 impl Metric {

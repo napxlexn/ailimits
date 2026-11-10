@@ -221,6 +221,7 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
                 unit: MetricUnit::Percent,
                 reset_at,
                 window,
+                unified_pool: false,
             });
         }
     };

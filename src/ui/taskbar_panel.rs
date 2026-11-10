@@ -850,6 +850,7 @@ mod tests {
                 unit: MetricUnit::Percent,
                 reset_at: None,
                 window: MetricWindow::Session,
+                unified_pool: false,
             }],
             updated_at: Utc::now(),
             received_at: Some(std::time::Instant::now()),
