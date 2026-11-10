@@ -182,19 +182,9 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
     Ok(dest)
 }
 
-/// Where the STANDARD install puts the exe: `{localappdata}\AiLimits\ailimits.exe`
-/// (installer/ailimits.iss default). This is only a guess, not a guarantee:
-/// the installer is interactive and does not set `DisableDirPage`, so a user
-/// can pick a different directory, and Inno reuses that choice for later
-/// silent upgrades too. Callers must verify the path actually exists before
-/// relying on it — see `relaunch_target`.
-fn installed_exe_path() -> Option<PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("AiLimits").join("ailimits.exe"))
-}
-
 /// Where the Inno uninstall entry says the app is installed, if it exists.
-/// Written by the installer itself (per-user key, `{AppId}_is1`), so unlike
-/// `installed_exe_path()` it is correct even for a custom install directory.
+/// Written by the installer itself (per-user key, `{AppId}_is1`), so it is
+/// correct for a custom install directory too.
 #[cfg(target_os = "windows")]
 fn inno_install_location() -> Option<PathBuf> {
     use windows::core::w;
@@ -268,17 +258,23 @@ fn running_from_managed_install() -> bool {
     false
 }
 
-/// Pick where to relaunch after an update: the standard install path if it
-/// actually exists on disk, else the exe that is currently running.
-///
-/// `installed_exe_path()` is only correct for the default install location;
-/// for a custom directory it names a path nothing ever wrote to, and
-/// relaunching a path that does not exist silently loses the app — the
-/// update installs fine but AI Limits never reappears. Falling back to the
-/// running exe still fixes the reinstall-forever loop from the second update
-/// onward, because by then the standard path exists.
-fn relaunch_target(standard: Option<PathBuf>, current: Option<PathBuf>) -> Option<PathBuf> {
-    standard.filter(|p| p.exists()).or(current)
+/// The handoff script: force-close this process, run the installer silently,
+/// relaunch `relaunch` (when known), then delete the installer and itself.
+/// Pure on its inputs for testability.
+fn handoff_script(installer: &Path, relaunch: Option<&Path>) -> String {
+    let inst = installer.display();
+    let relaunch = relaunch
+        .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
+        .unwrap_or_default();
+    format!(
+        "@echo off\r\n\
+         taskkill /im ailimits.exe /f >nul 2>&1\r\n\
+         ping -n 2 127.0.0.1 >nul\r\n\
+         \"{inst}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n\
+         {relaunch}\
+         del /q \"{inst}\" >nul 2>&1\r\n\
+         del /q \"%~f0\" >nul 2>&1\r\n"
+    )
 }
 
 /// Hand off to the downloaded installer for a silent, in-place upgrade, then exit.
@@ -294,19 +290,12 @@ fn launch_installer_and_exit(installer: &Path) -> Result<()> {
     // CREATE_NO_WINDOW | DETACHED_PROCESS — no console flash, survives our exit.
     const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
 
-    let inst = installer.display();
-    let relaunch = relaunch_target(installed_exe_path(), std::env::current_exe().ok())
-        .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
-        .unwrap_or_default();
-    let script = format!(
-        "@echo off\r\n\
-         taskkill /im ailimits.exe /f >nul 2>&1\r\n\
-         ping -n 2 127.0.0.1 >nul\r\n\
-         \"{inst}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n\
-         {relaunch}\
-         del /q \"{inst}\" >nul 2>&1\r\n\
-         del /q \"%~f0\" >nul 2>&1\r\n"
-    );
+    // Relaunch the running exe itself. An update only gets here from inside
+    // the directory the installer's own uninstall entry names (see
+    // `running_from_managed_install`), and the silent upgrade rewrites that
+    // directory, so this path IS the freshly installed exe, whether the
+    // install went to the default location or a custom one.
+    let script = handoff_script(installer, std::env::current_exe().ok().as_deref());
 
     let bat = std::env::temp_dir().join("ailimits-update.cmd");
     std::fs::write(&bat, script)
@@ -391,14 +380,6 @@ mod tests {
     }
 
     #[test]
-    fn installed_path_targets_the_installer_directory() {
-        // The installer writes to {localappdata}\AiLimits\ailimits.exe; the
-        // relaunch must aim there, not at whatever copy happens to be running.
-        let p = installed_exe_path().expect("local data dir resolves on Windows");
-        assert!(p.ends_with("AiLimits/ailimits.exe") || p.ends_with(r"AiLimits\ailimits.exe"));
-    }
-
-    #[test]
     fn a_copy_inside_the_managed_dir_is_recognised() {
         let dir = std::env::temp_dir().join("ailimits_managed_test");
         std::fs::create_dir_all(&dir).unwrap();
@@ -439,43 +420,27 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_prefers_the_standard_path_when_it_exists() {
-        // A real file inside a temp dir stands in for a standard-location
-        // install; nothing outside the temp dir is touched.
-        let dir =
-            std::env::temp_dir().join(format!("ailimits-relaunch-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let standard = dir.join("ailimits.exe");
-        std::fs::write(&standard, b"stub").unwrap();
-        let current = dir.join("current.exe"); // never created — must be ignored
+    fn the_handoff_relaunches_exactly_the_exe_it_is_given() {
+        // A custom install directory: the relaunch names the running exe and
+        // nothing else, no guess at the default location.
+        let installer = Path::new(r"C:\Temp\AiLimits-Setup-9.9.9.exe");
+        let running = Path::new(r"D:\Tools\AI Limits\ailimits.exe");
+        let script = handoff_script(installer, Some(running));
 
-        let target = relaunch_target(Some(standard.clone()), Some(current));
-        assert_eq!(target, Some(standard));
-
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(script.contains("start \"\" \"D:\\Tools\\AI Limits\\ailimits.exe\"\r\n"));
+        assert_eq!(script.matches("start ").count(), 1, "one relaunch only");
+        assert!(!script.contains("AppData"), "no guessed default location");
+        // The installer runs silently first, the relaunch after it.
+        let install = script
+            .find("\"C:\\Temp\\AiLimits-Setup-9.9.9.exe\" /VERYSILENT")
+            .expect("the installer line");
+        assert!(install < script.find("start ").unwrap());
     }
 
     #[test]
-    fn relaunch_falls_back_to_the_running_exe_when_the_standard_path_is_absent() {
-        // A custom install directory means installed_exe_path() names a
-        // location the installer never wrote to. The path below is never
-        // created, so it must not exist; the running exe must win instead.
-        let dir =
-            std::env::temp_dir().join(format!("ailimits-relaunch-test-{}-b", std::process::id()));
-        let missing_standard = dir.join("ailimits.exe");
-        let current = dir.join("current.exe");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&current, b"stub").unwrap();
-        assert!(!missing_standard.exists());
-
-        let target = relaunch_target(Some(missing_standard), Some(current.clone()));
-        assert_eq!(target, Some(current));
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn relaunch_yields_none_when_neither_path_is_available() {
-        assert_eq!(relaunch_target(None, None), None);
+    fn the_handoff_skips_the_relaunch_when_the_exe_is_unknown() {
+        let script = handoff_script(Path::new(r"C:\Temp\setup.exe"), None);
+        assert!(!script.contains("start "));
+        assert!(script.contains("/VERYSILENT"));
     }
 }
