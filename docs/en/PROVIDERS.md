@@ -29,7 +29,9 @@ Ground rules that apply to every provider:
    (menu: *Paste usage token*; CLI: `ailimits-auth set-usage-token claude`).
 2. **Claude Code OAuth token** — `%USERPROFILE%\.claude\.credentials.json`
    → `claudeAiOauth.accessToken` (skipped when `expiresAt` is in the past).
-3. A source exists but gave no data → `NetworkError("token expired")`.
+3. A source exists (either token: a stored usage token counts as much as
+   the credentials file) but gave no data → `NetworkError("token expired")`,
+   or `"rate-limited, retrying"` after an HTTP 429.
 4. No sources at all → `NotConfigured` (the row is hidden).
 
 (`statusline.jsonl` snapshots were a source until 0.7.0; Claude Code no
@@ -92,7 +94,11 @@ Authorization: Bearer <token>
 
 `primary_window` = the 5-hour session → `Session`; `secondary_window` =
 the week → `Weekly`. `reset_at` is unix epoch seconds. 401/403 on the CLI
-token → `AuthError("token expired — run Codex CLI once")`.
+token → `AuthError("token expired — run Codex CLI once")`. Without auth.json
+a stored usage token that failed keeps the row (greyed, last data kept):
+`AuthError("usage token rejected")` on 401/403, otherwise the network error.
+An unreadable auth.json → `NetworkError("auth.json unreadable")`. No source
+at all → `NotConfigured` (the row is hidden).
 
 ## GitHub Copilot (subscription only)
 

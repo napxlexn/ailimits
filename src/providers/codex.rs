@@ -58,12 +58,22 @@ impl CodexProvider {
     /// ChatGPT subscription usage. The CLI token is read-only: Codex CLI
     /// refreshes it itself, the widget must never rotate it.
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        // 1. Manual usage token, if stored. Rejected → fall through to auth.json.
+        // 1. Manual usage token, if stored. Rejected → fall through to
+        // auth.json, keeping the reason for when nothing stands behind it.
+        let mut usage_token_failure = None;
         if let Some(token) = self.get_usage_token() {
             match self.fetch_usage(&token).await {
                 Ok(Some(data)) => return Ok(data),
-                Ok(None) => warn!("stored Codex usage token was rejected, falling back"),
-                Err(e) => warn!("stored Codex usage token fetch failed: {e}"),
+                Ok(None) => {
+                    warn!("stored Codex usage token was rejected, falling back");
+                    usage_token_failure = Some(ProviderStatus::AuthError(
+                        "usage token rejected".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    warn!("stored Codex usage token fetch failed: {e}");
+                    usage_token_failure = Some(ProviderStatus::NetworkError(e.to_string()));
+                }
             }
         }
 
@@ -71,12 +81,11 @@ impl CodexProvider {
         let token = match read_codex_token().await {
             Ok(Some(t)) => t,
             Ok(None) => {
-                // No auth.json — hint to log into Codex CLI.
-                return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+                return Ok(self.data(status_without_cli_token(usage_token_failure, false), vec![]));
             }
             Err(e) => {
-                warn!("codex auth.json parse error: {e}");
-                return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+                warn!("codex auth.json unreadable: {e}");
+                return Ok(self.data(status_without_cli_token(usage_token_failure, true), vec![]));
             }
         };
 
@@ -135,6 +144,23 @@ impl Provider for CodexProvider {
         }
         self.fetch_via_subscription().await
     }
+}
+
+/// The status of a cycle in which the Codex CLI token could not be used.
+///
+/// An unreadable auth.json is an honest error — possibly caught mid-rewrite
+/// by Codex CLI, the next cycle reads it again; the message never quotes the
+/// file. Without auth.json, a stored usage token that failed still owns the
+/// row: app.rs keeps its last data on screen, greyed with its age. Only with
+/// no source at all does the row stay hidden (`NotConfigured`).
+pub fn status_without_cli_token(
+    usage_token_failure: Option<ProviderStatus>,
+    auth_json_unreadable: bool,
+) -> ProviderStatus {
+    if auth_json_unreadable {
+        return ProviderStatus::NetworkError("auth.json unreadable".to_string());
+    }
+    usage_token_failure.unwrap_or(ProviderStatus::NotConfigured)
 }
 
 /// Read the Codex CLI access token: %USERPROFILE%\.codex\auth.json → tokens.access_token.

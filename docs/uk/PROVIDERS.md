@@ -27,7 +27,10 @@
    (меню: *Paste usage token*; CLI: `ailimits-auth set-usage-token claude`).
 2. **OAuth-токен Claude Code** — `%USERPROFILE%\.claude\.credentials.json`
    → `claudeAiOauth.accessToken` (пропускається, якщо `expiresAt` у минулому).
-3. Джерело є, але даних не дало → `NetworkError("token expired")`.
+3. Джерело є (будь-який із токенів: збережений usage token важить стільки ж,
+   скільки файл credentials), але даних не дало →
+   `NetworkError("token expired")`, або `"rate-limited, retrying"` після
+   HTTP 429.
 4. Джерел немає взагалі → `NotConfigured` (рядок ховається).
 
 (Знімки `statusline.jsonl` були джерелом до 0.7.0; Claude Code більше не
@@ -90,7 +93,11 @@ Authorization: Bearer <token>
 
 `primary_window` = 5-годинна сесія → `Session`; `secondary_window` =
 тиждень → `Weekly`. `reset_at` — unix epoch секунди. 401/403 на токені CLI
-→ `AuthError("token expired — run Codex CLI once")`.
+→ `AuthError("token expired — run Codex CLI once")`. Без auth.json
+збережений usage token, що не спрацював, тримає рядок (сірий, з останніми
+даними): `AuthError("usage token rejected")` на 401/403, інакше мережева
+помилка. Нечитабельний auth.json → `NetworkError("auth.json unreadable")`.
+Джерел немає взагалі → `NotConfigured` (рядок ховається).
 
 ## GitHub Copilot (тільки підписка)
 

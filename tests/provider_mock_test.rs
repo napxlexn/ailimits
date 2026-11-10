@@ -69,6 +69,81 @@ fn oauth_usage_tolerates_unknown_schema() {
 }
 
 #[test]
+fn a_failing_claude_usage_token_keeps_the_row() {
+    use ailimits::providers::claude::ChainOutcome;
+
+    // Only a stored usage token, and it gave no data (rejected, 429, offline,
+    // an unknown schema): an honest error that app.rs greys, never a hidden
+    // row that drops the last real data.
+    let only_token = ChainOutcome {
+        usage_token: true,
+        ..ChainOutcome::default()
+    };
+    assert!(
+        matches!(only_token.status(), ProviderStatus::NetworkError(ref m) if m == "token expired"),
+        "got {:?}",
+        only_token.status()
+    );
+    let bounced = ChainOutcome {
+        rate_limited: true,
+        ..only_token
+    };
+    assert!(matches!(
+        bounced.status(),
+        ProviderStatus::NetworkError(ref m) if m == "rate-limited, retrying"
+    ));
+
+    // The credentials file alone, as it always was.
+    let file = ChainOutcome {
+        credentials_file: true,
+        ..ChainOutcome::default()
+    };
+    assert!(matches!(file.status(), ProviderStatus::NetworkError(_)));
+
+    // No source at all: the row stays hidden.
+    assert!(matches!(
+        ChainOutcome::default().status(),
+        ProviderStatus::NotConfigured
+    ));
+}
+
+#[test]
+fn a_failing_codex_usage_token_or_unreadable_auth_json_keeps_the_row() {
+    use ailimits::providers::codex::status_without_cli_token;
+
+    // No auth.json behind a rejected usage token: the rejection owns the row.
+    let rejected = Some(ProviderStatus::AuthError(
+        "usage token rejected".to_string(),
+    ));
+    assert!(matches!(
+        status_without_cli_token(rejected.clone(), false),
+        ProviderStatus::AuthError(ref m) if m == "usage token rejected"
+    ));
+    // The same for a request that never got an answer.
+    let offline = Some(ProviderStatus::NetworkError(
+        "error sending request".to_string(),
+    ));
+    assert!(matches!(
+        status_without_cli_token(offline, false),
+        ProviderStatus::NetworkError(ref m) if m == "error sending request"
+    ));
+
+    // An auth.json that cannot be read is an honest error, never "not set up".
+    for usage_token_failure in [None, rejected] {
+        assert!(matches!(
+            status_without_cli_token(usage_token_failure, true),
+            ProviderStatus::NetworkError(ref m) if m == "auth.json unreadable"
+        ));
+    }
+
+    // No source at all: the row stays hidden.
+    assert!(matches!(
+        status_without_cli_token(None, false),
+        ProviderStatus::NotConfigured
+    ));
+}
+
+#[test]
 fn wham_usage_response_parses_to_metrics() {
     use ailimits::providers::codex::parse_wham_usage;
 

@@ -140,18 +140,19 @@ impl ClaudeProvider {
     /// stopped writing that file in 2026; the reader went with 0.7.0.)
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
         let credentials_path = claude_dir().join(".credentials.json");
-        // The one limit source; stats-cache holds no limits and does not count.
-        let has_source = credentials_path.exists();
-
-        // Whether a usage request bounced off the endpoint's rate limiter
-        // this cycle — only to word the error honestly below (a 429 is not
-        // an expired token).
-        let mut rate_limited = false;
+        let usage_token = self.get_usage_token();
+        // The token sources this machine has; stats-cache holds no limits and
+        // does not count.
+        let mut chain = ChainOutcome {
+            usage_token: usage_token.is_some(),
+            credentials_file: credentials_path.exists(),
+            ..ChainOutcome::default()
+        };
 
         // 0. Manual usage token: a minimal read-only usage request.
         // Rejected → quietly fall back to the Claude Code sources.
-        if let Some(token) = self.get_usage_token() {
-            match self.fetch_via_oauth(&token, &mut rate_limited).await {
+        if let Some(token) = usage_token {
+            match self.fetch_via_oauth(&token, &mut chain.rate_limited).await {
                 Ok(Some(data)) => return Ok(data),
                 Ok(None) => warn!("stored Claude usage token was rejected, falling back"),
                 Err(e) => warn!("stored Claude usage token fetch failed: {e}"),
@@ -161,7 +162,7 @@ impl ClaudeProvider {
         // 1. OAuth: the Claude Code token is READ-ONLY — never refresh it,
         // refresh-token rotation would log Claude Code out.
         match read_oauth_token(&credentials_path).await {
-            Ok(Some(token)) => match self.fetch_via_oauth(&token, &mut rate_limited).await {
+            Ok(Some(token)) => match self.fetch_via_oauth(&token, &mut chain.rate_limited).await {
                 Ok(Some(data)) => return Ok(data),
                 Ok(None) => { /* expired or 401 — fall back */ }
                 Err(e) => warn!("oauth usage fetch error: {e}"),
@@ -170,25 +171,9 @@ impl ClaudeProvider {
             Err(e) => warn!(".credentials.json parse error: {e}"),
         }
 
-        // 2. A source exists but there is no fresh data right now — an HONEST
-        // error instead of invented numbers. app.rs keeps the last real data
-        // on screen; the renderer greys it out with its age.
-        // On HTTP 429 (the usage endpoint's per-token bucket is shared with
-        // Claude Code's own polling; verified 2026-07-09, `Retry-After: 0`)
-        // the next cycle usually gets through — say so instead of falsely
-        // blaming the token.
-        if has_source {
-            // Short message — the renderer shows it instead of a generic "offline".
-            let msg = if rate_limited {
-                "rate-limited, retrying"
-            } else {
-                "token expired"
-            };
-            return Ok(self.data(ProviderStatus::NetworkError(msg.to_string()), vec![]));
-        }
-
-        // 3. No sources at all — hint to run Claude Code.
-        Ok(self.data(ProviderStatus::NotConfigured, vec![]))
+        // 2./3. No source produced data: an honest error, or a hidden row
+        // when there is no source at all.
+        Ok(self.data(chain.status(), vec![]))
     }
 
     /// One usage request; Ok(None) = the token did not work, fall back.
@@ -237,6 +222,43 @@ impl ClaudeProvider {
             // Live fetch — monotonically anchored against wall-clock jumps.
             received_at: Some(std::time::Instant::now()),
         }
+    }
+}
+
+/// What the subscription source chain learned in a cycle that produced no
+/// data — enough to word the row honestly.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChainOutcome {
+    /// A manual usage token is stored in Credential Manager.
+    pub usage_token: bool,
+    /// Claude Code's `.credentials.json` exists.
+    pub credentials_file: bool,
+    /// A usage request bounced off the endpoint's rate limiter (HTTP 429).
+    pub rate_limited: bool,
+}
+
+impl ChainOutcome {
+    /// The status the cycle ends on.
+    ///
+    /// Any source — the stored usage token as much as the credentials file —
+    /// makes it an HONEST error instead of invented numbers: app.rs keeps the
+    /// last real data on screen and the renderer greys it with its age. Only
+    /// with no source at all does the row stay hidden (`NotConfigured`).
+    /// On HTTP 429 (the usage endpoint's per-token bucket is shared with
+    /// Claude Code's own polling; verified 2026-07-09, `Retry-After: 0`) the
+    /// next cycle usually gets through — say so instead of falsely blaming
+    /// the token.
+    pub fn status(self) -> ProviderStatus {
+        if !self.usage_token && !self.credentials_file {
+            return ProviderStatus::NotConfigured;
+        }
+        // Short message — the renderer shows it instead of a generic "offline".
+        let msg = if self.rate_limited {
+            "rate-limited, retrying"
+        } else {
+            "token expired"
+        };
+        ProviderStatus::NetworkError(msg.to_string())
     }
 }
 
