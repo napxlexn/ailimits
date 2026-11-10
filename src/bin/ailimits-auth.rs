@@ -6,6 +6,8 @@
 //   ailimits-auth remove <provider>          remove the key
 //   ailimits-auth set-usage-token <p>        store a manual usage token (claude | codex)
 //   ailimits-auth remove-usage-token <p>     remove the usage token
+//   ailimits-auth login cursor               sign the widget in to Cursor (its own session)
+//   ailimits-auth logout cursor              forget that session
 //
 // Secrets are stored ONLY in Windows Credential Manager (service "ailimits");
 // config.toml holds nothing but a label.
@@ -44,6 +46,8 @@ fn main() -> Result<()> {
         Some("remove") => remove(args.get(1).map(String::as_str)),
         Some("set-usage-token") => set_usage_token(args.get(1).map(String::as_str)),
         Some("remove-usage-token") => remove_usage_token(args.get(1).map(String::as_str)),
+        Some("login") => login(args.get(1).map(String::as_str)),
+        Some("logout") => logout(args.get(1).map(String::as_str)),
         _ => {
             print_usage();
             Ok(())
@@ -64,11 +68,13 @@ fn print_usage() {
         "  ailimits-auth set-usage-token <p>       store a manual usage token (claude | codex)"
     );
     println!("  ailimits-auth remove-usage-token <p>    remove the usage token");
+    println!("  ailimits-auth login cursor              sign in to Cursor (opens the browser)");
+    println!("  ailimits-auth logout cursor             forget the Cursor session");
     println!();
     println!("By default everything works through subscriptions, no keys needed:");
     println!("  Claude — Claude Code token, Codex — Codex CLI token, Copilot — gh CLI token,");
     println!("  Antigravity — Antigravity CLI token, Grok — Grok CLI login,");
-    println!("  Cursor — the Cursor editor's session.");
+    println!("  Cursor — its own session: sign in once (login cursor, or from the menu).");
 }
 
 /// Key label for a provider.
@@ -388,6 +394,60 @@ fn remove(provider: Option<&str>) -> Result<()> {
     save_config(&config)?;
 
     println!("→ Restart the widget to apply");
+    Ok(())
+}
+
+/// Only Cursor has a sign-in of the widget's own.
+fn require_cursor(provider: Option<&str>, command: &str) -> Result<()> {
+    match provider {
+        Some("cursor") => Ok(()),
+        Some(other) => bail!("{command} is for cursor only, got '{other}'"),
+        None => bail!("specify a provider: ailimits-auth {command} cursor"),
+    }
+}
+
+/// Sign the widget in to Cursor: the link opens in the browser, and
+/// approving it there hands the widget a session of its own. The editor's
+/// session is not touched.
+fn login(provider: Option<&str>) -> Result<()> {
+    require_cursor(provider, "login")?;
+    let request = session::LoginRequest::new()?;
+    let url = request.url();
+    println!("Approve the sign-in in your browser (it opens now), or open this link:");
+    println!("  {url}");
+    ailimits::platform::open_url(&url);
+    println!(
+        "Waiting for the sign-in (up to {} minutes)...",
+        session::SIGN_IN_TIMEOUT.as_secs() / 60
+    );
+
+    let outcome = tokio::runtime::Runtime::new()?.block_on(session::complete_sign_in(request));
+    match outcome {
+        session::SignInOutcome::SignedIn(Some(exp)) => println!(
+            "Signed in to Cursor, session valid until {} UTC",
+            exp.format("%Y-%m-%d %H:%M")
+        ),
+        session::SignInOutcome::SignedIn(None) => println!("Signed in to Cursor"),
+        session::SignInOutcome::TimedOut => {
+            bail!("Cursor sign-in timed out — nothing was approved; run it again")
+        }
+        session::SignInOutcome::Failed(e) => bail!("Cursor sign-in failed: {e}"),
+    }
+    println!("→ The widget uses it from its next update");
+    Ok(())
+}
+
+/// Forget the widget's own Cursor session. The provider falls back to the
+/// editor's token, or hides the row.
+fn logout(provider: Option<&str>) -> Result<()> {
+    require_cursor(provider, "logout")?;
+    let had = session::is_stored();
+    session::delete().context("failed to remove the Cursor session")?;
+    if had {
+        println!("Signed out of Cursor (label: {})", session::SESSION_LABEL);
+    } else {
+        println!("— no Cursor session stored");
+    }
     Ok(())
 }
 
