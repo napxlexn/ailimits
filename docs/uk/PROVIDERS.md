@@ -3,8 +3,10 @@
 Базові правила для всіх провайдерів:
 
 - **Токени read-only.** Віджет повторно використовує токени офіційних
-  CLI-інструментів (для Cursor — самого редактора) і НІКОЛИ їх не оновлює та
-  не ротує (ротація розлогінила б CLI). Прострочений токен — тихий fallback, а не діалог із помилкою.
+  CLI-інструментів і НІКОЛИ їх не оновлює та не ротує (ротація розлогінила б
+  CLI). Прострочений токен — тихий fallback, а не діалог із помилкою. Єдиний
+  сеанс, який віджет оновлює, — його власний сеанс Cursor, яким не
+  користується жоден інший застосунок (див. Cursor).
 - **Недокументовані endpoint'и вважаються ворожими.** Толерантні парсери;
   будь-яка незнайома схема чи статус ≠ 200 деградує чесно (NetworkError),
   а не вигадує цифри.
@@ -153,7 +155,7 @@ CLI-токени — короткоживучі OAuth access tokens; CLI-вла�
 | Copilot | gh сам керує своїм токеном | нескінченно, поки залогінений у gh |
 | Antigravity | keyring token, потім legacy token Gemini CLI | лише поки одне з цих джерел оновлюється, далі fallback/сірий |
 | Grok | ~6 год access token (звірено), оновлює Grok CLI при використанні | до ~6 год після останнього сеансу Grok CLI, далі fallback/сірий |
-| Cursor | JWT на ~60 днів, оновлює редактор Cursor, поки він запущений | до `exp` токена (до ~60 днів після останнього оновлення редактором), далі сірий |
+| Cursor | власний сеанс віджета: JWT на ~60 днів, віджет оновлює його в останній тиждень (чи це його подовжує, ще не звірено) | доки сеанс не завершиться, далі сірий із "sign in to Cursor again" |
 
 Команди штибу `gh auth token` («вивести/оновити токен») у Codex чи Claude
 CLI **немає** (звірено з офіційною auth-докою OpenAI Codex). Єдиний
@@ -315,72 +317,168 @@ Accept: application/json
 
 ## Cursor (тільки підписка)
 
-Джерело токена: власний сеанс редактора Cursor у його базі стану VS Code
-`%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, таблиця
-`ItemTable(key, value)`, ключ `cursorAuth/accessToken`; READ-ONLY, ніколи не
-оновлюється). Токен — JWT (issuer `https://authentication.cursor.sh`, audience
-`https://cursor.com`, час життя ~60 днів), який редактор оновлює, поки
-запущений. Віджет декодує лише його payload, заради `sub` і `exp`, і ніколи
-не надсилає токен, чий `exp` минув. У тій самій таблиці також лежать
-`cursorAuth/refreshToken`, `cursorAuth/cachedEmail`,
-`cursorAuth/stripeMembershipType` і `cursorAuth/cachedSignUpType`; віджет не
-читає жодного з них.
+Джерела токена, по черзі:
 
-База належить редактору, який може тримати її відкритою і писати в неї
-(вона в режимі WAL). Віджет читає її через SQLite, що постачається з Windows
-(`System32\winsqlite3.dll`, вантажиться при першому використанні), відкриває
-з `SQLITE_OPEN_READONLY` і busy timeout 200 мс. Як і будь-який читач SQLite,
-він торкається лише індексу спільної пам'яті (`state.vscdb-shm`); сама база і
-її `-wal` файл ніколи не записуються. Утримане блокування — тимчасова
-помилка, яку повторює наступний цикл.
+1. **Власний сеанс віджета** — мітка Credential Manager `cursor_session`
+   (меню: *Providers → Cursor → Sign in to Cursor...*; CLI:
+   `ailimits-auth login cursor`). Віджет сам входить у Cursor і володіє цим
+   сеансом, тож це єдиний токен Cursor, який віджет будь-коли оновлює.
+2. **Токен редактора, лише поки він не зашифрований** — база стану VS Code
+   редактора Cursor `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
+   (SQLite, таблиця `ItemTable(key, value)`, ключ `cursorAuth/accessToken`;
+   READ-ONLY, ніколи не оновлюється, ніколи не надсилається після свого
+   `exp`); пробується лише тоді, коли власного сеансу немає. Свіжі версії
+   Cursor шифрують це значення на диску: `cursor-safe-storage:v1:` + base64
+   від `v10` і AES-256-GCM, ключ у `%APPDATA%\Cursor\Local State`
+   (`os_crypt.encrypted_key`, під DPAPI). Віджет ніколи його не
+   розшифровує — розшифровувати збережені облікові дані чужого застосунку
+   саме те, що роблять крадії паролів, і антивіруси це ловлять. Значення з
+   префіксом `cursor-safe-storage:` вважається відсутнім токеном.
+3. Ні того, ні іншого → `NotConfigured`: рядок прихований, поки
+   користувач не увійде.
 
-Endpoint (схему відповіді звірено 2026-11-10, HTTP 200, на безкоштовному
-плані; той самий читає дашборд cursor.com):
+База редактора належить редактору, який може тримати її відкритою і писати
+в неї (вона в режимі WAL). Віджет читає її через SQLite, що постачається з
+Windows (`System32\winsqlite3.dll`, вантажиться при першому використанні),
+відкриває з `SQLITE_OPEN_READONLY` і busy timeout 200 мс. Як і будь-який
+читач SQLite, він торкається лише індексу спільної пам'яті
+(`state.vscdb-shm`); сама база і її `-wal` файл ніколи не записуються.
+Утримане блокування — тимчасова помилка, яку повторює наступний цикл.
+
+### Вхід за посиланням (звірено наживо 2026-11-10)
+
+Власний сценарій редактора, зв'язаний PKCE:
+
+1. verifier = base64url без доповнення від 32 випадкових байтів;
+   challenge = base64url без доповнення від SHA-256 ASCII-рядка verifier;
+   uuid = випадковий UUID версії 4.
+2. Браузер відкриває
+   `https://cursor.com/loginDeepControl?challenge=<challenge>&uuid=<uuid>&mode=login`,
+   і користувач тисне *Sign in*.
+3. Віджет опитує `GET https://api2.cursor.sh/auth/poll?uuid=<uuid>&verifier=<verifier>`:
+   404, поки вхід не підтверджено, далі 200
+   `{"accessToken": "...", "refreshToken": "...", "authId": "...", "challenge": "...", "uuid": "..."}`.
+   Обидва токени були тим самим JWT (`sub` на кшталт `github|user_…`, час
+   життя близько 60 днів). Опитування чекає 1 с, далі щоразу в 1.2 раза
+   довше, до 8 с, і здається через 5 хвилин. Verifier несе лише опитування,
+   і воно ніколи не логується.
+
+Сеанс зберігається як UTF-8 JSON: токен, його `exp`, остання спроба
+оновлення і чи завершив його Cursor. У віджеті вхід чекає у фоновій задачі
+і закінчується тостом: "Signed in to Cursor", "Cursor sign-in timed out" чи
+"Cursor sign-in failed". Повторний вхід замінює сеанс (інший акаунт або
+сеанс, який завершив Cursor); *Sign out of Cursor* чи
+`ailimits-auth logout cursor` його забуває. Перезапуск не потрібен в
+жодному разі: провайдер читає сеанс при кожному оновленні.
+
+### Оновлення (лише власного сеансу)
 
 ```
-GET https://cursor.com/api/usage-summary
-Cookie: WorkosCursorSessionToken=<sub>%3A%3A<token>
-Accept: application/json
+POST https://api2.cursor.sh/oauth/token
+Content-Type: application/json
+
+{"grant_type": "refresh_token", "client_id": "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB",
+ "refresh_token": "<token>"}
+→ 200 {"access_token": "...", "id_token": "...", "shouldLogout": false}
 ```
 
-`sub` має вигляд `github|user_…`: провайдер входу, далі id акаунта. Cookie
-несе його цілим; `%3A%3A` — буквальне, вже URL-кодоване `::`. Звірено
-2026-11-10 зі щойно виданим токеном того самого акаунта (разовий вхід за
-посиланням; збережений токен редактора протух 2026-09-29). Запит із
-власного збереженого токена редактора — той самий запит, але чекає живої
-перевірки, коли в редакторі знову виконано вхід.
+Звірено 2026-11-10 одразу після входу: новий токен відрізнявся, його `exp`
+не зрушив, а старий токен і далі працював. Тож віджет оновлює сеанс лише в
+останні 7 днів перед `exp`, не частіше разу на добу, і зберігає новий
+`access_token` як обидва токени. `shouldLogout: true` завершує сеанс, так
+само як і відхилене оновлення (401/403, поки не траплялося). Чи подовжує
+оновлення біля `exp` сеанс, ще не звірено; якщо ні, сеанс живе близько 60
+днів, а далі рядок просить увійти знову.
+
+### Використання (звірено 2026-11-10, HTTP 200)
+
+Три методи dashboard-сервісу, який викликає редактор (протокол Connect,
+JSON), усі одним і тим самим запитом:
+
+```
+POST https://api2.cursor.sh/aiserver.v1.DashboardService/<Method>
+Authorization: Bearer <token>
+Content-Type: application/json
+Connect-Protocol-Version: 1
+
+{}
+```
+
+**`GetCurrentPeriodUsage`** — щоциклу, головна метрика:
 
 ```json
-{"billingCycleStart": "2026-10-28T20:49:51.046Z",
- "billingCycleEnd":   "2026-11-28T20:49:51.046Z",
- "membershipType": "free", "limitType": "user", "isUnlimited": false,
- "autoModelSelectedDisplayMessage":  "You've used 0% of your included total usage",
- "namedModelSelectedDisplayMessage": "You've used 0% of your included API usage",
- "individualUsage": {
-   "plan": {"enabled": true, "used": 0, "limit": 0, "remaining": 0,
-            "breakdown": {"included": 0, "bonus": 0, "total": 0},
-            "autoPercentUsed": 0, "apiPercentUsed": 0, "totalPercentUsed": 0},
-   "onDemand": {"enabled": false, "used": 0, "limit": null, "remaining": null}},
- "teamUsage": {}}
+{"billingCycleStart": "1794265288407", "billingCycleEnd": "1794870088407",
+ "planUsage": {"remainingBonus": false, "bonusTooltip": "...",
+   "autoPercentUsed": 1.191765980498375, "totalPercentUsed": 1.191765980498375},
+ "spendLimitUsage": {"limitType": "user"}, "displayThreshold": 200,
+ "enabled": true, "displayMessage": "You've used 1% of your included usage",
+ "autoModelSelectedDisplayMessage": "...",
+ "namedModelSelectedDisplayMessage": "...",
+ "autoBucketModels": ["default", "composer-2", "..."]}
 ```
 
-→ одна метрика на білінговий цикл: `individualUsage.plan.totalPercentUsed`
-(0–100; `used / limit`, якщо відсотка немає, обидва в центах), скидання в
-`billingCycleEnd`, підпис — `membershipType` (`free` → `Free`, `pro` → `Pro`).
-`isUnlimited: true` → рядок `Unlimited` без відсотка і без скидання, ніколи не
-смужка 0%. Вимкнений `individualUsage.plan`, зіпсований JSON чи будь-яка інша
-форма → "unrecognized usage schema". Поки не показується: розподіл auto/API
-(`autoPercentUsed` / `apiPercentUsed`; витрачений API-пул лишає Auto
-робочим, тож він не може бути long window, що перехоплює головну метрику) і
-витрати on-demand. Командні ліміти (`limitType: "team"`, `teamUsage`) не
-звірені.
+→ одна метрика: `planUsage.totalPercentUsed` (0–100), скидання в
+`billingCycleEnd`. Межі циклу — епохи в мілісекундах, записані рядками.
+Тіло — protobuf JSON, який пропускає нульові значення, тож `planUsage` без
+`totalPercentUsed` поряд із коректним циклом — це 0%, і лише тоді. Немає
+об'єкта `planUsage`, тіло не JSON або будь-яка інша форма → "unrecognized
+usage schema". Поки не показується: розподіл auto / названі моделі.
 
-Стани: немає `state.vscdb` (Cursor не встановлено) або немає токена (вихід
-з акаунта) → `NotConfigured`, рядок прихований; заблокована база → "state
-database busy, retrying"; токен із минулим `exp` → "token expired", без
-жодного запиту (відкрий Cursor, і він оновить токен); 401/403 → "token
-rejected"; будь-який інший статус → "HTTP <code>". Кожна помилка лишає
-останні дані сірими з давністю.
+**`GetPlanInfo`** — не частіше разу на годину для кожного акаунта (через
+десять хвилин після запиту, що нічого не приніс, а доти лишається останній
+відомий план); дає підпис рядка:
+
+```json
+{"planInfo": {"planName": "Premium", "price": "",
+  "billingCycleEnd": "1796857287995",
+  "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_WEEKLY",
+  "includedUsageResetsAt": "1794870088407"}}
+```
+
+→ підпис — `planName` (`Premium`); без нього — період
+(`includedUsagePeriod`: `Weekly`, `Monthly`, `Daily`), далі довжина циклу,
+інакше `Included`.
+
+**`GetSandUsageStatus`** — Grok Bot, щоциклу, додаткова метрика:
+
+```json
+{"currentPeriodStart": "2026-11-09T23:01:28.407Z",
+ "nextResetTimestampUtc": "2026-11-16T23:01:28.407Z",
+ "usagePercent": 1.191765980498375, "hasAvailableUsage": true,
+ "grokPlanLabel": "Grok Bot Plan", "cursorPlanName": "Premium",
+ "isUnified": true, "billingBrand": "SAND_BILLING_BRAND_GROK"}
+```
+
+→ друга метрика `Grok Bot` = `usagePercent`, скидання в
+`nextResetTimestampUtc`. Відсутній відсоток — це 0% лише поряд із відомим
+періодом і `hasAvailableUsage: true`; тіло, де пропущено все (акаунт без
+Grok Bot), не дає метрики. Це метрика session-вікна, тож вона ніколи не
+перехоплює головну, і жодна поверхня її поки не малює. На звіреному
+акаунті Grok, Cursor і Grok Bot ділять ОДИН тижневий пул (те саме
+скидання, той самий відсоток); як це показувати — відкрите рішення, тож
+`isUnified` переноситься як `unified_pool` метрики, щоб пізніше ним
+скористалося відображення. Будь-яка невдача цього виклику лише прибирає
+метрику.
+
+Без сеансу (звірено): HTTP 401
+`{"code": "unauthenticated", ..., "debug": {"error": "ERROR_NOT_LOGGED_IN", ...}}`.
+
+Стани (кожна помилка лишає останні дані сірими з давністю):
+
+- власний сеанс відхилено (401/403): одне оновлення, якщо до `exp` лишилося
+  не більше 7 днів, і ще одна спроба; інакше сеанс позначається
+  завершеним → `AuthError("sign in to Cursor again")`;
+- власний сеанс після `exp` або завершений через `shouldLogout` → те саме,
+  без жодного запиту використання;
+- токен редактора відхилено → "token rejected"; після його `exp` → "token
+  expired", без жодного запиту; заблокована база → "state database busy,
+  retrying";
+- немає відповіді → "offline, retrying"; будь-який інший статус →
+  "HTTP <code>".
+
+Де виправлення — це вхід, підказка під курсором додає "sign in to Cursor".
+Запитів за цикл: два (використання і Grok Bot), плюс план не частіше разу
+на годину і оновлення не частіше разу на добу в останній тиждень сеансу.
 
 ## Видалені провайдери і методи
 
@@ -392,3 +490,10 @@ rejected"; будь-який інший статус → "HTTP <code>". Кожн
 - **Codex API-key probe** (платний запит chat/completions заради заголовків)
   і **Copilot Billing API** — видалені; підписочні endpoint'и дають строго
   більше даних безкоштовно. Відновлюються з git history.
+- **Зведення використання Cursor через cookie** —
+  `GET https://cursor.com/api/usage-summary` із cookie
+  `WorkosCursorSessionToken=<sub>%3A%3A<token>`, складеним із токена
+  редактора (схему звірено 2026-11-10 на безкоштовному плані:
+  `individualUsage.plan.totalPercentUsed`, `membershipType`,
+  `isUnlimited`). Того ж дня замінене dashboard-сервісом із власним сеансом
+  віджета, щойно редактор почав шифрувати свій токен.

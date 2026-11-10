@@ -4,8 +4,9 @@ AI Limits is written and maintained by one person, napxlexn. Every line of
 code in this repository has the same author, and it stays that way: pull
 requests are not merged, however good they are.
 
-Why: AI Limits updates itself silently and reads the login tokens of Claude
-Code, Codex CLI, gh, Antigravity, the Grok CLI and Cursor. Whatever it ships
+Why: AI Limits updates itself silently, reads the login tokens of Claude
+Code, Codex CLI, gh, Antigravity and the Grok CLI, and keeps a Cursor
+session of its own. Whatever it ships
 runs on people's machines with no review step on their side, so every line
 goes through one pair of hands. One author also keeps the code, the design
 and the licensing in one place.

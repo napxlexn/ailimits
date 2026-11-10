@@ -10,7 +10,8 @@ main.rs ── single-instance guard, logging, app::run()
 app.rs ─── owns everything: config, display data, window, menu
    ├── monitor/scheduler.rs   tokio task: fetch_all → sleep(interval) loop
    │     └── providers/       claude.rs / codex.rs / copilot.rs / antigravity.rs /
-   │                          grok.rs / cursor.rs
+   │                          grok.rs / cursor.rs (+ cursor/session.rs: the
+   │                          widget's own Cursor sign-in and session)
    ├── ui/renderer.rs         tiny-skia drawing (the ONLY place that draws)
    ├── ui/layout.rs           zone rectangles per layout/detail level
    ├── ui/theme.rs            all colors (the ONLY source of colors)

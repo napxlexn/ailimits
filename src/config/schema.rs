@@ -95,8 +95,8 @@ fn default_providers() -> Vec<ProviderConfig> {
         base("antigravity", true, AuthMethod::Subscription, "", 80),
         // Grok — SuperGrok subscription via the Grok CLI's auth.json.
         base("grok", true, AuthMethod::Subscription, "", 80),
-        // Cursor — the editor's own session token, read from its state
-        // database. Hidden until Cursor is installed and signed in.
+        // Cursor — the widget's own session (menu: Sign in to Cursor...),
+        // else the editor's plain token. Hidden until one of them exists.
         base("cursor", true, AuthMethod::Subscription, "", 80),
     ]
 }

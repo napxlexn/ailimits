@@ -72,13 +72,15 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 ## What it does
 
-- **Reads, never writes.** It reads the tokens the official CLI tools (and the
-  Cursor editor) already store on your machine. It never refreshes or rotates
-  them, so it cannot log you out of those tools. Keys you add yourself are
-  stored in Windows Credential Manager. The app connects only to the
-  providers' own endpoints and sends no telemetry.
+- **Reads, never writes.** It reads the tokens the official CLI tools already
+  store on your machine. It never refreshes or rotates them, so it cannot log
+  you out of those tools. Cursor is the one exception: the app signs in to it
+  with a session of its own and leaves the editor's session alone. Keys you
+  add yourself, and that session, are stored in Windows Credential Manager.
+  The app connects only to the providers' own endpoints and sends no
+  telemetry.
 - **No setup.** Your normal CLI use keeps the tokens valid, so there is
-  nothing to log into and nothing to configure.
+  nothing to configure. Only Cursor asks you to sign in once, from the menu.
 - **Low load, measured on the running app.** 0.012% of one CPU core, no GPU
   use (it renders on the CPU), about 45 MB of memory, no raised timer resolution,
   a 3 MB exe. Reproduce it with `bench/perf_audit.ps1`; the full numbers are
@@ -135,8 +137,8 @@ the auth sources listed below.
 
 1. **Run it.** On first launch it finds the CLIs you already use (Claude Code,
    Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions, the Grok
-   CLI) and the Cursor editor, and starts showing usage. Nothing to log into, nothing to
-   configure.
+   CLI) and starts showing usage. Nothing to configure. For Cursor,
+   right-click, **Providers**, **Cursor**, *Sign in to Cursor...* once.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
    snap to the nearest screen edge. `Lock position` in the right-click menu
    pins it.
@@ -154,9 +156,9 @@ the auth sources listed below.
 
 ## How authorization works
 
-The widget never asks you to log in. It monitors **subscription** limits by
-reusing the tokens the official CLI tools keep on your machine, strictly
-read-only:
+The widget never asks you to log in, except once for Cursor. It monitors
+**subscription** limits by reusing the tokens the official CLI tools keep on
+your machine, strictly read-only:
 
 | Provider | Automatic source (default) | To enable it |
 |---|---|---|
@@ -165,12 +167,15 @@ read-only:
 | Copilot | `gh auth token` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | run Antigravity CLI once, or use a still-supported Gemini CLI flow |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; `GROK_HOME` is honoured) | run `grok` and sign in once (a SuperGrok subscription) |
-| Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (the Cursor editor's session, opened read-only) | sign in to [Cursor](https://cursor.com) once |
+| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); without it, the editor's token in `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, only if stored unencrypted | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`); ~60-day session |
 
-These are OAuth access tokens, short-lived except Cursor's (about 60 days).
-The CLI or editor that owns each one refreshes it whenever you use it. The
-widget never refreshes a token itself, because an OAuth refresh rotates it
-and would log the CLI out.
+These are OAuth access tokens, short-lived except Cursor's. The CLI that
+owns each one refreshes it whenever you use it. The widget never refreshes
+another app's token, because an OAuth refresh rotates it and would log the
+CLI out. The Cursor session (about 60 days) belongs to the widget: you sign
+in to Cursor in the browser, and the widget keeps and refreshes that
+session itself. The Cursor editor now encrypts its own token, and the
+widget never decrypts it.
 
 ### How long it stays accurate without any action
 
@@ -181,7 +186,7 @@ and would log the CLI out.
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
 | **Antigravity** | while Antigravity CLI refreshes its keyring token, or a supported Gemini CLI flow refreshes `oauth_creds.json` | the last value greyed, with its age |
 | **Grok** | up to ~6 hours after your last Grok CLI session (the token's real lifetime) | the last value greyed, with its age |
-| **Cursor** | until the editor's session token expires, about 60 days after Cursor last refreshed it | the last value greyed, with its age |
+| **Cursor** | about 60 days after you sign in (the session's lifetime) | the last value greyed, and `sign in to Cursor again` |
 
 Google stopped serving Gemini CLI requests for individual, Google AI Pro, and
 Google AI Ultra users on June 18, 2026. Those users are expected to migrate to
@@ -212,7 +217,7 @@ depend on CLI activity. What each option actually gives you:
 | **Codex** | None | No separate stable token exists. The usage token is the same short-lived OAuth token. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
 | **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login. An xAI API key reports API spend, not that limit. | |
-| **Cursor** | None | The usage is tied to the editor's own session, and no separate key reports the same numbers. | |
+| **Cursor** | Its own sign-in, about 60 days | Right-click, **Providers**, **Cursor**, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
 
 **Two ways to add a credential:**
 
@@ -231,6 +236,8 @@ depend on CLI activity. What each option actually gives you:
    ailimits-auth set-usage-token claude|codex # store a manual usage token
    ailimits-auth remove copilot|claude
    ailimits-auth remove-usage-token claude|codex
+   ailimits-auth login cursor                 # sign in to Cursor in the browser
+   ailimits-auth logout cursor                # forget that session
    ```
    `set-usage-token` sends one request to the provider's usage endpoint first
    and stores the token only if it is accepted.

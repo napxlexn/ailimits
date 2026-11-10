@@ -132,8 +132,9 @@ auth_method = "subscription"
 alert_threshold = 80
 
 [[providers]]
-# Cursor: власний сеанс редактора з його бази стану. Рядок прихований, поки
-# Cursor не встановлено і не виконано вхід.
+# Cursor: власний сеанс віджета (меню: Sign in to Cursor...) у Credential
+# Manager; без нього — токен редактора, поки той зберігається незашифрованим.
+# Рядок прихований, доки немає ні того, ні іншого.
 id = "cursor"
 enabled = true
 auth_method = "subscription"
@@ -171,6 +172,7 @@ on_startup = ""
 | `claude_usage_token` | ручний usage-токен підписки Claude |
 | `codex_usage_token` | ручний usage-токен ChatGPT/Codex |
 | `copilot_pat` | GitHub PAT (замість gh CLI) |
+| `cursor_session` | власний сеанс Cursor віджета, як UTF-8 JSON: токен, його строк дії, остання спроба оновлення, чи завершив його Cursor (меню: *Sign in to Cursor...* / *Sign out of Cursor*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
 Rust-структури — у `src/config/schema.rs`; цей файл є єдиним джерелом
 правди для схеми.

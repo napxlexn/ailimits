@@ -126,8 +126,9 @@ auth_method = "subscription"
 alert_threshold = 80
 
 [[providers]]
-# Cursor: the editor's own session, read from its state database. The row
-# stays hidden until Cursor is installed and signed in.
+# Cursor: the widget's own session (menu: Sign in to Cursor...), kept in
+# Credential Manager; without one, the editor's token while it is stored
+# unencrypted. The row stays hidden until one of them exists.
 id = "cursor"
 enabled = true
 auth_method = "subscription"
@@ -165,6 +166,7 @@ in the Windows Credential Manager under service `ailimits`:
 | `claude_usage_token` | manual Claude subscription usage token |
 | `codex_usage_token` | manual ChatGPT/Codex usage token |
 | `copilot_pat` | GitHub PAT (used instead of the gh CLI) |
+| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (menu: *Sign in to Cursor...* / *Sign out of Cursor*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
 The Rust structs live in `src/config/schema.rs` — that file is the single
 source of truth for the schema.

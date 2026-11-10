@@ -3,9 +3,10 @@
 Ground rules that apply to every provider:
 
 - **Read-only tokens.** The widget reuses tokens owned by the official CLI
-  tools (for Cursor, the editor itself) and NEVER refreshes or rotates them
-  (rotation would log the CLI out).
-  An expired token is a quiet fallback, not an error dialog.
+  tools and NEVER refreshes or rotates them (rotation would log the CLI out).
+  An expired token is a quiet fallback, not an error dialog. The one session
+  the widget refreshes is its own Cursor session, which no other app uses
+  (see Cursor).
 - **Undocumented endpoints are treated as hostile.** Tolerant parsers; any
   unknown schema or non-200 status degrades honestly (NetworkError) instead
   of inventing numbers.
@@ -154,7 +155,7 @@ client's refresh invalidated the others). Consequences:
 | Copilot | gh manages its own token | indefinite while logged into gh |
 | Antigravity | keyring token, then the legacy Gemini CLI token | only while one of those sources is refreshed, then fallback/grey |
 | Grok | ~6h access token (verified), refreshed by the Grok CLI on use | up to ~6h after the last Grok CLI session, then fallback/grey |
-| Cursor | ~60-day JWT, refreshed by the Cursor editor while it runs | until the token's `exp` (up to ~60 days after the editor last refreshed it), then grey |
+| Cursor | the widget's own session: a ~60-day JWT, refreshed by the widget in its last week (whether that extends it is not verified yet) | until the session ends, then grey with "sign in to Cursor again" |
 
 There is no `gh auth token`-style "print/refresh the token" command for the
 Codex or Claude CLIs (verified against the OpenAI Codex auth docs). The only
@@ -312,71 +313,166 @@ Not to be confused with:
 
 ## Cursor (subscription only)
 
-Token source: the Cursor editor's own session, kept in its VS Code state
-database `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, table
-`ItemTable(key, value)`, key `cursorAuth/accessToken`; READ-ONLY, never
-refreshed). The token is a JWT (issuer `https://authentication.cursor.sh`,
-audience `https://cursor.com`, lifetime ~60 days) that the editor refreshes
-while it runs. The widget decodes only its payload, for `sub` and `exp`, and
-never sends a token past its `exp`. The same table also holds
-`cursorAuth/refreshToken`, `cursorAuth/cachedEmail`,
-`cursorAuth/stripeMembershipType` and `cursorAuth/cachedSignUpType`; the
-widget reads none of them.
+Token sources, in order:
 
-The database belongs to the editor, which may hold it open and write to it
-(it runs in WAL mode). It is read through the SQLite that ships with Windows
-(`System32\winsqlite3.dll`, loaded on first use), opened
-`SQLITE_OPEN_READONLY` with a 200 ms busy timeout. As with any SQLite reader,
-only the shared-memory index (`state.vscdb-shm`) is touched; the database and
-its `-wal` file are never written. A held lock is a transient error that the
-next cycle retries.
+1. **The widget's own session** — Credential Manager label `cursor_session`
+   (menu: *Providers → Cursor → Sign in to Cursor...*; CLI:
+   `ailimits-auth login cursor`). The widget signs in to Cursor by itself
+   and owns this session, so it is the one Cursor token the widget ever
+   refreshes.
+2. **The editor's token, only while it is plain** — the Cursor editor's VS
+   Code state database `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
+   (SQLite, table `ItemTable(key, value)`, key `cursorAuth/accessToken`;
+   READ-ONLY, never refreshed, never sent past its `exp`), tried only when
+   there is no own session. Current Cursor versions encrypt this value at
+   rest: `cursor-safe-storage:v1:` + base64 of `v10` and AES-256-GCM, the
+   key in `%APPDATA%\Cursor\Local State` (`os_crypt.encrypted_key`, under
+   DPAPI). The widget never decrypts it — decrypting another app's stored
+   credentials is what credential stealers do, and antivirus engines flag
+   it. A value with the `cursor-safe-storage:` prefix counts as no token.
+3. Neither → `NotConfigured`: the row is hidden until the user signs in.
 
-Endpoint (response schema verified 2026-11-10, HTTP 200, on a free plan; the
-cursor.com dashboard reads the same one):
+The editor's database belongs to the editor, which may hold it open and
+write to it (it runs in WAL mode). It is read through the SQLite that ships
+with Windows (`System32\winsqlite3.dll`, loaded on first use), opened
+`SQLITE_OPEN_READONLY` with a 200 ms busy timeout. As with any SQLite
+reader, only the shared-memory index (`state.vscdb-shm`) is touched; the
+database and its `-wal` file are never written. A held lock is a transient
+error that the next cycle retries.
+
+### Sign-in by link (verified live 2026-11-10)
+
+The editor's own flow, bound by PKCE:
+
+1. verifier = unpadded base64url of 32 random bytes; challenge = unpadded
+   base64url of the SHA-256 of the verifier's ASCII; uuid = a random v4
+   UUID.
+2. The browser opens
+   `https://cursor.com/loginDeepControl?challenge=<challenge>&uuid=<uuid>&mode=login`
+   and the user clicks *Sign in*.
+3. The widget polls `GET https://api2.cursor.sh/auth/poll?uuid=<uuid>&verifier=<verifier>`:
+   404 until the sign-in is approved, then 200
+   `{"accessToken": "...", "refreshToken": "...", "authId": "...", "challenge": "...", "uuid": "..."}`.
+   The two tokens were the same JWT (`sub` like `github|user_…`, lifetime
+   about 60 days). The poll waits 1 s, then 1.2 times longer each time up
+   to 8 s, and gives up after 5 minutes. Only the poll carries the
+   verifier, and it is never logged.
+
+The session is kept as UTF-8 JSON: the token, its `exp`, the last refresh
+attempt, and whether Cursor ended it. In the widget the sign-in waits in a
+background task and ends with a toast: "Signed in to Cursor", "Cursor
+sign-in timed out" or "Cursor sign-in failed". Signing in again replaces
+the session (another account, or one Cursor ended); *Sign out of Cursor* or
+`ailimits-auth logout cursor` forgets it. No restart is needed either way:
+the provider reads the session on every update.
+
+### Refresh (the own session only)
 
 ```
-GET https://cursor.com/api/usage-summary
-Cookie: WorkosCursorSessionToken=<sub>%3A%3A<token>
-Accept: application/json
+POST https://api2.cursor.sh/oauth/token
+Content-Type: application/json
+
+{"grant_type": "refresh_token", "client_id": "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB",
+ "refresh_token": "<token>"}
+→ 200 {"access_token": "...", "id_token": "...", "shouldLogout": false}
 ```
 
-`sub` reads like `github|user_…`: the sign-in provider, then the account id.
-The cookie carries it whole; `%3A%3A` is a literal, already URL-encoded `::`.
-Verified 2026-11-10 with a freshly issued token of the same account (a
-one-off sign-in by link; the editor's stored token had expired 2026-09-29).
-A request built from the editor's own stored token is the same request, but
-awaits a live check once the editor is signed in again.
+Verified 2026-11-10 right after a sign-in: the new token differed, its `exp`
+did not move, and the old token kept working. So the widget refreshes only
+in the last 7 days before `exp`, at most once a day, and stores the new
+`access_token` as both tokens. `shouldLogout: true` ends the session, and so
+does a refused refresh (401/403, not seen yet). Whether a refresh near `exp`
+extends the session is not verified yet; if it does not, a session lasts
+about 60 days and the row then asks for a new sign-in.
+
+### Usage (verified 2026-11-10, HTTP 200)
+
+Three methods of the dashboard service the editor calls (Connect protocol,
+JSON), all the same request:
+
+```
+POST https://api2.cursor.sh/aiserver.v1.DashboardService/<Method>
+Authorization: Bearer <token>
+Content-Type: application/json
+Connect-Protocol-Version: 1
+
+{}
+```
+
+**`GetCurrentPeriodUsage`** — every cycle, the headline:
 
 ```json
-{"billingCycleStart": "2026-10-28T20:49:51.046Z",
- "billingCycleEnd":   "2026-11-28T20:49:51.046Z",
- "membershipType": "free", "limitType": "user", "isUnlimited": false,
- "autoModelSelectedDisplayMessage":  "You've used 0% of your included total usage",
- "namedModelSelectedDisplayMessage": "You've used 0% of your included API usage",
- "individualUsage": {
-   "plan": {"enabled": true, "used": 0, "limit": 0, "remaining": 0,
-            "breakdown": {"included": 0, "bonus": 0, "total": 0},
-            "autoPercentUsed": 0, "apiPercentUsed": 0, "totalPercentUsed": 0},
-   "onDemand": {"enabled": false, "used": 0, "limit": null, "remaining": null}},
- "teamUsage": {}}
+{"billingCycleStart": "1794265288407", "billingCycleEnd": "1794870088407",
+ "planUsage": {"remainingBonus": false, "bonusTooltip": "...",
+   "autoPercentUsed": 1.191765980498375, "totalPercentUsed": 1.191765980498375},
+ "spendLimitUsage": {"limitType": "user"}, "displayThreshold": 200,
+ "enabled": true, "displayMessage": "You've used 1% of your included usage",
+ "autoModelSelectedDisplayMessage": "...",
+ "namedModelSelectedDisplayMessage": "...",
+ "autoBucketModels": ["default", "composer-2", "..."]}
 ```
 
-→ one metric per billing cycle: `individualUsage.plan.totalPercentUsed`
-(0–100; `used / limit` when the percentage is missing, both in cents), reset
-at `billingCycleEnd`, labelled with `membershipType` (`free` → `Free`, `pro`
-→ `Pro`). `isUnlimited: true` → an `Unlimited` row with no percentage and no
-reset, never a 0% bar. A disabled `individualUsage.plan`, malformed JSON or
-any other shape → "unrecognized usage schema". Not shown yet: the auto/API
-split (`autoPercentUsed` / `apiPercentUsed`; a spent API pool still leaves
-Auto working, so it cannot be a long window that takes over the headline)
-and on-demand spend. Team limits (`limitType: "team"`, `teamUsage`) are
-unverified.
+→ one metric: `planUsage.totalPercentUsed` (0–100), reset at
+`billingCycleEnd`. The cycle bounds are millisecond epochs written as
+strings. The body is protobuf JSON, which leaves zero values out, so a
+`planUsage` without `totalPercentUsed` beside a valid cycle is 0% — and
+only then. No `planUsage` object, a body that is not JSON, or any other
+shape → "unrecognized usage schema". Not shown yet: the auto / named-model
+split.
 
-States: no `state.vscdb` (Cursor not installed) or no token (signed out) →
-`NotConfigured`, the row is hidden; a locked database → "state database busy,
-retrying"; a token past `exp` → "token expired", with no request sent (opening
-Cursor refreshes it); 401/403 → "token rejected"; any other status →
-"HTTP <code>". Every error keeps the last data greyed with its age.
+**`GetPlanInfo`** — at most once an hour per account (ten minutes after a
+request that brought nothing, keeping the last plan meanwhile); it labels
+the row:
+
+```json
+{"planInfo": {"planName": "Premium", "price": "",
+  "billingCycleEnd": "1796857287995",
+  "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_WEEKLY",
+  "includedUsageResetsAt": "1794870088407"}}
+```
+
+→ the label is `planName` (`Premium`); without one, the period
+(`includedUsagePeriod`: `Weekly`, `Monthly`, `Daily`), else the cycle's
+length, else `Included`.
+
+**`GetSandUsageStatus`** — Grok Bot, every cycle, an extra metric:
+
+```json
+{"currentPeriodStart": "2026-11-09T23:01:28.407Z",
+ "nextResetTimestampUtc": "2026-11-16T23:01:28.407Z",
+ "usagePercent": 1.191765980498375, "hasAvailableUsage": true,
+ "grokPlanLabel": "Grok Bot Plan", "cursorPlanName": "Premium",
+ "isUnified": true, "billingBrand": "SAND_BILLING_BRAND_GROK"}
+```
+
+→ a second metric `Grok Bot` = `usagePercent`, reset at
+`nextResetTimestampUtc`. A missing percent is 0% only beside a known period
+and `hasAvailableUsage: true`; a body with everything left out (an account
+without Grok Bot) gives no metric. It is a session-window metric, so it
+never takes over the headline, and no surface draws it yet. On the
+verified account Grok, Cursor and Grok Bot share ONE weekly pool (the same
+reset, the same percentage); how to show that is an open decision, so
+`isUnified` is carried as the metric's `unified_pool` for a later display
+to use. Any failure of this call only leaves the metric out.
+
+Without a session (verified): HTTP 401
+`{"code": "unauthenticated", ..., "debug": {"error": "ERROR_NOT_LOGGED_IN", ...}}`.
+
+States (every error keeps the last data greyed with its age):
+
+- the own session refused (401/403): one refresh if within 7 days of `exp`,
+  then one more try; otherwise the session is marked ended →
+  `AuthError("sign in to Cursor again")`;
+- the own session past `exp`, or ended by `shouldLogout` → the same, with
+  no usage request sent;
+- the editor's token refused → "token rejected"; past its `exp` → "token
+  expired", with no request sent; a locked database → "state database busy,
+  retrying";
+- no answer → "offline, retrying"; any other status → "HTTP <code>".
+
+Where a sign-in is the fix, the hover adds "sign in to Cursor".
+Requests per cycle: two (usage and Grok Bot), plus the plan at most hourly
+and a refresh at most daily in a session's last week.
 
 ## Removed providers and methods
 
@@ -388,3 +484,9 @@ Cursor refreshes it); 401/403 → "token rejected"; any other status →
 - **Codex API-key probe** (paid chat/completions request for headers) and
   **Copilot Billing API** — removed; the subscription endpoints provide
   strictly more data for free. Recoverable from git history.
+- **Cursor usage summary by cookie** — `GET https://cursor.com/api/usage-summary`
+  with a `WorkosCursorSessionToken=<sub>%3A%3A<token>` cookie built from the
+  editor's token (schema verified 2026-11-10 on a free plan:
+  `individualUsage.plan.totalPercentUsed`, `membershipType`,
+  `isUnlimited`). Superseded the same day by the dashboard service with the
+  widget's own session, once the editor began encrypting its token.
