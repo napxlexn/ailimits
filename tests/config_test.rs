@@ -4,9 +4,9 @@ use ailimits::config::schema::{Config, DetailLevel, IndicatorKind, Layout, Palet
 
 #[test]
 fn default_config_has_expected_providers() {
-    // The default config contains all five providers, enabled, no keys.
+    // The default config contains all six providers, enabled, no keys.
     let config = Config::default();
-    assert_eq!(config.providers.len(), 5);
+    assert_eq!(config.providers.len(), 6);
     for p in &config.providers {
         assert!(p.enabled, "{} should be enabled by default", p.id);
         assert!(p.credential_label.is_empty());
@@ -43,7 +43,7 @@ fn every_default_provider_id_resolves() {
 fn empty_toml_parses_to_defaults() {
     // An empty TOML must not break parsing.
     let config: Config = toml::from_str("").expect("empty config should parse");
-    assert_eq!(config.providers.len(), 5);
+    assert_eq!(config.providers.len(), 6);
 }
 
 #[test]
