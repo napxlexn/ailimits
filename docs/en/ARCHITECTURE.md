@@ -10,7 +10,7 @@ main.rs ── single-instance guard, logging, app::run()
 app.rs ─── owns everything: config, display data, window, menu
    ├── monitor/scheduler.rs   tokio task: fetch_all → sleep(interval) loop
    │     └── providers/       claude.rs / codex.rs / copilot.rs / antigravity.rs /
-   │                          grok.rs
+   │                          grok.rs / cursor.rs
    ├── ui/renderer.rs         tiny-skia drawing (the ONLY place that draws)
    ├── ui/layout.rs           zone rectangles per layout/detail level
    ├── ui/theme.rs            all colors (the ONLY source of colors)
@@ -24,6 +24,8 @@ app.rs ─── owns everything: config, display data, window, menu
    │                          silent install + relaunch (menu: Automatic updates)
    ├── platform/taskbar_geom.rs  pure placement/fallback rules for the panel
    │                          (testable, no Win32 calls)
+   ├── platform/sqlite.rs     read-only lookups in another app's SQLite
+   │                          database (Cursor's state.vscdb) via winsqlite3
    ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save
    └── notifications/toast.rs Windows toasts
 ```
@@ -62,6 +64,17 @@ the scheduler), save the config, and request a redraw.
 - **2 tokio workers** — the default one-per-core (32 here) wasted ~30
   threads for three tiny HTTP requests per cycle.
 - **Single instance** via a named mutex in `main.rs`.
+- **SQLite through Windows' own `winsqlite3.dll`, not a bundled engine** —
+  Cursor keeps its session in a SQLite database, and one indexed SELECT a
+  minute does not justify compiling SQLite in: `rusqlite` with `bundled`
+  adds about 1 MB (+29%) to the `release-min` exe, the FFI reader together
+  with the whole provider 13 KB (measured 2026-11-10). The DLL ships with
+  Windows 10 and 11 and is loaded from System32 only
+  (`LOAD_LIBRARY_SEARCH_SYSTEM32`) on the first lookup, then kept. It is not
+  an import, so a machine without it gets an honest error instead of an exe
+  that will not start. Connections are `SQLITE_OPEN_READONLY` with a 200 ms
+  busy timeout. Measured: ~0.6 ms per lookup; +0.2 MB private memory after
+  the first one, levelling off under +0.5 MB over 21,000 lookups.
 - **Honest display states** (see PROVIDERS.md): retention → grey + age →
   `≈0%` estimates after a provable reset.
 - **Monotonic staleness anchor**: whether live data is "stale" is decided on a

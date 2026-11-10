@@ -94,7 +94,7 @@ column_flow = "row"
 show_forecast = false
 
 [[providers]]
-# Ідентифікатор: claude / codex / copilot / antigravity / grok ("gemini" —
+# Ідентифікатор: claude / codex / copilot / antigravity / grok / cursor ("gemini" —
 # застарілий id, перейменовується на "antigravity" при завантаженні).
 # Провайдер за замовчуванням, якого бракує у старому конфігу, додається
 # при завантаженні, увімкненим.
@@ -127,6 +127,14 @@ alert_threshold = 80
 
 [[providers]]
 id = "grok"
+enabled = true
+auth_method = "subscription"
+alert_threshold = 80
+
+[[providers]]
+# Cursor: власний сеанс редактора з його бази стану. Рядок прихований, поки
+# Cursor не встановлено і не виконано вхід.
+id = "cursor"
 enabled = true
 auth_method = "subscription"
 alert_threshold = 80

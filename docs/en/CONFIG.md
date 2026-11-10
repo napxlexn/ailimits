@@ -89,8 +89,8 @@ column_flow = "row"
 show_forecast = false
 
 [[providers]]
-# Identifier: claude / codex / copilot / antigravity / grok ("gemini" is a
-# legacy id, renamed to "antigravity" on load). A default provider missing
+# Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"
+# is a legacy id, renamed to "antigravity" on load). A default provider missing
 # from an older config is appended on load, enabled.
 id = "claude"
 enabled = true
@@ -121,6 +121,14 @@ alert_threshold = 80
 
 [[providers]]
 id = "grok"
+enabled = true
+auth_method = "subscription"
+alert_threshold = 80
+
+[[providers]]
+# Cursor: the editor's own session, read from its state database. The row
+# stays hidden until Cursor is installed and signed in.
+id = "cursor"
 enabled = true
 auth_method = "subscription"
 alert_threshold = 80

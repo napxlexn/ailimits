@@ -15,7 +15,7 @@
 
 A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
-**Google Antigravity**, **xAI Grok**.
+**Google Antigravity**, **xAI Grok**, **Cursor**.
 
 <p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Open the website" src="https://img.shields.io/badge/OPEN%20THE%20WEBSITE-0078d4?style=for-the-badge"></a></p>
 
@@ -72,11 +72,11 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 ## What it does
 
-- **Reads, never writes.** It reads the tokens the official CLI tools already
-  store on your machine. It never refreshes or rotates them, so it cannot log
-  you out of those tools. Keys you add yourself are stored in Windows
-  Credential Manager. The app connects only to the providers' own endpoints
-  and sends no telemetry.
+- **Reads, never writes.** It reads the tokens the official CLI tools (and the
+  Cursor editor) already store on your machine. It never refreshes or rotates
+  them, so it cannot log you out of those tools. Keys you add yourself are
+  stored in Windows Credential Manager. The app connects only to the
+  providers' own endpoints and sends no telemetry.
 - **No setup.** Your normal CLI use keeps the tokens valid, so there is
   nothing to log into and nothing to configure.
 - **Low load, measured on the running app.** 0.012% of one CPU core, no GPU
@@ -133,8 +133,8 @@ the auth sources listed below.
 ## Quick start
 
 1. **Run it.** On first launch it finds the CLIs you already use (Claude Code,
-   Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions, and the
-   Grok CLI) and starts showing usage. Nothing to log into, nothing to
+   Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions, the Grok
+   CLI) and the Cursor editor, and starts showing usage. Nothing to log into, nothing to
    configure.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
    snap to the nearest screen edge. `Lock position` in the right-click menu
@@ -164,10 +164,12 @@ read-only:
 | Copilot | `gh auth token` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | run Antigravity CLI once, or use a still-supported Gemini CLI flow |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; `GROK_HOME` is honoured) | run `grok` and sign in once (a SuperGrok subscription) |
+| Cursor | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (the Cursor editor's session, opened read-only) | sign in to [Cursor](https://cursor.com) once |
 
-These are short-lived OAuth access tokens. The CLI that owns each one
-refreshes it whenever you use that CLI. The widget never refreshes a token
-itself, because an OAuth refresh rotates it and would log the CLI out.
+These are OAuth access tokens, short-lived except Cursor's (about 60 days).
+The CLI or editor that owns each one refreshes it whenever you use it. The
+widget never refreshes a token itself, because an OAuth refresh rotates it
+and would log the CLI out.
 
 ### How long it stays accurate without any action
 
@@ -178,6 +180,7 @@ itself, because an OAuth refresh rotates it and would log the CLI out.
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
 | **Antigravity** | while Antigravity CLI refreshes its keyring token, or a supported Gemini CLI flow refreshes `oauth_creds.json` | the last value greyed, with its age |
 | **Grok** | up to ~6 hours after your last Grok CLI session (the token's real lifetime) | the last value greyed, with its age |
+| **Cursor** | until the editor's session token expires, about 60 days after Cursor last refreshed it | the last value greyed, with its age |
 
 Google stopped serving Gemini CLI requests for individual, Google AI Pro, and
 Google AI Ultra users on June 18, 2026. Those users are expected to migrate to
@@ -191,9 +194,9 @@ polling. While Claude Code is running, a Claude refresh can take 2 to 3
 minutes even on the 1-minute interval. The rejected cycle retries a minute
 later. Other providers are unaffected.
 
-An expired Claude, Codex or Grok token does not produce wrong numbers. The last
-value stays greyed with its age, a window that has provably reset shows `≈0%`,
-and the reset countdown keeps running locally. If you use the CLIs daily, the
+An expired Claude, Codex, Grok or Cursor token does not produce wrong numbers.
+The last value stays greyed with its age, a window that has provably reset
+shows `≈0%`, and the reset countdown keeps running locally. If you use the CLIs daily, the
 data is live nearly all the time.
 
 ### Manual authorization (for independence or no-CLI setups)
@@ -208,6 +211,7 @@ depend on CLI activity. What each option actually gives you:
 | **Codex** | None | No separate stable token exists. The usage token is the same short-lived OAuth token. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
 | **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login. An xAI API key reports API spend, not that limit. | |
+| **Cursor** | None | The usage is tied to the editor's own session, and no separate key reports the same numbers. | |
 
 **Two ways to add a credential:**
 

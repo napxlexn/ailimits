@@ -3,7 +3,8 @@
 Ground rules that apply to every provider:
 
 - **Read-only tokens.** The widget reuses tokens owned by the official CLI
-  tools and NEVER refreshes or rotates them (rotation would log the CLI out).
+  tools (for Cursor, the editor itself) and NEVER refreshes or rotates them
+  (rotation would log the CLI out).
   An expired token is a quiet fallback, not an error dialog.
 - **Undocumented endpoints are treated as hostile.** Tolerant parsers; any
   unknown schema or non-200 status degrades honestly (NetworkError) instead
@@ -132,6 +133,7 @@ client's refresh invalidated the others). Consequences:
 | Copilot | gh manages its own token | indefinite while logged into gh |
 | Antigravity | keyring token, then the legacy Gemini CLI token | only while one of those sources is refreshed, then fallback/grey |
 | Grok | ~6h access token (verified), refreshed by the Grok CLI on use | up to ~6h after the last Grok CLI session, then fallback/grey |
+| Cursor | ~60-day JWT, refreshed by the Cursor editor while it runs | until the token's `exp` (up to ~60 days after the editor last refreshed it), then grey |
 
 There is no `gh auth token`-style "print/refresh the token" command for the
 Codex or Claude CLIs (verified against the OpenAI Codex auth docs). The only
@@ -278,6 +280,73 @@ Not to be confused with:
   without SuperGrok gets: that comes from the CLI's chat API, not from this
   call. What the billing call answers for such an account is not verified;
   whatever it is, a non-200 degrades honestly.
+
+## Cursor (subscription only)
+
+Token source: the Cursor editor's own session, kept in its VS Code state
+database `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (SQLite, table
+`ItemTable(key, value)`, key `cursorAuth/accessToken`; READ-ONLY, never
+refreshed). The token is a JWT (issuer `https://authentication.cursor.sh`,
+audience `https://cursor.com`, lifetime ~60 days) that the editor refreshes
+while it runs. The widget decodes only its payload, for `sub` and `exp`, and
+never sends a token past its `exp`. The same table also holds
+`cursorAuth/refreshToken`, `cursorAuth/cachedEmail`,
+`cursorAuth/stripeMembershipType` and `cursorAuth/cachedSignUpType`; the
+widget reads none of them.
+
+The database belongs to the editor, which may hold it open and write to it
+(it runs in WAL mode). It is read through the SQLite that ships with Windows
+(`System32\winsqlite3.dll`, loaded on first use), opened
+`SQLITE_OPEN_READONLY` with a 200 ms busy timeout. As with any SQLite reader,
+only the shared-memory index (`state.vscdb-shm`) is touched; the database and
+its `-wal` file are never written. A held lock is a transient error that the
+next cycle retries.
+
+Endpoint (response schema verified 2026-11-10, HTTP 200, on a free plan; the
+cursor.com dashboard reads the same one):
+
+```
+GET https://cursor.com/api/usage-summary
+Cookie: WorkosCursorSessionToken=<account id>%3A%3A<token>
+Accept: application/json
+```
+
+`sub` reads like `github|user_…`: the sign-in provider, then the account id.
+The cookie carries the account id (`user_…`), which is the form cursor.com
+sets in a browser; `%3A%3A` is a literal, already URL-encoded `::`. A request
+built from the editor's own token still awaits a live check: the token stored
+on the development machine expired 2026-09-29.
+
+```json
+{"billingCycleStart": "2026-10-28T20:49:51.046Z",
+ "billingCycleEnd":   "2026-11-28T20:49:51.046Z",
+ "membershipType": "free", "limitType": "user", "isUnlimited": false,
+ "autoModelSelectedDisplayMessage":  "You've used 0% of your included total usage",
+ "namedModelSelectedDisplayMessage": "You've used 0% of your included API usage",
+ "individualUsage": {
+   "plan": {"enabled": true, "used": 0, "limit": 0, "remaining": 0,
+            "breakdown": {"included": 0, "bonus": 0, "total": 0},
+            "autoPercentUsed": 0, "apiPercentUsed": 0, "totalPercentUsed": 0},
+   "onDemand": {"enabled": false, "used": 0, "limit": null, "remaining": null}},
+ "teamUsage": {}}
+```
+
+→ one metric per billing cycle: `individualUsage.plan.totalPercentUsed`
+(0–100; `used / limit` when the percentage is missing, both in cents), reset
+at `billingCycleEnd`, labelled with `membershipType` (`free` → `Free`, `pro`
+→ `Pro`). `isUnlimited: true` → an `Unlimited` row with no percentage and no
+reset, never a 0% bar. A disabled `individualUsage.plan`, malformed JSON or
+any other shape → "unrecognized usage schema". Not shown yet: the auto/API
+split (`autoPercentUsed` / `apiPercentUsed`; a spent API pool still leaves
+Auto working, so it cannot be a long window that takes over the headline)
+and on-demand spend. Team limits (`limitType: "team"`, `teamUsage`) are
+unverified.
+
+States: no `state.vscdb` (Cursor not installed) or no token (signed out) →
+`NotConfigured`, the row is hidden; a locked database → "state database busy,
+retrying"; a token past `exp` → "token expired", with no request sent (opening
+Cursor refreshes it); 401/403 → "token rejected"; any other status →
+"HTTP <code>". Every error keeps the last data greyed with its age.
 
 ## Removed providers and methods
 

@@ -5,10 +5,10 @@ code in this repository has the same author, and it stays that way: pull
 requests are not merged, however good they are.
 
 Why: AI Limits updates itself silently and reads the login tokens of Claude
-Code, Codex CLI, gh, Antigravity and the Grok CLI. Whatever it ships runs on
-people's machines with no review step on their side, so every line goes
-through one pair of hands. One author also keeps the code, the design and the
-licensing in one place.
+Code, Codex CLI, gh, Antigravity, the Grok CLI and Cursor. Whatever it ships
+runs on people's machines with no review step on their side, so every line
+goes through one pair of hands. One author also keeps the code, the design
+and the licensing in one place.
 
 ## What helps
 
