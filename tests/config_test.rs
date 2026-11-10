@@ -4,22 +4,39 @@ use ailimits::config::schema::{Config, DetailLevel, IndicatorKind, Layout, Palet
 
 #[test]
 fn default_config_has_expected_providers() {
-    // The default config contains all four providers, enabled, no keys.
+    // The default config contains all five providers, enabled, no keys.
     let config = Config::default();
-    assert_eq!(config.providers.len(), 4);
+    assert_eq!(config.providers.len(), 5);
     for p in &config.providers {
         assert!(p.enabled, "{} should be enabled by default", p.id);
         assert!(p.credential_label.is_empty());
     }
     let ids: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(ids, vec!["claude", "codex", "copilot", "antigravity"]);
+    assert_eq!(
+        ids,
+        vec!["claude", "codex", "copilot", "antigravity", "grok"]
+    );
+}
+
+#[test]
+fn every_default_provider_id_resolves() {
+    // A default id the provider enum does not know would be skipped at
+    // startup and shown as "?" in the menu.
+    use ailimits::providers::ProviderId;
+    for p in &Config::default().providers {
+        assert!(
+            ProviderId::from_config_id(&p.id).is_some(),
+            "unknown provider id {}",
+            p.id
+        );
+    }
 }
 
 #[test]
 fn empty_toml_parses_to_defaults() {
     // An empty TOML must not break parsing.
     let config: Config = toml::from_str("").expect("empty config should parse");
-    assert_eq!(config.providers.len(), 4);
+    assert_eq!(config.providers.len(), 5);
 }
 
 #[test]

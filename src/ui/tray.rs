@@ -1415,6 +1415,16 @@ mod tests {
                     data(ProviderId::Antigravity, 7),
                 ],
             ),
+            (
+                "icon_5.png",
+                vec![
+                    data(ProviderId::Claude, 93),
+                    data(ProviderId::Codex, 81),
+                    data(ProviderId::Copilot, 40),
+                    data(ProviderId::Antigravity, 7),
+                    data(ProviderId::Grok, 1),
+                ],
+            ),
         ] {
             let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).unwrap();
             pm.fill(tiny_skia::Color::TRANSPARENT);

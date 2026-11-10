@@ -14,6 +14,7 @@ use ailimits::config::{
     schema::{AuthMethod, Config},
     storage,
 };
+use ailimits::providers::grok::{self, GrokLogin};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 
@@ -64,7 +65,8 @@ fn print_usage() {
     println!("  ailimits-auth remove-usage-token <p>    remove the usage token");
     println!();
     println!("By default everything works through subscriptions, no keys needed:");
-    println!("  Claude — Claude Code token, Codex — Codex CLI token, Copilot — gh CLI token.");
+    println!("  Claude — Claude Code token, Codex — Codex CLI token, Copilot — gh CLI token,");
+    println!("  Antigravity — Antigravity CLI token, Grok — Grok CLI login.");
 }
 
 /// Key label for a provider.
@@ -179,6 +181,30 @@ fn status() -> Result<()> {
         "legacy Gemini CLI oauth_creds.json: {}",
         if gemini_creds.exists() { "OK" } else { "no" }
     );
+
+    // Grok CLI login: the same file and the same session rules as the
+    // provider. Only the expiry is shown, never the token.
+    let grok_auth = grok::auth_path();
+    match std::fs::read_to_string(&grok_auth) {
+        Ok(content) => match grok::parse_grok_auth(&content, Utc::now()) {
+            Ok(GrokLogin::Token { expires_at, .. }) => {
+                println!("Grok auth.json: OK");
+                if let Some(t) = expires_at {
+                    println!("  token valid until {} UTC", t.format("%Y-%m-%d %H:%M"));
+                }
+            }
+            Ok(GrokLogin::Expired) => {
+                println!("Grok auth.json: no (expired)");
+                println!("  → run grok, it refreshes the token automatically");
+            }
+            Ok(GrokLogin::Missing) => println!("Grok auth.json: no (no session — run grok login)"),
+            Err(_) => println!("Grok auth.json: no (unreadable)"),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("Grok auth.json: no (missing — run grok login)")
+        }
+        Err(_) => println!("Grok auth.json: no (unreadable)"),
+    }
 
     // Stored keys.
     println!();

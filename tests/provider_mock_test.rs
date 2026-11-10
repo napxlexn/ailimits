@@ -713,6 +713,237 @@ fn antigravity_quota_summary_ignores_an_unknown_shape() {
     assert!(parse_quota_summary(r#"{"foo": 1}"#).unwrap().is_empty());
 }
 
+// The billing body verified live 2026-11-10, after some Grok Build use.
+const GROK_BILLING_FULL: &str = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-11-09T23:01:28.407+00:00","end":"2026-11-16T23:01:28.407+00:00"},
+ "creditUsagePercent":1.0,
+ "productUsage":[{"product":"GrokBuild","usagePercent":1.0}],
+ "isUnifiedBillingUser":true,"prepaidBalance":{"val":0},"topUpMethod":"TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+ "billingPeriodStart":"2026-11-09T23:01:28.407+00:00","billingPeriodEnd":"2026-11-16T23:01:28.407+00:00"}}"#;
+
+#[test]
+fn grok_billing_full_body_parses_to_the_weekly_limit_and_its_products() {
+    use ailimits::providers::grok::parse_billing_credits;
+    use chrono::{TimeZone, Timelike};
+
+    let metrics = parse_billing_credits(GROK_BILLING_FULL).expect("should parse");
+    assert_eq!(metrics.len(), 2);
+
+    // The whole subscription limit leads: it is what every surface shows.
+    assert_eq!(metrics[0].label, "Weekly");
+    assert_eq!(metrics[0].used, 1);
+    assert_eq!(metrics[0].limit, Some(100));
+    assert_eq!(metrics[0].window, MetricWindow::Long);
+    let reset = metrics[0].reset_at.expect("currentPeriod.end is the reset");
+    assert_eq!(
+        reset.with_nanosecond(0),
+        Utc.with_ymd_and_hms(2026, 11, 16, 23, 1, 28).single()
+    );
+
+    // The per-product share rides along, compactly labelled.
+    assert_eq!(metrics[1].label, "Build");
+    assert_eq!(metrics[1].used, 1);
+    assert_eq!(metrics[1].window, MetricWindow::Long);
+    assert_eq!(metrics[1].reset_at, Some(reset));
+
+    let data = ProviderData {
+        id: ProviderId::Grok,
+        status: ProviderStatus::Ok,
+        metrics,
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    };
+    assert_eq!(
+        data.headline_metric().map(|m| m.label.as_str()),
+        Some("Weekly")
+    );
+}
+
+#[test]
+fn grok_billing_without_the_percent_fields_reads_zero_beside_a_valid_period() {
+    use ailimits::providers::grok::{billing_outcome, parse_billing_credits};
+
+    // Before any use: protobuf JSON leaves the zero percent and the empty
+    // product list out entirely (verified live 2026-11-10).
+    let body = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-11-09T23:01:28.407+00:00","end":"2026-11-16T23:01:28.407+00:00"},
+        "isUnifiedBillingUser":true,"prepaidBalance":{"val":0},
+        "billingPeriodStart":"2026-11-09T23:01:28.407+00:00","billingPeriodEnd":"2026-11-16T23:01:28.407+00:00"}}"#;
+    let metrics = parse_billing_credits(body).expect("should parse");
+    assert_eq!(metrics.len(), 1, "no products without a product list");
+    assert_eq!(metrics[0].label, "Weekly");
+    assert_eq!(metrics[0].used, 0);
+    assert!(metrics[0].reset_at.is_some());
+
+    let (status, metrics) = billing_outcome(200, body);
+    assert!(matches!(status, ProviderStatus::Ok));
+    assert_eq!(metrics[0].used, 0);
+}
+
+#[test]
+fn grok_billing_reset_falls_back_to_the_billing_period_end() {
+    use ailimits::providers::grok::parse_billing_credits;
+
+    let body = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY","start":"2026-11-09T23:01:28Z"},
+        "creditUsagePercent":42.4,"billingPeriodEnd":"2026-11-16T23:01:28Z"}}"#;
+    let metrics = parse_billing_credits(body).expect("should parse");
+    assert_eq!(metrics[0].used, 42);
+    assert_eq!(
+        metrics[0].reset_at.map(|t| t.to_rfc3339()).as_deref(),
+        Some("2026-11-16T23:01:28+00:00")
+    );
+}
+
+#[test]
+fn grok_billing_names_an_unknown_period_for_what_it_is() {
+    use ailimits::providers::grok::parse_billing_credits;
+
+    let body = r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_SOMETHING_NEW","end":"2026-11-16T23:01:28Z"},
+        "creditUsagePercent":250,"productUsage":[{"product":"Chat"},{"product":"GrokBuild","usagePercent":"bad"}]}}"#;
+    let metrics = parse_billing_credits(body).expect("should parse");
+    assert_eq!(metrics[0].label, "Limit");
+    assert_eq!(metrics[0].used, 100, "clamped to the scale");
+    // A product without a percent is an omitted zero; one with garbage is
+    // dropped rather than guessed.
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[1].label, "Chat");
+    assert_eq!(metrics[1].used, 0);
+}
+
+#[test]
+fn grok_billing_malformed_or_unknown_bodies_degrade_to_an_honest_error() {
+    use ailimits::providers::grok::{billing_outcome, parse_billing_credits};
+
+    // Not JSON at all (an HTML error page behind a 200).
+    assert!(parse_billing_credits("<html>oops</html>").is_err());
+    // The plain /v1/billing shape (monthly API spend) and other strangers:
+    // no period and no percent, so no number may be shown.
+    for body in [
+        r#"{"monthlyLimit":{"val":0},"used":{"val":0},"onDemandCap":{"val":0}}"#,
+        r#"{"config":{"monthlyLimit":{"val":0},"used":{"val":0}}}"#,
+        r#"{"config":{"currentPeriod":{"type":"USAGE_PERIOD_TYPE_WEEKLY"}}}"#,
+        r#"{"config":[]}"#,
+        r#"[]"#,
+    ] {
+        assert!(
+            parse_billing_credits(body).unwrap().is_empty(),
+            "{body} must not yield metrics"
+        );
+    }
+
+    for body in ["<html>oops</html>", r#"{"foo": 1}"#] {
+        let (status, metrics) = billing_outcome(200, body);
+        assert!(metrics.is_empty());
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized billing schema"),
+            "got {status:?}"
+        );
+    }
+}
+
+#[test]
+fn grok_billing_non_200_degrades_to_an_honest_error() {
+    use ailimits::providers::grok::billing_outcome;
+
+    for (code, want) in [
+        (401, "token rejected"),
+        (403, "token rejected"),
+        (429, "HTTP 429"),
+        (500, "HTTP 500"),
+        (302, "HTTP 302"),
+    ] {
+        // Even a body that would parse is ignored off a non-200.
+        let (status, metrics) = billing_outcome(code, GROK_BILLING_FULL);
+        assert!(metrics.is_empty(), "HTTP {code} must not yield metrics");
+        assert!(
+            matches!(&status, ProviderStatus::NetworkError(m) if m == want),
+            "HTTP {code}: got {status:?}"
+        );
+    }
+}
+
+#[test]
+fn grok_auth_picks_the_live_session_and_never_an_expired_one() {
+    use ailimits::providers::grok::{parse_grok_auth, GrokLogin};
+    use chrono::TimeZone;
+
+    let now = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
+    // The verified shape: sessions keyed "<issuer>::<client-id>".
+    let body = r#"{
+        "https://auth.x.ai::client-a": {"key": "tok-old", "refresh_token": "r1", "auth_mode": "oidc",
+            "expires_at": "2026-11-09T05:43:16.908847600Z", "oidc_issuer": "https://auth.x.ai"},
+        "https://auth.x.ai::client-b": {"key": "tok-live", "refresh_token": "r2", "auth_mode": "oidc",
+            "expires_at": "2026-11-10T05:43:16.908847600Z", "oidc_issuer": "https://auth.x.ai"},
+        "https://idp.example::client-c": {"key": "tok-undated", "auth_mode": "oidc"}
+    }"#;
+    match parse_grok_auth(body, now).expect("should parse") {
+        GrokLogin::Token { key, expires_at } => {
+            assert_eq!(key, "tok-live", "a stated, later expiry wins");
+            assert!(expires_at.is_some_and(|t| t > now));
+        }
+        other => panic!("expected a token, got {other:?}"),
+    }
+
+    // Every session lapsed: a login exists, so this is not "no login".
+    let expired =
+        r#"{"https://auth.x.ai::a": {"key": "tok-old", "expires_at": "2026-11-09T05:43:16Z"}}"#;
+    assert!(matches!(
+        parse_grok_auth(expired, now).unwrap(),
+        GrokLogin::Expired
+    ));
+
+    // A session with no stated expiry is left to the server to judge.
+    let undated = r#"{"https://auth.x.ai::a": {"key": "tok-undated"}}"#;
+    assert!(matches!(
+        parse_grok_auth(undated, now).unwrap(),
+        GrokLogin::Token {
+            expires_at: None,
+            ..
+        }
+    ));
+
+    // Signed out, or nothing that looks like a session.
+    for body in ["{}", r#"{"https://auth.x.ai::a": {"key": ""}}"#, "[]"] {
+        assert!(
+            matches!(parse_grok_auth(body, now).unwrap(), GrokLogin::Missing),
+            "{body} holds no session"
+        );
+    }
+
+    // Not JSON — an error the provider reports as an unreadable file.
+    assert!(parse_grok_auth("{\"half", now).is_err());
+}
+
+#[test]
+fn grok_auth_debug_print_never_shows_the_token() {
+    use ailimits::providers::grok::parse_grok_auth;
+
+    let body = r#"{"https://auth.x.ai::a": {"key": "tok-secret-value", "expires_at": "2099-01-01T00:00:00Z"}}"#;
+    let login = parse_grok_auth(body, Utc::now()).unwrap();
+    let printed = format!("{login:?}");
+    assert!(!printed.contains("tok-secret-value"), "{printed}");
+    assert!(printed.contains("Token"));
+}
+
+#[test]
+fn grok_stale_rows_point_at_the_grok_cli() {
+    use ailimits::ui::renderer::hover_reason;
+    use chrono::Duration;
+    use std::collections::HashMap;
+
+    let stale = ProviderData {
+        id: ProviderId::Grok,
+        status: ProviderStatus::Ok,
+        metrics: vec![window_metric("Weekly", 30, MetricWindow::Long)],
+        updated_at: Utc::now() - Duration::hours(7),
+        received_at: None,
+    };
+    let mut errors = HashMap::new();
+    errors.insert(ProviderId::Grok, "token expired".to_string());
+    assert_eq!(
+        hover_reason(&stale, &errors).as_deref(),
+        Some("token expired — run Grok CLI")
+    );
+}
+
 #[test]
 fn antigravity_models_quota_treats_a_missing_fraction_as_exhausted() {
     use ailimits::providers::antigravity::parse_available_models_quota;

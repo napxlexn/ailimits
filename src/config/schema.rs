@@ -93,6 +93,8 @@ fn default_providers() -> Vec<ProviderConfig> {
         // Antigravity (the Gemini successor) — keyring token first, then the
         // legacy Gemini CLI file.
         base("antigravity", true, AuthMethod::Subscription, "", 80),
+        // Grok — SuperGrok subscription via the Grok CLI's auth.json.
+        base("grok", true, AuthMethod::Subscription, "", 80),
     ]
 }
 

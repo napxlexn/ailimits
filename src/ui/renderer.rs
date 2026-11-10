@@ -1072,6 +1072,7 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         ProviderId::Codex => "run Codex CLI",
         ProviderId::Copilot => "check gh auth",
         ProviderId::Antigravity => "run Antigravity",
+        ProviderId::Grok => "run Grok CLI",
     };
     Some(format!("{cause} — {action}"))
 }
@@ -1222,6 +1223,22 @@ mod tests {
                 d.id = ProviderId::Codex;
                 d
             },
+            {
+                let mut d = data(vec![pct_metric("session", 44, MetricWindow::Session)]);
+                d.id = ProviderId::Copilot;
+                d
+            },
+            {
+                // The longest name: it sets the name column's width.
+                let mut d = data(vec![pct_metric("session", 61, MetricWindow::Session)]);
+                d.id = ProviderId::Antigravity;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 1, MetricWindow::Long)]);
+                d.id = ProviderId::Grok;
+                d
+            },
         ];
 
         let dir = std::env::temp_dir();
@@ -1291,6 +1308,11 @@ mod tests {
             {
                 let mut d = data(vec![pct_metric("session", 61, MetricWindow::Session)]);
                 d.id = ProviderId::Antigravity;
+                d
+            },
+            {
+                let mut d = data(vec![pct_metric("weekly", 1, MetricWindow::Long)]);
+                d.id = ProviderId::Grok;
                 d
             },
         ];

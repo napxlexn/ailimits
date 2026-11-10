@@ -4,6 +4,7 @@ pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
+pub mod grok;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -23,6 +24,8 @@ pub enum ProviderId {
     /// alias; new writes serialize as "antigravity".
     #[serde(alias = "gemini")]
     Antigravity,
+    /// xAI's Grok (the SuperGrok subscription, read through the Grok CLI).
+    Grok,
 }
 
 impl ProviderId {
@@ -32,6 +35,7 @@ impl ProviderId {
             ProviderId::Codex => "Codex",
             ProviderId::Copilot => "Copilot",
             ProviderId::Antigravity => "Antigravity",
+            ProviderId::Grok => "Grok",
         }
     }
 
@@ -44,6 +48,7 @@ impl ProviderId {
             // "gemini" is the legacy config id, migrated on load; accepted
             // here so nothing breaks mid-migration.
             "antigravity" | "gemini" => Some(ProviderId::Antigravity),
+            "grok" => Some(ProviderId::Grok),
             _ => None,
         }
     }
