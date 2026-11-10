@@ -159,6 +159,11 @@ CLI-керований refresh — це `gh auth token` у Copilot. Для об�
    коли `token.expiry` в минулому).
 2. **Legacy Gemini CLI** — `~/.gemini/oauth_creds.json` → `access_token`
    (READ-ONLY; пропускається, коли `expiry_date` в минулому).
+3. Токен є, але всі прострочені → `NetworkError("token expired")`: останні
+   дані лишаються, сірі, з давністю, доки Antigravity не оновить токен.
+   Облікові дані, які не вдається прочитати →
+   `NetworkError("credentials unreadable")`. Токена немає ніде →
+   `NotConfigured` (рядок ховається).
 
 Станом на 18 червня 2026 року Google припинив обслуговувати запити Gemini CLI
 і IDE-розширень Gemini Code Assist для Gemini Code Assist for individuals,

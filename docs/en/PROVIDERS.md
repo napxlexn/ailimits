@@ -160,6 +160,11 @@ Token sources, in order:
    `token.expiry` is in the past).
 2. **Legacy Gemini CLI** — `~/.gemini/oauth_creds.json` → `access_token`
    (READ-ONLY; skipped when `expiry_date` is in the past).
+3. A token exists but every one is expired → `NetworkError("token expired")`:
+   the last data stays, greyed with its age, until Antigravity refreshes the
+   token. A credential that cannot be read →
+   `NetworkError("credentials unreadable")`. No token anywhere →
+   `NotConfigured` (the row is hidden).
 
 As of June 18, 2026, Google stopped serving Gemini CLI and Gemini Code Assist
 IDE-extension requests for Gemini Code Assist for individuals, Google AI Pro,

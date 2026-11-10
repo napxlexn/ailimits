@@ -277,26 +277,120 @@ fn copilot_zero_entitlement_quota_does_not_become_primary_metric() {
 
 #[test]
 fn antigravity_keyring_token_parses_to_access_token() {
-    use ailimits::providers::antigravity::parse_antigravity_keyring_token;
+    use ailimits::providers::antigravity::{parse_antigravity_keyring_token, AntigravityLogin};
 
     let body = r#"{"token":{"access_token":"tok-live","token_type":"Bearer","refresh_token":"refresh","expiry":"2099-07-09T16:05:44.2342031+02:00"},"auth_method":"consumer"}"#;
 
-    assert_eq!(
-        parse_antigravity_keyring_token(body).expect("should parse"),
-        Some("tok-live".to_string())
-    );
+    match parse_antigravity_keyring_token(body).expect("should parse") {
+        AntigravityLogin::Token(token) => assert_eq!(token, "tok-live"),
+        other => panic!("expected a token, got {other:?}"),
+    }
 }
 
 #[test]
-fn antigravity_keyring_token_skips_expired_token() {
-    use ailimits::providers::antigravity::parse_antigravity_keyring_token;
+fn antigravity_keyring_token_reports_an_expired_token_as_expired() {
+    use ailimits::providers::antigravity::{parse_antigravity_keyring_token, AntigravityLogin};
 
+    // The token is never sent, but a login exists: the row must keep its
+    // last data (greyed, "token expired"), not vanish as "not set up".
     let body = r#"{"token":{"access_token":"tok-expired","token_type":"Bearer","refresh_token":"refresh","expiry":"2000-07-09T16:05:44.2342031+02:00"},"auth_method":"consumer"}"#;
-
-    assert_eq!(
+    assert!(matches!(
         parse_antigravity_keyring_token(body).expect("should parse"),
-        None
+        AntigravityLogin::Expired
+    ));
+
+    // No readable expiry: not sent either.
+    let undated = r#"{"token":{"access_token":"tok-undated"}}"#;
+    assert!(matches!(
+        parse_antigravity_keyring_token(undated).unwrap(),
+        AntigravityLogin::Expired
+    ));
+
+    // Nothing that looks like a session.
+    for body in [
+        r#"{"auth_method":"consumer"}"#,
+        r#"{"token":{"access_token":""}}"#,
+    ] {
+        assert!(
+            matches!(
+                parse_antigravity_keyring_token(body).unwrap(),
+                AntigravityLogin::Missing
+            ),
+            "{body} holds no session"
+        );
+    }
+}
+
+#[test]
+fn antigravity_legacy_gemini_creds_classify_like_the_keyring() {
+    use ailimits::providers::antigravity::{parse_gemini_oauth_creds, AntigravityLogin};
+    use chrono::TimeZone;
+
+    let now = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
+    let live = r#"{"access_token":"tok-live","expiry_date":4102444800000}"#;
+    assert!(matches!(
+        parse_gemini_oauth_creds(live, now).unwrap(),
+        AntigravityLogin::Token(ref t) if t == "tok-live"
+    ));
+    let expired = r#"{"access_token":"tok-old","expiry_date":1759104000000}"#;
+    assert!(matches!(
+        parse_gemini_oauth_creds(expired, now).unwrap(),
+        AntigravityLogin::Expired
+    ));
+    assert!(matches!(
+        parse_gemini_oauth_creds(r#"{"refresh_token":"r"}"#, now).unwrap(),
+        AntigravityLogin::Missing
+    ));
+    assert!(parse_gemini_oauth_creds("{\"half", now).is_err());
+}
+
+#[test]
+fn antigravity_logins_combine_to_the_most_telling_state() {
+    use ailimits::providers::antigravity::{combine_logins, AntigravityLogin};
+    use AntigravityLogin::{Expired, Missing, Token};
+
+    let unreadable = || Err(anyhow::anyhow!("unreadable"));
+    let token = || Ok(Token("tok".to_string()));
+
+    // A usable token from either source wins.
+    assert!(matches!(combine_logins(token(), Ok(Expired)), Ok(Token(_))));
+    assert!(matches!(combine_logins(Ok(Expired), token()), Ok(Token(_))));
+    assert!(matches!(
+        combine_logins(unreadable(), token()),
+        Ok(Token(_))
+    ));
+    // An expired login is not a missing one, whichever source holds it.
+    assert!(matches!(
+        combine_logins(Ok(Expired), Ok(Missing)),
+        Ok(Expired)
+    ));
+    assert!(matches!(
+        combine_logins(Ok(Missing), Ok(Expired)),
+        Ok(Expired)
+    ));
+    assert!(matches!(
+        combine_logins(unreadable(), Ok(Expired)),
+        Ok(Expired)
+    ));
+    // An unreadable source alone is an error, never "not set up".
+    assert!(combine_logins(unreadable(), Ok(Missing)).is_err());
+    assert!(combine_logins(Ok(Missing), unreadable()).is_err());
+    // Neither source: the row stays hidden.
+    assert!(matches!(
+        combine_logins(Ok(Missing), Ok(Missing)),
+        Ok(Missing)
+    ));
+}
+
+#[test]
+fn antigravity_login_debug_print_never_shows_the_token() {
+    use ailimits::providers::antigravity::AntigravityLogin;
+
+    let printed = format!(
+        "{:?}",
+        AntigravityLogin::Token("tok-secret-value".to_string())
     );
+    assert!(!printed.contains("tok-secret-value"), "{printed}");
 }
 
 #[test]

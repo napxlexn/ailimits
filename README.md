@@ -194,7 +194,7 @@ polling. While Claude Code is running, a Claude refresh can take 2 to 3
 minutes even on the 1-minute interval. The rejected cycle retries a minute
 later. Other providers are unaffected.
 
-An expired Claude, Codex, Grok or Cursor token does not produce wrong numbers.
+An expired Claude, Codex, Antigravity, Grok or Cursor token does not produce wrong numbers.
 The last value stays greyed with its age, a window that has provably reset
 shows `≈0%`, and the reset countdown keeps running locally. If you use the CLIs daily, the
 data is live nearly all the time.

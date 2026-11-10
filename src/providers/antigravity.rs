@@ -51,6 +51,29 @@ enum QuotaOutcome {
     TokenRejected,
 }
 
+/// What the Antigravity token sources hold for the widget.
+pub enum AntigravityLogin {
+    /// No token anywhere: Antigravity (or the Gemini CLI) was never signed
+    /// in here, or was signed out.
+    Missing,
+    /// A token exists, but none is usable: every one is past its expiry (or
+    /// states none). Only Antigravity may refresh it, so the widget waits.
+    Expired,
+    /// A usable access token.
+    Token(String),
+}
+
+// Written by hand so that no debug print can ever carry the token.
+impl std::fmt::Debug for AntigravityLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AntigravityLogin::Missing => f.write_str("Missing"),
+            AntigravityLogin::Expired => f.write_str("Expired"),
+            AntigravityLogin::Token(_) => f.write_str("Token(..)"),
+        }
+    }
+}
+
 /// Outcome of resolving the Code Assist project id.
 enum ProjectResolution {
     /// Resolved project id (from cache or a fresh loadCodeAssist call).
@@ -204,12 +227,28 @@ impl AntigravityProvider {
     }
 
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        let token = match read_antigravity_token().await {
-            Ok(Some(t)) => t,
-            Ok(None) => return Ok(self.data(ProviderStatus::NotConfigured, vec![])),
-            Err(e) => {
-                warn!("antigravity credential read error: {e}");
+        let token = match read_antigravity_login().await {
+            Ok(AntigravityLogin::Token(t)) => t,
+            // Never signed in here — the row stays hidden.
+            Ok(AntigravityLogin::Missing) => {
                 return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+            }
+            // A login that has lapsed is an honest error, not a missing one:
+            // app.rs keeps the last real data on screen, greyed with its age.
+            Ok(AntigravityLogin::Expired) => {
+                return Ok(self.data(
+                    ProviderStatus::NetworkError("token expired".to_string()),
+                    vec![],
+                ));
+            }
+            // A credential that exists but cannot be read: honest, never
+            // "not set up". The message never quotes the secret.
+            Err(e) => {
+                warn!("antigravity credentials unreadable: {e}");
+                return Ok(self.data(
+                    ProviderStatus::NetworkError("credentials unreadable".to_string()),
+                    vec![],
+                ));
             }
         };
 
@@ -278,49 +317,71 @@ impl Provider for AntigravityProvider {
     }
 }
 
-/// Read the Antigravity or legacy Gemini CLI access token; Ok(None) if
-/// missing or expired.
-async fn read_antigravity_token() -> Result<Option<String>> {
-    match read_antigravity_keyring_token() {
-        Ok(Some(token)) => return Ok(Some(token)),
-        Ok(None) => {}
-        Err(e) => warn!("gemini antigravity keyring read error: {e}"),
+/// Read the Antigravity login: the keyring first, then the legacy Gemini CLI
+/// file (only read when the keyring holds no usable token).
+async fn read_antigravity_login() -> Result<AntigravityLogin> {
+    let keyring = read_antigravity_keyring_login();
+    if let Ok(AntigravityLogin::Token(token)) = keyring {
+        return Ok(AntigravityLogin::Token(token));
     }
-
-    read_legacy_gemini_cli_token().await
+    combine_logins(keyring, read_legacy_gemini_login().await)
 }
 
-/// Read the legacy Gemini CLI access token.
-async fn read_legacy_gemini_cli_token() -> Result<Option<String>> {
+/// One login from the two sources. A usable token wins; otherwise an expired
+/// one says the account was signed in here (an honest "token expired", the
+/// last data kept); an unreadable source is an error unless the other one
+/// says more; only with neither is the login missing.
+pub fn combine_logins(
+    keyring: Result<AntigravityLogin>,
+    legacy: Result<AntigravityLogin>,
+) -> Result<AntigravityLogin> {
+    use AntigravityLogin::{Expired, Missing, Token};
+    match (keyring, legacy) {
+        (Ok(Token(token)), _) | (_, Ok(Token(token))) => Ok(Token(token)),
+        (Ok(Expired), _) | (_, Ok(Expired)) => Ok(Expired),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Ok(Missing), Ok(Missing)) => Ok(Missing),
+    }
+}
+
+/// Read the legacy Gemini CLI login. A missing file is `Missing`.
+async fn read_legacy_gemini_login() -> Result<AntigravityLogin> {
     let path = dirs::home_dir()
         .unwrap_or_default()
         .join(".gemini")
         .join("oauth_creds.json");
     if !path.exists() {
-        return Ok(None);
+        return Ok(AntigravityLogin::Missing);
     }
     let content = tokio::fs::read_to_string(&path).await?;
-    let value: serde_json::Value = serde_json::from_str(&content)?;
+    parse_gemini_oauth_creds(&content, Utc::now())
+}
 
+/// Parse the legacy Gemini CLI `oauth_creds.json`:
+/// {"access_token": "...", "expiry_date": <ms epoch>, ...}.
+pub fn parse_gemini_oauth_creds(body: &str, now: DateTime<Utc>) -> Result<AntigravityLogin> {
+    let value: serde_json::Value = serde_json::from_str(body)?;
+    let Some(token) = value
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(AntigravityLogin::Missing);
+    };
     let expiry_ms = value
         .get("expiry_date")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
-    if expiry_ms <= Utc::now().timestamp_millis() {
-        return Ok(None);
+    if expiry_ms <= now.timestamp_millis() {
+        return Ok(AntigravityLogin::Expired);
     }
-
-    Ok(value
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string()))
+    Ok(AntigravityLogin::Token(token.to_string()))
 }
 
-/// Read Antigravity's keyring token if present.
-fn read_antigravity_keyring_token() -> Result<Option<String>> {
+/// Read Antigravity's keyring login. No secret is `Missing`.
+fn read_antigravity_keyring_login() -> Result<AntigravityLogin> {
     let Some(secret) = read_antigravity_keyring_secret()? else {
-        return Ok(None);
+        return Ok(AntigravityLogin::Missing);
     };
     parse_antigravity_keyring_token(&secret)
 }
@@ -379,17 +440,29 @@ fn read_antigravity_keyring_secret() -> Result<Option<String>> {
 /// duplicate the platform read.
 pub fn keyring_token_present() -> bool {
     match read_antigravity_keyring_secret() {
-        Ok(Some(secret)) => matches!(parse_antigravity_keyring_token(&secret), Ok(Some(_))),
+        Ok(Some(secret)) => matches!(
+            parse_antigravity_keyring_token(&secret),
+            Ok(AntigravityLogin::Token(_))
+        ),
         _ => false,
     }
 }
 
-/// Parse Antigravity keyring JSON into an access token.
-pub fn parse_antigravity_keyring_token(body: &str) -> Result<Option<String>> {
+/// Parse Antigravity keyring JSON into a login:
+/// {"token": {"access_token": "...", "expiry": "RFC3339", ...}, ...}.
+/// A token past its expiry, or with none the parser can read, is `Expired`:
+/// it is never sent.
+pub fn parse_antigravity_keyring_token(body: &str) -> Result<AntigravityLogin> {
     let value: serde_json::Value = serde_json::from_str(body)?;
-    let token = match value.get("token").and_then(|v| v.as_object()) {
-        Some(token) => token,
-        None => return Ok(None),
+    let Some(token) = value.get("token").and_then(|v| v.as_object()) else {
+        return Ok(AntigravityLogin::Missing);
+    };
+    let Some(access_token) = token
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(AntigravityLogin::Missing);
     };
 
     let expires_at = token
@@ -397,16 +470,10 @@ pub fn parse_antigravity_keyring_token(body: &str) -> Result<Option<String>> {
         .and_then(|v| v.as_str())
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc));
-    match expires_at {
-        Some(expiry) if expiry > Utc::now() => {}
-        _ => return Ok(None),
-    }
-
-    Ok(token
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string()))
+    Ok(match expires_at {
+        Some(expiry) if expiry > Utc::now() => AntigravityLogin::Token(access_token.to_string()),
+        _ => AntigravityLogin::Expired,
+    })
 }
 
 /// Parse the retrieveUserQuotaSummary response. Verified live 2026-08-01:
