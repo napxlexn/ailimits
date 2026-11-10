@@ -15,7 +15,7 @@
 
 Маленький нативний floating-віджет для Windows 11, що показує ліміти
 використання AI-провайдерів прямо на робочому столі: **Claude**,
-**OpenAI Codex**, **GitHub Copilot**, **Google Antigravity**.
+**OpenAI Codex**, **GitHub Copilot**, **Google Antigravity**, **xAI Grok**.
 
 <p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Відкрити сайт" src="https://img.shields.io/badge/ВІДКРИТИ%20САЙТ-0078d4?style=for-the-badge"></a></p>
 
@@ -55,7 +55,7 @@
 </td>
 <td width="50%" align="center" valign="top">
   <img src="docs/images/widget-providers.gif" height="230" alt="Віджет росте від одного рядка провайдера до чотирьох і назад">
-  <br><sub>Розмір картки залежить від того, скільки провайдерів увімкнено: від одного до чотирьох.</sub>
+  <br><sub>Розмір картки залежить від того, скільки провайдерів увімкнено: від одного до п'яти.</sub>
 </td>
 </tr>
 <tr>
@@ -134,8 +134,8 @@ winget install --id 9P2B0J1VWPWH --source msstore
 ## Швидкий старт
 
 1. **Запусти.** При першому старті він тихо знаходить CLI, якими ти вже
-   користуєшся (Claude Code, Codex, `gh`, Antigravity CLI і ще підтримані
-   сеанси Gemini CLI), і одразу показує ліміти. Без логіну й
+   користуєшся (Claude Code, Codex, `gh`, Antigravity CLI, ще підтримані
+   сеанси Gemini CLI і Grok CLI), і одразу показує ліміти. Без логіну й
    налаштувань.
 2. **Постав на місце.** Тягни лівою кнопкою; **Shift** під час перетягування
    магнітить до найближчого краю екрана; `Lock position` (ПКМ) фіксує.
@@ -163,6 +163,7 @@ winget install --id 9P2B0J1VWPWH --source msstore
 | Codex | `%USERPROFILE%\.codex\auth.json` (токен Codex CLI) | один раз `codex login` |
 | Copilot | `gh auth token` (GitHub CLI) | один раз `gh auth login` |
 | Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | запустити Antigravity CLI хоч раз або мати ще підтриманий Gemini CLI flow |
+| Grok | `%USERPROFILE%\.grok\auth.json` (логін Grok CLI; `GROK_HOME` враховується) | один раз запустити `grok` і залогінитись (підписка SuperGrok) |
 
 Це короткоживучі **OAuth access tokens**; CLI-власник оновлює їх щоразу,
 коли ти ним користуєшся. Віджет ніколи не оновлює їх сам, бо OAuth-refresh
@@ -176,6 +177,7 @@ winget install --id 9P2B0J1VWPWH --source msstore
 | **Codex** | поки активно користуєшся Codex CLI (його токен коротший) | останнє значення сірим, із давністю |
 | **Copilot** | Нескінченно. gh тримає токен свіжим, поки ти залогінений. | |
 | **Antigravity** | поки Antigravity CLI оновлює keyring token або підтриманий Gemini CLI flow оновлює `oauth_creds.json` | останнє значення сірим, із давністю |
+| **Grok** | до ~6 годин після останнього сеансу в Grok CLI (реальний час життя токена) | останнє значення сірим, із давністю |
 
 Google припинив обслуговувати Gemini CLI для individual, Google AI Pro і
 Google AI Ultra користувачів 18 червня 2026 року. Шлях міграції для них це
@@ -189,7 +191,7 @@ Antigravity CLI; віджет читає token Antigravity із Windows Credenti
 інтервалі. Невдалий цикл повторюється за хвилину; решти провайдерів це не
 стосується.
 
-Протухлий токен Claude/Codex ніколи не означає неправильних цифр: останнє
+Протухлий токен Claude/Codex/Grok ніколи не означає неправильних цифр: останнє
 значення лишається сірим із давністю, гарантовано скинуте вікно показує
 `≈0%`, а відлік до скидання тікає локально. Якщо користуєшся CLI щодня, живі
 дані будуть майже весь час.
@@ -205,6 +207,7 @@ Antigravity CLI; віджет читає token Antigravity із Windows Credenti
 | **Claude** | API ключ | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | Ні. Це ліміти твого API-акаунта, а не підписки Pro чи Max. |
 | **Codex** | Немає | Окремого стабільного токена не існує. Usage-токен це той самий короткоживучий OAuth. | |
 | **Antigravity** | Немає | Квота прив'язана до OAuth-токена, який оновлює Antigravity CLI, і окремого ключа з тими самими цифрами не існує. | |
+| **Grok** | Немає | Тижневий ліміт SuperGrok читається з власним логіном Grok CLI. API-ключ xAI показує витрати API, а не цей ліміт. | |
 
 **Два способи додати облікові дані:**
 

@@ -9,7 +9,8 @@ main.rs ── захист від другого екземпляра, логу
    │
 app.rs ─── володіє всім: конфіг, дані, вікно, меню
    ├── monitor/scheduler.rs   tokio-задача: цикл fetch_all → sleep(interval)
-   │     └── providers/       claude.rs / codex.rs / copilot.rs / antigravity.rs
+   │     └── providers/       claude.rs / codex.rs / copilot.rs / antigravity.rs /
+   │                          grok.rs
    ├── ui/renderer.rs         малювання tiny-skia (ЄДИНЕ місце, що малює)
    ├── ui/layout.rs           прямокутники зон за лейаутом/деталізацією
    ├── ui/theme.rs            всі кольори (ЄДИНЕ джерело кольорів)

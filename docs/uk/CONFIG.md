@@ -94,8 +94,10 @@ column_flow = "row"
 show_forecast = false
 
 [[providers]]
-# Ідентифікатор: claude / codex / copilot / antigravity ("gemini" —
+# Ідентифікатор: claude / codex / copilot / antigravity / grok ("gemini" —
 # застарілий id, перейменовується на "antigravity" при завантаженні).
+# Провайдер за замовчуванням, якого бракує у старому конфігу, додається
+# при завантаженні, увімкненим.
 id = "claude"
 enabled = true
 # Метод: "subscription" (дефолт) або "api_key" — вибір має лише Claude.
@@ -119,6 +121,12 @@ alert_threshold = 85
 
 [[providers]]
 id = "antigravity"
+enabled = true
+auth_method = "subscription"
+alert_threshold = 80
+
+[[providers]]
+id = "grok"
 enabled = true
 auth_method = "subscription"
 alert_threshold = 80

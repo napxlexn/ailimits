@@ -131,6 +131,7 @@ CLI-токени — короткоживучі OAuth access tokens; CLI-вла�
 | Codex | короткоживучий, оновлює Codex CLI при кожному запуску | лише поки Codex CLI активно використовується |
 | Copilot | gh сам керує своїм токеном | нескінченно, поки залогінений у gh |
 | Antigravity | keyring token, потім legacy token Gemini CLI | лише поки одне з цих джерел оновлюється, далі fallback/сірий |
+| Grok | ~6 год access token (звірено), оновлює Grok CLI при використанні | до ~6 год після останнього сеансу Grok CLI, далі fallback/сірий |
 
 Команди штибу `gh auth token` («вивести/оновити токен») у Codex чи Claude
 CLI **немає** (звірено з офіційною auth-докою OpenAI Codex). Єдиний
@@ -204,6 +205,83 @@ rejected". Парсери обходять JSON толерантно, тож з�
 чесної помилки. Хости (`cloudcode-pa` / `daily-` близнюк) нестабільні —
 окремі запити регулярно таймаутяться; це покривають звичайні
 retry/retention віджета.
+
+## Grok (підписка SuperGrok)
+
+Джерело токена: **логін Grok CLI**, `auth.json` у домашній теці CLI —
+`%GROK_HOME%\auth.json`, коли задано `GROK_HOME`, інакше
+`%USERPROFILE%\.grok\auth.json` (правило самого CLI). READ-ONLY: CLI оновлює
+свій токен щоразу, коли запускається; віджет цього не робить ніколи і не
+запускає CLI, щоб це зробити.
+
+Форма файлу (звірено 2026-11-10): об'єкт із ключами `"<issuer>::<client-id>"`,
+кожне значення — запис сесії:
+
+```json
+{"https://auth.x.ai::...": {"key": "...", "refresh_token": "...",
+  "expires_at": "RFC3339", "auth_mode": "oidc",
+  "user_id": "...", "email": "...", "team_id": "...",
+  "oidc_issuer": "https://auth.x.ai", "oidc_client_id": "..."}}
+```
+
+`key` — це access token (JWT, живе близько 6 годин). Сесії, у яких
+`expires_at` минув, пропускаються; з решти береться та, що дійсна найдовше,
+а сесія без указаного терміну йде останньою (її судить сервер). Далі:
+
+1. Придатна сесія → один billing-запит (нижче).
+2. Сесії є, але всі прострочені → `NetworkError("token expired")`; останні
+   реальні дані лишаються на екрані, сірі, з давністю, а hover додає
+   "run Grok CLI".
+3. Немає файлу або сесії в ньому → `NotConfigured` (рядок ховається).
+4. Файл не парситься → `NetworkError("auth.json unreadable")`; наступного
+   циклу він читається знову.
+
+Endpoint (звірено 2026-11-10, HTTP 200; власний billing-виклик CLI):
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <key>
+x-xai-token-auth: xai-grok-cli
+Accept: application/json
+```
+
+```json
+{"config": {
+   "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY",
+                     "start": "2026-11-09T23:01:28.407+00:00",
+                     "end":   "2026-11-16T23:01:28.407+00:00"},
+   "creditUsagePercent": 1.0,
+   "productUsage": [{"product": "GrokBuild", "usagePercent": 1.0}],
+   "isUnifiedBillingUser": true, "prepaidBalance": {"val": 0},
+   "topUpMethod": "TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+   "billingPeriodStart": "2026-11-09T23:01:28.407+00:00",
+   "billingPeriodEnd":   "2026-11-16T23:01:28.407+00:00"}}
+```
+
+→ одна long-window метрика `Weekly` = `creditUsagePercent` (0–100),
+скидання = `currentPeriod.end` (fallback `billingPeriodEnd`). Це той самий
+"Weekly SuperGrok Limit", що показує сторінка Usage на grok.com. Тип періоду,
+відмінний від тижневого, підписується `Daily` / `Monthly`, а невідомий —
+`Limit`. Кожен запис `productUsage` іде слідом окремою long-window метрикою:
+частка цього продукту в тому самому ліміті (`GrokBuild` → `Build`; інші назви,
+як-от Chat, лишаються як є). Віджет поки не малює продукти; вони зберігаються
+в даних для майбутнього вигляду по продуктах.
+
+Тіло — protobuf JSON, який пропускає нульові значення: до будь-якого
+використання той самий виклик відповідав без `creditUsagePercent` і без
+`productUsage` взагалі. Тож 200 з коректним `currentPeriod` і без відсотка —
+це 0%, і лише тоді; тіло без жодного з них — незнайома схема. Незнайома
+схема, тіло не в JSON або будь-який статус ≠ 200 — чесний `NetworkError`:
+`unrecognized billing schema`, `token rejected` (401/403) або `HTTP <code>`.
+
+Не плутати з:
+
+- простим `/v1/billing` (без `format`): він віддає місячні on-demand витрати
+  API (`monthlyLimit`, `used`, `onDemandCap`), а не ліміт підписки;
+- HTTP 429 з `subscription:free-usage-exhausted`, який отримує акаунт без
+  SuperGrok: це відповідь chat API самого CLI, а не цього виклику. Що
+  billing-виклик відповідає такому акаунту, не звірено; хай що це буде,
+  статус ≠ 200 деградує чесно.
 
 ## Видалені провайдери і методи
 

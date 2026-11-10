@@ -15,7 +15,7 @@
 
 A tiny native Windows 11 floating overlay that shows your AI provider usage
 limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
-**Google Antigravity**.
+**Google Antigravity**, **xAI Grok**.
 
 <p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Open the website" src="https://img.shields.io/badge/OPEN%20THE%20WEBSITE-0078d4?style=for-the-badge"></a></p>
 
@@ -55,7 +55,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 </td>
 <td width="50%" align="center" valign="top">
   <img src="docs/images/widget-providers.gif" height="230" alt="The widget growing from a single provider row to four and back">
-  <br><sub>The card is sized to the providers you enabled, one to four.</sub>
+  <br><sub>The card is sized to the providers you enabled, one to five.</sub>
 </td>
 </tr>
 <tr>
@@ -133,8 +133,9 @@ the auth sources listed below.
 ## Quick start
 
 1. **Run it.** On first launch it finds the CLIs you already use (Claude Code,
-   Codex, `gh`, Antigravity CLI, and still-supported Gemini CLI sessions) and
-   starts showing usage. Nothing to log into, nothing to configure.
+   Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions, and the
+   Grok CLI) and starts showing usage. Nothing to log into, nothing to
+   configure.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
    snap to the nearest screen edge. `Lock position` in the right-click menu
    pins it.
@@ -162,6 +163,7 @@ read-only:
 | Codex | `%USERPROFILE%\.codex\auth.json` (Codex CLI token) | run `codex login` once |
 | Copilot | `gh auth token` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | run Antigravity CLI once, or use a still-supported Gemini CLI flow |
+| Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; `GROK_HOME` is honoured) | run `grok` and sign in once (a SuperGrok subscription) |
 
 These are short-lived OAuth access tokens. The CLI that owns each one
 refreshes it whenever you use that CLI. The widget never refreshes a token
@@ -175,6 +177,7 @@ itself, because an OAuth refresh rotates it and would log the CLI out.
 | **Codex** | while you actively use Codex CLI (its token is shorter-lived) | the last value greyed, with its age |
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
 | **Antigravity** | while Antigravity CLI refreshes its keyring token, or a supported Gemini CLI flow refreshes `oauth_creds.json` | the last value greyed, with its age |
+| **Grok** | up to ~6 hours after your last Grok CLI session (the token's real lifetime) | the last value greyed, with its age |
 
 Google stopped serving Gemini CLI requests for individual, Google AI Pro, and
 Google AI Ultra users on June 18, 2026. Those users are expected to migrate to
@@ -188,7 +191,7 @@ polling. While Claude Code is running, a Claude refresh can take 2 to 3
 minutes even on the 1-minute interval. The rejected cycle retries a minute
 later. Other providers are unaffected.
 
-An expired Claude or Codex token does not produce wrong numbers. The last
+An expired Claude, Codex or Grok token does not produce wrong numbers. The last
 value stays greyed with its age, a window that has provably reset shows `≈0%`,
 and the reset countdown keeps running locally. If you use the CLIs daily, the
 data is live nearly all the time.
@@ -204,6 +207,7 @@ depend on CLI activity. What each option actually gives you:
 | **Claude** | API key | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | No. It shows your API account rate limits, not your Pro or Max subscription usage. |
 | **Codex** | None | No separate stable token exists. The usage token is the same short-lived OAuth token. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
+| **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login. An xAI API key reports API spend, not that limit. | |
 
 **Two ways to add a credential:**
 

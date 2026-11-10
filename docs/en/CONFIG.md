@@ -89,8 +89,9 @@ column_flow = "row"
 show_forecast = false
 
 [[providers]]
-# Identifier: claude / codex / copilot / antigravity ("gemini" is a legacy
-# id, renamed to "antigravity" on load).
+# Identifier: claude / codex / copilot / antigravity / grok ("gemini" is a
+# legacy id, renamed to "antigravity" on load). A default provider missing
+# from an older config is appended on load, enabled.
 id = "claude"
 enabled = true
 # Method: "subscription" (default) or "api_key" — only Claude has a choice.
@@ -114,6 +115,12 @@ alert_threshold = 85
 
 [[providers]]
 id = "antigravity"
+enabled = true
+auth_method = "subscription"
+alert_threshold = 80
+
+[[providers]]
+id = "grok"
 enabled = true
 auth_method = "subscription"
 alert_threshold = 80

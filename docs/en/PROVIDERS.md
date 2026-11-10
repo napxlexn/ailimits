@@ -131,6 +131,7 @@ client's refresh invalidated the others). Consequences:
 | Codex | short-lived, refreshed by Codex CLI on each run | only while Codex CLI is in active use |
 | Copilot | gh manages its own token | indefinite while logged into gh |
 | Antigravity | keyring token, then the legacy Gemini CLI token | only while one of those sources is refreshed, then fallback/grey |
+| Grok | ~6h access token (verified), refreshed by the Grok CLI on use | up to ~6h after the last Grok CLI session, then fallback/grey |
 
 There is no `gh auth token`-style "print/refresh the token" command for the
 Codex or Claude CLIs (verified against the OpenAI Codex auth docs). The only
@@ -200,6 +201,83 @@ used % = `(1 - remainingFraction) * 100`; the epoch placeholder
 degrades to an honest error. The hosts (`cloudcode-pa` / `daily-` twin) are
 flaky — individual requests time out routinely; the widget's normal
 retry/retention covers that.
+
+## Grok (SuperGrok subscription)
+
+Token source: the **Grok CLI login**, `auth.json` in the CLI's home —
+`%GROK_HOME%\auth.json` when `GROK_HOME` is set, otherwise
+`%USERPROFILE%\.grok\auth.json` (the CLI's own rule). READ-ONLY: the CLI
+refreshes its token whenever it runs; the widget never does, and never starts
+the CLI to make it.
+
+File shape (verified 2026-11-10): an object keyed `"<issuer>::<client-id>"`,
+each value a session record:
+
+```json
+{"https://auth.x.ai::...": {"key": "...", "refresh_token": "...",
+  "expires_at": "RFC3339", "auth_mode": "oidc",
+  "user_id": "...", "email": "...", "team_id": "...",
+  "oidc_issuer": "https://auth.x.ai", "oidc_client_id": "..."}}
+```
+
+`key` is the access token (a JWT that lives about 6 hours). Sessions past
+`expires_at` are skipped; of the rest the one valid longest is used, and a
+session with no stated expiry comes last (the server judges it). Then:
+
+1. A usable session → one billing request (below).
+2. Sessions exist, but all have expired → `NetworkError("token expired")`;
+   the last real data stays on screen, greyed with its age, and the hover
+   adds "run Grok CLI".
+3. No file, or no session in it → `NotConfigured` (the row is hidden).
+4. A file that does not parse → `NetworkError("auth.json unreadable")`; it
+   is read again on the next cycle.
+
+Endpoint (verified 2026-11-10, HTTP 200; the CLI's own billing call):
+
+```
+GET https://cli-chat-proxy.grok.com/v1/billing?format=credits
+Authorization: Bearer <key>
+x-xai-token-auth: xai-grok-cli
+Accept: application/json
+```
+
+```json
+{"config": {
+   "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY",
+                     "start": "2026-11-09T23:01:28.407+00:00",
+                     "end":   "2026-11-16T23:01:28.407+00:00"},
+   "creditUsagePercent": 1.0,
+   "productUsage": [{"product": "GrokBuild", "usagePercent": 1.0}],
+   "isUnifiedBillingUser": true, "prepaidBalance": {"val": 0},
+   "topUpMethod": "TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+   "billingPeriodStart": "2026-11-09T23:01:28.407+00:00",
+   "billingPeriodEnd":   "2026-11-16T23:01:28.407+00:00"}}
+```
+
+→ one long-window metric `Weekly` = `creditUsagePercent` (0–100), reset =
+`currentPeriod.end` (fallback `billingPeriodEnd`). This is the "Weekly
+SuperGrok Limit" that grok.com's Usage page shows. A period type other than
+weekly is labelled `Daily` / `Monthly`, or `Limit` when unknown. Each
+`productUsage` entry follows as its own long-window metric: that product's
+share of the same limit (`GrokBuild` → `Build`; other names, such as Chat,
+pass through). The widget does not draw the products yet; they are kept in
+the data for a later per-product view.
+
+The body is protobuf JSON, which leaves zero values out: before any use the
+same call answered with no `creditUsagePercent` and no `productUsage` at all.
+So a 200 with a well-formed `currentPeriod` and no percent is 0% — and only
+then; a body with neither is an unknown schema. An unknown schema, a body
+that is not JSON, or any non-200 is an honest `NetworkError`:
+`unrecognized billing schema`, `token rejected` (401/403) or `HTTP <code>`.
+
+Not to be confused with:
+
+- the plain `/v1/billing` (no `format`): it answers the monthly on-demand API
+  spend (`monthlyLimit`, `used`, `onDemandCap`), not the subscription limit;
+- the HTTP 429 with `subscription:free-usage-exhausted` that an account
+  without SuperGrok gets: that comes from the CLI's chat API, not from this
+  call. What the billing call answers for such an account is not verified;
+  whatever it is, a non-200 degrades honestly.
 
 ## Removed providers and methods
 
