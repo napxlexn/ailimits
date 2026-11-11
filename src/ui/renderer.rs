@@ -4,13 +4,14 @@
 // zones from ui/layout.rs.
 
 use super::{
-    layout::{BodyLayout, Rect, RowTier, WindowLayout},
+    layout::{self, BodyLayout, Rect, RowTier, WindowLayout},
     theme::{Color, ComputedTheme, UsageLevel},
 };
 use crate::config::schema::DetailLevel;
 use crate::providers::{
     Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
 };
+use crate::rows::{ModelLabel, RowView};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use fontdue::{
@@ -54,6 +55,16 @@ pub(super) const NAME_WIDTH: f32 = 56.0;
 pub(super) const PCT_WIDTH: f32 = 30.0;
 /// Gap between row elements.
 pub(super) const ROW_GAP: f32 = 7.0;
+/// Text size of Medium's meta line (the line under the bar).
+pub(super) const META_SIZE: f32 = 10.5;
+/// The widest reset countdown `format_duration` writes: what the meta line's
+/// reset is held to when deciding the room a model gets beside it.
+pub(super) const LONGEST_RESET: &str = "23h 59min";
+/// Size of a model label on Expanded's line of its own.
+const MODEL_EXPANDED_SIZE: f32 = 11.0;
+/// The first-install lines (rows.js `widgetPixmap`).
+const CHOOSE_TITLE: &str = "Choose what to show";
+const CHOOSE_LINE: &str = "Click here. Nothing is read until you choose.";
 
 /// Bar and text colors, accounting for staleness and estimation —
 /// both render grey. Stale data greys even while a reset is still ahead: the
@@ -112,6 +123,10 @@ impl Renderer {
 
     /// Draw the whole UI into the pixmap.
     ///
+    /// `rows` — the widget's rows (`rows::visible_rows`, Surface::Widget), in
+    /// the order `layout` was computed for. With the default config that is
+    /// one row per visible provider, carrying its data untouched.
+    ///
     /// `opacity` — background opacity from the config (0.10–0.85). Applied
     /// ONLY to the background alpha; text stays readable.
     #[allow(clippy::too_many_arguments)]
@@ -120,7 +135,7 @@ impl Renderer {
         pixmap: &mut Pixmap,
         layout: &WindowLayout,
         theme: &ComputedTheme,
-        providers: &[ProviderData],
+        rows: &[RowView],
         opacity: f32,
         detail: &DetailLevel,
         cursor: Option<(f32, f32)>,
@@ -146,10 +161,16 @@ impl Renderer {
             0.0,
         );
 
+        // A fresh install: say what to do rather than show an empty box.
+        if let BodyLayout::Choose { area } = &layout.body {
+            self.draw_choose(pixmap, area, theme);
+            return;
+        }
+
         // First-run / everything-unconfigured: with no visible providers the
         // window would be a blank translucent box with no path forward. Draw a
         // single guidance line pointing to the menu instead of nothing.
-        if providers.is_empty() {
+        if rows.is_empty() {
             self.draw_text(
                 pixmap,
                 "Right-click → set up providers",
@@ -163,16 +184,18 @@ impl Renderer {
             return;
         }
 
+        let model_line = |i: usize| layout.model_lines.get(i).copied().flatten();
         match &layout.body {
-            BodyLayout::Vertical { rows, hint } => {
-                for (row, data) in rows.iter().zip(providers.iter()) {
-                    let fc = forecast_label(forecasts, data);
-                    let reason = hover_reason(data, errors);
+            BodyLayout::Vertical { rows: rects, hint } => {
+                for (i, (rect, row)) in rects.iter().zip(rows.iter()).enumerate() {
+                    let fc = forecast_label(forecasts, &row.data);
+                    let reason = hover_reason(&row.data, errors);
                     self.draw_vertical_row(
                         pixmap,
-                        row,
+                        rect,
                         theme,
-                        data,
+                        row,
+                        model_line(i).as_ref(),
                         detail,
                         layout.row_tier,
                         cursor,
@@ -186,19 +209,20 @@ impl Renderer {
                     && hint.h > 0.0
                     && layout.row_tier == RowTier::Full
                 {
-                    let hover_hint = hovered_hint_text(rows, providers, cursor, errors);
-                    self.draw_hint(pixmap, hint, theme, providers, hover_hint.as_deref());
+                    let hover_hint = hovered_hint_text(rects, rows, cursor, errors);
+                    self.draw_hint(pixmap, hint, theme, rows, hover_hint.as_deref());
                 }
             }
             BodyLayout::Horizontal { cols } => {
-                for (col, data) in cols.iter().zip(providers.iter()) {
-                    let fc = forecast_label(forecasts, data);
-                    let reason = hover_reason(data, errors);
+                for (i, (col, row)) in cols.iter().zip(rows.iter()).enumerate() {
+                    let fc = forecast_label(forecasts, &row.data);
+                    let reason = hover_reason(&row.data, errors);
                     self.draw_horizontal_col(
                         pixmap,
                         col,
                         theme,
-                        data,
+                        row,
+                        model_line(i).as_ref(),
                         detail,
                         cursor,
                         fc.as_deref(),
@@ -206,7 +230,33 @@ impl Renderer {
                     );
                 }
             }
+            BodyLayout::Choose { .. } => {}
         }
+    }
+
+    /// The first-install box: what to do, in two lines (rows.js
+    /// `widgetPixmap`, its first branch).
+    fn draw_choose(&self, pixmap: &mut Pixmap, area: &Rect, theme: &ComputedTheme) {
+        self.draw_text(
+            pixmap,
+            CHOOSE_TITLE,
+            area.x,
+            area.y + 4.0,
+            12.0,
+            theme.provider_name,
+            Align::Left,
+            area.w,
+        );
+        self.draw_text(
+            pixmap,
+            CHOOSE_LINE,
+            area.x,
+            area.y + 23.0,
+            META_SIZE,
+            theme.meta,
+            Align::Left,
+            area.w,
+        );
     }
 
     // ─── Vertical ────────────────────────────────────────────────
@@ -215,9 +265,10 @@ impl Renderer {
     fn draw_vertical_row(
         &self,
         pixmap: &mut Pixmap,
-        row: &Rect,
+        rect: &Rect,
         theme: &ComputedTheme,
-        data: &ProviderData,
+        row: &RowView,
+        model_line: Option<&Rect>,
         detail: &DetailLevel,
         tier: RowTier,
         cursor: Option<(f32, f32)>,
@@ -225,13 +276,14 @@ impl Renderer {
         reason: Option<&str>,
     ) {
         match detail {
-            // Compact has no per-row reset slot; the reason shows in the hint line.
-            DetailLevel::Compact => self.vertical_compact(pixmap, row, theme, data, tier, cursor),
+            // Compact has no per-row reset slot; the reason shows in the hint
+            // line. Nor a model: the tooltip carries it.
+            DetailLevel::Compact => self.vertical_compact(pixmap, rect, theme, row, tier, cursor),
             DetailLevel::Medium => self.vertical_medium(
-                pixmap, row, theme, data, false, tier, cursor, forecast, reason,
+                pixmap, rect, theme, row, model_line, false, tier, cursor, forecast, reason,
             ),
             DetailLevel::Expanded => self.vertical_medium(
-                pixmap, row, theme, data, true, tier, cursor, forecast, reason,
+                pixmap, rect, theme, row, model_line, true, tier, cursor, forecast, reason,
             ),
         }
     }
@@ -243,15 +295,16 @@ impl Renderer {
         pixmap: &mut Pixmap,
         row: &Rect,
         theme: &ComputedTheme,
-        data: &ProviderData,
+        view: &RowView,
         tier: RowTier,
         cursor: Option<(f32, f32)>,
     ) {
+        let data = &view.data;
         let text_y = row.y + (row.h - 13.0) / 2.0;
         if tier == RowTier::Full {
             self.draw_text(
                 pixmap,
-                data.id.display_name(),
+                self.fit_name(view.names, 11.0, || NAME_WIDTH),
                 row.x,
                 text_y,
                 11.0,
@@ -309,31 +362,47 @@ impl Renderer {
         }
     }
 
-    /// Medium/expanded: name+pct / bar / meta line.
+    /// Medium/expanded: name+pct / bar / meta line, and the model: in what
+    /// the reset leaves of Medium's meta line, or on a line of its own
+    /// (`model_line`, see `layout::Shape`).
     #[allow(clippy::too_many_arguments)]
     fn vertical_medium(
         &self,
         pixmap: &mut Pixmap,
         row: &Rect,
         theme: &ComputedTheme,
-        data: &ProviderData,
+        view: &RowView,
+        model_line: Option<&Rect>,
         expanded: bool,
         tier: RowTier,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
     ) {
+        let data = &view.data;
         // Hovering a greyed/estimated row answers "why": the meta line shows
         // the stored failure + the action instead of the usual metric/reset.
         let hovered_reason =
             reason.filter(|_| cursor.is_some_and(|point| point_in_rect(point, row)));
         let name_size = if expanded { 13.0 } else { 12.0 };
+        let pct_size = if expanded { 15.0 } else { 13.0 };
+        let active_metric = active_progress_metric(data, row, cursor);
+        let shown_pct = match (&data.status, active_metric.and_then(Metric::percentage)) {
+            (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => Some(pct),
+            _ => None,
+        };
         // Name and percent share this line with no clipping between them, so a
         // row too narrow for both drops the name rather than overlapping it.
+        // A name with shorter forms takes the longest that ends before the
+        // percent.
         if tier == RowTier::Full {
+            let room = || match shown_pct {
+                Some(pct) => row.w - self.text_width(&pct_text(data, pct), pct_size) - 6.0,
+                None => row.w,
+            };
             self.draw_text(
                 pixmap,
-                data.id.display_name(),
+                self.fit_name(view.names, name_size, room),
                 row.x,
                 row.y + 3.0,
                 name_size,
@@ -353,9 +422,12 @@ impl Renderer {
         };
         let meta_y = bar_y + bar_h + 4.0;
 
-        let active_metric = active_progress_metric(data, row, cursor);
-        match (&data.status, active_metric.and_then(Metric::percentage)) {
-            (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => {
+        // What the meta line's right part holds, for a model sharing it:
+        // Some(text) right-aligned ("" for nothing), None when the line is
+        // taken from the left (a count, the hover reason).
+        let mut meta_right: Option<String> = Some(String::new());
+        match (&data.status, shown_pct) {
+            (_, Some(pct)) => {
                 let stale = stale_age_secs_or_estimated(data);
                 let (bar_color, text_color) = row_colors(theme, data, pct);
                 // Percent at the top right.
@@ -364,7 +436,7 @@ impl Renderer {
                     &pct_text(data, pct),
                     row.x,
                     row.y + 2.0,
-                    if expanded { 15.0 } else { 13.0 },
+                    pct_size,
                     text_color,
                     Align::Right,
                     row.w,
@@ -372,6 +444,7 @@ impl Renderer {
                 self.draw_bar(pixmap, &bar, theme, bar_color, pct);
 
                 if let Some(text) = hovered_reason {
+                    meta_right = None;
                     self.draw_text(
                         pixmap,
                         text,
@@ -387,12 +460,14 @@ impl Renderer {
                     expanded && active_metric.is_some_and(is_long_window_metric);
                 if hovered_reason.is_none() && !weekly_active_in_expanded {
                     if active_metric.is_some_and(is_long_window_metric) {
-                        self.draw_weekly_time_only(pixmap, row, theme, active_metric, meta_y);
+                        meta_right =
+                            self.draw_weekly_time_only(pixmap, row, theme, active_metric, meta_y);
                     } else {
                         // Meta line: the metric on the left, the reset on the right.
                         if let Some(m) = active_metric
                             .filter(|m| !is_percent_metric(m) || is_long_window_metric(m))
                         {
+                            meta_right = None;
                             self.draw_text(
                                 pixmap,
                                 &m.display_text(),
@@ -408,43 +483,31 @@ impl Renderer {
                         // fact the user plans around, so a prediction never
                         // covers it. The forecast (when enabled) only fills in
                         // while there is no future reset to show.
-                        if let Some(reset) = active_metric
+                        let right = if let Some(reset) = active_metric
                             .and_then(|m| m.reset_at)
                             .filter(|t| *t > Utc::now())
                         {
                             let secs = reset.signed_duration_since(Utc::now()).num_seconds();
-                            self.draw_text(
-                                pixmap,
-                                &format_duration(secs),
-                                row.x + row.w / 2.0,
-                                meta_y,
-                                if expanded { 11.5 } else { 10.5 },
-                                theme.meta,
-                                Align::Right,
-                                row.w / 2.0,
-                            );
+                            Some((format_duration(secs), theme.meta))
                         } else if let Some(fc) = forecast {
+                            Some((fc.to_string(), theme.high.text))
+                        } else {
+                            stale.map(|label| (label, theme.meta))
+                        };
+                        if let Some((text, color)) = right {
                             self.draw_text(
                                 pixmap,
-                                fc,
+                                &text,
                                 row.x + row.w / 2.0,
                                 meta_y,
                                 if expanded { 11.5 } else { 10.5 },
-                                theme.high.text,
+                                color,
                                 Align::Right,
                                 row.w / 2.0,
                             );
-                        } else if let Some(label) = stale {
-                            self.draw_text(
-                                pixmap,
-                                &label,
-                                row.x + row.w / 2.0,
-                                meta_y,
-                                if expanded { 11.5 } else { 10.5 },
-                                theme.meta,
-                                Align::Right,
-                                row.w / 2.0,
-                            );
+                            if meta_right.is_some() {
+                                meta_right = Some(text);
+                            }
                         }
                     }
                 }
@@ -474,6 +537,33 @@ impl Renderer {
         // active one — suppressed while the hover reason owns the meta line.
         if expanded && hovered_reason.is_none() {
             self.draw_expanded_weekly_metric(pixmap, row, theme, data, meta_y, cursor);
+        }
+
+        // The model: a line of its own when the layout gave it one, else
+        // (Medium only) what the right part of the meta line leaves free.
+        let Some(label) = &view.model else {
+            return;
+        };
+        let (x, y, room, size) = match (model_line, expanded) {
+            (Some(line), _) => {
+                let size = if expanded { MODEL_EXPANDED_SIZE } else { META_SIZE };
+                (line.x, meta_y + layout::MODEL_LINE_H, line.w, size)
+            }
+            (None, false) => {
+                let Some(right) = meta_right else {
+                    return;
+                };
+                let right_w = if right.is_empty() {
+                    0.0
+                } else {
+                    self.text_width(&right, META_SIZE)
+                };
+                (row.x, meta_y, layout::medium_model_room(row.w, right_w), META_SIZE)
+            }
+            (None, true) => return,
+        };
+        if let Some(text) = self.fit_label(label, size, room) {
+            self.draw_text(pixmap, &text, x, y, size, theme.meta, Align::Left, room);
         }
     }
 
@@ -513,6 +603,8 @@ impl Renderer {
         );
     }
 
+    /// The weekly's "label: time" right-aligned on the meta line; returns
+    /// what it drew ("" for nothing), for a model sharing the line.
     fn draw_weekly_time_only(
         &self,
         pixmap: &mut Pixmap,
@@ -520,9 +612,9 @@ impl Renderer {
         theme: &ComputedTheme,
         metric: Option<&Metric>,
         y: f32,
-    ) {
+    ) -> Option<String> {
         let Some(metric) = metric else {
-            return;
+            return Some(String::new());
         };
         let text = metric
             .reset_at
@@ -542,6 +634,7 @@ impl Renderer {
             Align::Right,
             row.w,
         );
+        Some(text)
     }
 
     /// Bottom hint: the nearest reset.
@@ -550,7 +643,7 @@ impl Renderer {
         pixmap: &mut Pixmap,
         hint: &Rect,
         theme: &ComputedTheme,
-        providers: &[ProviderData],
+        rows: &[RowView],
         override_text: Option<&str>,
     ) {
         if let Some(text) = override_text {
@@ -567,8 +660,9 @@ impl Renderer {
             return;
         }
 
-        let next = providers
+        let next = rows
             .iter()
+            .map(|r| &r.data)
             .flat_map(|p| {
                 p.metrics.iter().filter_map(move |m| {
                     m.reset_at
@@ -598,19 +692,22 @@ impl Renderer {
 
     // ─── Horizontal ──────────────────────────────────────────────
 
-    /// Column: percent on top, a vertical bar, the name below.
+    /// Column: percent on top, a vertical bar, the name below, and the model
+    /// on a line under the column when the layout gave it one.
     #[allow(clippy::too_many_arguments)]
     fn draw_horizontal_col(
         &self,
         pixmap: &mut Pixmap,
         col: &Rect,
         theme: &ComputedTheme,
-        data: &ProviderData,
+        view: &RowView,
+        model_line: Option<&Rect>,
         detail: &DetailLevel,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
     ) {
+        let data = &view.data;
         // The narrow column only fits the action half of the hover reason
         // ("run Claude Code"), not the full cause — the vertical layouts and
         // the compact hint line carry the long form.
@@ -663,7 +760,7 @@ impl Renderer {
 
         self.draw_text(
             pixmap,
-            data.id.display_name(),
+            self.fit_name(view.names, name_size, || col.w),
             col.x,
             col.y + col.h - if reset_size.is_some() { 23.0 } else { 12.0 },
             name_size,
@@ -671,6 +768,25 @@ impl Renderer {
             Align::Center,
             col.w,
         );
+
+        // The model under the column, half a point smaller than the name;
+        // Expanded leaves room for its reset line.
+        if let (Some(label), Some(line)) = (&view.model, model_line) {
+            let size = name_size - 0.5;
+            if let Some(text) = self.fit_label(label, size, line.w) {
+                let y = line.y + if reset_size.is_some() { 3.0 } else { 0.0 };
+                self.draw_text(
+                    pixmap,
+                    &text,
+                    line.x,
+                    y,
+                    size,
+                    theme.meta,
+                    Align::Center,
+                    line.w,
+                );
+            }
+        }
 
         if let Some(reset_size) = reset_size {
             // Same slot ownership as the vertical layout, but the hover reason
@@ -961,6 +1077,64 @@ impl Renderer {
         tl.append(&[&self.font], &TextStyle::new(text, size, 0));
         laid_out_width(&tl)
     }
+
+    /// The longest of a row's names that fits `room` at `size`, else its
+    /// shortest. A provider's own row has one name and draws it as it always
+    /// has, without measuring.
+    fn fit_name(
+        &self,
+        names: &[&'static str],
+        size: f32,
+        room: impl FnOnce() -> f32,
+    ) -> &'static str {
+        match names {
+            [] => "",
+            [only] => only,
+            [.., last] => {
+                let room = room();
+                names
+                    .iter()
+                    .copied()
+                    .find(|n| self.text_width(n, size) <= room)
+                    .unwrap_or(last)
+            }
+        }
+    }
+
+    /// The longest form of a model label that fits `room` at `size`: effort
+    /// steps out first, then the version, then the model (`steps()` order).
+    /// None when not even the shortest fits; a word is never cut.
+    fn fit_label(&self, label: &ModelLabel, size: f32, room: f32) -> Option<String> {
+        label
+            .steps()
+            .into_iter()
+            .find(|s| self.text_width(s, size) <= room)
+    }
+}
+
+/// What Medium's meta line can hold at its widest beside a model, for the
+/// row's headline metric (what `vertical_medium` draws when not hovered):
+/// the right-aligned text with its countdown at its longest, "" when the
+/// line is empty (a status sits on the bar line instead), None when its left
+/// part is taken by a count ("123 / 300"). See `layout::Shape::of`.
+pub(super) fn medium_meta_widest(data: &ProviderData) -> Option<String> {
+    let metric = data.headline_metric();
+    match (&data.status, metric.and_then(Metric::percentage), metric) {
+        (ProviderStatus::Ok | ProviderStatus::Estimated, Some(_), Some(m)) => {
+            if is_long_window_metric(m) {
+                Some(if m.reset_at.is_some() {
+                    format!("{}: {LONGEST_RESET}", m.label)
+                } else {
+                    m.label.clone()
+                })
+            } else if !is_percent_metric(m) {
+                None
+            } else {
+                Some(LONGEST_RESET.to_string())
+            }
+        }
+        _ => Some(String::new()),
+    }
 }
 
 /// The right edge of the last glyph of a laid-out line.
@@ -1096,13 +1270,14 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
 }
 
 fn hovered_hint_text(
-    rows: &[Rect],
-    providers: &[ProviderData],
+    rects: &[Rect],
+    rows: &[RowView],
     cursor: Option<(f32, f32)>,
     errors: &HashMap<ProviderId, String>,
 ) -> Option<String> {
     let point = cursor?;
-    rows.iter().zip(providers.iter()).find_map(|(row, data)| {
+    rects.iter().zip(rows.iter()).find_map(|(row, view)| {
+        let data = &view.data;
         if !point_in_rect(point, row) {
             return None;
         }
@@ -1275,7 +1450,7 @@ mod tests {
                     &detail,
                     &scale,
                     &crate::config::schema::ColumnFlow::Row,
-                    providers.len(),
+                    &crate::ui::layout::Shape::plain(providers.len()),
                 );
                 let mut pm =
                     Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
@@ -1283,7 +1458,7 @@ mod tests {
                     &mut pm,
                     &win,
                     &theme,
-                    &providers,
+                    &rows_of(&providers),
                     0.85,
                     &detail,
                     None,
@@ -1352,7 +1527,7 @@ mod tests {
                     &detail,
                     &WidthScale::Full,
                     &flow,
-                    providers.len(),
+                    &crate::ui::layout::Shape::plain(providers.len()),
                 );
                 let mut pm =
                     Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
@@ -1360,7 +1535,7 @@ mod tests {
                     &mut pm,
                     &win,
                     &theme,
-                    &providers,
+                    &rows_of(&providers),
                     0.85,
                     &detail,
                     None,
@@ -1447,7 +1622,7 @@ mod tests {
                     &detail,
                     &WidthScale::Full,
                     &ColumnFlow::Row,
-                    providers.len(),
+                    &crate::ui::layout::Shape::plain(providers.len()),
                 );
                 let mut pm =
                     Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
@@ -1455,7 +1630,7 @@ mod tests {
                     &mut pm,
                     &win,
                     &theme,
-                    &providers,
+                    &rows_of(&providers),
                     0.85,
                     &detail,
                     None,
@@ -1549,7 +1724,7 @@ mod tests {
                     &detail,
                     &WidthScale::Full,
                     &ColumnFlow::Row,
-                    providers.len(),
+                    &crate::ui::layout::Shape::plain(providers.len()),
                 );
                 let mut pm =
                     Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
@@ -1557,7 +1732,7 @@ mod tests {
                     &mut pm,
                     &win,
                     &theme,
-                    &providers,
+                    &rows_of(&providers),
                     0.85,
                     &detail,
                     None,
@@ -1569,6 +1744,17 @@ mod tests {
                 println!("{} {}x{}", path.display(), win.width, win.height);
             }
         }
+    }
+
+    /// The widget's rows for `providers` with the default config: one row
+    /// per provider, its data untouched (rows.rs guarantees it).
+    fn rows_of(providers: &[ProviderData]) -> Vec<RowView> {
+        crate::rows::visible_rows(
+            &crate::config::schema::Config::default(),
+            providers,
+            crate::config::schema::Surface::Widget,
+            &crate::models::Models::new(),
+        )
     }
 
     /// Draw one widget the way app.rs does.
@@ -1586,11 +1772,13 @@ mod tests {
         forecasts: &HashMap<ProviderId, chrono::DateTime<Utc>>,
         errors: &HashMap<ProviderId, String>,
     ) -> Pixmap {
-        let win = crate::ui::layout::compute(&layout, &detail, &scale, &flow, providers.len());
+        let rows = rows_of(providers);
+        let shape = crate::ui::layout::Shape::plain(rows.len());
+        let win = crate::ui::layout::compute(&layout, &detail, &scale, &flow, &shape);
         let mut pm = Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
         let theme = ComputedTheme::compute(ui);
         renderer.draw(
-            &mut pm, &win, &theme, providers, opacity, &detail, cursor, forecasts, errors,
+            &mut pm, &win, &theme, &rows, opacity, &detail, cursor, forecasts, errors,
         );
         pm
     }
@@ -1681,7 +1869,8 @@ mod tests {
         errors.insert(ProviderId::Copilot, "offline, retrying".to_string());
         for (dname, detail) in details.clone() {
             let win = crate::ui::layout::compute(
-                &Layout::Vertical, &detail, &WidthScale::Full, &ColumnFlow::Row, states.len(),
+                &Layout::Vertical, &detail, &WidthScale::Full, &ColumnFlow::Row,
+                &crate::ui::layout::Shape::plain(states.len()),
             );
             let BodyLayout::Vertical { rows, .. } = &win.body else { unreachable!() };
             let last = rows[states.len() - 1];

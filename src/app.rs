@@ -6,10 +6,11 @@
 
 use crate::{
     config::{
-        schema::{AuthMethod, Config},
+        schema::{AuthMethod, Config, Surface},
         storage,
     },
     hooks,
+    models::Models,
     monitor::{
         scheduler::{Scheduler, SharedInterval, SharedProviders},
         trend::Trend,
@@ -37,6 +38,7 @@ use crate::{
         tray::Tray,
         window::WindowState,
     },
+    rows::{self, RowView},
     updater,
 };
 use anyhow::{Context as AnyhowContext, Result};
@@ -497,6 +499,33 @@ fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> 
         .collect()
 }
 
+/// The rows a surface shows (rows.rs), built from the providers the widget
+/// shows. With the default config: one row per visible provider, untouched.
+fn surface_rows(
+    config: &Config,
+    display: &[ProviderData],
+    surface: Surface,
+    models: &Models,
+) -> Vec<RowView> {
+    rows::visible_rows(config, &visible_data(config, display), surface, models)
+}
+
+/// What the widget's size depends on (layout.rs `Shape`): its rows, the
+/// lines their models take, and whether nothing is chosen yet.
+fn widget_shape(
+    config: &Config,
+    display: &[ProviderData],
+    models: &Models,
+    renderer: &Renderer,
+) -> layout::Shape {
+    layout::Shape::of(
+        &config.ui,
+        &surface_rows(config, display, Surface::Widget, models),
+        rows::nothing_chosen(config),
+        |text, size| renderer.text_width(text, size),
+    )
+}
+
 /// Rebuild the providers after a config change — the list is shared
 /// with the scheduler.
 fn refresh_providers(
@@ -705,14 +734,14 @@ fn apply_ui_change(
     window: &Rc<tao::window::Window>,
     win_state: &mut WindowState,
     menu: &ContextMenu,
-    provider_count: usize,
+    shape: &layout::Shape,
 ) {
     *win_layout = layout::compute(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
         &config.ui.column_flow,
-        provider_count,
+        shape,
     );
     *theme = ComputedTheme::compute(&config.ui);
 
@@ -830,16 +859,19 @@ pub fn run() -> Result<()> {
 
     // 5. Layout, theme, renderer — mut: switched live from the menu.
     // The layout is computed from VISIBLE providers, not all of them.
-    let mut visible_count = visible_data(&config, &display).len();
+    // The rows measure their text for the layout, so the renderer comes
+    // first. No model is read yet: the readers arrive with their consent.
+    let renderer = Renderer::new()?;
+    let models = Models::new();
+    let mut shape = widget_shape(&config, &display, &models, &renderer);
     let mut win_layout = layout::compute(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
         &config.ui.column_flow,
-        visible_count,
+        &shape,
     );
     let mut theme = ComputedTheme::compute(&config.ui);
-    let renderer = Renderer::new()?;
 
     // 6. The window: borderless, transparent, out of the taskbar.
     let mut builder = WindowBuilder::new()
@@ -953,6 +985,7 @@ pub fn run() -> Result<()> {
             }
         }));
     }
+    tray.set_first_install(rows::nothing_chosen(&config), &visible_data(&config, &display));
     tray.set_mode(
         config.general.indicator,
         &menu.menu,
@@ -1119,7 +1152,10 @@ pub fn run() -> Result<()> {
                 if let Some(t) = tooltip_at {
                     if now >= t {
                         tooltip_at = None;
-                        panel.show_tooltip(&visible_data(&config, &display));
+                        panel.show_tooltip(
+                            &surface_rows(&config, &display, Surface::Tooltip, &models),
+                            rows::nothing_chosen(&config),
+                        );
                     }
                 }
             }
@@ -1285,8 +1321,8 @@ pub fn run() -> Result<()> {
             }
 
             Event::RedrawRequested(_) => {
-                // Render only the visible providers.
-                let visible = visible_data(&config, &display);
+                // Render only the visible providers, as the widget's rows.
+                let visible = surface_rows(&config, &display, Surface::Widget, &models);
                 renderer.draw(
                     &mut pixmap,
                     &win_layout,
@@ -1478,9 +1514,9 @@ pub fn run() -> Result<()> {
                         }
                         // A provider appeared/disappeared (e.g. became
                         // NotConfigured) → resize.
-                        let new_count = visible_data(&config, &display).len();
-                        if new_count != visible_count {
-                            visible_count = new_count;
+                        let new_shape = widget_shape(&config, &display, &models, &renderer);
+                        if new_shape != shape {
+                            shape = new_shape;
                             apply_ui_change(
                                 &config,
                                 &mut win_layout,
@@ -1490,7 +1526,11 @@ pub fn run() -> Result<()> {
                                 &window,
                                 &mut win_state,
                                 &menu,
-                                visible_count,
+                                &shape,
+                            );
+                            tray.set_first_install(
+                                rows::nothing_chosen(&config),
+                                &visible_data(&config, &display),
                             );
                             tray.sync_providers(
                                 &menu.menu,
@@ -1524,7 +1564,7 @@ pub fn run() -> Result<()> {
                                 &mut display,
                                 pid,
                             );
-                            visible_count = visible_data(&config, &display).len();
+                            shape = widget_shape(&config, &display, &models, &renderer);
                             apply_ui_change(
                                 &config,
                                 &mut win_layout,
@@ -1534,7 +1574,11 @@ pub fn run() -> Result<()> {
                                 &window,
                                 &mut win_state,
                                 &menu,
-                                visible_count,
+                                &shape,
+                            );
+                            tray.set_first_install(
+                                rows::nothing_chosen(&config),
+                                &visible_data(&config, &display),
                             );
                             tray.sync_providers(
                                 &menu.menu,
@@ -1735,7 +1779,7 @@ pub fn run() -> Result<()> {
                         }
                         refresh_providers(&config, &providers, &mut thresholds, &mut display, &pid);
                         // A disabled provider disappears immediately → resize.
-                        visible_count = visible_data(&config, &display).len();
+                        shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
                             &config,
                             &mut win_layout,
@@ -1745,7 +1789,11 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
+                        );
+                        tray.set_first_install(
+                            rows::nothing_chosen(&config),
+                            &visible_data(&config, &display),
                         );
                         tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
                         panel.update(&visible_data(&config, &display), true);
@@ -1921,9 +1969,9 @@ pub fn run() -> Result<()> {
                                     &mut display,
                                     pid,
                                 );
-                                let new_count = visible_data(&config, &display).len();
-                                if new_count != visible_count {
-                                    visible_count = new_count;
+                                let new_shape = widget_shape(&config, &display, &models, &renderer);
+                                if new_shape != shape {
+                                    shape = new_shape;
                                     apply_ui_change(
                                         &config,
                                         &mut win_layout,
@@ -1933,9 +1981,13 @@ pub fn run() -> Result<()> {
                                         &window,
                                         &mut win_state,
                                         &menu,
-                                        visible_count,
+                                        &shape,
                                     );
                                 }
+                                tray.set_first_install(
+                                    rows::nothing_chosen(&config),
+                                    &visible_data(&config, &display),
+                                );
                                 tray.sync_providers(
                                     &menu.menu,
                                     &visible_data(&config, &display),
@@ -1955,6 +2007,7 @@ pub fn run() -> Result<()> {
                     }
                     Some(MenuAction::SetDetail(d)) => {
                         config.ui.detail = d;
+                        shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
                             &config,
                             &mut win_layout,
@@ -1964,12 +2017,13 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         save_config(config.clone());
                     }
                     Some(MenuAction::SetLayout(l)) => {
                         config.ui.layout = l;
+                        shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
                             &config,
                             &mut win_layout,
@@ -1979,12 +2033,13 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         save_config(config.clone());
                     }
                     Some(MenuAction::SetWidthScale(w)) => {
                         config.ui.width_scale = w;
+                        shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
                             &config,
                             &mut win_layout,
@@ -1994,12 +2049,13 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         save_config(config.clone());
                     }
                     Some(MenuAction::SetColumnFlow(f)) => {
                         config.ui.column_flow = f;
+                        shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
                             &config,
                             &mut win_layout,
@@ -2009,7 +2065,7 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         save_config(config.clone());
                     }
@@ -2026,7 +2082,7 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         tray.update(&visible_data(&config, &display), &theme, true);
                         panel.update(&visible_data(&config, &display), true);
@@ -2043,7 +2099,7 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         tray.update(&visible_data(&config, &display), &theme, true);
                         panel.update(&visible_data(&config, &display), true);
@@ -2066,7 +2122,7 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         tray.update(&visible_data(&config, &display), &theme, true);
                         panel.update(&visible_data(&config, &display), true);
@@ -2083,7 +2139,7 @@ pub fn run() -> Result<()> {
                             &window,
                             &mut win_state,
                             &menu,
-                            visible_count,
+                            &shape,
                         );
                         tray.update(&visible_data(&config, &display), &theme, true);
                         panel.update(&visible_data(&config, &display), true);

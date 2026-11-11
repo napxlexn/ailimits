@@ -16,6 +16,7 @@
 
 use crate::config::schema::IndicatorKind;
 use crate::providers::{ProviderData, ProviderStatus};
+use crate::rows::{ModelLabel, RowView};
 use crate::ui::theme::{ComputedTheme, UsageLevel};
 use anyhow::{Context, Result};
 use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
@@ -37,6 +38,9 @@ pub struct Tray {
     /// indicator is occluded by the Start/Search scrim), not a configured tray
     /// mode. It renders the busiest-provider rings, like Tray mode.
     fallback: bool,
+    /// Nothing chosen yet (a fresh install, `rows::nothing_chosen`): the
+    /// tooltip says what to do instead of the bare app name.
+    first_install: bool,
 }
 
 impl Tray {
@@ -47,6 +51,18 @@ impl Tray {
             last: Vec::new(),
             promote_pending: false,
             fallback: false,
+            first_install: false,
+        }
+    }
+
+    /// Whether nothing is chosen yet. Set it whenever the providers allowed
+    /// or switched on change; the tooltip follows at once.
+    pub fn set_first_install(&mut self, on: bool, providers: &[ProviderData]) {
+        if self.first_install != on {
+            self.first_install = on;
+            if let Some(icon) = self.icon.as_ref() {
+                let _ = icon.set_tooltip(Some(tooltip(providers, on)));
+            }
         }
     }
 
@@ -116,7 +132,7 @@ impl Tray {
                 let _ = icon.set_icon(Some(img));
             }
         }
-        let _ = icon.set_tooltip(Some(tooltip(providers)));
+        let _ = icon.set_tooltip(Some(tooltip(providers, self.first_install)));
         // Second promotion pass once the registry keys surely exist.
         if self.promote_pending {
             self.promote_pending = false;
@@ -233,18 +249,118 @@ pub(crate) fn ring_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
     vec![first, second]
 }
 
-pub(crate) fn tooltip(providers: &[ProviderData]) -> String {
-    if providers.is_empty() {
-        return "AI Limits".to_string();
-    }
-    providers
-        .iter()
+/// The tray icon's own tooltip (Windows keeps 128 UTF-16 units of it): the
+/// providers and their percentages, never models or extra rows. On a fresh
+/// install with nothing chosen it says what to do.
+pub(crate) fn tooltip(providers: &[ProviderData], first_install: bool) -> String {
+    summary(providers.iter(), first_install)
+}
+
+fn summary<'a>(providers: impl Iterator<Item = &'a ProviderData>, first_install: bool) -> String {
+    let parts: Vec<String> = providers
         .map(|d| match provider_pct(d) {
             Some(p) => format!("{} {}%", d.id.display_name(), p.round() as u32),
             None => format!("{} •", d.id.display_name()),
         })
-        .collect::<Vec<_>>()
-        .join("  ·  ")
+        .collect();
+    if parts.is_empty() {
+        return if first_install {
+            FIRST_INSTALL_TIP.to_string()
+        } else {
+            "AI Limits".to_string()
+        };
+    }
+    parts.join("  ·  ")
+}
+
+/// What the tray and the panel tooltips say before anything is chosen.
+const FIRST_INSTALL_TIP: &str = "AI Limits: choose what to show";
+
+/// One line of the panel's drawn tooltip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TipLine {
+    pub text: String,
+    /// The continuation of a row too long for one line: set in a little.
+    pub indent: bool,
+}
+
+/// What the panel's drawn tooltip says, line by line: the tooltip's rows
+/// (`rows::visible_rows`, Surface::Tooltip). While every row is a provider's
+/// own with no model label (the default config) it is today's single line,
+/// the same text as the tray's. Otherwise one row per line, "Claude 25%
+/// (2h 14min) · Opus 5.5 · xhigh", the label complete (the tooltip has no
+/// width limit), a line wider than `TIP_WRAP_PX` wrapped at a " · ".
+pub(crate) fn tooltip_lines(rows: &[RowView], first_install: bool) -> Vec<TipLine> {
+    if rows.iter().all(|r| !r.is_extra() && r.model.is_none()) {
+        return vec![TipLine {
+            text: summary(rows.iter().map(|r| &r.data), first_install),
+            indent: false,
+        }];
+    }
+    let now = chrono::Utc::now();
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut line = match provider_pct(&row.data) {
+            Some(p) => format!("{} {}%", row.name(), p.round() as u32),
+            None => format!("{} •", row.name()),
+        };
+        if let Some(reset) = row.data.headline_reset() {
+            let secs = reset.signed_duration_since(now).num_seconds();
+            line.push_str(&format!(" ({})", crate::ui::renderer::format_duration(secs)));
+        }
+        if let Some(label) = row.model.as_ref().and_then(ModelLabel::full) {
+            line.push_str(" · ");
+            line.push_str(&label);
+        }
+        out.extend(wrap_tip_line(&line));
+    }
+    out
+}
+
+/// The multi-line tooltip wraps a line wider than this (100% scaling) at a
+/// " · ", so a long model label never makes a tooltip half a screen wide.
+const TIP_WRAP_PX: f32 = 400.0;
+/// How far a wrapped line's continuation is set in (100% scaling).
+const TIP_WRAP_INDENT: f32 = 20.0;
+/// Space between two lines of the multi-line tooltip (100% scaling).
+const TIP_LINE_GAP: f32 = 5.0;
+
+/// `line` as it fits `TIP_WRAP_PX`: whole, or broken at its " · " marks.
+/// A part wider than the limit on its own stays whole: a word is never cut.
+fn wrap_tip_line(line: &str) -> Vec<TipLine> {
+    let width = |text: &str, indent: bool| {
+        text_extent(text, TIP_FONT_PX).0 + if indent { TIP_WRAP_INDENT } else { 0.0 }
+    };
+    if width(line, false) <= TIP_WRAP_PX {
+        return vec![TipLine {
+            text: line.to_string(),
+            indent: false,
+        }];
+    }
+    let mut out: Vec<TipLine> = Vec::new();
+    let mut current = String::new();
+    for part in line.split(" · ") {
+        if current.is_empty() {
+            current = part.to_string();
+            continue;
+        }
+        let joined = format!("{current} · {part}");
+        if width(&joined, !out.is_empty()) <= TIP_WRAP_PX {
+            current = joined;
+        } else {
+            let indent = !out.is_empty();
+            out.push(TipLine {
+                text: std::mem::replace(&mut current, part.to_string()),
+                indent,
+            });
+        }
+    }
+    let indent = !out.is_empty();
+    out.push(TipLine {
+        text: current,
+        indent,
+    });
+    out
 }
 
 /// Tray-icon ink for the system taskbar's light/dark theme: near-black on a
@@ -690,7 +806,79 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     let mut pm = Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
     pm.fill(tiny_skia::Color::TRANSPARENT);
     let radius = (TIP_RADIUS * scale).min(box_h / 2.0);
+    let text_ink = paint_tip_box(&mut pm, inset, box_w, box_h, radius, scale, light);
+    draw_text_at(&mut pm, text, inset + pad_x, text_y, size, text_ink);
+    pm
+}
 
+/// The panel's tooltip with one line per entry of `lines` (`tooltip_lines`):
+/// the same box, shadow, padding and text as `render_tooltip`, lines
+/// `TIP_LINE_GAP` apart on a common baseline grid. A single line is exactly
+/// `render_tooltip`.
+pub(crate) fn render_tooltip_lines(lines: &[TipLine], bar_h: f32, light: bool) -> Pixmap {
+    match lines {
+        [] => return render_tooltip("AI Limits", bar_h, light),
+        [one] if !one.indent => return render_tooltip(&one.text, bar_h, light),
+        _ => {}
+    }
+    let scale = (bar_h / TIP_BASE_BAR_H).clamp(0.85, 3.0);
+    let size = TIP_FONT_PX * scale;
+    let pad_x = (TIP_PAD_X * scale).round();
+    let pad_top = (TIP_PAD_TOP * scale).round();
+    let pad_bottom = (TIP_PAD_BOTTOM * scale).round();
+    let line_h = (TIP_LINE_H * scale).round();
+    let gap = (TIP_LINE_GAP * scale).round();
+    let indent = (TIP_WRAP_INDENT * scale).round();
+    let n = lines.len() as f32;
+    let text_w = lines
+        .iter()
+        .map(|l| text_extent(&l.text, size).0 + if l.indent { indent } else { 0.0 })
+        .fold(0.0, f32::max);
+    let box_w = (text_w + pad_x * 2.0).ceil().max(8.0);
+    let box_h = (pad_top + line_h * n + gap * (n - 1.0) + pad_bottom)
+        .ceil()
+        .max(8.0);
+    let inset = tip_shadow_inset(bar_h) as f32;
+    let w = (box_w + inset * 2.0) as u32;
+    let h = (box_h + inset * 2.0) as u32;
+    let mut pm = Pixmap::new(w, h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
+    pm.fill(tiny_skia::Color::TRANSPARENT);
+    let radius = (TIP_RADIUS * scale).min(box_h / 2.0);
+    let ink = paint_tip_box(&mut pm, inset, box_w, box_h, radius, scale, light);
+
+    // Every line sits on the same grid: its capital height centred in its
+    // band, as the single line's ink is, so the lines keep one baseline step
+    // whatever letters they hold.
+    let Some(font) = font() else {
+        return pm;
+    };
+    let Some((_, _, _, cap_top, cap_bottom)) = digits_bounds(font, "H", size) else {
+        return pm;
+    };
+    let cap_h = cap_bottom - cap_top;
+    for (i, line) in lines.iter().enumerate() {
+        let Some((_, _, _, ink_top, _)) = digits_bounds(font, &line.text, size) else {
+            continue;
+        };
+        let band_top = inset + pad_top + (line_h + gap) * i as f32;
+        let cap_y = band_top + (line_h - cap_h) / 2.0;
+        let x = inset + pad_x + if line.indent { indent } else { 0.0 };
+        draw_text_at(&mut pm, &line.text, x, cap_y + (ink_top - cap_top), size, ink);
+    }
+    pm
+}
+
+/// The tooltip's box inside `pm`: shadow, body and, in light mode, the
+/// hairline. Returns the ink for its text.
+fn paint_tip_box(
+    pm: &mut Pixmap,
+    inset: f32,
+    box_w: f32,
+    box_h: f32,
+    radius: f32,
+    scale: f32,
+    light: bool,
+) -> tiny_skia::Color {
     // Drop shadow: concentric rounded rects stepping outward, each barely
     // visible, which approximates the shell's falloff without a blur pass.
     // Measured over mid grey: -3,-4,-7,-10 luma at 1..4px out, nothing beyond.
@@ -710,7 +898,7 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     for (step, alpha) in ramp {
         let s = step * scale;
         fill_round_rect(
-            &mut pm,
+            pm,
             inset - s,
             inset - s + 1.0,
             box_w + s * 2.0,
@@ -723,7 +911,7 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     // the shadow rings lie UNDER the box as well, and a body at alpha 244 lets
     // ~4% of them through - so the body's final colour depended on the shadow's
     // alphas, and tuning either one silently moved the other.
-    clear_round_rect(&mut pm, inset, inset, box_w, box_h, radius);
+    clear_round_rect(pm, inset, inset, box_w, box_h, radius);
 
     // DARK: no border at all. Scanning inward from the edge of the measured
     // tooltip over black gives 45,44,45,45 — flat body from the first pixel.
@@ -742,7 +930,7 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
     };
     if light {
         fill_round_rect(
-            &mut pm,
+            pm,
             inset,
             inset,
             box_w,
@@ -751,7 +939,7 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
             color(0, 0, 0, 36),
         );
         fill_round_rect(
-            &mut pm,
+            pm,
             inset + 1.0,
             inset + 1.0,
             box_w - 2.0,
@@ -760,10 +948,9 @@ pub(crate) fn render_tooltip(text: &str, bar_h: f32, light: bool) -> Pixmap {
             body,
         );
     } else {
-        fill_round_rect(&mut pm, inset, inset, box_w, box_h, radius, body);
+        fill_round_rect(pm, inset, inset, box_w, box_h, radius, body);
     }
-    draw_text_at(&mut pm, text, inset + pad_x, text_y, size, text_ink);
-    pm
+    text_ink
 }
 
 /// Ink width/height of `text` rendered at `size` px.
@@ -954,7 +1141,7 @@ mod tests {
                     items.push((format!("stacked-{set}-{n}-{ink}"), take()));
                 }
                 for bar in [40.0, 48.0, 72.0] {
-                    let pm = render_tooltip(&tooltip(&providers), bar, light);
+                    let pm = render_tooltip(&tooltip(&providers, false), bar, light);
                     items.push((format!("tooltip-{set}-{bar}-{ink}"), pm));
                 }
             }

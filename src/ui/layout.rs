@@ -3,9 +3,10 @@
 // The layout hands out zone rectangles; the renderer (the single place
 // that draws) does the in-zone arrangement.
 
-use super::renderer::{NAME_WIDTH, PCT_WIDTH, ROW_GAP};
+use super::renderer::{self, NAME_WIDTH, PCT_WIDTH, ROW_GAP};
 use super::theme::Dimensions;
-use crate::config::schema::{ColumnFlow, DetailLevel, Layout, WidthScale};
+use crate::config::schema::{ColumnFlow, DetailLevel, Layout, UIConfig, WidthScale};
+use crate::rows::RowView;
 
 /// Rectangle in window coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -34,6 +35,9 @@ pub enum BodyLayout {
     Vertical { rows: Vec<Rect>, hint: Rect },
     /// Columns with vertical bars.
     Horizontal { cols: Vec<Rect> },
+    /// A fresh install with nothing chosen yet: what to do, in two lines
+    /// ("Choose what to show" over "Click here...").
+    Choose { area: Rect },
 }
 
 /// How much of a row fits at the current width. A property of the window,
@@ -57,7 +61,108 @@ pub struct WindowLayout {
     pub body: BodyLayout,
     /// Row presentation the width allows; meaningful for the rows layout.
     pub row_tier: RowTier,
+    /// One entry per row or column: the band added under it for its model's
+    /// line of its own, or None when it has none (see `Shape`).
+    pub model_lines: Vec<Option<Rect>>,
 }
+
+/// What the widget's size depends on besides the config: one entry per row
+/// (whether the row carries a line of its own for its model) and whether the
+/// widget is waiting for a first choice. The app keeps the last one and lays
+/// the window out again only when it changes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Shape {
+    pub model_lines: Vec<bool>,
+    /// A fresh install with nothing chosen (`rows::nothing_chosen`).
+    pub choose: bool,
+}
+
+impl Shape {
+    /// `n` rows, none with a model line: every widget before model labels.
+    pub fn plain(n: usize) -> Self {
+        Self {
+            model_lines: vec![false; n],
+            choose: false,
+        }
+    }
+
+    /// The shape of `rows` under `ui`. `measure` is `Renderer::text_width`.
+    ///
+    /// Where a model label goes (the "own line" design):
+    /// - Compact rows: nowhere; the tooltip carries it.
+    /// - Medium rows: on the meta line, in what the reset leaves of it; a
+    ///   line of its own when the meta line's left part is taken (a count
+    ///   such as Copilot's "123 / 300"), or when its right part at its
+    ///   widest (a weekly "Weekly: 23h 59min") leaves less than the narrowest
+    ///   name slot, so a name held to `rows::name_fits` always shows in full.
+    /// - Expanded rows and every columns layout: a line of its own.
+    ///
+    /// Only a row that shows a model ever gets the line.
+    pub fn of(
+        ui: &UIConfig,
+        rows: &[RowView],
+        choose: bool,
+        measure: impl Fn(&str, f32) -> f32,
+    ) -> Self {
+        let columns = matches!(ui.layout, Layout::Horizontal);
+        let row_w = rows_width(&ui.detail, &ui.width_scale) - Dimensions::PADDING_H * 2.0;
+        let model_lines = rows
+            .iter()
+            .map(|row| {
+                row.model.is_some()
+                    && (columns
+                        || match ui.detail {
+                            DetailLevel::Compact => false,
+                            DetailLevel::Expanded => true,
+                            DetailLevel::Medium => medium_needs_line(row, row_w, &measure),
+                        })
+            })
+            .collect();
+        Self {
+            model_lines,
+            choose: choose && rows.is_empty(),
+        }
+    }
+}
+
+/// Whether a Medium row's model needs a line of its own (see `Shape::of`).
+fn medium_needs_line(row: &RowView, row_w: f32, measure: &impl Fn(&str, f32) -> f32) -> bool {
+    match renderer::medium_meta_widest(&row.data) {
+        None => true,
+        Some(right) => {
+            let room = medium_model_room(row_w, measure(&right, renderer::META_SIZE));
+            room < medium_name_slot()
+        }
+    }
+}
+
+/// What Medium's meta line leaves a model beside a right-aligned text
+/// `right_w` wide. The one formula the renderer, the shape and the
+/// name-slot test share.
+pub fn medium_model_room(row_w: f32, right_w: f32) -> f32 {
+    if right_w > 0.0 {
+        row_w - right_w - MODEL_GAP
+    } else {
+        row_w
+    }
+}
+
+/// The narrowest place a model name is drawn at Medium's meta size: what a
+/// name held to `rows::name_fits` is promised.
+fn medium_name_slot() -> f32 {
+    crate::rows::NAME_SLOTS
+        .iter()
+        .filter(|(_, size)| *size == renderer::META_SIZE)
+        .map(|(w, _)| *w)
+        .fold(0.0, f32::max)
+}
+
+/// Air between a model and the reset sharing Medium's meta line.
+pub const MODEL_GAP: f32 = 8.0;
+/// The line a row grows by for its model (rows layout).
+pub const MODEL_LINE_H: f32 = 14.0;
+/// The line a column grows by for its model (columns layout).
+pub const MODEL_COL_LINE_H: f32 = 13.0;
 
 /// Hint area height.
 const HINT_HEIGHT: f32 = 20.0 * Dimensions::DENSITY_SCALE;
@@ -116,50 +221,91 @@ fn row_tier(detail: &DetailLevel, row_w: f32) -> RowTier {
     }
 }
 
-/// Compute the window layout.
+/// Compute the window layout for a widget of `shape` (one row or column per
+/// entry; see `Shape`).
 pub fn compute(
     layout: &Layout,
     detail: &DetailLevel,
     width_scale: &WidthScale,
     column_flow: &ColumnFlow,
-    provider_count: usize,
+    shape: &Shape,
 ) -> WindowLayout {
+    // A fresh install: two lines saying what to do, in a box of the Medium
+    // rows' width whatever the chosen layout, so the second line fits.
+    if shape.choose {
+        return choose();
+    }
     // No visible providers (all unconfigured / disabled): the renderer draws a
     // single guidance line. Force a vertical compact box wide enough for that
     // hint regardless of the user's chosen layout, so it never clips (a
     // horizontal 0-provider window would otherwise be ~60px wide).
-    if provider_count == 0 {
-        return vertical(&DetailLevel::Compact, &WidthScale::Full, 1);
+    if shape.model_lines.is_empty() {
+        let mut win = vertical(&DetailLevel::Compact, &WidthScale::Full, &[false]);
+        win.model_lines.clear();
+        return win;
     }
-    let n = provider_count.max(1);
+    let lines = &shape.model_lines;
     match layout {
-        Layout::Vertical => vertical(detail, width_scale, n),
-        Layout::Horizontal => horizontal(detail, column_flow, n),
+        Layout::Vertical => vertical(detail, width_scale, lines),
+        Layout::Horizontal => horizontal(detail, column_flow, lines),
         // Legacy config value: the 2x2 mode was removed from the UI.
-        Layout::Grid => vertical(detail, width_scale, n),
+        Layout::Grid => vertical(detail, width_scale, lines),
     }
 }
 
-/// Vertical layout.
-fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowLayout {
-    let width: f32 = Dimensions::scale(match detail {
+/// The rows layout's window width.
+fn rows_width(detail: &DetailLevel, width_scale: &WidthScale) -> f32 {
+    Dimensions::scale(match detail {
         DetailLevel::Compact => 212.0,
         DetailLevel::Medium => 250.0,
         DetailLevel::Expanded => 290.0,
-    }) * width_scale.fraction();
+    }) * width_scale.fraction()
+}
+
+/// The first-install box: one Medium row's width and height.
+fn choose() -> WindowLayout {
+    let width = rows_width(&DetailLevel::Medium, &WidthScale::Full);
+    let pad_h = Dimensions::PADDING_H;
+    let area = Rect {
+        x: pad_h,
+        y: TOP_PADDING,
+        w: width - pad_h * 2.0,
+        h: Dimensions::row_height(&DetailLevel::Medium),
+    };
+    WindowLayout {
+        width,
+        height: area.y + area.h + 4.0,
+        body: BodyLayout::Choose { area },
+        row_tier: RowTier::Full,
+        model_lines: Vec::new(),
+    }
+}
+
+/// Vertical layout: one row per entry of `lines`, a row with a model line
+/// taller by that line.
+fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> WindowLayout {
+    let width: f32 = rows_width(detail, width_scale);
     let row_h = Dimensions::row_height(detail);
     let pad_h = Dimensions::PADDING_H;
 
-    let mut rows = Vec::with_capacity(n);
+    let mut rows = Vec::with_capacity(lines.len());
+    let mut model_lines = Vec::with_capacity(lines.len());
     let mut y = TOP_PADDING;
-    for _ in 0..n {
+    for &line in lines {
+        let extra = if line { MODEL_LINE_H } else { 0.0 };
         rows.push(Rect {
             x: pad_h,
             y,
             w: width - pad_h * 2.0,
-            h: row_h,
+            h: row_h + extra,
         });
-        y += row_h;
+        model_lines.push(line.then_some(Rect {
+            x: pad_h,
+            y: y + row_h,
+            w: width - pad_h * 2.0,
+            h: MODEL_LINE_H,
+        }));
+        y += row_h + extra;
     }
 
     // The hint is written for the natural width and the renderer drops it once
@@ -181,6 +327,7 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
         height,
         body: BodyLayout::Vertical { rows, hint },
         row_tier: tier,
+        model_lines,
     }
 }
 
@@ -188,7 +335,12 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, n: usize) -> WindowL
 /// side or stacked downwards. Only the geometry differs between the two — the
 /// column body and the renderer's per-column drawing are shared, because a
 /// column is drawn relative to its own rectangle wherever that sits.
-fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
+///
+/// A column with a model line keeps its body as it is and gains the line
+/// under it. Side by side every column shares one height, so the window grows
+/// by the line once any column has one; stacked, only those columns grow.
+fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> WindowLayout {
+    let n = lines.len();
     // Nothing is drawn in the side margins, so they stay small and identical
     // at every detail level: a bigger detail level buys bigger bars and text,
     // not more empty background around them.
@@ -213,22 +365,32 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
         ROW_FLOW_GAP
     };
     let gaps = gap * n.saturating_sub(1) as f32;
+    let extra = |line: bool| if line { MODEL_COL_LINE_H } else { 0.0 };
+    // Stacked: each column's own line; side by side: one shared line.
+    let extras: f32 = if stacked {
+        lines.iter().map(|&l| extra(l)).sum()
+    } else {
+        extra(lines.iter().any(|&l| l))
+    };
     let (width, height) = if stacked {
         (
             pad_h * 2.0 + col_w,
-            TOP_PADDING + body_h * n as f32 + gaps + 6.0,
+            TOP_PADDING + body_h * n as f32 + gaps + extras + 6.0,
         )
     } else {
         (
             pad_h * 2.0 + col_w * n as f32 + gaps,
-            TOP_PADDING + body_h + 6.0,
+            TOP_PADDING + body_h + extras + 6.0,
         )
     };
 
     let mut cols = Vec::with_capacity(n);
-    for i in 0..n {
+    let mut model_lines = Vec::with_capacity(n);
+    // The lines of the columns above, stacked.
+    let mut above = 0.0;
+    for (i, &line) in lines.iter().enumerate() {
         let (x, y) = if stacked {
-            (pad_h, TOP_PADDING + (body_h + gap) * i as f32)
+            (pad_h, TOP_PADDING + (body_h + gap) * i as f32 + above)
         } else {
             (pad_h + (col_w + gap) * i as f32, TOP_PADDING)
         };
@@ -238,6 +400,15 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
             w: col_w,
             h: body_h,
         });
+        model_lines.push(line.then_some(Rect {
+            x,
+            y: y + body_h,
+            w: col_w,
+            h: MODEL_COL_LINE_H,
+        }));
+        if stacked {
+            above += extra(line);
+        }
     }
 
     WindowLayout {
@@ -245,6 +416,7 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout
         height,
         body: BodyLayout::Horizontal { cols },
         row_tier: RowTier::Full,
+        model_lines,
     }
 }
 
@@ -260,7 +432,7 @@ mod tests {
             detail,
             &WidthScale::Full,
             &ColumnFlow::Row,
-            2,
+            &Shape::plain(2),
         )
         .width
     }
@@ -285,7 +457,7 @@ mod tests {
         ];
 
         for (detail, scale, want) in cases {
-            let got = compute(&Layout::Vertical, &detail, &scale, &ColumnFlow::Row, 2).row_tier;
+            let got = compute(&Layout::Vertical, &detail, &scale, &ColumnFlow::Row, &Shape::plain(2)).row_tier;
             assert_eq!(
                 got, want,
                 "{detail:?} at {scale:?}: expected {want:?}, got {got:?}"
@@ -340,7 +512,7 @@ mod tests {
             &DetailLevel::Compact,
             &WidthScale::Half,
             &ColumnFlow::Row,
-            2,
+            &Shape::plain(2),
         );
         assert_ne!(
             narrow.row_tier,
@@ -437,7 +609,7 @@ mod tests {
     }
 
     fn compute_columns(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
-        compute(&Layout::Horizontal, detail, &WidthScale::Full, flow, n)
+        compute(&Layout::Horizontal, detail, &WidthScale::Full, flow, &Shape::plain(n))
     }
 
     #[test]
@@ -448,7 +620,7 @@ mod tests {
             &DetailLevel::Compact,
             &WidthScale::ThreeQuarters,
             &ColumnFlow::Row,
-            2,
+            &Shape::plain(2),
         )
         .width;
 

@@ -20,6 +20,7 @@
 use crate::config::schema::IndicatorKind;
 use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
+use crate::rows::RowView;
 use crate::ui::tray::{color, draw_digits_fit, fill_round_rect, provider_pct};
 use anyhow::{Context as AnyhowContext, Result};
 use std::rc::Rc;
@@ -380,11 +381,13 @@ impl TaskbarPanel {
         }
     }
 
-    /// Show the hover tooltip — the provider summary in a dark, rounded,
-    /// borderless pill centered above the overlay — painted by us so it matches
-    /// the shell's own tooltips. Idempotent while shown; no-op if the panel is
-    /// hidden (no rect). Called from the overlay's CursorEntered.
-    pub fn show_tooltip(&mut self, providers: &[ProviderData]) {
+    /// Show the hover tooltip — the tooltip's rows in a dark, rounded,
+    /// borderless box centered above the overlay — painted by us so it matches
+    /// the shell's own tooltips. Today's single provider line with the default
+    /// config; one row per line, with model labels, once extra rows or labels
+    /// are on (`tray::tooltip_lines`). Idempotent while shown; no-op if the
+    /// panel is hidden (no rect). Called from the overlay's CursorEntered.
+    pub fn show_tooltip(&mut self, rows: &[RowView], first_install: bool) {
         #[cfg(target_os = "windows")]
         {
             if self.tip_shown || self.tip_hwnd == 0 {
@@ -393,7 +396,7 @@ impl TaskbarPanel {
             let Some((px, py, pw, _ph)) = self.rect else {
                 return;
             };
-            let text = crate::ui::tray::tooltip(providers);
+            let lines = crate::ui::tray::tooltip_lines(rows, first_install);
             let light = crate::platform::system_uses_light_theme();
             // The tooltip is sized from the BAR's thickness, which is the
             // only DPI signal here - not from the panel's height, which is
@@ -401,7 +404,7 @@ impl TaskbarPanel {
             // standing up. Taking the height made a side bar's tooltip a
             // third too big, while the tray icon's was right.
             let bar_thickness = self.bar_thickness() as f32;
-            let pm = crate::ui::tray::render_tooltip(&text, bar_thickness, light);
+            let pm = crate::ui::tray::render_tooltip_lines(&lines, bar_thickness, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
             // The pixmap carries the drop shadow around the box, so the box's
             // edge facing the bar sits `shadow` inside the pixmap's — add it
@@ -422,7 +425,7 @@ impl TaskbarPanel {
             self.tip_shown = true;
         }
         #[cfg(not(target_os = "windows"))]
-        let _ = providers;
+        let _ = (rows, first_install);
     }
 
     /// The bar's thickness, taken from the panel's own size: the panel spans
