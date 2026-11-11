@@ -28,11 +28,17 @@ pub type SharedProviders = Arc<RwLock<Vec<Arc<dyn Provider>>>>;
 /// Shared update interval — changed live from the context menu.
 pub type SharedInterval = Arc<AtomicU64>;
 
+/// Work that rides on every polling cycle instead of a timer of its own (the
+/// model labels are re-read here). Called after the cycle's fetches, never
+/// while polling is paused; it must only hand work off, not block.
+pub type CycleHook = Arc<dyn Fn() + Send + Sync>;
+
 pub struct Scheduler {
     providers: SharedProviders,
     /// Interval in seconds — shared, read before every cycle.
     interval_secs: SharedInterval,
     cmd_tx: mpsc::Sender<AppCommand>,
+    on_cycle: Option<CycleHook>,
 }
 
 impl Scheduler {
@@ -45,7 +51,14 @@ impl Scheduler {
             providers,
             interval_secs,
             cmd_tx,
+            on_cycle: None,
         }
+    }
+
+    /// Run `hook` after every cycle's fetches.
+    pub fn with_cycle_hook(mut self, hook: CycleHook) -> Self {
+        self.on_cycle = Some(hook);
+        self
     }
 
     /// Run the scheduler (spawned as a background task).
@@ -92,6 +105,9 @@ impl Scheduler {
             first_run = false;
 
             let any_ok = self.fetch_all().await;
+            if let Some(hook) = &self.on_cycle {
+                hook();
+            }
 
             let base = self
                 .interval_secs
