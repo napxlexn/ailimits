@@ -625,8 +625,16 @@ struct Frame {
     /// The scroll position, held to the content.
     scroll: f32,
     els: Vec<(Layer, El)>,
-    /// The pinned column heads: what covers the list's top, and its shapes.
-    sticky: Option<(Rect, Vec<Shape>)>,
+    sticky: Option<Sticky>,
+}
+
+/// The column heads, drawn over the list (window coordinates).
+#[derive(Debug, Clone)]
+struct Sticky {
+    rect: Rect,
+    shapes: Vec<Shape>,
+    /// Held at the list's top, over rows scrolled under it.
+    pinned: bool,
 }
 
 impl Frame {
@@ -634,11 +642,20 @@ impl Frame {
         (self.content_h - self.viewport.h).max(0.0)
     }
 
-    /// The list's visible part below the pinned column heads.
+    /// Where the list shows rows: below the column heads while they are
+    /// pinned.
     fn list_top(&self) -> f32 {
-        self.sticky
-            .as_ref()
-            .map_or(self.viewport.y, |(r, _)| bottom(r))
+        match &self.sticky {
+            Some(s) if s.pinned => bottom(&s.rect),
+            _ => self.viewport.y,
+        }
+    }
+
+    /// Whether a point is on the list's visible rows.
+    fn in_list(&self, x: f32, y: f32) -> bool {
+        contains(&self.viewport, x, y)
+            && y >= self.list_top()
+            && !self.sticky.as_ref().is_some_and(|s| contains(&s.rect, x, y))
     }
 }
 
@@ -819,6 +836,11 @@ impl Picker {
 
     /// The picker as shapes, for `Renderer::draw_picker`.
     pub fn scene(&self) -> PickerScene {
+        self.scene_with(true)
+    }
+
+    /// `cull`: leave out list rows scrolled out of sight.
+    fn scene_with(&self, cull: bool) -> PickerScene {
         let f = self.frame();
         let (hover, hover_row) = match self.pointer {
             Some((x, y)) => (self.hit(&f, x, y), self.hover_row(&f, x, y)),
@@ -840,25 +862,38 @@ impl Picker {
                 Layer::Overlay => overlay.extend(shapes),
                 Layer::Body => {
                     // Off-screen rows are not drawn.
-                    let visible = el_rect(el)
-                        .is_none_or(|r| bottom(&r) > vy && r.y < bottom(&f.viewport));
+                    let visible = !cull
+                        || el_rect(el)
+                            .is_none_or(|r| bottom(&r) > vy && r.y < bottom(&f.viewport));
                     if visible {
                         body.extend(shapes.iter().map(|s| s.moved(-vx, -vy)));
                     }
                 }
             }
         }
-        if let Some((r, shapes)) = &f.sticky {
+        if let Some(s) = &f.sticky {
             body.push(
                 Shape::Fill {
-                    rect: *r,
+                    rect: s.rect,
                     radius: 0.0,
                     ink: Ink::Surface,
                     alpha: 1.0,
                 }
                 .moved(-vx, -vy),
             );
-            body.extend(shapes.iter().map(|s| s.moved(-vx, -vy)));
+            body.extend(s.shapes.iter().map(|s| s.moved(-vx, -vy)));
+            // Pinned, a hairline shows the rows pass under the heads.
+            if s.pinned {
+                body.push(
+                    Shape::Fill {
+                        rect: rect(f.boxr.x + 10.0, bottom(&s.rect) - 1.0, BOX_W - 20.0, 1.0),
+                        radius: 0.0,
+                        ink: Ink::Separator,
+                        alpha: 1.0,
+                    }
+                    .moved(-vx, -vy),
+                );
+            }
         }
         PickerScene {
             width: f.width,
@@ -1216,20 +1251,15 @@ impl Picker {
         for el in &flow.els {
             els.push((Layer::Body, el.moved(dx, dy)));
         }
+        // The column heads: in place, or pinned to the top once the list has
+        // scrolled past them.
         let sticky = flow.sticky.as_ref().and_then(|(cy, ch, shapes)| {
-            // Pinned only once the list has scrolled past it; before that it
-            // is drawn in place, as part of the list.
             let at = (cy + dy).max(viewport.y);
             let r = rect(viewport.x, at, viewport.w, *ch);
-            (bottom(&r) > viewport.y && r.y < bottom(&viewport)).then(|| {
-                let shift = at - (cy + dy);
-                (
-                    r,
-                    shapes
-                        .iter()
-                        .map(|s| s.moved(dx, dy + shift))
-                        .collect::<Vec<_>>(),
-                )
+            (r.y < bottom(&viewport)).then(|| Sticky {
+                rect: r,
+                shapes: shapes.iter().map(|s| s.moved(dx, at)).collect(),
+                pinned: at > cy + dy,
             })
         });
 
@@ -1390,9 +1420,7 @@ impl Picker {
                 )
             })
             .collect();
-        for s in &heads {
-            f.shape(s.clone());
-        }
+        // Drawn once, by the frame, in place or pinned.
         f.sticky = Some((f.y, COLS_H, heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect()));
         f.y += COLS_H;
 
@@ -2053,7 +2081,7 @@ impl Picker {
         if !contains(&f.boxr, x, y) {
             return Hit::Outside;
         }
-        let in_list = contains(&f.viewport, x, y) && y >= f.list_top();
+        let in_list = f.in_list(x, y);
         for (layer, el) in f.els.iter().rev() {
             let Some((t, r, _)) = el.active() else {
                 continue;
@@ -2074,7 +2102,7 @@ impl Picker {
 
     /// The index in `f.els` of the row wash under the point.
     fn hover_row(&self, f: &Frame, x: f32, y: f32) -> Option<usize> {
-        if self.ask.is_some() || !contains(&f.viewport, x, y) || y < f.list_top() {
+        if self.ask.is_some() || !f.in_list(x, y) {
             return None;
         }
         f.els.iter().position(|(layer, el)| {
@@ -2371,9 +2399,8 @@ impl Picker {
         } else {
             r.y
         };
-        let list_top = f.sticky.as_ref().map_or(f.viewport.y + COLS_H, |(s, _)| {
-            bottom(s).max(f.viewport.y + COLS_H)
-        });
+        // Scrolled to the top edge, a row sits under the pinned heads.
+        let list_top = f.viewport.y + COLS_H;
         if top < list_top {
             self.scroll = f.scroll - (list_top - top);
         } else if bottom(&r) > bottom(&f.viewport) {
@@ -3054,4 +3081,871 @@ fn place_window(
     // Without a work area (the query failed) nothing holds it in.
     let work = work.unwrap_or((i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4));
     place(anchor, (size.0 as i32, size.1 as i32), margin, gap, work)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::ProviderId;
+
+    /// A fixed-advance stand-in for the font: half the size per character,
+    /// so 10 ordinary characters fit a model name's narrowest place.
+    fn mono(text: &str, size: f32) -> f32 {
+        text.chars().count() as f32 * size * 0.5
+    }
+
+    const ALL: [&str; 6] = ["claude", "codex", "grok", "cursor", "antigravity", "copilot"];
+
+    /// Every row there is, as the app offers them.
+    fn rows() -> Vec<RowChoice> {
+        let own = [
+            ("claude", "Claude", "Today’s row"),
+            ("codex", "Codex", "Today’s row"),
+            ("grok", "Grok", "Shared with Cursor and Grok Bot"),
+            ("cursor", "Cursor", "The same limit as the Grok row"),
+            ("antigravity", "Antigravity", "Gemini models, weekly"),
+            ("copilot", "Copilot", "Premium requests, monthly"),
+        ];
+        let mut out = Vec::new();
+        for (id, name, note) in own {
+            out.push(RowChoice {
+                id,
+                provider: id,
+                name,
+                note,
+                has_data: true,
+            });
+            let pid = ProviderId::from_config_id(id).unwrap();
+            for s in crate::rows::sub_rows(&pid) {
+                out.push(RowChoice {
+                    id: s.id,
+                    provider: id,
+                    name: s.names[0],
+                    note: s.note,
+                    has_data: true,
+                });
+            }
+        }
+        out
+    }
+
+    fn models() -> Vec<ModelChoice> {
+        let m = |provider: &'static str, id: &str, auto: &str| ModelChoice {
+            provider,
+            model_id: id.to_string(),
+            automatic: auto.to_string(),
+            renamed: None,
+        };
+        vec![
+            m("claude", "claude-opus-5-5", "Opus 5.5"),
+            m("codex", "gpt-6.1-sol", "GPT-6.1 Sol"),
+            m("grok", "grok-4.7", "Grok 4.7"),
+            m("copilot", "auto", "Auto"),
+        ]
+    }
+
+    /// The upgraded user's day: five tools read, the default rows, the
+    /// Opus week in the tooltip, no model label yet.
+    fn input() -> PickerInput {
+        let base = ["claude", "codex", "grok", "antigravity", "copilot"];
+        let mut tooltip: Vec<String> = base.iter().map(|s| s.to_string()).collect();
+        tooltip.push("claude.opus".into());
+        PickerInput {
+            mode: PickerMode::Normal,
+            rows: rows(),
+            widget_rows: base.iter().map(|s| s.to_string()).collect(),
+            tooltip_rows: tooltip,
+            model: UiModel::default(),
+            reads: Reads {
+                sign_in: base.iter().map(|s| s.to_string()).collect(),
+                ..Reads::default()
+            },
+            enabled: ALL.to_vec(),
+            found: Vec::new(),
+            models: models(),
+        }
+    }
+
+    /// The settings files allowed and the model shown in the tooltip.
+    fn with_model() -> PickerInput {
+        let mut i = input();
+        i.reads.tool_settings = true;
+        i.model.tooltip = vec![ModelPart::Model];
+        i
+    }
+
+    fn picker(input: PickerInput) -> Picker {
+        Picker::new(input, mono)
+    }
+
+    fn row(id: &str, surface: Surface) -> Target {
+        Target::Row {
+            row: id.to_string(),
+            surface,
+        }
+    }
+
+    fn part(part: ModelPart, surface: Surface) -> Target {
+        Target::Part { part, surface }
+    }
+
+    fn field(id: &str) -> Target {
+        Target::Field(id.to_string())
+    }
+
+    /// A target's area in window coordinates, whether it can be used or not.
+    fn area(p: &Picker, t: &Target) -> Option<(Layer, Rect)> {
+        p.frame().els.into_iter().find_map(|(layer, el)| {
+            let (et, r) = match &el {
+                El::Tick { target, cell, .. } => (target.clone(), *cell),
+                El::Radio { target, rect, .. }
+                | El::Field { target, rect, .. }
+                | El::Button { target, rect, .. } => (target.clone(), *rect),
+                El::Close { rect, .. } => (Target::Close, *rect),
+                _ => return None,
+            };
+            (et == *t).then_some((layer, r))
+        })
+    }
+
+    /// The middle of a target, scrolled into view first.
+    fn spot(p: &mut Picker, t: &Target) -> (f32, f32) {
+        let (layer, r) = area(p, t).expect("target laid out");
+        if layer == Layer::Body {
+            let f = p.frame();
+            if r.y < f.list_top() || bottom(&r) > bottom(&f.viewport) {
+                p.scroll = f.scroll + (r.y - f.list_top()) - 8.0;
+                p.settle();
+            }
+        }
+        let (_, r) = area(p, t).unwrap();
+        (r.x + r.w / 2.0, r.y + r.h / 2.0)
+    }
+
+    fn click(p: &mut Picker, t: &Target) -> Vec<PickerAction> {
+        let (x, y) = spot(p, t);
+        let mut out = p.handle(PickerEvent::PointerDown { x, y });
+        out.extend(p.handle(PickerEvent::PointerUp { x, y }));
+        out
+    }
+
+    fn key(p: &mut Picker, k: PickerKey) -> Vec<PickerAction> {
+        p.handle(PickerEvent::Key(k))
+    }
+
+    fn typed(p: &mut Picker, s: &str) -> Vec<PickerAction> {
+        p.handle(PickerEvent::Text(s.to_string()))
+    }
+
+    fn set_row(surface: Surface, row: &str, on: bool) -> PickerAction {
+        PickerAction::SetRow {
+            surface,
+            row: row.to_string(),
+            on,
+        }
+    }
+
+    fn rename(id: &str, name: Option<&str>) -> PickerAction {
+        PickerAction::Rename {
+            model_id: id.to_string(),
+            name: name.map(String::from),
+        }
+    }
+
+    /// Every text laid out, scrolled into sight or not.
+    fn texts(p: &Picker) -> String {
+        p.scene_with(false).texts().join("\n")
+    }
+
+    fn ticked(p: &Picker, t: &Target) -> bool {
+        p.frame().els.iter().any(|(_, el)| {
+            matches!(el, El::Tick { target, on: true, .. } if target == t)
+        })
+    }
+
+    fn field_text(p: &Picker, id: &str) -> String {
+        let m = p.input.models.iter().find(|m| m.model_id == id).unwrap();
+        p.field_text(m)
+    }
+
+    // ─── Rows ────────────────────────────────────────────────────
+
+    #[test]
+    fn a_tick_shows_or_hides_a_row_on_its_surface() {
+        let mut p = picker(input());
+        assert!(ticked(&p, &row("claude", Surface::Widget)));
+        assert_eq!(
+            click(&mut p, &row("claude", Surface::Widget)),
+            [set_row(Surface::Widget, "claude", false)]
+        );
+        assert_eq!(
+            click(&mut p, &row("claude.opus", Surface::Widget)),
+            [set_row(Surface::Widget, "claude.opus", true)]
+        );
+        assert_eq!(
+            click(&mut p, &row("claude.opus", Surface::Tooltip)),
+            [set_row(Surface::Tooltip, "claude.opus", false)]
+        );
+        // Nothing closes.
+        assert!(p.ask.is_none());
+    }
+
+    #[test]
+    fn a_press_released_elsewhere_does_nothing() {
+        let mut p = picker(input());
+        let (x, y) = spot(&mut p, &row("claude", Surface::Widget));
+        p.handle(PickerEvent::PointerDown { x, y });
+        assert!(p.handle(PickerEvent::PointerUp { x: x - 100.0, y }).is_empty());
+    }
+
+    #[test]
+    fn a_row_of_a_tool_not_yet_read_asks_first() {
+        let mut p = picker(input());
+        // Cursor is not in reads.sign_in.
+        assert!(!ticked(&p, &row("cursor", Surface::Widget)));
+        assert!(click(&mut p, &row("cursor", Surface::Widget)).is_empty());
+        let ask = p.ask.clone().expect("a question");
+        assert_eq!(ask.kind, ReadKind::SignIn("cursor".into()));
+        // The question names the tool, every file and the host.
+        let text = texts(&p);
+        assert!(text.contains("Read Cursor’s sign-in?"), "{text}");
+        let info = crate::consent::read_info("cursor").unwrap();
+        let flat = text.replace('\n', " ");
+        for f in info.sign_in.iter().chain(info.hosts) {
+            let first = f.split(' ').next().unwrap();
+            assert!(flat.contains(first), "{f} not named");
+        }
+        // While it is open, other ticks are inert.
+        let (x, y) = {
+            let (_, r) = area(&p, &row("claude", Surface::Widget)).unwrap();
+            (r.x + r.w / 2.0, r.y + r.h / 2.0)
+        };
+        p.handle(PickerEvent::PointerDown { x, y });
+        assert!(p.handle(PickerEvent::PointerUp { x, y }).is_empty());
+        // Allow: the read first, then the tick.
+        assert_eq!(
+            click(&mut p, &Target::Allow),
+            [
+                PickerAction::Allow(ReadKind::SignIn("cursor".into())),
+                set_row(Surface::Widget, "cursor", true),
+            ]
+        );
+        assert!(p.ask.is_none());
+        assert_eq!(p.focus, Some(row("cursor", Surface::Widget)));
+    }
+
+    #[test]
+    fn cancel_reads_nothing_and_leaves_the_tick_off() {
+        let mut p = picker(input());
+        click(&mut p, &row("cursor", Surface::Tooltip));
+        assert!(click(&mut p, &Target::Cancel).is_empty());
+        assert!(p.ask.is_none());
+        assert!(!ticked(&p, &row("cursor", Surface::Tooltip)));
+        // Esc cancels a question without closing the picker.
+        click(&mut p, &row("cursor", Surface::Tooltip));
+        assert!(key(&mut p, PickerKey::Escape).is_empty());
+        assert!(p.ask.is_none());
+        // Enter answers with the focused Allow.
+        click(&mut p, &row("cursor", Surface::Tooltip));
+        assert_eq!(
+            key(&mut p, PickerKey::Enter),
+            [
+                PickerAction::Allow(ReadKind::SignIn("cursor".into())),
+                set_row(Surface::Tooltip, "cursor", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn rows_group_by_provider_with_notes() {
+        let mut i = input();
+        i.enabled.retain(|p| *p != "cursor");
+        i.rows.iter_mut().find(|r| r.id == "claude.sonnet").unwrap().has_data = false;
+        let text = texts(&picker(i));
+        assert!(text.contains(OFF_IN_MENU));
+        assert!(text.contains(NOT_REPORTED));
+        // Codex and Copilot have one limit for everything.
+        assert_eq!(text.matches(ONE_LIMIT).count(), 2);
+        // An extra row shows its own part of the name.
+        assert!(text.contains("\nOpus\n"));
+    }
+
+    // ─── Model, version, effort ──────────────────────────────────
+
+    #[test]
+    fn a_model_tick_asks_for_the_settings_files() {
+        let mut p = picker(input());
+        assert!(click(&mut p, &part(ModelPart::Model, Surface::Tooltip)).is_empty());
+        assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::ToolSettings);
+        let text = texts(&p).replace('\n', " ");
+        // The files of the tools that may be read; Antigravity has none.
+        for id in ["claude", "codex", "grok", "copilot"] {
+            let s = crate::consent::read_info(id).unwrap().settings.unwrap();
+            assert!(text.contains(s.split(':').next().unwrap()), "{s}");
+        }
+        assert_eq!(
+            click(&mut p, &Target::Allow),
+            [
+                PickerAction::Allow(ReadKind::ToolSettings),
+                PickerAction::SetPart {
+                    surface: Surface::Tooltip,
+                    part: ModelPart::Model,
+                    on: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn version_needs_the_model_and_effort_may_go_alone() {
+        let mut i = input();
+        i.reads.tool_settings = true;
+        let mut p = picker(i.clone());
+        // Version is dimmed and inert until Model is on.
+        assert!(click(&mut p, &part(ModelPart::Version, Surface::Widget)).is_empty());
+        assert!(p.ask.is_none());
+        let f = p.frame();
+        assert!(!p
+            .focusables(&f)
+            .iter()
+            .any(|(t, ..)| *t == part(ModelPart::Version, Surface::Widget)));
+        assert_eq!(
+            click(&mut p, &part(ModelPart::Effort, Surface::Widget)),
+            [PickerAction::SetPart {
+                surface: Surface::Widget,
+                part: ModelPart::Effort,
+                on: true
+            }]
+        );
+        // Model off takes the version with it.
+        i.model.widget = vec![ModelPart::Model, ModelPart::Version];
+        let mut p = picker(i);
+        assert!(ticked(&p, &part(ModelPart::Version, Surface::Widget)));
+        assert_eq!(
+            click(&mut p, &part(ModelPart::Model, Surface::Widget)),
+            [
+                PickerAction::SetPart {
+                    surface: Surface::Widget,
+                    part: ModelPart::Model,
+                    on: false
+                },
+                PickerAction::SetPart {
+                    surface: Surface::Widget,
+                    part: ModelPart::Version,
+                    on: false
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parts_show_as_ticked_only_when_the_settings_may_be_read() {
+        let mut i = input();
+        i.model.widget = vec![ModelPart::Model];
+        let p = picker(i);
+        assert!(!ticked(&p, &part(ModelPart::Model, Surface::Widget)));
+    }
+
+    #[test]
+    fn last_used_asks_for_the_session_tail() {
+        let mut p = picker(with_model());
+        assert!(click(&mut p, &Target::Source(ModelSource::LastUsed)).is_empty());
+        assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::LastSession);
+        assert!(texts(&p).contains("64 KB"));
+        assert_eq!(
+            click(&mut p, &Target::Allow),
+            [
+                PickerAction::Allow(ReadKind::LastSession),
+                PickerAction::SetSource(ModelSource::LastUsed),
+            ]
+        );
+        // Allowed already: no question; the shown one again: nothing.
+        let mut i = with_model();
+        i.reads.last_session = true;
+        let mut p = picker(i);
+        assert_eq!(
+            click(&mut p, &Target::Source(ModelSource::LastUsed)),
+            [PickerAction::SetSource(ModelSource::LastUsed)]
+        );
+        assert!(click(&mut p, &Target::Source(ModelSource::Configured)).is_empty());
+    }
+
+    #[test]
+    fn the_source_waits_for_a_part() {
+        let mut p = picker(input());
+        assert!(click(&mut p, &Target::Source(ModelSource::LastUsed)).is_empty());
+        assert!(p.ask.is_none());
+    }
+
+    // ─── Model names ─────────────────────────────────────────────
+
+    #[test]
+    fn names_wait_for_the_model() {
+        let text = texts(&picker(input()));
+        assert!(text.contains(NAMES_OFF));
+        let mut i = input();
+        i.reads.tool_settings = true;
+        i.model.widget = vec![ModelPart::Effort];
+        assert!(texts(&picker(i)).contains(NAMES_OFF));
+        let p = picker(with_model());
+        let text = texts(&p);
+        assert!(text.replace('\n', " ").contains(NAMES_ON));
+        // The placeholder is the automatic name.
+        assert!(text.contains("Opus 5.5  (automatic)"), "{text}");
+        assert!(text.contains("Up to about 10 characters"), "{text}");
+    }
+
+    #[test]
+    fn typing_renames_at_once_and_stops_at_the_limit() {
+        let mut p = picker(with_model());
+        let id = "claude-opus-5-5";
+        click(&mut p, &field(id));
+        assert!(p.editing());
+        assert_eq!(typed(&mut p, "Opus"), [rename(id, Some("Opus"))]);
+        assert!(texts(&p).contains("Room for about 6 more characters"));
+        // Ten characters fit; the eleventh is refused.
+        assert_eq!(typed(&mut p, "Maximum"), [rename(id, Some("OpusMaximu"))]);
+        assert_eq!(field_text(&p, id), "OpusMaximu");
+        assert!(p.edit.as_ref().unwrap().full);
+        assert!(texts(&p).contains("Full: it just fits"));
+        assert!(typed(&mut p, "x").is_empty());
+        // Editing keys.
+        assert_eq!(key(&mut p, PickerKey::Backspace), [rename(id, Some("OpusMaxim"))]);
+        key(&mut p, PickerKey::Home);
+        assert_eq!(key(&mut p, PickerKey::Delete), [rename(id, Some("pusMaxim"))]);
+        key(&mut p, PickerKey::Right);
+        assert_eq!(typed(&mut p, "é"), [rename(id, Some("péusMaxim"))]);
+        key(&mut p, PickerKey::Left);
+        key(&mut p, PickerKey::Left);
+        assert_eq!(key(&mut p, PickerKey::Backspace), Vec::new());
+        key(&mut p, PickerKey::End);
+        // An empty field brings the automatic name back.
+        let mut last = Vec::new();
+        for _ in 0..12 {
+            let out = key(&mut p, PickerKey::Backspace);
+            if !out.is_empty() {
+                last = out;
+            }
+        }
+        assert_eq!(last, [rename(id, None)]);
+    }
+
+    #[test]
+    fn spaces_never_lead_double_or_trail() {
+        let mut p = picker(with_model());
+        let id = "claude-opus-5-5";
+        click(&mut p, &field(id));
+        assert!(typed(&mut p, " ").is_empty());
+        assert_eq!(field_text(&p, id), "");
+        assert_eq!(typed(&mut p, "Opus"), [rename(id, Some("Opus"))]);
+        // A trailing space is kept while typing but never sent.
+        assert!(typed(&mut p, "  ").is_empty());
+        assert_eq!(field_text(&p, id), "Opus ");
+        assert_eq!(typed(&mut p, "Max"), [rename(id, Some("Opus Max"))]);
+        // No room for a space with nothing after it.
+        typed(&mut p, "i");
+        assert_eq!(field_text(&p, id), "Opus Maxi");
+        assert!(typed(&mut p, " ").is_empty());
+        assert_eq!(field_text(&p, id), "Opus Maxi");
+        assert!(p.edit.as_ref().unwrap().full);
+    }
+
+    #[test]
+    fn a_paste_is_cut_to_what_fits() {
+        let mut p = picker(with_model());
+        let id = "gpt-6.1-sol";
+        click(&mut p, &field(id));
+        let out = p.handle(PickerEvent::Paste("  Claude\nOpus Five  ".into()));
+        assert_eq!(out, [rename(id, Some("Claude Opu"))]);
+        assert!(p.edit.as_ref().unwrap().full);
+        // Into the middle: only what still fits goes in.
+        key(&mut p, PickerKey::Home);
+        let out = p.handle(PickerEvent::Paste("XYZ".into()));
+        assert!(out.is_empty(), "{out:?}");
+        let mut p = picker(with_model());
+        click(&mut p, &field(id));
+        typed(&mut p, "GPT");
+        key(&mut p, PickerKey::Home);
+        let out = p.handle(PickerEvent::Paste("ABCDEFGHIJ".into()));
+        assert_eq!(out, [rename(id, Some("ABCDEFGGPT"))]);
+        // A paste with nowhere to go is ignored.
+        let mut p = picker(with_model());
+        assert!(!p.editing());
+        assert!(p.handle(PickerEvent::Paste("x".into())).is_empty());
+    }
+
+    #[test]
+    fn a_new_input_keeps_the_edit_focus_and_scroll() {
+        let mut p = picker(with_model());
+        let id = "claude-opus-5-5";
+        click(&mut p, &field(id));
+        typed(&mut p, "Opus ");
+        let scroll = p.scroll;
+        assert!(scroll > 0.0);
+        // The app applied the rename and sends its new state.
+        let mut i = with_model();
+        i.models[0].renamed = Some("Opus".into());
+        p.set_input(i);
+        assert_eq!(field_text(&p, id), "Opus ");
+        assert_eq!(p.edit.as_ref().unwrap().caret, 5);
+        assert_eq!(p.focus, Some(field(id)));
+        assert_eq!(p.scroll, scroll);
+        // Leaving the field shows the stored name; Tab goes to the next.
+        key(&mut p, PickerKey::Tab);
+        assert_eq!(p.focus, Some(field("gpt-6.1-sol")));
+        assert_eq!(field_text(&p, id), "Opus");
+        // The model it edited is gone: the edit ends.
+        click(&mut p, &field(id));
+        let mut i = with_model();
+        i.models.remove(0);
+        p.set_input(i);
+        assert!(!p.editing());
+        assert_eq!(p.focus, None);
+    }
+
+    #[test]
+    fn a_click_places_the_caret() {
+        let mut p = picker(with_model());
+        let id = "claude-opus-5-5";
+        click(&mut p, &field(id));
+        typed(&mut p, "Opus");
+        let (_, r) = area(&p, &field(id)).unwrap();
+        // mono: 6 px a character at 12 px; the second boundary is at 12.
+        let x = r.x + 8.0 + 12.5;
+        p.handle(PickerEvent::PointerDown { x, y: r.y + 10.0 });
+        p.handle(PickerEvent::PointerUp { x, y: r.y + 10.0 });
+        assert_eq!(p.edit.as_ref().unwrap().caret, 2);
+        assert!(p.wants_text_cursor());
+    }
+
+    // ─── Closing ─────────────────────────────────────────────────
+
+    #[test]
+    fn escape_the_cross_and_a_click_outside_close() {
+        let mut p = picker(input());
+        assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+        let mut p = picker(input());
+        assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
+        let mut p = picker(input());
+        // The shadow margin is outside the box.
+        assert_eq!(
+            p.handle(PickerEvent::PointerDown { x: 3.0, y: 3.0 }),
+            [PickerAction::Close]
+        );
+        let mut p = picker(input());
+        assert_eq!(p.handle(PickerEvent::FocusLost), [PickerAction::Close]);
+        // An open question goes with the window.
+        let mut p = picker(input());
+        click(&mut p, &row("cursor", Surface::Widget));
+        assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
+    }
+
+    // ─── Welcome and the update notice ───────────────────────────
+
+    #[test]
+    fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
+        let mut i = input();
+        i.mode = PickerMode::Welcome;
+        i.reads = Reads::default();
+        i.found = vec!["claude", "codex", "grok"];
+        let mut p = picker(i);
+        let text = texts(&p);
+        assert!(text.starts_with(TITLE_WELCOME));
+        assert!(text.contains("Tick the tools you use."));
+        assert_eq!(text.lines().filter(|l| *l == FOUND).count(), 3);
+        assert!(!p.frame().els.iter().any(|(_, el)| matches!(el, El::Tick { on: true, .. })));
+        // The first tick asks for that tool's sign-in.
+        click(&mut p, &row("codex", Surface::Widget));
+        assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::SignIn("codex".into()));
+        click(&mut p, &Target::Cancel);
+        // Closing answers the welcome, once.
+        assert_eq!(
+            key(&mut p, PickerKey::Escape),
+            [PickerAction::NoticeDone, PickerAction::Close]
+        );
+        assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    }
+
+    #[test]
+    fn the_welcome_becomes_the_picker_once_a_tool_is_allowed() {
+        let mut i = input();
+        i.mode = PickerMode::Welcome;
+        i.reads.sign_in = vec!["codex".into()];
+        assert!(texts(&picker(i)).starts_with(TITLE_ROWS));
+    }
+
+    fn notice() -> PickerInput {
+        let mut i = input();
+        i.mode = PickerMode::UpdateNotice;
+        i.reads.sign_in = vec!["claude".into(), "copilot".into(), "gemini".into()];
+        i
+    }
+
+    #[test]
+    fn the_update_notice_names_every_file_and_host() {
+        let p = picker(notice());
+        let text = texts(&p).replace('\n', " ");
+        assert!(text.starts_with(TITLE_NOTICE));
+        for id in ["claude", "copilot", "antigravity"] {
+            let info = crate::consent::read_info(id).unwrap();
+            assert!(text.contains(info.tool), "{}", info.tool);
+            for s in info.sign_in.iter().chain(info.hosts) {
+                for word in s.split(' ').filter(|w| w.len() > 3) {
+                    assert!(text.contains(word.trim_end_matches(')')), "{word} of {s}");
+                }
+            }
+        }
+        // Only what is read.
+        assert!(!text.contains("Codex CLI"));
+    }
+
+    #[test]
+    fn ok_closes_the_notice_and_review_opens_the_picker() {
+        let mut p = picker(notice());
+        assert_eq!(
+            key(&mut p, PickerKey::Enter),
+            [PickerAction::NoticeDone, PickerAction::Close]
+        );
+        let mut p = picker(notice());
+        assert_eq!(
+            click(&mut p, &Target::NoticeReview),
+            [PickerAction::NoticeDone]
+        );
+        assert!(texts(&p).starts_with(TITLE_ROWS));
+        // A late snapshot still saying UpdateNotice keeps the picker.
+        p.set_input(notice());
+        assert!(texts(&p).starts_with(TITLE_ROWS));
+        assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+        // The cross on the notice answers it too.
+        let mut p = picker(notice());
+        assert_eq!(
+            click(&mut p, &Target::Close),
+            [PickerAction::NoticeDone, PickerAction::Close]
+        );
+    }
+
+    // ─── Keyboard and scrolling ──────────────────────────────────
+
+    #[test]
+    fn the_keyboard_walks_the_grid() {
+        let mut p = picker(input());
+        key(&mut p, PickerKey::Tab);
+        assert_eq!(p.focus, Some(Target::Close));
+        assert!(p.focus_visible);
+        key(&mut p, PickerKey::Tab);
+        assert_eq!(p.focus, Some(row("claude", Surface::Widget)));
+        key(&mut p, PickerKey::Right);
+        assert_eq!(p.focus, Some(row("claude", Surface::Tooltip)));
+        key(&mut p, PickerKey::Down);
+        assert_eq!(p.focus, Some(row("claude.opus", Surface::Tooltip)));
+        assert_eq!(
+            key(&mut p, PickerKey::Space),
+            [set_row(Surface::Tooltip, "claude.opus", false)]
+        );
+        key(&mut p, PickerKey::Left);
+        key(&mut p, PickerKey::Up);
+        assert_eq!(p.focus, Some(row("claude", Surface::Widget)));
+        key(&mut p, PickerKey::BackTab);
+        assert_eq!(p.focus, Some(Target::Close));
+        // End goes to the last control, scrolled into view: with no model
+        // part on, the source waits and there are no names, so the last is
+        // the Effort tick for the tooltip.
+        key(&mut p, PickerKey::End);
+        assert_eq!(p.focus, Some(part(ModelPart::Effort, Surface::Tooltip)));
+        assert!(p.scroll > 0.0);
+    }
+
+    #[test]
+    fn the_list_scrolls_within_the_work_area() {
+        let mut p = picker(with_model());
+        p.set_max_height(300.0);
+        let (_, h) = p.window_size();
+        assert_eq!(h, 300.0 + MARGIN * 2.0);
+        p.handle(PickerEvent::Wheel { dy: -48.0 });
+        assert_eq!(p.scroll, 48.0);
+        p.handle(PickerEvent::Wheel { dy: 480.0 });
+        assert_eq!(p.scroll, 0.0);
+        p.handle(PickerEvent::Wheel { dy: -100_000.0 });
+        let f = p.frame();
+        assert_eq!(p.scroll, f.max_scroll());
+        assert!(f.max_scroll() > 0.0);
+        // The column heads stay at the top.
+        let s = f.sticky.clone().expect("pinned heads");
+        assert!(s.pinned);
+        assert_eq!(s.rect.y, f.viewport.y);
+        // Tab from the top reaches a field far below and reveals it.
+        p.scroll = 0.0;
+        p.focus = None;
+        while p.focus != Some(field("claude-opus-5-5")) {
+            key(&mut p, PickerKey::Tab);
+        }
+        let f = p.frame();
+        let (_, r) = area(&p, &field("claude-opus-5-5")).unwrap();
+        assert!(r.y >= f.list_top() && bottom(&r) <= bottom(&f.viewport), "{r:?}");
+    }
+
+    #[test]
+    fn hover_repaints_only_when_it_changes() {
+        let mut p = picker(input());
+        p.take_dirty();
+        let (x, y) = spot(&mut p, &row("claude", Surface::Widget));
+        p.take_dirty();
+        p.handle(PickerEvent::PointerMove { x, y });
+        assert!(p.take_dirty());
+        p.handle(PickerEvent::PointerMove { x: x + 1.0, y });
+        assert!(!p.take_dirty());
+        p.handle(PickerEvent::PointerLeave);
+        assert!(p.take_dirty());
+    }
+
+    // ─── Placement ───────────────────────────────────────────────
+
+    const WORK: (i32, i32, i32, i32) = (0, 0, 1920, 1032);
+
+    fn at(x: i32, y: i32, w: i32, h: i32) -> ScreenRect {
+        ScreenRect { x, y, w, h }
+    }
+
+    #[test]
+    fn the_box_goes_beside_the_anchor_inside_the_work_area() {
+        let size = (404, 584);
+        // Right of a widget on the left, top-aligned; the margin is outside.
+        assert_eq!(place(at(100, 100, 278, 200), size, 12, 8, WORK), (100 + 278 + 8 - 12, 88));
+        // Against the right edge: to its left.
+        assert_eq!(
+            place(at(1600, 100, 278, 200), size, 12, 8, WORK),
+            (1600 - 8 - 380 - 12, 88)
+        );
+        // Low on the screen: slid up into the work area.
+        let (_, y) = place(at(100, 900, 278, 100), size, 12, 8, WORK);
+        assert_eq!(y + 12 + 560, 1032);
+        // The tray icon in the corner: left of it, bottom held in.
+        let (x, y) = place(at(1840, 1040, 24, 40), size, 12, 8, WORK);
+        assert_eq!((x + 12 + 380, y + 12 + 560), (1840 - 8, 1032));
+        // A widget as wide as the screen: below it.
+        assert_eq!(place(at(0, 50, 1920, 100), size, 12, 8, WORK), (-12, 50 + 100 + 8 - 12));
+        // No room anywhere: held inside all the same.
+        let (x, y) = place(at(10, 10, 1900, 1000), size, 12, 8, WORK);
+        assert!(x + 12 >= 0 && x + 12 + 380 <= 1920 && y + 12 >= 0 && y + 12 + 560 <= 1032);
+    }
+
+    #[test]
+    fn room_text_reads_well() {
+        assert_eq!(room_text(1, false), "Fits every size. Room for about 1 more character.");
+        assert_eq!(room_text(3, false), "Fits every size. Room for about 3 more characters.");
+        assert!(room_text(0, false).starts_with("Full"));
+        assert!(room_text(10, true).starts_with("Up to about 10 characters"));
+    }
+
+    #[test]
+    fn wrapping_breaks_long_paths() {
+        let p = picker(input());
+        let lines = p.wrap(
+            &[span(
+                r"%USERPROFILE%\.claude\projects\...\*.jsonl (the end of the newest)",
+                SIZE_NOTE,
+                Ink::Text,
+                false,
+            )],
+            150.0,
+        );
+        assert!(lines.len() > 1);
+        for l in &lines {
+            let end = l.last().map_or(0.0, |r| r.x + mono(&r.text, r.size));
+            assert!(end <= 150.0 + 0.01, "{:?}", l.iter().map(|r| &r.text).collect::<Vec<_>>());
+        }
+        let joined: String = lines
+            .iter()
+            .flatten()
+            .map(|r| r.text.as_str())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(joined.contains(r"\.claude\"));
+    }
+
+    // ─── Visual baseline ─────────────────────────────────────────
+
+    /// The picker, pinned: see ui/visual_baseline.rs. New looks only (the
+    /// picker did not exist in 0.7.0).
+    #[test]
+    fn visual_baseline_picker() {
+        use crate::ui::visual_baseline as vb;
+        let renderer = Rc::new(Renderer::new().expect("a system font"));
+        let draw = |p: &Picker, light: bool, scale: f32| {
+            let (w, h) = p.window_size();
+            let mut pm = tiny_skia::Pixmap::new(
+                (w * scale).ceil() as u32,
+                (h * scale).ceil() as u32,
+            )
+            .unwrap();
+            renderer.draw_picker(&mut pm, &p.scene(), &PickerTheme::for_system(light), scale);
+            pm
+        };
+        let make = |input: PickerInput| {
+            let r = renderer.clone();
+            Picker::new(input, move |t, s| r.text_width(t, s))
+        };
+        let mut items = Vec::new();
+
+        let normal = make(input());
+        items.push(("normal-dark".to_string(), draw(&normal, false, 1.0)));
+        items.push(("normal-light".to_string(), draw(&normal, true, 1.0)));
+        items.push(("normal-dark-150".to_string(), draw(&normal, false, 1.5)));
+
+        let mut welcome = input();
+        welcome.mode = PickerMode::Welcome;
+        welcome.reads = Reads::default();
+        welcome.found = vec!["claude", "codex", "grok"];
+        let welcome = make(welcome);
+        items.push(("welcome-dark".to_string(), draw(&welcome, false, 1.0)));
+        items.push(("welcome-light".to_string(), draw(&welcome, true, 1.0)));
+
+        let notice = make(notice());
+        items.push(("notice-dark".to_string(), draw(&notice, false, 1.0)));
+        items.push(("notice-light".to_string(), draw(&notice, true, 1.0)));
+
+        // A read question open, with the focus ring on Allow.
+        let mut ask = make(input());
+        click(&mut ask, &row("cursor", Surface::Widget));
+        ask.focus_visible = true;
+        items.push(("ask-sign-in-dark".to_string(), draw(&ask, false, 1.0)));
+        let mut ask = make(input());
+        click(&mut ask, &part(ModelPart::Model, Surface::Widget));
+        items.push(("ask-settings-light".to_string(), draw(&ask, true, 1.0)));
+
+        // The names: one typed (caret, room hint), the others placeholders.
+        let mut names = make(with_model());
+        click(&mut names, &field("claude-opus-5-5"));
+        typed(&mut names, "My Opus");
+        items.push(("name-typed-dark".to_string(), draw(&names, false, 1.0)));
+        items.push(("name-typed-light".to_string(), draw(&names, true, 1.0)));
+        let mut full = make(with_model());
+        click(&mut full, &field("gpt-6.1-sol"));
+        full.handle(PickerEvent::Paste("GPT-6.1 Sol Thinking".into()));
+        items.push(("name-full-dark".to_string(), draw(&full, false, 1.0)));
+        let mut placeholder = make(with_model());
+        placeholder.handle(PickerEvent::Wheel { dy: -10_000.0 });
+        items.push(("name-placeholder-dark".to_string(), draw(&placeholder, false, 1.0)));
+
+        // Scrolled half way, the heads pinned, a row hovered.
+        let mut scrolled = make(input());
+        scrolled.set_max_height(360.0);
+        scrolled.handle(PickerEvent::Wheel { dy: -200.0 });
+        scrolled.handle(PickerEvent::PointerMove { x: 120.0, y: 160.0 });
+        items.push(("scrolled-dark".to_string(), draw(&scrolled, false, 1.0)));
+
+        // Model ticks: Effort alone, Version dimmed; keyboard focus ring.
+        let mut i = input();
+        i.reads.tool_settings = true;
+        i.model.widget = vec![ModelPart::Effort];
+        i.model.tooltip = vec![ModelPart::Model, ModelPart::Version];
+        let mut parts = make(i);
+        parts.focus = Some(part(ModelPart::Effort, Surface::Widget));
+        parts.focus_visible = true;
+        parts.reveal_focus();
+        items.push(("version-disabled-dark".to_string(), draw(&parts, false, 1.0)));
+        items.push(("version-disabled-light".to_string(), draw(&parts, true, 1.0)));
+
+        vb::check("picker", items);
+    }
 }
