@@ -1,0 +1,16 @@
+# Visual baseline 'tooltip-rows': name, size, FNV-1a of the RGBA pixels.
+# Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
+every-40-dark 289x176 5a7b9d955e9b6bdd
+every-40-light 289x176 ae1b4a4150c911e9
+every-48-dark 336x212 f4440fb3491b9ce7
+every-48-light 336x212 a174d89a7e834c7d
+every-72-dark 489x323 8a1abf56dd2d6fa4
+every-72-light 489x323 970f0c89f3b22497
+first-install-48-dark 214x42 3d2e95899ac5e74b
+first-install-48-light 214x42 31b813ed77a9ef78
+mix-48-dark 275x110 88d30dfdc915b323
+mix-48-light 275x110 f9d2af40e492f5eb
+unlabelled-48-dark 186x76 18a0b44a109c67da
+unlabelled-48-light 186x76 559bb00fc0f64568
+wrap-48-dark 397x76 899e7b72f684770b
+wrap-48-light 397x76 539ad3ae65f1502d

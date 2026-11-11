@@ -60,6 +60,8 @@ pub(super) const META_SIZE: f32 = 10.5;
 /// The widest reset countdown `format_duration` writes: what the meta line's
 /// reset is held to when deciding the room a model gets beside it.
 pub(super) const LONGEST_RESET: &str = "23h 59min";
+/// The widest provider name: what the columns' width is made for.
+const WIDEST_PROVIDER_NAME: &str = "Antigravity";
 /// Size of a model label on Expanded's line of its own.
 const MODEL_EXPANDED_SIZE: f32 = 11.0;
 /// The first-install lines (rows.js `widgetPixmap`).
@@ -766,9 +768,13 @@ impl Renderer {
             }
         }
 
+        // A column is made as wide as the widest provider name (layout.rs);
+        // a name with shorter forms takes one no wider than that, so the
+        // columns keep today's air between their names.
+        let name_room = || self.text_width(WIDEST_PROVIDER_NAME, name_size).min(col.w);
         self.draw_text(
             pixmap,
-            self.fit_name(view.names, name_size, || col.w),
+            self.fit_name(view.names, name_size, name_room),
             col.x,
             col.y + col.h - if reset_size.is_some() { 23.0 } else { 12.0 },
             name_size,
@@ -1939,6 +1945,363 @@ mod tests {
         }
 
         vb::check("widget", items);
+    }
+
+    // ─── Rows and models: the new looks ───────────────────────────
+
+    /// A reset `secs` from now plus half a minute (see visual_baseline.rs).
+    fn reset_in(secs: i64) -> Option<chrono::DateTime<Utc>> {
+        Some(Utc::now() + chrono::Duration::seconds(secs + 30))
+    }
+
+    fn pct_reset(label: &str, used: u64, window: MetricWindow, secs: i64) -> Metric {
+        Metric {
+            reset_at: reset_in(secs),
+            ..pct_metric(label, used, window)
+        }
+    }
+
+    /// Every provider with every metric an extra row can show.
+    fn rows_fixture() -> Vec<ProviderData> {
+        use MetricWindow::{Long, Session};
+        const H: i64 = 3600;
+        const D: i64 = 86_400;
+        let of = |id: ProviderId, metrics: Vec<Metric>| ProviderData {
+            id,
+            ..data(metrics)
+        };
+        vec![
+            of(
+                ProviderId::Claude,
+                vec![
+                    pct_reset("Session", 25, Session, 2 * H + 14 * 60),
+                    pct_reset("Weekly", 34, Long, 3 * D + 4 * H),
+                    pct_reset("Opus", 61, Long, 3 * D + 4 * H),
+                    pct_reset("Sonnet", 12, Long, 3 * D + 4 * H),
+                ],
+            ),
+            of(
+                ProviderId::Codex,
+                vec![
+                    pct_reset("Session", 48, Session, 4 * H + 51 * 60),
+                    pct_reset("Weekly", 52, Long, 5 * D + 2 * H),
+                ],
+            ),
+            of(
+                ProviderId::Grok,
+                vec![
+                    pct_reset("Weekly", 12, Long, 6 * D + 2 * H),
+                    pct_reset("Build", 7, Long, 6 * D + 2 * H),
+                ],
+            ),
+            of(
+                ProviderId::Antigravity,
+                vec![
+                    pct_reset("Gemini", 30, Long, 5 * D),
+                    pct_reset("Claude/GPT", 64, Long, 5 * D),
+                ],
+            ),
+            of(
+                ProviderId::Copilot,
+                vec![Metric {
+                    label: "Premium".into(),
+                    used: 123,
+                    limit: Some(300),
+                    unit: MetricUnit::Requests,
+                    reset_at: reset_in(20 * D + 3 * H),
+                    window: Session,
+                    unified_pool: false,
+                }],
+            ),
+            of(
+                ProviderId::Cursor,
+                vec![
+                    pct_reset("Premium", 12, Session, 6 * D + 2 * H),
+                    pct_reset("Grok Bot", 3, Session, 6 * D + 2 * H),
+                ],
+            ),
+        ]
+    }
+
+    /// The parts of a model label switched on.
+    #[derive(Clone, Copy)]
+    enum Parts {
+        Full,
+        NoEffort,
+        NoVersion,
+        ModelOnly,
+        EffortOnly,
+    }
+
+    /// The label each provider's tool would give, with `parts` on (rows.rs
+    /// `model_label`: version needs the model, effort can go alone).
+    fn label_for(id: &ProviderId, parts: Parts) -> Option<ModelLabel> {
+        let (model, version, effort) = match id {
+            ProviderId::Claude => ("Opus", Some("Opus 5.5"), Some("xhigh")),
+            ProviderId::Codex => ("GPT", Some("GPT-6.1 Sol"), Some("high")),
+            ProviderId::Grok => ("Grok", Some("Grok 4.7"), Some("high")),
+            ProviderId::Antigravity => ("Claude Sonnet", Some("Claude Sonnet 4.6"), None),
+            ProviderId::Copilot => ("Auto", None, Some("medium")),
+            ProviderId::Cursor => return None,
+        };
+        let (m, v, e) = match parts {
+            Parts::Full => (true, true, true),
+            Parts::NoEffort => (true, true, false),
+            Parts::NoVersion => (true, false, true),
+            Parts::ModelOnly => (true, false, false),
+            Parts::EffortOnly => (false, false, true),
+        };
+        let label = ModelLabel {
+            model: m.then(|| model.to_string()),
+            with_version: version.filter(|_| m && v).map(String::from),
+            effort: effort.filter(|_| e).map(String::from),
+        };
+        (label.model.is_some() || label.effort.is_some()).then_some(label)
+    }
+
+    /// The widget's rows for `ids` (None: the default rows), each provider's
+    /// own row labelled with `parts` (None: no labels).
+    fn widget_rows(
+        providers: &[ProviderData],
+        ids: Option<&[&str]>,
+        parts: Option<Parts>,
+    ) -> Vec<RowView> {
+        let mut config = crate::config::schema::Config::default();
+        config.ui.rows.widget = ids.map(|ids| ids.iter().map(|s| s.to_string()).collect());
+        let mut rows = crate::rows::visible_rows(
+            &config,
+            providers,
+            crate::config::schema::Surface::Widget,
+            &crate::models::Models::new(),
+        );
+        for row in rows.iter_mut().filter(|r| !r.is_extra()) {
+            row.model = parts.and_then(|p| label_for(&row.provider, p));
+        }
+        rows
+    }
+
+    /// Draw a widget of `rows` the way app.rs does: shape, layout, draw.
+    fn rows_widget(
+        renderer: &Renderer,
+        rows: &[RowView],
+        ui: &crate::config::schema::UIConfig,
+        choose: bool,
+        cursor: Option<(f32, f32)>,
+    ) -> Pixmap {
+        let shape = crate::ui::layout::Shape::of(ui, rows, choose, |t, s| renderer.text_width(t, s));
+        let win = crate::ui::layout::compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &shape,
+        );
+        let mut pm = Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+        let theme = ComputedTheme::compute(ui);
+        renderer.draw(
+            &mut pm,
+            &win,
+            &theme,
+            rows,
+            0.45,
+            &ui.detail,
+            cursor,
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        pm
+    }
+
+    /// Every layout of the widget, named as in the pinned group.
+    fn every_layout() -> Vec<(String, crate::config::schema::UIConfig)> {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        let mut out = Vec::new();
+        for (dname, detail) in [
+            ("compact", DetailLevel::Compact),
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
+            for (wname, width_scale) in [
+                ("100", WidthScale::Full),
+                ("075", WidthScale::ThreeQuarters),
+                ("050", WidthScale::Half),
+            ] {
+                let ui = UIConfig {
+                    detail: detail.clone(),
+                    width_scale,
+                    ..UIConfig::default()
+                };
+                out.push((format!("rows-{dname}-{wname}"), ui));
+            }
+            for (fname, column_flow) in [("side", ColumnFlow::Row), ("stacked", ColumnFlow::Column)] {
+                let ui = UIConfig {
+                    layout: Layout::Horizontal,
+                    detail: detail.clone(),
+                    column_flow,
+                    ..UIConfig::default()
+                };
+                out.push((format!("columns-{dname}-{fname}"), ui));
+            }
+        }
+        out
+    }
+
+    /// The new looks of rows and models, recorded as their own group (the
+    /// 0.7.0 group `widget` stays as it was): extra rows with their short
+    /// names, model labels at every step in every layout, Medium beside the
+    /// longest reset, the Expanded and columns line, a count with a model,
+    /// hover, stale data, the workshop's scenarios and the first install.
+    #[test]
+    fn visual_baseline_widget_rows() {
+        use crate::config::schema::{Layout, UIConfig, WidthScale};
+        use crate::ui::visual_baseline as vb;
+
+        let renderer = Renderer::new().expect("a system font");
+        let fixture = rows_fixture();
+        let mut items = Vec::new();
+
+        // Every extra row, in every layout: names step to their short forms.
+        let all = [
+            "claude", "claude.opus", "claude.sonnet", "codex", "grok", "grok.build",
+            "antigravity", "antigravity.cg", "copilot", "cursor", "cursor.bot",
+        ];
+        let extra = widget_rows(&fixture, Some(&all), None);
+        assert_eq!(extra.len(), all.len());
+        for (name, ui) in every_layout() {
+            items.push((format!("extra-{name}"), rows_widget(&renderer, &extra, &ui, false, None)));
+        }
+
+        // Model labels: the whole label in every layout, each step of it in
+        // Medium and Expanded rows and the Medium columns.
+        let full = widget_rows(&fixture, None, Some(Parts::Full));
+        for (name, ui) in every_layout() {
+            items.push((format!("labels-full-{name}"), rows_widget(&renderer, &full, &ui, false, None)));
+        }
+        for (pname, parts) in [
+            ("noeffort", Parts::NoEffort),
+            ("noversion", Parts::NoVersion),
+            ("model", Parts::ModelOnly),
+            ("effort", Parts::EffortOnly),
+        ] {
+            let rows = widget_rows(&fixture, None, Some(parts));
+            for (name, ui) in every_layout() {
+                let wanted = name.starts_with("rows-medium")
+                    || name.starts_with("rows-expanded")
+                    || name == "columns-medium-side";
+                if wanted {
+                    let pm = rows_widget(&renderer, &rows, &ui, false, None);
+                    items.push((format!("labels-{pname}-{name}"), pm));
+                }
+            }
+        }
+
+        // Medium beside the longest reset, with a name at the slot's limit
+        // and a weekly whose "Weekly: 23h 59min" leaves too little when
+        // narrow: the name shows whole, the effort steps out first.
+        let measure = |t: &str, s: f32| renderer.text_width(t, s);
+        let at_limit = crate::rows::fit_name("Sonnet 4.6 Extended Thinking", measure);
+        let longest = vec![
+            ProviderData {
+                id: ProviderId::Claude,
+                ..data(vec![pct_reset("Session", 25, MetricWindow::Session, 23 * 3600 + 59 * 60)])
+            },
+            ProviderData {
+                id: ProviderId::Grok,
+                ..data(vec![pct_reset("Weekly", 12, MetricWindow::Long, 23 * 3600 + 59 * 60)])
+            },
+        ];
+        let mut longest_rows = widget_rows(&longest, None, None);
+        for row in &mut longest_rows {
+            row.model = Some(ModelLabel {
+                model: Some(at_limit.clone()),
+                with_version: None,
+                effort: Some("xhigh".into()),
+            });
+        }
+        for (wname, width_scale) in [
+            ("100", WidthScale::Full),
+            ("075", WidthScale::ThreeQuarters),
+            ("050", WidthScale::Half),
+        ] {
+            let ui = UIConfig {
+                detail: DetailLevel::Medium,
+                width_scale,
+                ..UIConfig::default()
+            };
+            let pm = rows_widget(&renderer, &longest_rows, &ui, false, None);
+            items.push((format!("longest-reset-medium-{wname}"), pm));
+        }
+
+        // A count (Copilot's requests on the meta line's left) with a model:
+        // the model takes a line of its own even in Medium.
+        let count = widget_rows(&fixture, Some(&["copilot", "codex"]), Some(Parts::Full));
+        for (dname, detail) in [("medium", DetailLevel::Medium), ("expanded", DetailLevel::Expanded)] {
+            for (wname, width_scale) in [("100", WidthScale::Full), ("050", WidthScale::Half)] {
+                let ui = UIConfig {
+                    detail: detail.clone(),
+                    width_scale,
+                    ..UIConfig::default()
+                };
+                let pm = rows_widget(&renderer, &count, &ui, false, None);
+                items.push((format!("count-model-{dname}-{wname}"), pm));
+            }
+        }
+
+        // Hover over a labelled row: the weekly takes the meta line and the
+        // model steps down beside it.
+        let medium = |width_scale| UIConfig {
+            detail: DetailLevel::Medium,
+            width_scale,
+            ..UIConfig::default()
+        };
+        for (wname, scale) in [("100", WidthScale::Full), ("050", WidthScale::Half)] {
+            let pm = rows_widget(&renderer, &full, &medium(scale), false, Some((30.0, 12.0)));
+            items.push((format!("hover-labels-medium-{wname}"), pm));
+        }
+
+        // Every honest state with a label: loading, sign-in trouble, offline
+        // (the meta line is free), estimated, aged (the age owns the slot).
+        let aged_rows = widget_rows(&vb::states(), None, Some(Parts::Full));
+        for (dname, detail) in [("medium", DetailLevel::Medium), ("expanded", DetailLevel::Expanded)] {
+            let ui = UIConfig {
+                detail,
+                ..UIConfig::default()
+            };
+            let pm = rows_widget(&renderer, &aged_rows, &ui, false, None);
+            items.push((format!("states-labels-{dname}"), pm));
+        }
+
+        // The workshop's scenarios: two providers and one by model; a small
+        // widget with only the model on.
+        let mix = widget_rows(
+            &fixture,
+            Some(&["codex", "copilot", "claude.opus", "claude.sonnet"]),
+            None,
+        );
+        let small = widget_rows(&fixture, Some(&["claude", "codex"]), Some(Parts::ModelOnly));
+        for (dname, detail) in [
+            ("compact", DetailLevel::Compact),
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
+            let ui = UIConfig {
+                detail,
+                ..UIConfig::default()
+            };
+            items.push((format!("scenario-mix-{dname}"), rows_widget(&renderer, &mix, &ui, false, None)));
+            items.push((format!("scenario-small-{dname}"), rows_widget(&renderer, &small, &ui, false, None)));
+        }
+
+        // A fresh install with nothing chosen, whatever the layout.
+        for (lname, layout) in [("rows", Layout::Vertical), ("columns", Layout::Horizontal)] {
+            let ui = UIConfig {
+                layout,
+                ..UIConfig::default()
+            };
+            items.push((format!("first-install-{lname}"), rows_widget(&renderer, &[], &ui, true, None)));
+        }
+
+        vb::check("widget-rows", items);
     }
 
     // ─── Model names: the places they are drawn ───────────────────

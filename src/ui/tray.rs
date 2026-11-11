@@ -1611,6 +1611,108 @@ mod tests {
         assert_eq!(wrap_tip_line(&one).len(), 1);
     }
 
+    /// `typical()` with the metrics extra rows show: Claude's Opus and Sonnet
+    /// weeks, Grok Build, Cursor and its Grok Bot share.
+    fn rows_providers() -> Vec<ProviderData> {
+        let mut providers = crate::ui::visual_baseline::typical();
+        let like = |m: &Metric, label: &str, used: u64| Metric {
+            label: label.into(),
+            used,
+            ..m.clone()
+        };
+        for p in providers.iter_mut() {
+            let week = p.metrics.last().cloned().expect("a metric");
+            match p.id {
+                ProviderId::Claude => {
+                    p.metrics.push(like(&week, "Opus", 61));
+                    p.metrics.push(like(&week, "Sonnet", 12));
+                }
+                ProviderId::Grok => p.metrics.push(like(&week, "Build", 7)),
+                _ => {}
+            }
+        }
+        let grok_week = providers[2].metrics[0].clone();
+        providers.push(ProviderData {
+            id: ProviderId::Cursor,
+            metrics: vec![
+                like(&grok_week, "Premium", 12),
+                like(&grok_week, "Grok Bot", 3),
+            ],
+            ..providers[2].clone()
+        });
+        providers
+    }
+
+    /// The whole label each tool would give (renderer tests use the same).
+    fn full_label(id: &ProviderId) -> Option<ModelLabel> {
+        let (m, v, e) = match id {
+            ProviderId::Claude => ("Opus", Some("Opus 5.5"), Some("xhigh")),
+            ProviderId::Codex => ("GPT", Some("GPT-6.1 Sol"), Some("high")),
+            ProviderId::Grok => ("Grok", Some("Grok 4.7"), Some("high")),
+            ProviderId::Antigravity => ("Claude Sonnet", Some("Claude Sonnet 4.6 Thinking"), None),
+            ProviderId::Copilot => ("Auto", None, Some("medium")),
+            ProviderId::Cursor => return None,
+        };
+        Some(ModelLabel {
+            model: Some(m.into()),
+            with_version: v.map(String::from),
+            effort: e.map(String::from),
+        })
+    }
+
+    fn labelled_rows(ids: &[&str], labels: bool) -> Vec<RowView> {
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(ids.iter().map(|s| s.to_string()).collect());
+        let mut rows = tip_rows(&config, &rows_providers());
+        assert_eq!(rows.len(), ids.len(), "every row has its metric");
+        for row in rows.iter_mut().filter(|r| !r.is_extra() && labels) {
+            row.model = full_label(&row.provider);
+        }
+        rows
+    }
+
+    /// The panel's multi-line tooltip, recorded as a new group (the 0.7.0
+    /// tooltips in `tray` stay as they were): the workshop's scenarios (two
+    /// providers and one by model; every row with its label) in both themes
+    /// and at three bar sizes, a label that wraps, rows without labels, and
+    /// the first install.
+    #[test]
+    fn visual_baseline_tooltip_rows() {
+        use crate::ui::visual_baseline as vb;
+        let mix = labelled_rows(&["claude", "claude.opus", "claude.sonnet", "codex", "copilot"], true);
+        let every = labelled_rows(
+            &[
+                "claude", "claude.opus", "claude.sonnet", "codex", "grok", "grok.build",
+                "antigravity", "antigravity.cg", "copilot", "cursor", "cursor.bot",
+            ],
+            true,
+        );
+        let unlabelled = labelled_rows(&["claude", "claude.opus", "codex"], false);
+        let mut long = labelled_rows(&["claude", "antigravity"], true);
+        long[1].model = Some(ModelLabel {
+            model: Some("Claude Sonnet".into()),
+            with_version: Some("Claude Sonnet 4.6 Thinking Extended Preview Edition".into()),
+            effort: Some("max".into()),
+        });
+        let mut items = Vec::new();
+        for light in [false, true] {
+            let ink = if light { "light" } else { "dark" };
+            let mut add = |name: &str, rows: &[RowView], first: bool, bar: f32| {
+                let lines = tooltip_lines(rows, first);
+                let pm = render_tooltip_lines(&lines, bar, light);
+                items.push((format!("{name}-{bar}-{ink}"), pm));
+            };
+            add("mix", &mix, false, 48.0);
+            for bar in [40.0, 48.0, 72.0] {
+                add("every", &every, false, bar);
+            }
+            add("wrap", &long, false, 48.0);
+            add("unlabelled", &unlabelled, false, 48.0);
+            add("first-install", &[], true, 48.0);
+        }
+        vb::check("tooltip-rows", items);
+    }
+
     /// The tooltip is sized from the BAR's thickness, and from nothing else.
     /// The panel's own height is not that thickness on a side bar - the
     /// stacked layout stands 64px tall where the bar is 48 - and passing it
