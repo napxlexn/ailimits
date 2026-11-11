@@ -474,6 +474,104 @@ Where a sign-in is the fix, the hover adds "sign in to Cursor".
 Requests per cycle: two (usage and Grok Bot), plus the plan at most hourly
 and a refresh at most daily in a session's last week.
 
+## Model labels
+
+The model each tool is set to (or last used) and its effort, shown on a
+provider's own row when the Model, Version or Effort tick is on
+(`src/models`). These are local reads only: no request is made for them and
+nothing from these files is sent anywhere. Only the model id and the effort
+leave a reader; no other part of any file is kept.
+
+Each read is asked for first and is off by default:
+
+- `[reads] tool_settings`: the tools' settings files (table below). Off: no
+  settings file is opened.
+- `[reads] last_session`: the end of the newest session file, used only with
+  `[ui.model] source = "last_used"`. Off: no session file is opened.
+
+### Settings files (`tool_settings`)
+
+| Tool | File | Keys |
+|---|---|---|
+| Claude Code | `%USERPROFILE%\.claude\settings.json` | `model`; effort `modelSettings.<model>.effortLevel`, else the top-level `effortLevel` |
+| Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort` |
+| Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
+| Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
+| Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (a display label: `Claude Sonnet 4.6 (Thinking)`; no separate effort) |
+| Cursor | none | |
+
+Shapes verified 2026-11-11 on the owner's PC, key names only:
+
+- Claude Code: no top-level `model` while the default model is in use (the
+  default is written nowhere, so there is no label); the effort is kept per
+  model under `modelSettings`. A context option is dropped from the id
+  (`opus[1m]` reads as `opus`), so one rename covers both.
+- Codex CLI: `model` and `model_reasoning_effort` at the top level; a model
+  set only in a `[profiles.*]` table is not read.
+- Grok CLI: `[models] default_reasoning_effort` present; `[models] default`
+  is from the CLI's own docs (`user-guide/05-configuration.md`) and was not
+  set there (the CLI's built-in default: no label).
+- Copilot CLI: `model` (`"auto"`); `effortLevel` from its docs, not set there.
+- Antigravity CLI: `model`, stored as the label the CLI shows.
+
+Never read for labels: `%USERPROFILE%\.claude.json`,
+`%USERPROFILE%\.copilot\config.json`, `command-history-state.json`, any
+sign-in file, the Windows Credential Manager.
+
+### Last used (`last_session`)
+
+Only for the two tools that keep sessions; the others show their configured
+model. Only the last 64 KB of the newest file is read.
+
+- **Claude Code**: the newest `%USERPROFILE%\.claude\projects\<project>\<session>.jsonl`,
+  looked for in the 32 project folders a session was most recently started
+  in, top level only: `<session>\subagents\...` holds subagent transcripts,
+  whose model is not the user's choice, and is never read. The model is the
+  last record with `"type": "assistant"` that is not `isSidechain`:
+  `message.model` (a `<synthetic>` model, written by Claude Code itself, is
+  skipped) and the record's `effort`.
+- **Codex CLI**: the newest `rollout-*.jsonl` in the two newest day folders
+  of `sessions\YYYY\MM\DD` (under `CODEX_HOME` when set). The model is the
+  last `turn_context` record (`payload.model`, `payload.effort`) or `event_msg`
+  of type `thread_settings_applied` (`payload.thread_settings.model`,
+  `.reasoning_effort`). Newer Codex versions compress finished sessions to
+  `.jsonl.zst` (every session on the owner's PC was): a compressed newest
+  session cannot be read without a decoder, so the label falls back to the
+  configured model. In the uncompressed sessions the last model record sat
+  2 KB to 850 KB from the end, so a tail often holds none.
+
+No model in the tail: the label keeps what the same file said before, else
+falls back to the configured model when `tool_settings` allows, else shows
+nothing.
+
+### Bounds and failures
+
+- Settings files over 256 KB are not read; session tails are 64 KB, and a
+  line cut by the start of the tail is dropped.
+- A UTF-8 BOM and CRLF line ends are accepted. A missing file, broken JSON
+  or TOML, a wrong type, a value longer than 128 bytes or with control
+  characters: no label for that tool. Never an error state, never a panic.
+- A file is read again only when its modification time or length changed.
+- Read once per update cycle (60 s minimum) from the scheduler: no
+  watchers, threads or timers. Finding the newest session is one folder
+  listing per folder looked into, never a walk of every session. Measured
+  2026-11-11 on the owner's PC (debug build): Claude Code 872 session files
+  in 122 folders (a full walk 5.4 ms warm, the bounded search 0.7 ms);
+  Codex CLI 114 files in 71 folders (a full walk 2.4 ms, the bounded search
+  0.17 ms); a whole cycle with every read on and the files unchanged, about
+  1 ms.
+
+### Names
+
+No table of names, so a new model needs no update: the generic rule drops
+date stamps and `latest`, drops the provider's own name unless a version
+follows it, joins version digits (`4-5` → `4.5`), capitalises, and joins an
+acronym to its version with a hyphen (`GPT-6.1`). The model is the words
+before the first version word (`Opus`, `GPT`), the version adds the rest
+(`Opus 5.5`, `GPT-6.1 Sol`). Checked against 156 public model ids
+(`tests/fixtures/model-names.tsv`). A name the user types in
+`[ui.model.names]` replaces the automatic one and is split the same way.
+
 ## Removed providers and methods
 
 - **Gemini API-key method** — the public Generative Language API exposes no
