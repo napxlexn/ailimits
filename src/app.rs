@@ -66,8 +66,9 @@ pub enum AppCommand {
     /// A Cursor sign-in from the menu has ended.
     CursorSignIn(SignInOutcome),
     /// The model labels were read (models/): each provider's model id and
-    /// effort, nothing else of the files.
-    Models(Models),
+    /// effort, nothing else of the files; with the generation of the
+    /// request they answer.
+    Models(u64, Models),
     /// Quit the application.
     Quit,
 }
@@ -418,15 +419,18 @@ async fn save_provider_cache(cache: HashMap<ProviderId, ProviderData>) -> Result
 
 /// Build provider instances + alert thresholds from the config.
 ///
-/// A provider the user has not allowed to read its sign-in is built switched
-/// off: its fetch returns `NotConfigured` before it touches any file, the
-/// keyring, `gh` or the network.
+/// A provider the user has allowed nothing for is built switched off: its
+/// fetch returns `NotConfigured` before it touches any file, the keyring,
+/// `gh` or the network. One set up only with the app's own sign-in (a pasted
+/// key, the menu's Cursor sign-in) runs without `tool_files`: it uses that
+/// alone and never falls back to the tool's files.
 fn build_providers(config: &Config) -> (Vec<Arc<dyn Provider>>, HashMap<ProviderId, u8>) {
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut thresholds: HashMap<ProviderId, u8> = HashMap::new();
     for pc in &config.providers {
         let pc = &crate::config::schema::ProviderConfig {
             enabled: config.provider_active(pc),
+            tool_files: config.sign_in_allowed(&pc.id),
             ..pc.clone()
         };
         let (provider, id): (Arc<dyn Provider>, ProviderId) = match pc.id.as_str() {
@@ -539,13 +543,23 @@ struct ModelRequest {
 }
 
 /// The model readers and what they are asked for, shared with the polling
-/// cycle.
+/// cycle. Two locks: the request is only ever held for a moment (the event
+/// loop takes it), the reader for a whole read (blocking threads only), so
+/// a slow disk can never stall the window.
 struct ModelJob {
-    reader: ModelReader,
-    request: Option<ModelRequest>,
+    reader: std::sync::Mutex<ModelReader>,
+    /// What to read, and its generation: a read is shown only if no newer
+    /// request came while it ran.
+    request: std::sync::Mutex<(u64, Option<ModelRequest>)>,
 }
 
-type SharedModelJob = Arc<std::sync::Mutex<ModelJob>>;
+type SharedModelJob = Arc<ModelJob>;
+
+impl ModelJob {
+    fn request(&self) -> std::sync::MutexGuard<'_, (u64, Option<ModelRequest>)> {
+        self.request.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
 
 /// What to read for the model labels, or None when nothing is to be read:
 /// no label part is on, or no model read is allowed.
@@ -578,24 +592,19 @@ fn spawn_model_read(
     tx: &mpsc::Sender<AppCommand>,
     rt: &tokio::runtime::Handle,
 ) {
-    let requested = job
-        .lock()
-        .map(|j| j.request.is_some())
-        .unwrap_or_else(|p| p.into_inner().request.is_some());
-    if !requested {
+    let (generation, request) = job.request().clone();
+    let Some(req) = request else {
         return;
-    }
+    };
     let job = job.clone();
     let tx = tx.clone();
     rt.spawn_blocking(move || {
-        let models = {
-            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-            let Some(req) = j.request.clone() else {
-                return;
-            };
-            j.reader.read(&req.reads, req.source, &req.ids)
-        };
-        let _ = tx.blocking_send(AppCommand::Models(models));
+        let models = job
+            .reader
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .read(&req.reads, req.source, &req.ids);
+        let _ = tx.blocking_send(AppCommand::Models(generation, models));
     });
 }
 
@@ -612,7 +621,11 @@ fn refresh_models(
 ) -> bool {
     let request = model_request(config);
     let none = request.is_none();
-    job.lock().unwrap_or_else(|p| p.into_inner()).request = request;
+    {
+        let mut slot = job.request();
+        slot.0 += 1;
+        slot.1 = request;
+    }
     if none {
         let changed = !models.is_empty();
         models.clear();
@@ -999,10 +1012,10 @@ pub fn run() -> Result<()> {
         Arc::new(AtomicU64::new(config.general.update_interval_secs));
     // The model labels are re-read on the polling cycle, never on a timer
     // of their own, and only as far as `[reads]` allows (`model_request`).
-    let model_job: SharedModelJob = Arc::new(std::sync::Mutex::new(ModelJob {
-        reader: ModelReader::new(),
-        request: model_request(&config),
-    }));
+    let model_job: SharedModelJob = Arc::new(ModelJob {
+        reader: std::sync::Mutex::new(ModelReader::new()),
+        request: std::sync::Mutex::new((0, model_request(&config))),
+    });
     let cycle_hook: CycleHook = {
         let job = model_job.clone();
         let tx = cmd_tx.clone();
@@ -1296,13 +1309,17 @@ pub fn run() -> Result<()> {
         }
         macro_rules! apply_picker_actions {
             ($actions:expr) => {{
+                let actions: Vec<PickerAction> = $actions;
+                // The menu's question sends its Allow alone; a row's Allow
+                // comes with the row it was asked for.
+                let lone = actions.len() == 1;
                 let mut changed = false;
-                for action in $actions {
+                for action in actions {
                     let done = crate::choices::apply(&mut config, &action);
                     match &action {
                         PickerAction::NoticeDone => picker_mode = PickerMode::Normal,
                         PickerAction::Allow(ReadKind::SignIn(p))
-                            if menu_asked.as_deref() == Some(p.as_str()) =>
+                            if lone && menu_asked.as_deref() == Some(p.as_str()) =>
                         {
                             crate::choices::show_provider_rows(&mut config, p);
                             menu_asked = None;
@@ -1324,6 +1341,9 @@ pub fn run() -> Result<()> {
                     }
                     changed |= done.changed;
                 }
+                // The menu's question is answered in the first actions after
+                // it (Cancel sends none): whatever comes next is not it.
+                menu_asked = None;
                 if changed {
                     save_config(config.clone());
                     shape = widget_shape(&config, &display, &models, &renderer);
@@ -1854,11 +1874,11 @@ pub fn run() -> Result<()> {
                             let pid = "cursor";
                             // Signing in says the user wants the row, and
                             // the session is the app's own: nothing else of
-                            // Cursor's is needed.
+                            // Cursor's is read for it.
                             if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
                                 pc.enabled = true;
                             }
-                            config.allow_sign_in(pid);
+                            config.allow_app_sign_in(pid);
                             crate::choices::show_provider_rows(&mut config, pid);
                             // The new session may be another account: no
                             // old numbers stand in for it.
@@ -1913,10 +1933,11 @@ pub fn run() -> Result<()> {
                             feedback("AI Limits", "Cursor sign-in failed");
                         }
                     },
-                    AppCommand::Models(read) => {
-                        // A read that began before its request was withdrawn
-                        // is stale: nothing is shown once reading stops.
-                        if model_request(&config).is_some() && read != models {
+                    AppCommand::Models(generation, read) => {
+                        // A read that began before the request changed (or
+                        // was withdrawn) is stale: only the newest shows.
+                        let current = model_job.request().0;
+                        if generation == current && read != models {
                             models = read;
                             let new_shape = widget_shape(&config, &display, &models, &renderer);
                             if new_shape != shape {
@@ -2102,7 +2123,9 @@ pub fn run() -> Result<()> {
                     // Never allowed to read its sign-in: ask first, in the
                     // picker, naming the file and the host. The tick stays
                     // off until the answer.
-                    Some(MenuAction::ToggleProvider(pid)) if !config.sign_in_allowed(&pid) => {
+                    Some(MenuAction::ToggleProvider(pid))
+                        if !config.sign_in_allowed(&pid) && !config.app_sign_in_allowed(&pid) =>
+                    {
                         menu.sync(&config, win_state.pinned);
                         menu_asked = Some(pid.clone());
                         open_picker!(Some(pid));
@@ -2193,8 +2216,10 @@ pub fn run() -> Result<()> {
                                         }
                                     }
                                     // Pasting a key is the user setting the
-                                    // provider up.
-                                    config.allow_sign_in(&pid);
+                                    // provider up with the app's own key:
+                                    // that allows the key, not the tool's
+                                    // files.
+                                    config.allow_app_sign_in(&pid);
                                     crate::choices::show_provider_rows(&mut config, &pid);
                                     refresh_providers(
                                         &config,
@@ -2210,10 +2235,35 @@ pub fn run() -> Result<()> {
                                         &cmd_tx,
                                         runtime.handle(),
                                     );
+                                    // A first provider on a fresh install:
+                                    // the widget leaves "Choose what to show"
+                                    // now, not at the first data.
+                                    shape = widget_shape(&config, &display, &models, &renderer);
+                                    apply_ui_change(
+                                        &config,
+                                        &mut win_layout,
+                                        &mut theme,
+                                        &mut pixmap,
+                                        &mut surface,
+                                        &window,
+                                        &mut win_state,
+                                        &menu,
+                                        &shape,
+                                    );
+                                    tray.set_first_install(
+                                        rows::nothing_chosen(&config),
+                                        &visible_data(&config, &display),
+                                    );
+                                    tray.sync_providers(
+                                        &menu.menu,
+                                        &visible_data(&config, &display),
+                                        &theme,
+                                    );
                                     menu.sync(&config, win_state.pinned);
                                     save_config(config.clone());
                                     fetch_one(&providers, &cmd_tx, &runtime, &pid);
                                     window.request_redraw();
+                                    refresh_picker!();
                                     feedback("AI Limits", &format!("Key for {pid} stored"));
                                 }
                                 Err(e) => {

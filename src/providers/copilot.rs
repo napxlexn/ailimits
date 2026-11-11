@@ -124,10 +124,12 @@ impl Provider for CopilotProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        // Token: PAT from Credential Manager, or the cached gh CLI token.
+        // Token: PAT from Credential Manager, or the cached gh CLI token,
+        // which is asked of `gh` only when the user allowed it.
         let (token, from_gh) = match self.get_token() {
             Some(t) => (Some(t), false),
-            None => (self.gh_token_cached().await, true),
+            None if self.config.tool_files => (self.gh_token_cached().await, true),
+            None => return Ok(self.data(ProviderStatus::NotConfigured, vec![])),
         };
         match token {
             Some(t) => {

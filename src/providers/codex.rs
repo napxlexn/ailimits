@@ -77,7 +77,10 @@ impl CodexProvider {
             }
         }
 
-        // 2. Codex CLI token.
+        // 2. Codex CLI token, only when the user allowed reading it.
+        if !self.config.tool_files {
+            return Ok(self.data(status_without_cli_token(usage_token_failure, false), vec![]));
+        }
         let token = match read_codex_token().await {
             Ok(Some(t)) => t,
             Ok(None) => {

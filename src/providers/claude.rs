@@ -145,9 +145,12 @@ impl ClaudeProvider {
         let usage_token = self.get_usage_token();
         // The token sources this machine has; stats-cache holds no limits and
         // does not count.
+        // Claude Code's file only when the user allowed reading it; the
+        // stored usage token is the app's own.
+        let tool_files = self.config.tool_files;
         let mut chain = ChainOutcome {
             usage_token: usage_token.is_some(),
-            credentials_file: credentials_path.exists(),
+            credentials_file: tool_files && credentials_path.exists(),
             ..ChainOutcome::default()
         };
 
@@ -162,15 +165,17 @@ impl ClaudeProvider {
 
         // 1. OAuth: the Claude Code token is READ-ONLY — never refresh it,
         // refresh-token rotation would log Claude Code out.
-        match read_oauth_token(&credentials_path).await {
-            Ok(Some(token)) => {
-                // Rejected, unanswered or unreadable — fall back.
-                if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
-                    return Ok(data);
+        if tool_files {
+            match read_oauth_token(&credentials_path).await {
+                Ok(Some(token)) => {
+                    // Rejected, unanswered or unreadable — fall back.
+                    if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
+                        return Ok(data);
+                    }
                 }
+                Ok(None) => { /* no file, or an expired token — fall back */ }
+                Err(e) => warn!(".credentials.json parse error: {e}"),
             }
-            Ok(None) => { /* no file, or an expired token — fall back */ }
-            Err(e) => warn!(".credentials.json parse error: {e}"),
         }
 
         // 2./3. No source produced data: an honest error, or a hidden row

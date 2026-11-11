@@ -299,12 +299,13 @@ fn set(provider: Option<&str>) -> Result<()> {
             p.auth_method = AuthMethod::ApiKey;
         }
     }
-    // Setting a key up is the user asking for the provider.
-    config.allow_sign_in(provider);
+    // Setting a key up is the user asking for the provider, with the app's
+    // own key: that allows the key, not the tool's files.
+    config.allow_app_sign_in(provider);
     save_config(&config)?;
 
     println!("Key for '{provider}' stored in Credential Manager (label: {label})");
-    println!("→ Restart the widget to apply");
+    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
     Ok(())
 }
 
@@ -328,7 +329,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
         .context("failed to store the usage token in Credential Manager")?;
 
     println!("{provider} usage token stored (label: {label})");
-    println!("→ Restart the widget to apply");
+    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
     Ok(())
 }
 
@@ -371,7 +372,7 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
         Err(e) => bail!("failed to remove the usage token: {e}"),
     }
 
-    println!("→ Restart the widget to apply");
+    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
     Ok(())
 }
 
@@ -395,7 +396,7 @@ fn remove(provider: Option<&str>) -> Result<()> {
     }
     save_config(&config)?;
 
-    println!("→ Restart the widget to apply");
+    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
     Ok(())
 }
 
@@ -448,9 +449,9 @@ fn login(provider: Option<&str>) -> Result<()> {
         if let Some(p) = config.providers.iter_mut().find(|p| p.id == "cursor") {
             p.enabled = true;
         }
-        config.allow_sign_in("cursor");
+        config.allow_app_sign_in("cursor");
         save_config(&config)?;
-        println!("→ Restart the widget to apply");
+        println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
     }
     Ok(())
 }

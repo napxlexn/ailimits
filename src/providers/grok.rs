@@ -80,6 +80,10 @@ impl GrokProvider {
     /// SuperGrok usage. The CLI token is read-only: the Grok CLI refreshes it
     /// whenever it runs, the widget must never rotate it.
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
+        // The Grok CLI's login is its own: only when the user allowed it.
+        if !self.config.tool_files {
+            return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+        }
         let token = match read_grok_login().await {
             Ok(GrokLogin::Token { key, .. }) => key,
             // No session at all — the row stays hidden until `grok` signs in.
@@ -401,6 +405,7 @@ mod tests {
             enabled: true,
             auth_method: Default::default(),
             credential_label: String::new(),
+            tool_files: true,
             alert_threshold: 80,
         });
         let data = provider.fetch().await.expect("fetch");

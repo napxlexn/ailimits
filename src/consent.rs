@@ -40,8 +40,12 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "Codex CLI",
         sign_in: &[r"%USERPROFILE%\.codex\auth.json"],
         hosts: &["chatgpt.com"],
-        settings: Some(r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort"),
-        session: Some(r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest)"),
+        settings: Some(
+            r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort (in CODEX_HOME when it is set)",
+        ),
+        session: Some(
+            r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest; in CODEX_HOME when it is set)",
+        ),
     },
     ReadInfo {
         id: "copilot",
@@ -51,7 +55,9 @@ pub const READ_INFO: &[ReadInfo] = &[
             "otherwise the token GitHub CLI gives (gh auth token)",
         ],
         hosts: &["api.github.com"],
-        settings: Some(r"%USERPROFILE%\.copilot\settings.json: model, effortLevel"),
+        settings: Some(
+            r"%USERPROFILE%\.copilot\settings.json: model, effortLevel (in COPILOT_HOME when it is set)",
+        ),
         session: None,
     },
     ReadInfo {
@@ -71,10 +77,10 @@ pub const READ_INFO: &[ReadInfo] = &[
     ReadInfo {
         id: "grok",
         tool: "Grok CLI",
-        sign_in: &[r"%USERPROFILE%\.grok\auth.json"],
+        sign_in: &[r"%USERPROFILE%\.grok\auth.json (in GROK_HOME when it is set)"],
         hosts: &["cli-chat-proxy.grok.com"],
         settings: Some(
-            r"%USERPROFILE%\.grok\config.toml: [models] default, default_reasoning_effort",
+            r"%USERPROFILE%\.grok\config.toml: [models] default, default_reasoning_effort (in GROK_HOME when it is set)",
         ),
         session: None,
     },

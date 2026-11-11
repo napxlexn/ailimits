@@ -78,11 +78,49 @@ impl Config {
         }
     }
 
-    /// A provider that may fetch: switched on AND allowed to read its
-    /// sign-in. Everything that decides whether a provider runs or shows
-    /// goes through this one test.
+    /// Whether the provider was set up with a sign-in of the app's own: a
+    /// key or token the user pasted, the app's own Cursor session. That
+    /// allows those alone, never the other tool's files.
+    pub fn app_sign_in_allowed(&self, provider_id: &str) -> bool {
+        let id = canonical_provider_id(provider_id);
+        self.reads
+            .app_sign_in
+            .iter()
+            .any(|p| canonical_provider_id(p) == id)
+    }
+
+    /// Record that the provider was set up with the app's own sign-in.
+    pub fn allow_app_sign_in(&mut self, provider_id: &str) {
+        if !self.app_sign_in_allowed(provider_id) {
+            self.reads
+                .app_sign_in
+                .push(canonical_provider_id(provider_id).to_string());
+        }
+    }
+
+    /// Stop a provider: nothing of it is read any more, of the tool's files
+    /// or of the app's own, until the user allows it again.
+    pub fn revoke(&mut self, provider_id: &str) {
+        let id = canonical_provider_id(provider_id).to_string();
+        self.reads
+            .sign_in
+            .retain(|p| canonical_provider_id(p) != id);
+        self.reads
+            .app_sign_in
+            .retain(|p| canonical_provider_id(p) != id);
+        for p in self.providers.iter_mut() {
+            if canonical_provider_id(&p.id) == id {
+                p.enabled = false;
+            }
+        }
+    }
+
+    /// A provider that may fetch: switched on AND allowed, either to read
+    /// the tool's sign-in or to use the app's own. Everything that decides
+    /// whether a provider runs or shows goes through this one test; which
+    /// sources it may then use is `ProviderConfig::tool_files`.
     pub fn provider_active(&self, pc: &ProviderConfig) -> bool {
-        pc.enabled && self.sign_in_allowed(&pc.id)
+        pc.enabled && (self.sign_in_allowed(&pc.id) || self.app_sign_in_allowed(&pc.id))
     }
 }
 
@@ -101,6 +139,11 @@ pub struct Reads {
     /// Providers whose sign-in may be read, by config id.
     #[serde(default)]
     pub sign_in: Vec<String>,
+    /// Providers set up with the app's own sign-in only (a pasted key or
+    /// token, the menu's Cursor sign-in): they use that and read nothing of
+    /// the tool's files.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub app_sign_in: Vec<String>,
     /// The tools' own settings files, for the model and effort they are set
     /// to (Claude Code settings.json, Codex config.toml...).
     #[serde(default)]
@@ -155,6 +198,7 @@ fn default_providers() -> Vec<ProviderConfig> {
             enabled,
             auth_method: auth,
             credential_label: label.to_string(),
+            tool_files: false,
             alert_threshold: threshold,
         };
 
@@ -412,6 +456,13 @@ pub struct ProviderConfig {
     /// Notification threshold, %.
     #[serde(default = "default_threshold")]
     pub alert_threshold: u8,
+    /// Whether the provider may read the other tool's own sign-in: its token
+    /// file, its Credential Manager entry, `gh auth token`, Cursor's editor
+    /// database. Set from `[reads] sign_in` when the provider is built (see
+    /// app.rs `build_providers`); never saved. Without it a provider uses
+    /// only what is the app's own, and otherwise reports nothing.
+    #[serde(skip)]
+    pub tool_files: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

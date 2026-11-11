@@ -71,6 +71,19 @@ fn set_row(config: &mut Config, surface: Surface, row: &str, on: bool) {
     *rows_slot(config, surface) = Some(list);
 }
 
+/// Whether any row of a provider is chosen on either surface.
+fn has_any_row(config: &Config, provider: &str) -> bool {
+    let Some(pid) = ProviderId::from_config_id(provider) else {
+        return false;
+    };
+    let ids: Vec<&str> = std::iter::once(pid.config_id())
+        .chain(rows::sub_rows(&pid).map(|s| s.id))
+        .collect();
+    [Surface::Widget, Surface::Tooltip]
+        .iter()
+        .any(|&surface| ids.iter().any(|id| rows::row_chosen(config, surface, id)))
+}
+
 /// A provider switched on from outside the picker (the Providers menu, a
 /// pasted key, a Cursor sign-in) also gets its own row back on every
 /// surface whose rows were chosen.
@@ -120,6 +133,15 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 }
             }
             set_row(config, *surface, row, *on);
+            // No row of the provider left on either surface: the user is
+            // done with it, so nothing of it is read any more ("Untick its
+            // rows to stop"). Ticking a row again asks again.
+            let allowed =
+                config.sign_in_allowed(&provider) || config.app_sign_in_allowed(&provider);
+            if !*on && allowed && !has_any_row(config, &provider) {
+                config.revoke(&provider);
+                out.provider = Some(provider);
+            }
             out.models = out.provider.is_some();
         }
         PickerAction::SetPart { surface, part, on } => {
@@ -236,6 +258,10 @@ pub fn picker_input(
             continue;
         };
         if let Some(info) = models.get(&pid) {
+            // Two tools on the same model id share one name: one field.
+            if model_choices.iter().any(|c| c.model_id == info.id) {
+                continue;
+            }
             let auto = models::name_parts(&info.id, &pid, None).with_version;
             model_choices.push(ModelChoice {
                 provider: pid.config_id(),
@@ -379,6 +405,59 @@ mod tests {
         assert_eq!(config.reads.pending, PendingNotice::None);
         let close = apply(&mut config, &PickerAction::Close);
         assert!(close.close && !close.changed);
+    }
+
+    #[test]
+    fn unticking_every_row_of_a_provider_stops_reading_it() {
+        let mut config = Config::default();
+        apply(
+            &mut config,
+            &PickerAction::Allow(ReadKind::SignIn("claude".into())),
+        );
+        apply(&mut config, &row(Surface::Widget, "claude.opus", true));
+        // Off in the widget; the tooltip still shows it by default.
+        let done = apply(&mut config, &row(Surface::Widget, "claude", false));
+        assert!(done.provider.is_none());
+        assert!(config.sign_in_allowed("claude"));
+        let done = apply(&mut config, &row(Surface::Tooltip, "claude", false));
+        assert!(done.provider.is_none(), "the Opus row is still on");
+        let done = apply(&mut config, &row(Surface::Widget, "claude.opus", false));
+        assert_eq!(done.provider.as_deref(), Some("claude"));
+        assert!(!config.sign_in_allowed("claude"));
+        let pc = config.providers.iter().find(|p| p.id == "claude").unwrap();
+        assert!(!pc.enabled && !config.provider_active(pc));
+        // The app's own sign-in goes too. Both surfaces are spelled out by
+        // now and neither has Cursor's row, so one untick ends it.
+        config.allow_app_sign_in("cursor");
+        config
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "cursor")
+            .unwrap()
+            .enabled = true;
+        let done = apply(&mut config, &row(Surface::Widget, "cursor", false));
+        assert_eq!(done.provider.as_deref(), Some("cursor"));
+        assert!(!config.app_sign_in_allowed("cursor"));
+    }
+
+    #[test]
+    fn one_name_field_per_model_id() {
+        let mut config = Config::default();
+        config.allow_sign_in("codex");
+        config.allow_sign_in("copilot");
+        let mut models = Models::new();
+        for p in [ProviderId::Codex, ProviderId::Copilot] {
+            models.insert(
+                p,
+                ModelInfo {
+                    id: "gpt-5".into(),
+                    effort: None,
+                },
+            );
+        }
+        let input = picker_input(&config, &[], &models, PickerMode::Normal, &[]);
+        assert_eq!(input.models.len(), 1);
+        assert_eq!(input.models[0].provider, "codex");
     }
 
     #[test]

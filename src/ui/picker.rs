@@ -987,16 +987,24 @@ impl Picker {
     fn view(&self) -> View {
         match self.input.mode {
             PickerMode::UpdateNotice if !self.reviewed => View::Notice,
-            PickerMode::Welcome if self.input.reads.sign_in.is_empty() => {
-                View::Rows { welcome: true }
-            }
+            // The welcome keeps its intro and marks while it is open: the
+            // rows do not jump under the cursor after the first Allow.
+            PickerMode::Welcome => View::Rows { welcome: true },
             _ => View::Rows { welcome: false },
         }
     }
 
+    /// Whether the provider may run: its sign-in allowed, or set up with the
+    /// app's own (a pasted key, the menu's Cursor sign-in), which needs no
+    /// question.
     fn allowed(&self, provider: &str) -> bool {
         let p = canonical(provider);
-        self.input.reads.sign_in.iter().any(|s| canonical(s) == p)
+        let reads = &self.input.reads;
+        reads
+            .sign_in
+            .iter()
+            .chain(reads.app_sign_in.iter())
+            .any(|s| canonical(s) == p)
     }
 
     fn enabled(&self, provider: &str) -> bool {
@@ -1671,7 +1679,8 @@ impl Picker {
         if !row.note.is_empty() {
             notes.push(row.note.to_string());
         }
-        if own && !self.enabled(row.provider) {
+        // Allowed but switched off: the menu, not a missing consent.
+        if own && self.allowed(row.provider) && !self.enabled(row.provider) {
             notes.push(OFF_IN_MENU.to_string());
         }
         if !own && !row.has_data && self.allowed(row.provider) {
@@ -1868,24 +1877,14 @@ impl Picker {
 
     /// The question's title, its lead-in, the files, and what follows.
     fn ask_text(&self, kind: &ReadKind) -> (String, String, Vec<String>, String) {
-        // The files a question covers: those of the providers that may be
-        // read, or every tool's when none is yet.
+        // The files a settings or session question covers: every tool's
+        // that has one, so a tool allowed later is never read unnamed.
         let files = |pick: fn(&crate::consent::ReadInfo) -> Option<&'static str>| {
-            let allowed: Vec<String> = self
-                .allowed_in_order()
+            crate::consent::READ_INFO
                 .iter()
-                .filter_map(|p| crate::consent::read_info(p).and_then(pick))
+                .filter_map(pick)
                 .map(String::from)
-                .collect();
-            if allowed.is_empty() {
-                crate::consent::READ_INFO
-                    .iter()
-                    .filter_map(pick)
-                    .map(String::from)
-                    .collect()
-            } else {
-                allowed
-            }
+                .collect::<Vec<String>>()
         };
         match kind {
             ReadKind::SignIn(p) => {
@@ -1917,7 +1916,7 @@ impl Picker {
                     ),
                     list,
                     format!(
-                        "The token stays on this PC{goes}. It is never changed or refreshed. Untick to stop; details in Privacy."
+                        "The token stays on this PC{goes}. It is never changed or refreshed. Untick its rows to stop."
                     ),
                 )
             }
@@ -1925,13 +1924,13 @@ impl Picker {
                 "Read the tools’ settings files?".to_string(),
                 "To show the model, its version and effort, AI Limits reads these values from each tool’s own settings file:".to_string(),
                 files(|i| i.settings),
-                "Only those values are kept, in memory. Nothing is sent anywhere. Untick to stop; details in Privacy.".to_string(),
+                "Only those values are kept, in memory. Nothing is sent anywhere. Untick Model, Version and Effort to stop.".to_string(),
             ),
             ReadKind::LastSession => (
                 "Read the end of your newest session?".to_string(),
                 "For Last used, AI Limits reads the last 64 KB of the newest session file:".to_string(),
                 files(|i| i.session),
-                "Only the model name is kept. Your conversations are not stored or sent anywhere. Switch back to As set in the tool to stop; details in Privacy.".to_string(),
+                "Only the model name is kept. Your conversations are not stored or sent anywhere. Switch back to As set in the tool to stop.".to_string(),
             ),
         }
     }
@@ -3200,6 +3199,14 @@ impl PickerWindow {
             self.modifiers.control_key(),
             self.modifiers.alt_key(),
         );
+        // A held Enter or Space must not answer a question it just opened:
+        // the keys that act are taken once per press (a held Space still
+        // types spaces into a name field).
+        let acts = matches!(ev.logical_key, Key::Enter | Key::Space)
+            || matches!(&ev.logical_key, Key::Character(c) if *c == " ");
+        if ev.repeat && acts && !(self.picker.editing() && !matches!(ev.logical_key, Key::Enter)) {
+            return None;
+        }
         let key = match &ev.logical_key {
             Key::Tab if shift => Some(PickerKey::BackTab),
             Key::Tab => Some(PickerKey::Tab),
@@ -3580,6 +3587,8 @@ mod tests {
     #[test]
     fn rows_group_by_provider_with_notes() {
         let mut i = input();
+        // Allowed but switched off in the menu: that note.
+        i.reads.sign_in.push("cursor".into());
         i.enabled.retain(|p| *p != "cursor");
         i.rows
             .iter_mut()
@@ -3905,11 +3914,13 @@ mod tests {
     }
 
     #[test]
-    fn the_welcome_becomes_the_picker_once_a_tool_is_allowed() {
+    fn the_welcome_stays_the_welcome_after_the_first_allow() {
+        // The intro and the marks stay while it is open, so the rows do not
+        // jump under the cursor.
         let mut i = input();
         i.mode = PickerMode::Welcome;
         i.reads.sign_in = vec!["codex".into()];
-        assert!(texts(&picker(i)).starts_with(TITLE_ROWS));
+        assert!(texts(&picker(i)).starts_with(TITLE_WELCOME));
     }
 
     fn notice() -> PickerInput {

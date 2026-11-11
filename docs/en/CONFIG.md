@@ -193,11 +193,16 @@ on_startup = ""
 # before it is allowed here, and each is asked once, naming the file and the
 # only host the token goes to (see "What is read, and when" below).
 [reads]
-# Providers whose sign-in may be read. A provider that is not listed is
-# switched off without touching anything. Ticking a provider in the picker or
-# in the Providers menu asks; pasting a key or signing in to Cursor counts as
-# allowing it.
+# Providers whose sign-in may be read. Ticking a provider in the picker or
+# in the Providers menu asks first; unticking every row of a provider in the
+# picker removes it from here again (and switches it off).
 sign_in       = ["claude", "codex", "grok"]
+# Providers set up only with the app's own sign-in: a key or usage token you
+# pasted (kept in Credential Manager) or the menu's Cursor sign-in. They use
+# that alone and read nothing of the tool's files; when it is removed they
+# show nothing rather than fall back to the tool's files. Written only when
+# not empty.
+app_sign_in   = ["cursor"]
 # The tools' settings files, for the model and effort ([ui.model]).
 tool_settings = false
 # The end of the newest Claude Code / Codex CLI session file, for the model
@@ -234,7 +239,20 @@ Every read of another tool's file is optional and asked for first:
   and one window lists every file read and every host contacted, once.
 - **A config that cannot be read** is set aside as `config.toml.corrupt` and
   the app starts as a fresh install: what the lost file allowed is unknown,
-  so nothing is read until chosen again.
+  so nothing is read until chosen again. An empty config, or one with no
+  `[[providers]]`, counts as a fresh install too.
+- **A fresh install switches every provider off** as well as allowing
+  nothing, so even an older version started on the same config afterwards
+  reads only what was allowed.
+- **To stop reading a tool**, untick all of its rows in Rows and models (or
+  untick Enabled in the Providers menu). Model labels stop being read when
+  Model, Version and Effort are all unticked.
+- **Where the tools keep their files** can be moved by `CODEX_HOME`,
+  `GROK_HOME` and `COPILOT_HOME`; the app follows them, and the questions say
+  so.
+- **`ailimits-auth status`** is a diagnostic you run yourself: it checks each
+  tool's sign-in directly (expiry and presence only, never printing a token)
+  and does not go by `[reads]`.
 
 The files and hosts per provider are in [PROVIDERS.md](PROVIDERS.md) and in
 `src/consent.rs`, the text the questions show.

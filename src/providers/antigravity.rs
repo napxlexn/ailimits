@@ -236,6 +236,11 @@ impl AntigravityProvider {
     }
 
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
+        // Both sources are Antigravity's (and the older Gemini CLI's): only
+        // when the user allowed reading them.
+        if !self.config.tool_files {
+            return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
+        }
         let token = match read_antigravity_login().await {
             Ok(AntigravityLogin::Token(t)) => t,
             // Never signed in here — the row stays hidden.
@@ -691,6 +696,7 @@ mod tests {
             enabled: true,
             auth_method: Default::default(),
             credential_label: String::new(),
+            tool_files: true,
             alert_threshold: 80,
         });
         // The project of the account signed in before the switch.

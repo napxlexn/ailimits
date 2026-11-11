@@ -119,7 +119,9 @@ impl CursorProvider {
         // A synchronous read, like the other providers' keyring reads.
         match session::load() {
             Ok(Some(own)) => self.fetch_with_own_session(own).await,
-            Ok(None) => self.fetch_with_editor_token().await,
+            // The editor's database only when the user allowed reading it.
+            Ok(None) if self.config.tool_files => self.fetch_with_editor_token().await,
+            Ok(None) => self.data(ProviderStatus::NotConfigured, vec![]),
             // A record this version cannot read: a new sign-in replaces it.
             Err(StoreError::Corrupt) => {
                 warn!("cursor: the stored session is unreadable");

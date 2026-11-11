@@ -56,13 +56,16 @@ pub async fn load_or_default() -> Result<Config> {
     }
     let parsed = match content {
         Ok(content) => toml::from_str::<Config>(&content)
-            .map(|cfg| (cfg, has_reads_table(&content)))
+            .map(|cfg| (cfg, origin_of(&content)))
             .map_err(|e| ("parse", e.to_string())),
         Err(e) => Err(("read", e.to_string())),
     };
     let (mut config, origin) = match parsed {
-        Ok((cfg, true)) => (cfg, Origin::Current),
-        Ok((cfg, false)) => (cfg, Origin::Upgrade),
+        Ok((cfg, Some(origin))) => (cfg, origin),
+        // Neither [reads] nor [[providers]]: an empty file, or one written by
+        // something else before the first start. Every version that read
+        // without asking wrote its providers, so this is no upgrade.
+        Ok((_, None)) => (Config::default(), Origin::FreshInstall),
         Err((what, e)) => {
             tracing::warn!("Config {what} error: {e}, using defaults");
             // Preserve the file: a single bad line must not be silently
@@ -126,12 +129,22 @@ pub(crate) enum Origin {
     Current,
 }
 
-/// Whether the TOML text has a top-level `[reads]` table. Asked of text that
-/// already parsed as a `Config`, so it parses again.
-fn has_reads_table(content: &str) -> bool {
-    content
-        .parse::<toml::Table>()
-        .is_ok_and(|t| t.contains_key("reads"))
+/// Where config text came from: `[reads]` makes it current, `[[providers]]`
+/// without it an older version's, neither of them nothing to go by (None).
+/// Asked of text that already parsed as a `Config`, so it parses again.
+fn origin_of(content: &str) -> Option<Origin> {
+    let table = content.parse::<toml::Table>().ok()?;
+    if table.contains_key("reads") {
+        Some(Origin::Current)
+    } else if table
+        .get("providers")
+        .and_then(|p| p.as_array())
+        .is_some_and(|a| !a.is_empty())
+    {
+        Some(Origin::Upgrade)
+    } else {
+        None
+    }
 }
 
 /// Put the `[reads]` section in the state the origin calls for.
@@ -147,6 +160,12 @@ pub(crate) fn settle_reads(config: &mut Config, origin: Origin) {
         Origin::FreshInstall => {
             config.reads = Default::default();
             config.reads.pending = super::schema::PendingNotice::Welcome;
+            // Switched off as well as not allowed: a version that knows no
+            // [reads] (a downgrade to 0.7.0) then reads nothing either.
+            // Allowing a provider switches it on.
+            for p in config.providers.iter_mut() {
+                p.enabled = false;
+            }
         }
         Origin::Upgrade => {
             let enabled: Vec<String> = config
@@ -346,11 +365,10 @@ mod tests {
 
     /// What `load_or_default` does with config text, minus the disk.
     fn load_text(content: &str) -> Config {
-        let mut config: Config = toml::from_str(content).expect("parses");
-        let origin = if has_reads_table(content) {
-            Origin::Current
-        } else {
-            Origin::Upgrade
+        let parsed: Config = toml::from_str(content).expect("parses");
+        let (mut config, origin) = match origin_of(content) {
+            Some(origin) => (parsed, origin),
+            None => (Config::default(), Origin::FreshInstall),
         };
         migrate(&mut config, origin);
         config
@@ -506,8 +524,57 @@ on_startup = ""
         assert!(config.reads.sign_in.is_empty());
         assert_eq!(config.reads.pending, PendingNotice::Welcome);
         assert!(!config.providers.iter().any(|p| config.provider_active(p)));
-        // The providers stay switched on: ticking one only needs the read.
-        assert!(config.providers.iter().all(|p| p.enabled));
+        // Switched off too, so a version that ignores [reads] reads nothing.
+        assert!(config.providers.iter().all(|p| !p.enabled));
+    }
+
+    #[test]
+    fn an_empty_or_providerless_config_is_no_upgrade() {
+        for text in [
+            "",
+            "
+",
+            "[window]
+pos_x = 10
+",
+            "[ui]
+detail = \"medium\"
+",
+        ] {
+            let config = load_text(text);
+            assert!(config.reads.sign_in.is_empty(), "{text:?}");
+            assert_eq!(config.reads.pending, PendingNotice::Welcome, "{text:?}");
+        }
+    }
+
+    /// 0.7.1 fresh install, Codex allowed, then 0.7.0 run once (it drops
+    /// [reads] on save), then 0.7.1 again: only Codex was switched on, so
+    /// only Codex is read before and after.
+    #[test]
+    fn a_downgrade_and_back_keeps_what_was_allowed() {
+        let mut config = Config::default();
+        settle_reads(&mut config, Origin::FreshInstall);
+        config.allow_sign_in("codex");
+        config
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "codex")
+            .unwrap()
+            .enabled = true;
+        let mut text = toml::to_string_pretty(&config).unwrap();
+        // What 0.7.0 would write back: no [reads].
+        let at = text.find("[reads]").unwrap();
+        text.truncate(at);
+        let enabled_in_070: Vec<String> = toml::from_str::<Config>(&text)
+            .unwrap()
+            .providers
+            .into_iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(enabled_in_070, ["codex"]);
+        let back = load_text(&text);
+        assert_eq!(back.reads.sign_in, ["codex"]);
     }
 
     #[test]
@@ -536,7 +603,7 @@ on_startup = ""
         assert_eq!(back.ui.rows, config.ui.rows);
         assert_eq!(back.ui.model, config.ui.model);
         assert_eq!(back.reads, config.reads);
-        assert!(has_reads_table(&text));
+        assert_eq!(origin_of(&text), Some(Origin::Current));
     }
 
     #[test]
