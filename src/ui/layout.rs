@@ -612,6 +612,185 @@ mod tests {
         compute(&Layout::Horizontal, detail, &WidthScale::Full, flow, &Shape::plain(n))
     }
 
+    // ─── Shape: the lines models take ─────────────────────────────
+
+    use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderId};
+    use crate::rows::ModelLabel;
+
+    /// A fixed-advance stand-in for the font: half the size per character.
+    fn mono(text: &str, size: f32) -> f32 {
+        text.chars().count() as f32 * size * 0.5
+    }
+
+    fn metric(label: &str, unit: MetricUnit, window: MetricWindow) -> Metric {
+        Metric {
+            label: label.to_string(),
+            used: 30,
+            limit: Some(100),
+            unit,
+            reset_at: Some(chrono::Utc::now() + chrono::Duration::hours(3)),
+            window,
+            unified_pool: false,
+        }
+    }
+
+    /// A provider's own row with `metrics`, and a model when `model`.
+    fn row(id: ProviderId, metrics: Vec<Metric>, model: bool) -> RowView {
+        let data = ProviderData {
+            id,
+            status: crate::providers::ProviderStatus::Ok,
+            metrics,
+            updated_at: chrono::Utc::now(),
+            received_at: None,
+        };
+        let mut rows = crate::rows::visible_rows(
+            &crate::config::schema::Config::default(),
+            &[data],
+            crate::config::schema::Surface::Widget,
+            &crate::models::Models::new(),
+        );
+        let mut row = rows.remove(0);
+        row.model = model.then(|| ModelLabel {
+            model: Some("Opus".into()),
+            with_version: None,
+            effort: None,
+        });
+        row
+    }
+
+    fn session(model: bool) -> RowView {
+        let m = metric("Session", MetricUnit::Percent, MetricWindow::Session);
+        row(ProviderId::Claude, vec![m], model)
+    }
+
+    fn weekly(model: bool) -> RowView {
+        let m = metric("Weekly", MetricUnit::Percent, MetricWindow::Long);
+        row(ProviderId::Grok, vec![m], model)
+    }
+
+    fn count(model: bool) -> RowView {
+        let m = metric("Premium", MetricUnit::Requests, MetricWindow::Session);
+        row(ProviderId::Copilot, vec![m], model)
+    }
+
+    fn ui(layout: Layout, detail: DetailLevel, scale: WidthScale, flow: ColumnFlow) -> UIConfig {
+        UIConfig {
+            layout,
+            detail,
+            width_scale: scale,
+            column_flow: flow,
+            ..UIConfig::default()
+        }
+    }
+
+    fn lines(ui: &UIConfig, rows: &[RowView]) -> Vec<bool> {
+        Shape::of(ui, rows, false, mono).model_lines
+    }
+
+    #[test]
+    fn only_a_row_with_a_model_ever_gets_a_line() {
+        let rows = [session(false), weekly(false), count(false)];
+        for layout in [Layout::Vertical, Layout::Horizontal] {
+            for detail in [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded] {
+                let ui = ui(layout.clone(), detail, WidthScale::Half, ColumnFlow::Row);
+                assert_eq!(lines(&ui, &rows), [false, false, false]);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_rows_leave_the_model_to_the_tooltip_and_expanded_gives_it_a_line() {
+        let rows = [session(true), weekly(true), count(true), session(false)];
+        let full = |d| ui(Layout::Vertical, d, WidthScale::Full, ColumnFlow::Row);
+        assert_eq!(lines(&full(DetailLevel::Compact), &rows), [false; 4]);
+        assert_eq!(
+            lines(&full(DetailLevel::Expanded), &rows),
+            [true, true, true, false]
+        );
+    }
+
+    #[test]
+    fn medium_shares_the_meta_line_unless_it_is_taken_or_too_full() {
+        let rows = [session(true), weekly(true), count(true)];
+        let at = |scale| ui(Layout::Vertical, DetailLevel::Medium, scale, ColumnFlow::Row);
+        // A count takes the left part at every width; a weekly's
+        // "Weekly: 23h 59min" leaves too little only when narrow.
+        assert_eq!(lines(&at(WidthScale::Full), &rows), [false, false, true]);
+        assert_eq!(lines(&at(WidthScale::Half), &rows), [false, true, true]);
+    }
+
+    #[test]
+    fn a_model_line_grows_only_its_own_row() {
+        let rows = [session(false), weekly(true), session(false)];
+        let ui = ui(Layout::Vertical, DetailLevel::Expanded, WidthScale::Full, ColumnFlow::Row);
+        let shape = Shape::of(&ui, &rows, false, mono);
+        let with = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &shape);
+        let without = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &Shape::plain(3));
+        let (BodyLayout::Vertical { rows: a, .. }, BodyLayout::Vertical { rows: b, .. }) =
+            (&with.body, &without.body)
+        else {
+            panic!("rows body");
+        };
+        assert_eq!(a[0].h, b[0].h);
+        assert_eq!(a[1].h, b[1].h + MODEL_LINE_H);
+        assert_eq!(a[2].y, b[2].y + MODEL_LINE_H);
+        assert!((with.height - without.height - MODEL_LINE_H).abs() < 0.01);
+        assert!(with.model_lines[0].is_none());
+        let line = with.model_lines[1].expect("the weekly row's line");
+        assert_eq!(line.y, a[1].y + b[1].h, "the line is the band the row grew by");
+    }
+
+    #[test]
+    fn columns_side_by_side_grow_once_and_stacked_grow_per_column() {
+        let rows = [session(true), weekly(false), count(true)];
+        for detail in [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded] {
+            for (flow, grows) in [
+                (ColumnFlow::Row, MODEL_COL_LINE_H),
+                (ColumnFlow::Column, 2.0 * MODEL_COL_LINE_H),
+            ] {
+                let ui = ui(Layout::Horizontal, detail.clone(), WidthScale::Full, flow);
+                let shape = Shape::of(&ui, &rows, false, mono);
+                assert_eq!(shape.model_lines, [true, false, true]);
+                let with = compute(&ui.layout, &ui.detail, &ui.width_scale, &flow, &shape);
+                let without = compute(&ui.layout, &ui.detail, &ui.width_scale, &flow, &Shape::plain(3));
+                assert!(
+                    (with.height - without.height - grows).abs() < 0.01,
+                    "{detail:?} {flow:?}: grew {} px",
+                    with.height - without.height
+                );
+                assert_eq!(with.width, without.width, "a model line never widens");
+                let BodyLayout::Horizontal { cols } = &with.body else {
+                    panic!("columns body");
+                };
+                let line = with.model_lines[0].expect("the first column's line");
+                assert_eq!(line.y, cols[0].y + cols[0].h, "under the column body");
+                assert_eq!(line.w, cols[0].w);
+                if flow == ColumnFlow::Column {
+                    // The column after one with a line starts below it.
+                    assert!(cols[1].y >= line.y + line.h);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_gets_the_choose_box_and_an_empty_widget_keeps_its_line() {
+        let ui = UIConfig::default();
+        let choose = Shape::of(&ui, &[], true, mono);
+        assert!(choose.choose);
+        let win = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &choose);
+        assert!(matches!(win.body, BodyLayout::Choose { .. }));
+        // Rows win over the first-install box (they cannot both be).
+        assert!(!Shape::of(&ui, &[session(false)], true, mono).choose);
+        // Nothing to show but something chosen: today's one-row box.
+        let empty = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &Shape::plain(0));
+        let BodyLayout::Vertical { rows, .. } = &empty.body else {
+            panic!("rows body");
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(empty.model_lines.is_empty());
+    }
+
     #[test]
     fn three_quarters_narrows_the_rows_window_to_three_quarters() {
         let full = full_width(&DetailLevel::Compact);

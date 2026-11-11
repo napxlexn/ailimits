@@ -544,11 +544,18 @@ impl Renderer {
         let Some(label) = &view.model else {
             return;
         };
+        let detail = if expanded {
+            DetailLevel::Expanded
+        } else {
+            DetailLevel::Medium
+        };
         let (x, y, room, size) = match (model_line, expanded) {
-            (Some(line), _) => {
-                let size = if expanded { MODEL_EXPANDED_SIZE } else { META_SIZE };
-                (line.x, meta_y + layout::MODEL_LINE_H, line.w, size)
-            }
+            (Some(line), _) => (
+                line.x,
+                meta_y + layout::MODEL_LINE_H,
+                line.w,
+                model_size(&detail, false),
+            ),
             (None, false) => {
                 let Some(right) = meta_right else {
                     return;
@@ -715,11 +722,12 @@ impl Renderer {
             .filter(|_| cursor.is_some_and(|point| point_in_rect(point, col)))
             .map(|r| r.rsplit(" — ").next().unwrap_or(r));
         // Compact has no percent: pct_size = None, the bar starts at the top.
-        let (bar_w, top_gap, bottom_gap, pct_size, name_size, reset_size) = match detail {
-            DetailLevel::Compact => (7.0, 4.0, 13.0, None, 9.5, None),
-            DetailLevel::Medium => (8.5, 19.0, 17.0, Some(12.5), 10.5, None),
-            DetailLevel::Expanded => (11.0, 23.0, 30.0, Some(14.5), 11.5, Some(11.0)),
+        let (bar_w, top_gap, bottom_gap, pct_size, reset_size) = match detail {
+            DetailLevel::Compact => (7.0, 4.0, 13.0, None, None),
+            DetailLevel::Medium => (8.5, 19.0, 17.0, Some(12.5), None),
+            DetailLevel::Expanded => (11.0, 23.0, 30.0, Some(14.5), Some(11.0)),
         };
+        let name_size = column_name_size(detail);
         let bar = Rect {
             x: col.x + (col.w - bar_w) / 2.0,
             y: col.y + top_gap,
@@ -772,7 +780,7 @@ impl Renderer {
         // The model under the column, half a point smaller than the name;
         // Expanded leaves room for its reset line.
         if let (Some(label), Some(line)) = (&view.model, model_line) {
-            let size = name_size - 0.5;
+            let size = model_size(detail, true);
             if let Some(text) = self.fit_label(label, size, line.w) {
                 let y = line.y + if reset_size.is_some() { 3.0 } else { 0.0 };
                 self.draw_text(
@@ -1109,6 +1117,28 @@ impl Renderer {
             .steps()
             .into_iter()
             .find(|s| self.text_width(s, size) <= room)
+    }
+}
+
+/// The provider name's size under a column.
+fn column_name_size(detail: &DetailLevel) -> f32 {
+    match detail {
+        DetailLevel::Compact => 9.5,
+        DetailLevel::Medium => 10.5,
+        DetailLevel::Expanded => 11.5,
+    }
+}
+
+/// The size a model label is drawn at: under a column half a point below
+/// the name; in rows Medium's meta size, Expanded's own line a little larger.
+/// Compact rows draw no model.
+pub(super) fn model_size(detail: &DetailLevel, columns: bool) -> f32 {
+    if columns {
+        column_name_size(detail) - 0.5
+    } else if *detail == DetailLevel::Expanded {
+        MODEL_EXPANDED_SIZE
+    } else {
+        META_SIZE
     }
 }
 
@@ -1909,6 +1939,223 @@ mod tests {
         }
 
         vb::check("widget", items);
+    }
+
+    // ─── Model names: the places they are drawn ───────────────────
+
+    /// One provider's own row of every meta-line form, each with `label`:
+    /// a session percent (the reset on the right), weeklies of two label
+    /// lengths ("Weekly: 23h 59min" on the right), a count on the left, and
+    /// an error (nothing on the meta line).
+    fn rows_of_every_form(label: &ModelLabel) -> Vec<RowView> {
+        use crate::providers::MetricWindow::{Long, Session};
+        let hours = |h: i64| Some(Utc::now() + chrono::Duration::hours(h));
+        let with_reset = |label: &str, pct: u64, window, h: i64| Metric {
+            reset_at: hours(h),
+            ..pct_metric(label, pct, window)
+        };
+        let of = |id: ProviderId, metrics: Vec<Metric>| ProviderData {
+            id,
+            ..data(metrics)
+        };
+        let providers = vec![
+            of(
+                ProviderId::Claude,
+                vec![
+                    with_reset("Session", 25, Session, 23),
+                    with_reset("Weekly", 34, Long, 80),
+                ],
+            ),
+            of(ProviderId::Grok, vec![with_reset("Weekly", 12, Long, 23)]),
+            of(ProviderId::Antigravity, vec![with_reset("Gemini", 30, Long, 23)]),
+            of(
+                ProviderId::Copilot,
+                vec![Metric {
+                    label: "Premium".into(),
+                    used: 123,
+                    limit: Some(300),
+                    unit: MetricUnit::Requests,
+                    reset_at: hours(23),
+                    window: Session,
+                    unified_pool: false,
+                }],
+            ),
+            ProviderData {
+                status: ProviderStatus::AuthError("token expired".into()),
+                ..of(ProviderId::Codex, vec![])
+            },
+        ];
+        let mut rows = rows_of(&providers);
+        for row in &mut rows {
+            row.model = Some(label.clone());
+        }
+        rows
+    }
+
+    /// Every place the widget draws a model name, as (where, room, size):
+    /// every layout x detail x width x column flow, Medium's meta line beside
+    /// its right part at its widest (the longest reset, "23h 59min"), the
+    /// lines of their own. Built from the same layout, shape and size
+    /// functions the drawing uses.
+    fn model_name_places(renderer: &Renderer) -> Vec<(String, f32, f32)> {
+        use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
+        use crate::ui::layout::{compute, medium_model_room, Shape};
+
+        let measure = |t: &str, s: f32| renderer.text_width(t, s);
+        let label = ModelLabel {
+            model: Some("Opus".into()),
+            with_version: None,
+            effort: None,
+        };
+        let rows = rows_of_every_form(&label);
+        let details = [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded];
+        let mut configs = Vec::new();
+        for detail in &details {
+            for scale in [WidthScale::Full, WidthScale::ThreeQuarters, WidthScale::Half] {
+                configs.push(UIConfig {
+                    layout: Layout::Vertical,
+                    detail: detail.clone(),
+                    width_scale: scale,
+                    ..UIConfig::default()
+                });
+            }
+            for flow in [ColumnFlow::Row, ColumnFlow::Column] {
+                configs.push(UIConfig {
+                    layout: Layout::Horizontal,
+                    detail: detail.clone(),
+                    column_flow: flow,
+                    ..UIConfig::default()
+                });
+            }
+        }
+
+        let mut places = Vec::new();
+        for ui in &configs {
+            let shape = Shape::of(ui, &rows, false, measure);
+            let win = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &shape);
+            let columns = ui.layout == Layout::Horizontal;
+            let rects = match &win.body {
+                BodyLayout::Vertical { rows, .. } => rows.clone(),
+                BodyLayout::Horizontal { cols } => cols.clone(),
+                BodyLayout::Choose { .. } => unreachable!(),
+            };
+            assert_eq!(rects.len(), rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                let at = format!(
+                    "{:?} {:?} {:?} {:?} {}",
+                    ui.layout, ui.detail, ui.width_scale, ui.column_flow, row.id
+                );
+                let size = model_size(&ui.detail, columns);
+                match (win.model_lines[i], &ui.detail, columns) {
+                    (Some(line), _, _) => places.push((at, line.w, size)),
+                    (None, _, true) => panic!("a column with a model has its line: {at}"),
+                    (None, DetailLevel::Compact, false) => {}
+                    (None, DetailLevel::Expanded, false) => {
+                        panic!("an Expanded row with a model has its line: {at}")
+                    }
+                    (None, DetailLevel::Medium, false) => {
+                        let right = medium_meta_widest(&row.data)
+                            .expect("a meta line taken from the left gets a line of its own");
+                        let room = medium_model_room(rects[i].w, measure(&right, META_SIZE));
+                        places.push((format!("{at} beside {right:?}"), room, size));
+                    }
+                }
+            }
+        }
+        places
+    }
+
+    /// `rows::NAME_SLOTS` is what a renamed model is held to. Every place
+    /// above must be at least as wide as the slot of its size, so a name that
+    /// passes `rows::name_fits` always shows in full; and each slot must be
+    /// the narrowest place of its size, not a guess well under it.
+    #[test]
+    fn every_model_name_place_holds_its_slot() {
+        let renderer = Renderer::new().expect("a system font");
+        let places = model_name_places(&renderer);
+        let mut narrowest: Vec<(f32, f32, String)> = Vec::new();
+        for (at, room, size) in &places {
+            match narrowest.iter_mut().find(|(s, _, _)| s == size) {
+                Some(n) if *room < n.1 => *n = (*size, *room, at.clone()),
+                Some(_) => {}
+                None => narrowest.push((*size, *room, at.clone())),
+            }
+        }
+        for (size, room, at) in &narrowest {
+            println!("narrowest at {size} px: {room:.2} px ({at})");
+        }
+        for (size, room, at) in &narrowest {
+            let slot = crate::rows::NAME_SLOTS
+                .iter()
+                .find(|(_, s)| s == size)
+                .unwrap_or_else(|| panic!("no name slot for {size} px, the size at {at}"));
+            assert!(
+                slot.0 <= *room,
+                "{at}: {room:.2} px at {size} px is narrower than the slot {} px",
+                slot.0
+            );
+            assert!(
+                slot.0 > room - 0.5,
+                "the slot at {size} px ({} px) is well under its narrowest place {room:.2} px ({at})",
+                slot.0
+            );
+        }
+        for (w, size) in crate::rows::NAME_SLOTS {
+            assert!(
+                narrowest.iter().any(|(s, _, _)| s == size),
+                "the slot ({w}, {size}) matches no place a model name is drawn"
+            );
+        }
+    }
+
+    /// The meta line's room is decided against `LONGEST_RESET`: no countdown
+    /// `format_duration` writes may be wider.
+    #[test]
+    fn the_longest_reset_is_the_widest_countdown() {
+        let renderer = Renderer::new().expect("a system font");
+        let longest = renderer.text_width(LONGEST_RESET, META_SIZE);
+        let mut secs: Vec<i64> = (0..60).collect();
+        secs.extend((1..60).map(|m| m * 60));
+        secs.extend((1..24).flat_map(|h| (0..60).map(move |m| h * 3600 + m * 60)));
+        secs.extend((1..100).flat_map(|d| (0..24).map(move |h| d * 86_400 + h * 3600)));
+        for s in secs {
+            let text = format_duration(s);
+            assert!(
+                renderer.text_width(&text, META_SIZE) <= longest,
+                "{text:?} is wider than {LONGEST_RESET:?}"
+            );
+        }
+    }
+
+    /// A name cut by `rows::fit_name` (what the picker's rename keeps) is
+    /// drawn whole in every place, whatever its letters.
+    #[test]
+    fn a_name_held_to_its_slot_shows_in_full_everywhere() {
+        let renderer = Renderer::new().expect("a system font");
+        let measure = |t: &str, s: f32| renderer.text_width(t, s);
+        let places = model_name_places(&renderer);
+        for typed in [
+            "WWWWWWWWWWWWWWWWWWWW",
+            "@@@@@@@@@@@@",
+            "Sonnet 4.6 Thinking",
+            "iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii",
+            "GPT-6.1 Sol Codex Max",
+        ] {
+            let name = crate::rows::fit_name(typed, measure);
+            assert!(!name.is_empty());
+            let label = ModelLabel {
+                model: Some(name.clone()),
+                with_version: None,
+                effort: Some("xhigh".into()),
+            };
+            for (at, room, size) in &places {
+                let shown = renderer.fit_label(&label, *size, *room);
+                assert!(
+                    shown.as_deref().is_some_and(|s| s.starts_with(name.as_str())),
+                    "{name:?} at {at}: shown as {shown:?}"
+                );
+            }
+        }
     }
 
     fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {

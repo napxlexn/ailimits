@@ -263,11 +263,13 @@ pub fn nothing_chosen(config: &Config) -> bool {
 }
 
 /// The narrowest places the widget draws a model name, as (width, font
-/// size) in the renderer's pixels. A renamed model must fit every one, so it
-/// shows in full in every size. The renderer owns these places: any change
-/// to where a model name is drawn updates this list (a renderer test holds
-/// them to the geometry).
-pub const NAME_SLOTS: &[(f32, f32)] = &[(56.5, 10.5), (51.1, 9.0)];
+/// size) in the renderer's pixels, one per size it draws a model at. A
+/// renamed model must fit every one, so it shows in full in every size. The
+/// renderer owns these places: any change to where a model name is drawn
+/// updates this list (`renderer::tests::every_model_name_place_holds_its_slot`
+/// holds them to the geometry). Medium at half width beside the longest
+/// reset (10.5 px), the Compact, Medium and Expanded columns (9, 10, 11 px).
+pub const NAME_SLOTS: &[(f32, f32)] = &[(56.5, 10.5), (51.0, 9.0), (59.9, 10.0), (68.8, 11.0)];
 
 /// Whether a model name fits every place a model name is drawn.
 /// `measure(text, size)` is `Renderer::text_width`.

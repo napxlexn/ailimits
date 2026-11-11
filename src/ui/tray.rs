@@ -1517,6 +1517,100 @@ mod tests {
         }
     }
 
+    // ─── Tooltip rows ─────────────────────────────────────────────
+
+    use crate::config::schema::{Config, Surface};
+    use crate::models::Models;
+
+    fn tip_rows(config: &Config, providers: &[ProviderData]) -> Vec<RowView> {
+        crate::rows::visible_rows(config, providers, Surface::Tooltip, &Models::new())
+    }
+
+    fn opus(effort: Option<&str>) -> ModelLabel {
+        ModelLabel {
+            model: Some("Opus".into()),
+            with_version: Some("Opus 5.5".into()),
+            effort: effort.map(String::from),
+        }
+    }
+
+    /// With the default config the panel's tooltip is today's one line, the
+    /// tray's own text, and draws exactly as before.
+    #[test]
+    fn the_default_tooltip_is_todays_single_line() {
+        let providers = crate::ui::visual_baseline::typical();
+        let rows = tip_rows(&Config::default(), &providers);
+        let lines = tooltip_lines(&rows, false);
+        assert_eq!(
+            lines,
+            [TipLine {
+                text: tooltip(&providers, false),
+                indent: false
+            }]
+        );
+        let a = render_tooltip_lines(&lines, 48.0, true);
+        let b = render_tooltip(&tooltip(&providers, false), 48.0, true);
+        assert_eq!(a.data(), b.data());
+        // Rows unticked from the tooltip still make one plain line.
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(vec!["codex".into(), "grok".into()]);
+        let lines = tooltip_lines(&tip_rows(&config, &providers), false);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].text, "Codex 48%  ·  Grok 12%");
+    }
+
+    #[test]
+    fn extra_rows_or_a_label_give_one_row_per_line() {
+        let providers = crate::ui::visual_baseline::typical();
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(vec!["claude".into(), "codex".into(), "antigravity.cg".into()]);
+        let mut rows = tip_rows(&config, &providers);
+        rows[0].model = Some(opus(Some("xhigh")));
+        let lines = tooltip_lines(&rows, false);
+        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [
+                "Claude 25% (2h 14min) · Opus 5.5 · xhigh",
+                "Codex 48% (4h 51min)",
+                "Antigravity · Claude and GPT 64% (5d 0h)",
+            ]
+        );
+        assert!(lines.iter().all(|l| !l.indent));
+    }
+
+    /// The tray icon's own text lists providers only, whatever the rows.
+    #[test]
+    fn the_tray_text_never_carries_models_or_extra_rows() {
+        let providers = crate::ui::visual_baseline::typical();
+        assert_eq!(
+            tooltip(&providers, false),
+            "Claude 25%  ·  Codex 48%  ·  Grok 12%  ·  Antigravity 30%  ·  Copilot 41%"
+        );
+        assert_eq!(tooltip(&[], false), "AI Limits");
+        assert_eq!(tooltip(&[], true), "AI Limits: choose what to show");
+        // Before anything is chosen the panel's tooltip says the same.
+        assert_eq!(tooltip_lines(&[], true)[0].text, "AI Limits: choose what to show");
+    }
+
+    #[test]
+    fn a_long_line_wraps_at_a_dot_and_never_cuts_a_word() {
+        let long = "Antigravity · Claude and GPT 64% (5d 0h) · Claude Sonnet 4.6 Thinking \
+                    Extended Preview · xhigh";
+        let lines = wrap_tip_line(long);
+        assert!(lines.len() > 1, "{lines:?}");
+        assert!(!lines[0].indent && lines[1..].iter().all(|l| l.indent));
+        let joined: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(joined.join(" · "), long, "nothing lost, nothing cut");
+        for l in &lines[..lines.len() - 1] {
+            let w = text_extent(&l.text, TIP_FONT_PX).0 + if l.indent { TIP_WRAP_INDENT } else { 0.0 };
+            assert!(w <= TIP_WRAP_PX, "{:?} is {w} px", l.text);
+        }
+        // One part wider than the limit on its own stays whole.
+        let one = "W".repeat(80);
+        assert_eq!(wrap_tip_line(&one).len(), 1);
+    }
+
     /// The tooltip is sized from the BAR's thickness, and from nothing else.
     /// The panel's own height is not that thickness on a side bar - the
     /// stacked layout stands 64px tall where the bar is 48 - and passing it
