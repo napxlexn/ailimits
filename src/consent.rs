@@ -65,7 +65,7 @@ pub const READ_INFO: &[ReadInfo] = &[
             "cloudcode-pa.googleapis.com",
             "daily-cloudcode-pa.googleapis.com",
         ],
-        settings: None,
+        settings: Some(r"%USERPROFILE%\.gemini\antigravity-cli\settings.json: model"),
         session: None,
     },
     ReadInfo {

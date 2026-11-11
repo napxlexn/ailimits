@@ -123,17 +123,7 @@ impl ModelReader {
 
     /// The model set in the tool's settings file.
     fn configured(&mut self, homes: &Homes, id: &ProviderId) -> Option<ModelInfo> {
-        let (path, parse): (PathBuf, SettingsParser) = match id {
-            ProviderId::Claude => (homes.claude().join("settings.json"), settings::claude),
-            ProviderId::Codex => (homes.codex.join("config.toml"), settings::codex),
-            ProviderId::Grok => (homes.grok.join("config.toml"), settings::grok),
-            ProviderId::Copilot => (homes.copilot.join("settings.json"), settings::copilot),
-            ProviderId::Antigravity => (
-                homes.antigravity_cli().join("settings.json"),
-                settings::antigravity,
-            ),
-            ProviderId::Cursor => return None,
-        };
+        let (path, parse) = settings_file(homes, id)?;
         let Some(stamp) = files::stamp(&path) else {
             self.settings.remove(id);
             return None;
@@ -247,6 +237,23 @@ impl Homes {
     fn antigravity_cli(&self) -> PathBuf {
         self.user.join(".gemini").join("antigravity-cli")
     }
+}
+
+/// A tool's settings file and the parser for it; None for a tool that has
+/// none (Cursor). The files are the ones `consent::READ_INFO` names.
+fn settings_file(homes: &Homes, id: &ProviderId) -> Option<(PathBuf, SettingsParser)> {
+    let file: (PathBuf, SettingsParser) = match id {
+        ProviderId::Claude => (homes.claude().join("settings.json"), settings::claude),
+        ProviderId::Codex => (homes.codex.join("config.toml"), settings::codex),
+        ProviderId::Grok => (homes.grok.join("config.toml"), settings::grok),
+        ProviderId::Copilot => (homes.copilot.join("settings.json"), settings::copilot),
+        ProviderId::Antigravity => (
+            homes.antigravity_cli().join("settings.json"),
+            settings::antigravity,
+        ),
+        ProviderId::Cursor => return None,
+    };
+    Some(file)
 }
 
 /// A folder named by an environment variable, when set to an absolute path.
@@ -526,6 +533,29 @@ mod tests {
         let m = r.read(&reads(true, false), ModelSource::Configured, &ALL);
         assert_eq!(m[&ProviderId::Copilot], info("gpt-5.5", Some("high")));
         assert_eq!(m[&ProviderId::Grok], info("grok-4.5", None));
+    }
+
+    /// What the user is told is read (consent.rs) is what the readers read:
+    /// the same settings file per tool, sessions for Claude Code and Codex
+    /// only, nothing for the tools without a reader.
+    #[test]
+    fn the_consent_text_names_the_files_read() {
+        let root = std::path::Path::new(r"C:\Users\someone");
+        let homes = Homes::under(root);
+        for id in &ALL {
+            let told = crate::consent::read_info(id.config_id()).unwrap();
+            match settings_file(&homes, id) {
+                Some((path, _)) => {
+                    let rel = path.strip_prefix(root).unwrap().display().to_string();
+                    let named = format!(r"%USERPROFILE%\{rel}: ");
+                    let text = told.settings.unwrap_or_default();
+                    assert!(text.starts_with(&named), "{id:?}: {text:?} vs {named:?}");
+                }
+                None => assert!(told.settings.is_none(), "{id:?}"),
+            }
+            let reads_sessions = matches!(id, ProviderId::Claude | ProviderId::Codex);
+            assert_eq!(told.session.is_some(), reads_sessions, "{id:?}");
+        }
     }
 
     /// The cost of finding the newest session on this PC. Prints counts,
