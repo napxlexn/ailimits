@@ -146,7 +146,11 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
         PickerAction::Rename { model_id, name } => {
             match name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
                 Some(n) => {
-                    config.ui.model.names.insert(model_id.clone(), n.to_string());
+                    config
+                        .ui
+                        .model
+                        .names
+                        .insert(model_id.clone(), n.to_string());
                 }
                 None => {
                     config.ui.model.names.remove(model_id);
@@ -283,19 +287,31 @@ mod tests {
     #[test]
     fn the_first_tick_spells_out_only_what_runs() {
         let mut config = Config::default();
-        apply(&mut config, &PickerAction::Allow(ReadKind::SignIn("claude".into())));
+        apply(
+            &mut config,
+            &PickerAction::Allow(ReadKind::SignIn("claude".into())),
+        );
         apply(&mut config, &row(Surface::Widget, "claude", true));
-        assert_eq!(config.ui.rows.widget.as_deref(), Some(&["claude".to_string()][..]));
+        assert_eq!(
+            config.ui.rows.widget.as_deref(),
+            Some(&["claude".to_string()][..])
+        );
         // The tooltip was not touched: still the default, so Claude shows
         // there too, being allowed now.
         assert!(config.ui.rows.tooltip.is_none());
         assert_eq!(resolved_rows(&config, Surface::Tooltip), ["claude"]);
         // A second provider allowed from the tooltip column stays out of
         // the widget, whose rows were chosen.
-        apply(&mut config, &PickerAction::Allow(ReadKind::SignIn("codex".into())));
+        apply(
+            &mut config,
+            &PickerAction::Allow(ReadKind::SignIn("codex".into())),
+        );
         apply(&mut config, &row(Surface::Tooltip, "codex", true));
         assert_eq!(resolved_rows(&config, Surface::Widget), ["claude"]);
-        assert_eq!(resolved_rows(&config, Surface::Tooltip), ["claude", "codex"]);
+        assert_eq!(
+            resolved_rows(&config, Surface::Tooltip),
+            ["claude", "codex"]
+        );
     }
 
     #[test]
@@ -317,7 +333,12 @@ mod tests {
     fn ticking_a_row_of_a_switched_off_provider_switches_it_on() {
         let mut config = Config::default();
         config.allow_sign_in("grok");
-        config.providers.iter_mut().find(|p| p.id == "grok").unwrap().enabled = false;
+        config
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "grok")
+            .unwrap()
+            .enabled = false;
         let done = apply(&mut config, &row(Surface::Widget, "grok.build", true));
         assert_eq!(done.provider.as_deref(), Some("grok"));
         assert!(config.providers.iter().any(|p| p.id == "grok" && p.enabled));
@@ -339,7 +360,10 @@ mod tests {
         apply(&mut config, &on(ModelPart::Effort));
         apply(&mut config, &on(ModelPart::Model));
         apply(&mut config, &on(ModelPart::Model));
-        assert_eq!(config.ui.model.tooltip, [ModelPart::Model, ModelPart::Effort]);
+        assert_eq!(
+            config.ui.model.tooltip,
+            [ModelPart::Model, ModelPart::Effort]
+        );
         assert!(apply(&mut config, &PickerAction::SetSource(ModelSource::LastUsed)).models);
         assert_eq!(config.ui.model.source, ModelSource::LastUsed);
         let rename = |name: Option<&str>| PickerAction::Rename {

@@ -361,14 +361,7 @@ impl PickerTheme {
             on_accent: Color::rgba(255, 255, 255, 255),
             hover: Color::rgba(0, 0, 0, 11),
             separator: Color::rgba(225, 225, 225, 255),
-            shadow: [
-                (10.0, 1),
-                (8.0, 2),
-                (6.0, 3),
-                (4.0, 4),
-                (2.0, 6),
-                (1.0, 8),
-            ],
+            shadow: [(10.0, 1), (8.0, 2), (6.0, 3), (4.0, 4), (2.0, 6), (1.0, 8)],
             shadow_drop: 3.0,
         }
     }

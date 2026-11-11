@@ -20,7 +20,9 @@ use std::time::Instant;
 use chrono::{DateTime, Duration, Utc};
 use tiny_skia::Pixmap;
 
-use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus};
+use crate::providers::{
+    Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
+};
 
 /// FNV-1a, 64 bit: stable across Rust versions, unlike `DefaultHasher`.
 fn fnv1a(bytes: &[u8], mut h: u64) -> u64 {

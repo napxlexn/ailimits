@@ -553,7 +553,8 @@ fn model_request(config: &Config) -> Option<ModelRequest> {
     let model = &config.ui.model;
     let reads = &config.reads;
     let parts_on = !model.widget.is_empty() || !model.tooltip.is_empty();
-    let sessions = model.source == crate::config::schema::ModelSource::LastUsed && reads.last_session;
+    let sessions =
+        model.source == crate::config::schema::ModelSource::LastUsed && reads.last_session;
     if !parts_on || !(reads.tool_settings || sessions) {
         return None;
     }
@@ -1870,7 +1871,13 @@ pub fn run() -> Result<()> {
                                 &mut display,
                                 pid,
                             );
-                            refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
+                            refresh_models(
+                                &model_job,
+                                &config,
+                                &mut models,
+                                &cmd_tx,
+                                runtime.handle(),
+                            );
                             shape = widget_shape(&config, &display, &models, &renderer);
                             apply_ui_change(
                                 &config,
@@ -2196,7 +2203,13 @@ pub fn run() -> Result<()> {
                                         &mut display,
                                         &pid,
                                     );
-                                    refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
+                                    refresh_models(
+                                        &model_job,
+                                        &config,
+                                        &mut models,
+                                        &cmd_tx,
+                                        runtime.handle(),
+                                    );
                                     menu.sync(&config, win_state.pinned);
                                     save_config(config.clone());
                                     fetch_one(&providers, &cmd_tx, &runtime, &pid);
@@ -2565,7 +2578,12 @@ mod tests {
         assert!(model_request(&config).is_none());
         config.ui.model.widget = vec![ModelPart::Effort];
         // A provider switched off is not read.
-        config.providers.iter_mut().find(|p| p.id == "codex").unwrap().enabled = false;
+        config
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "codex")
+            .unwrap()
+            .enabled = false;
         assert_eq!(model_request(&config).unwrap().ids, [ProviderId::Claude]);
     }
     use crate::providers::MetricUnit;

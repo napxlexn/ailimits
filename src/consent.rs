@@ -73,7 +73,9 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "Grok CLI",
         sign_in: &[r"%USERPROFILE%\.grok\auth.json"],
         hosts: &["cli-chat-proxy.grok.com"],
-        settings: Some(r"%USERPROFILE%\.grok\config.toml: [models] default, default_reasoning_effort"),
+        settings: Some(
+            r"%USERPROFILE%\.grok\config.toml: [models] default, default_reasoning_effort",
+        ),
         session: None,
     },
     ReadInfo {

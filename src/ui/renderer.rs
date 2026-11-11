@@ -2979,7 +2979,12 @@ impl Renderer {
                     pb.line_to(ox + 4.8 * s, oy + 8.8 * s);
                     pb.line_to(ox + 9.8 * s, oy + 3.4 * s);
                     if let Some(path) = pb.finish() {
-                        self.picker_line(pm, &path, 1.6 * s, picker_ink(theme, Ink::OnAccent, *alpha));
+                        self.picker_line(
+                            pm,
+                            &path,
+                            1.6 * s,
+                            picker_ink(theme, Ink::OnAccent, *alpha),
+                        );
                     }
                 } else {
                     self.picker_outline(pm, r, 4.0 * s, s, picker_ink(theme, Ink::Muted, *alpha));
@@ -2990,7 +2995,13 @@ impl Renderer {
                 let (cx, cy, rad) = (r.x + r.w / 2.0, r.y + r.h / 2.0, r.w / 2.0);
                 if *on {
                     self.picker_disc(pm, cx, cy, rad, picker_ink(theme, Ink::Accent, *alpha));
-                    self.picker_disc(pm, cx, cy, rad - 5.0 * s, picker_ink(theme, Ink::OnAccent, *alpha));
+                    self.picker_disc(
+                        pm,
+                        cx,
+                        cy,
+                        rad - 5.0 * s,
+                        picker_ink(theme, Ink::OnAccent, *alpha),
+                    );
                 } else if let Some(path) = PathBuilder::from_circle(cx, cy, rad - 0.5 * s) {
                     self.picker_line(pm, &path, s, picker_ink(theme, Ink::Muted, *alpha));
                 }

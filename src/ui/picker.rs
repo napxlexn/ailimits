@@ -163,15 +163,26 @@ pub enum PickerKey {
 /// (physical pixels divided by the scale factor), from its top-left corner.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerEvent {
-    PointerMove { x: f32, y: f32 },
+    PointerMove {
+        x: f32,
+        y: f32,
+    },
     /// The left button went down.
-    PointerDown { x: f32, y: f32 },
+    PointerDown {
+        x: f32,
+        y: f32,
+    },
     /// The left button came up.
-    PointerUp { x: f32, y: f32 },
+    PointerUp {
+        x: f32,
+        y: f32,
+    },
     PointerLeave,
     /// A wheel turn in logical pixels; positive scrolls toward the top, as a
     /// wheel turned away from the user does.
-    Wheel { dy: f32 },
+    Wheel {
+        dy: f32,
+    },
     Key(PickerKey),
     /// Typed text: one character, or a whole IME composition.
     Text(String),
@@ -389,7 +400,11 @@ const ROOM_SAMPLE: &str = "Sonnet 4.6 Opus Max GPT 5.5 Haiku Grok Fast ";
 const PARTS: [(ModelPart, &str, &str); 3] = [
     (ModelPart::Model, "Model", "Opus · GPT · Grok · Auto"),
     (ModelPart::Version, "Version", "5.5 · 6.1 Sol · 4.7"),
-    (ModelPart::Effort, "Effort", "low · medium · high · xhigh · max"),
+    (
+        ModelPart::Effort,
+        "Effort",
+        "low · medium · high · xhigh · max",
+    ),
 ];
 
 const SURFACES: [(Surface, f32); 2] = [
@@ -447,8 +462,14 @@ struct Run {
 #[derive(Debug, Clone, PartialEq)]
 enum Target {
     Close,
-    Row { row: String, surface: Surface },
-    Part { part: ModelPart, surface: Surface },
+    Row {
+        row: String,
+        surface: Surface,
+    },
+    Part {
+        part: ModelPart,
+        surface: Surface,
+    },
     Source(ModelSource),
     /// A name field, by model id.
     Field(String),
@@ -664,7 +685,10 @@ impl Frame {
     fn in_list(&self, x: f32, y: f32) -> bool {
         contains(&self.viewport, x, y)
             && y >= self.list_top()
-            && !self.sticky.as_ref().is_some_and(|s| contains(&s.rect, x, y))
+            && !self
+                .sticky
+                .as_ref()
+                .is_some_and(|s| contains(&s.rect, x, y))
     }
 }
 
@@ -917,8 +941,7 @@ impl Picker {
                 Layer::Body => {
                     // Off-screen rows are not drawn.
                     let visible = !cull
-                        || el_rect(el)
-                            .is_none_or(|r| bottom(&r) > vy && r.y < bottom(&f.viewport));
+                        || el_rect(el).is_none_or(|r| bottom(&r) > vy && r.y < bottom(&f.viewport));
                     if visible {
                         body.extend(shapes.iter().map(|s| s.moved(-vx, -vy)));
                     }
@@ -973,11 +996,7 @@ impl Picker {
 
     fn allowed(&self, provider: &str) -> bool {
         let p = canonical(provider);
-        self.input
-            .reads
-            .sign_in
-            .iter()
-            .any(|s| canonical(s) == p)
+        self.input.reads.sign_in.iter().any(|s| canonical(s) == p)
     }
 
     fn enabled(&self, provider: &str) -> bool {
@@ -1221,7 +1240,11 @@ impl Picker {
                     soft = next;
                 }
             }
-            let cut = if soft > 0 { soft } else { end.max(first_char_len(rest)) };
+            let cut = if soft > 0 {
+                soft
+            } else {
+                end.max(first_char_len(rest))
+            };
             out.push(rest[..cut].to_string());
             rest = &rest[cut..];
         }
@@ -1449,7 +1472,9 @@ impl Picker {
     }
 
     fn button_w(&self, label: &str) -> f32 {
-        (self.adv(label, SIZE_TEXT) + 24.0).max(BUTTON_MIN_W).round()
+        (self.adv(label, SIZE_TEXT) + 24.0)
+            .max(BUTTON_MIN_W)
+            .round()
     }
 
     /// The list: rows, model parts, the source, the names.
@@ -1503,7 +1528,11 @@ impl Picker {
             })
             .collect();
         // Drawn once, by the frame, in place or pinned.
-        f.sticky = Some((f.y, COLS_H, heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect()));
+        f.sticky = Some((
+            f.y,
+            COLS_H,
+            heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect(),
+        ));
         f.y += COLS_H;
 
         // Rows, grouped by provider.
@@ -1523,7 +1552,14 @@ impl Picker {
             }
             // A provider with one limit for everything has no extra rows.
             if g.len() == 1 && !g[0].id.contains('.') {
-                f.shape(text_shape(SUB_X, f.y, ONE_LIMIT, SIZE_NOTE, Ink::Muted, false));
+                f.shape(text_shape(
+                    SUB_X,
+                    f.y,
+                    ONE_LIMIT,
+                    SIZE_NOTE,
+                    Ink::Muted,
+                    false,
+                ));
                 f.y += lh(SIZE_NOTE) + 4.0;
             }
         }
@@ -1605,7 +1641,11 @@ impl Picker {
         f.shape(text_shape(PAD_X, f.y, NAMES, SIZE_TEXT, Ink::Text, true));
         f.y += lh(SIZE_TEXT);
         let models = self.renamable();
-        let note = if models.is_empty() { NAMES_OFF } else { NAMES_ON };
+        let note = if models.is_empty() {
+            NAMES_OFF
+        } else {
+            NAMES_ON
+        };
         let note = self.wrap(
             &[span(note, SIZE_NOTE, Ink::Muted, false)],
             BOX_W - SUB_X - PAD_X,
@@ -1647,7 +1687,14 @@ impl Picker {
         f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
         let top = y + ((h - block) / 2.0).round();
         if !own {
-            f.shape(text_shape(PAD_X + 1.0, top, "+", SIZE_TEXT, Ink::Muted, false));
+            f.shape(text_shape(
+                PAD_X + 1.0,
+                top,
+                "+",
+                SIZE_TEXT,
+                Ink::Muted,
+                false,
+            ));
         }
         f.shape(text_shape(x, top, name, SIZE_TEXT, Ink::Text, own));
         if own && welcome && self.found(row.provider) {
@@ -1790,7 +1837,14 @@ impl Picker {
 
     fn flow_item(&self, f: &mut Flow, spans: &[Span], width: f32) {
         let lines = self.wrap(spans, width - 18.0);
-        f.shape(text_shape(PAD_X + 4.0, f.y, "•", SIZE_TEXT, Ink::Text, false));
+        f.shape(text_shape(
+            PAD_X + 4.0,
+            f.y,
+            "•",
+            SIZE_TEXT,
+            Ink::Text,
+            false,
+        ));
         f.y += f.lines(&lines, PAD_X + 18.0, f.y, lh(SIZE_TEXT)) + 4.0;
     }
 
@@ -1894,7 +1948,14 @@ impl Picker {
         f.y += f.lines(&l, ASK_PAD, f.y, lh(SIZE_TEXT)) + 4.0;
         for file in files {
             let lines = self.wrap(&[span(file, SIZE_NOTE, Ink::Text, false)], inner - 18.0);
-            f.shape(text_shape(ASK_PAD + 4.0, f.y, "•", SIZE_NOTE, Ink::Text, false));
+            f.shape(text_shape(
+                ASK_PAD + 4.0,
+                f.y,
+                "•",
+                SIZE_NOTE,
+                Ink::Text,
+                false,
+            ));
             f.y += f.lines(&lines, ASK_PAD + 18.0, f.y, lh(SIZE_NOTE)) + 2.0;
         }
         f.y += 4.0;
@@ -1954,7 +2015,12 @@ impl Picker {
                 let (cx, cy) = (cell.x + cell.w / 2.0, (cell.y + cell.h / 2.0).round());
                 if self.ring(target) {
                     out.push(Shape::Stroke {
-                        rect: rect(cx - TICK_RING / 2.0, cy - TICK_RING / 2.0, TICK_RING, TICK_RING),
+                        rect: rect(
+                            cx - TICK_RING / 2.0,
+                            cy - TICK_RING / 2.0,
+                            TICK_RING,
+                            TICK_RING,
+                        ),
                         radius: 6.0,
                         width: 2.0,
                         ink: Ink::Text,
@@ -2400,8 +2466,10 @@ impl Picker {
     /// count as answered once seen.
     fn close(&mut self) -> Vec<PickerAction> {
         let mut out = Vec::new();
-        if matches!(self.input.mode, PickerMode::Welcome | PickerMode::UpdateNotice)
-            && !self.notice_done
+        if matches!(
+            self.input.mode,
+            PickerMode::Welcome | PickerMode::UpdateNotice
+        ) && !self.notice_done
         {
             self.notice_done = true;
             out.push(PickerAction::NoticeDone);
@@ -2476,7 +2544,8 @@ impl Picker {
             return;
         };
         let f = self.frame();
-        let Some((_, _, r, Layer::Body)) = self.focusables(&f).into_iter().find(|(ft, ..)| *ft == t)
+        let Some((_, _, r, Layer::Body)) =
+            self.focusables(&f).into_iter().find(|(ft, ..)| *ft == t)
         else {
             return;
         };
@@ -2544,9 +2613,9 @@ impl Picker {
             .and_then(|t| items.iter().position(|(ft, ..)| ft == t));
         let next = match k {
             PickerKey::Tab => Some(at.map_or(0, |i| (i + 1) % items.len())),
-            PickerKey::BackTab => Some(at.map_or(items.len() - 1, |i| {
-                (i + items.len() - 1) % items.len()
-            })),
+            PickerKey::BackTab => {
+                Some(at.map_or(items.len() - 1, |i| (i + items.len() - 1) % items.len()))
+            }
             PickerKey::Home => Some(0),
             PickerKey::End => Some(items.len() - 1),
             PickerKey::Up | PickerKey::Down | PickerKey::Left | PickerKey::Right => {
@@ -2726,14 +2795,15 @@ fn grid_move(items: &[(Target, Nav, Rect, Layer)], at: usize, k: PickerKey) -> u
                 .iter()
                 .map(|(_, n, ..)| n.0)
                 .filter(|&r| if k == PickerKey::Up { r < row } else { r > row })
-                .reduce(|a, b| if k == PickerKey::Up { a.max(b) } else { a.min(b) });
-            target_row.and_then(|tr| {
-                pick(
-                    (0..items.len())
-                        .filter(|&i| items[i].1 .0 == tr)
-                        .collect(),
-                )
-            })
+                .reduce(|a, b| {
+                    if k == PickerKey::Up {
+                        a.max(b)
+                    } else {
+                        a.min(b)
+                    }
+                });
+            target_row
+                .and_then(|tr| pick((0..items.len()).filter(|&i| items[i].1 .0 == tr).collect()))
         }
         _ => {
             let same: Vec<usize> = (0..items.len()).filter(|&i| items[i].1 .0 == row).collect();
@@ -2796,7 +2866,12 @@ pub fn place(
     let above = (anchor.x, anchor.y - gap - bh);
     // A side fits when the box clears the work area's edge on that side;
     // sliding along the anchor is the clamp's job.
-    let fits = [right.0 + bw <= r, left.0 >= l, below.1 + bh <= b, above.1 >= t];
+    let fits = [
+        right.0 + bw <= r,
+        left.0 >= l,
+        below.1 + bh <= b,
+        above.1 >= t,
+    ];
     let cands = [right, left, below, above];
     let (x, y) = match fits.iter().position(|f| *f) {
         Some(i) => cands[i],
@@ -3111,8 +3186,7 @@ impl PickerWindow {
             let y = self.pos.1.min(b - want.1 as i32 + m).max(t - m);
             if (x, y) != self.pos {
                 self.pos = (x, y);
-                self.window
-                    .set_outer_position(PhysicalPosition::new(x, y));
+                self.window.set_outer_position(PhysicalPosition::new(x, y));
             }
         }
     }
@@ -3151,7 +3225,10 @@ impl PickerWindow {
         let paste = (ctrl && !alt && ev.physical_key == KeyCode::KeyV)
             || (shift && ev.logical_key == Key::Insert);
         if paste {
-            return self.picker.editing().then(|| PickerEvent::Paste(clipboard_text()));
+            return self
+                .picker
+                .editing()
+                .then(|| PickerEvent::Paste(clipboard_text()));
         }
         // A Ctrl shortcut types nothing; AltGr (Ctrl+Alt) does.
         if ctrl && !alt {
@@ -3204,7 +3281,14 @@ mod tests {
         text.chars().count() as f32 * size * 0.5
     }
 
-    const ALL: [&str; 6] = ["claude", "codex", "grok", "cursor", "antigravity", "copilot"];
+    const ALL: [&str; 6] = [
+        "claude",
+        "codex",
+        "grok",
+        "cursor",
+        "antigravity",
+        "copilot",
+    ];
 
     /// Every row there is, as the app offers them.
     fn rows() -> Vec<RowChoice> {
@@ -3392,9 +3476,10 @@ mod tests {
     }
 
     fn ticked(p: &Picker, t: &Target) -> bool {
-        p.frame().els.iter().any(|(_, el)| {
-            matches!(el, El::Tick { target, on: true, .. } if target == t)
-        })
+        p.frame()
+            .els
+            .iter()
+            .any(|(_, el)| matches!(el, El::Tick { target, on: true, .. } if target == t))
     }
 
     fn field_text(p: &Picker, id: &str) -> String {
@@ -3429,7 +3514,9 @@ mod tests {
         let mut p = picker(input());
         let (x, y) = spot(&mut p, &row("claude", Surface::Widget));
         p.handle(PickerEvent::PointerDown { x, y });
-        assert!(p.handle(PickerEvent::PointerUp { x: x - 100.0, y }).is_empty());
+        assert!(p
+            .handle(PickerEvent::PointerUp { x: x - 100.0, y })
+            .is_empty());
     }
 
     #[test]
@@ -3494,7 +3581,11 @@ mod tests {
     fn rows_group_by_provider_with_notes() {
         let mut i = input();
         i.enabled.retain(|p| *p != "cursor");
-        i.rows.iter_mut().find(|r| r.id == "claude.sonnet").unwrap().has_data = false;
+        i.rows
+            .iter_mut()
+            .find(|r| r.id == "claude.sonnet")
+            .unwrap()
+            .has_data = false;
         let text = texts(&picker(i));
         assert!(text.contains(OFF_IN_MENU));
         assert!(text.contains(NOT_REPORTED));
@@ -3644,9 +3735,15 @@ mod tests {
         assert!(texts(&p).contains("Full: it just fits"));
         assert!(typed(&mut p, "x").is_empty());
         // Editing keys.
-        assert_eq!(key(&mut p, PickerKey::Backspace), [rename(id, Some("OpusMaxim"))]);
+        assert_eq!(
+            key(&mut p, PickerKey::Backspace),
+            [rename(id, Some("OpusMaxim"))]
+        );
         key(&mut p, PickerKey::Home);
-        assert_eq!(key(&mut p, PickerKey::Delete), [rename(id, Some("pusMaxim"))]);
+        assert_eq!(
+            key(&mut p, PickerKey::Delete),
+            [rename(id, Some("pusMaxim"))]
+        );
         key(&mut p, PickerKey::Right);
         assert_eq!(typed(&mut p, "é"), [rename(id, Some("péusMaxim"))]);
         key(&mut p, PickerKey::Left);
@@ -3787,10 +3884,17 @@ mod tests {
         assert!(text.starts_with(TITLE_WELCOME));
         assert!(text.contains("Tick the tools you use."));
         assert_eq!(text.lines().filter(|l| *l == FOUND).count(), 3);
-        assert!(!p.frame().els.iter().any(|(_, el)| matches!(el, El::Tick { on: true, .. })));
+        assert!(!p
+            .frame()
+            .els
+            .iter()
+            .any(|(_, el)| matches!(el, El::Tick { on: true, .. })));
         // The first tick asks for that tool's sign-in.
         click(&mut p, &row("codex", Surface::Widget));
-        assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::SignIn("codex".into()));
+        assert_eq!(
+            p.ask.as_ref().unwrap().kind,
+            ReadKind::SignIn("codex".into())
+        );
         click(&mut p, &Target::Cancel);
         // Closing answers the welcome, once.
         assert_eq!(
@@ -3915,7 +4019,10 @@ mod tests {
         }
         let f = p.frame();
         let (_, r) = area(&p, &field("claude-opus-5-5")).unwrap();
-        assert!(r.y >= f.list_top() && bottom(&r) <= bottom(&f.viewport), "{r:?}");
+        assert!(
+            r.y >= f.list_top() && bottom(&r) <= bottom(&f.viewport),
+            "{r:?}"
+        );
     }
 
     #[test]
@@ -3944,7 +4051,10 @@ mod tests {
     fn the_box_goes_beside_the_anchor_inside_the_work_area() {
         let size = (404, 584);
         // Right of a widget on the left, top-aligned; the margin is outside.
-        assert_eq!(place(at(100, 100, 278, 200), size, 12, 8, WORK), (100 + 278 + 8 - 12, 88));
+        assert_eq!(
+            place(at(100, 100, 278, 200), size, 12, 8, WORK),
+            (100 + 278 + 8 - 12, 88)
+        );
         // Against the right edge: to its left.
         assert_eq!(
             place(at(1600, 100, 278, 200), size, 12, 8, WORK),
@@ -3957,7 +4067,10 @@ mod tests {
         let (x, y) = place(at(1840, 1040, 24, 40), size, 12, 8, WORK);
         assert_eq!((x + 12 + 380, y + 12 + 560), (1840 - 8, 1032));
         // A widget as wide as the screen: below it.
-        assert_eq!(place(at(0, 50, 1920, 100), size, 12, 8, WORK), (-12, 50 + 100 + 8 - 12));
+        assert_eq!(
+            place(at(0, 50, 1920, 100), size, 12, 8, WORK),
+            (-12, 50 + 100 + 8 - 12)
+        );
         // No room anywhere: held inside all the same.
         let (x, y) = place(at(10, 10, 1900, 1000), size, 12, 8, WORK);
         assert!(x + 12 >= 0 && x + 12 + 380 <= 1920 && y + 12 >= 0 && y + 12 + 560 <= 1032);
@@ -3965,8 +4078,14 @@ mod tests {
 
     #[test]
     fn room_text_reads_well() {
-        assert_eq!(room_text(1, false), "Fits every size. Room for about 1 more character.");
-        assert_eq!(room_text(3, false), "Fits every size. Room for about 3 more characters.");
+        assert_eq!(
+            room_text(1, false),
+            "Fits every size. Room for about 1 more character."
+        );
+        assert_eq!(
+            room_text(3, false),
+            "Fits every size. Room for about 3 more characters."
+        );
         assert!(room_text(0, false).starts_with("Full"));
         assert!(room_text(10, true).starts_with("Up to about 10 characters"));
     }
@@ -3986,7 +4105,11 @@ mod tests {
         assert!(lines.len() > 1);
         for l in &lines {
             let end = l.last().map_or(0.0, |r| r.x + mono(&r.text, r.size));
-            assert!(end <= 150.0 + 0.01, "{:?}", l.iter().map(|r| &r.text).collect::<Vec<_>>());
+            assert!(
+                end <= 150.0 + 0.01,
+                "{:?}",
+                l.iter().map(|r| &r.text).collect::<Vec<_>>()
+            );
         }
         let joined: String = lines
             .iter()
@@ -4017,8 +4140,8 @@ mod tests {
         }
         let per_move = start.elapsed() / n;
         let (w, h) = p.window_size();
-        let mut pm = tiny_skia::Pixmap::new((w * 1.5).ceil() as u32, (h * 1.5).ceil() as u32)
-            .unwrap();
+        let mut pm =
+            tiny_skia::Pixmap::new((w * 1.5).ceil() as u32, (h * 1.5).ceil() as u32).unwrap();
         let mut glyphs = PickerGlyphs::default();
         let start = std::time::Instant::now();
         renderer.draw_picker(&mut pm, &p.scene(), &PickerTheme::dark(), 1.5, &mut glyphs);
@@ -4043,11 +4166,9 @@ mod tests {
         let renderer = Rc::new(Renderer::new().expect("a system font"));
         let draw = |p: &Picker, light: bool, scale: f32| {
             let (w, h) = p.window_size();
-            let mut pm = tiny_skia::Pixmap::new(
-                (w * scale).ceil() as u32,
-                (h * scale).ceil() as u32,
-            )
-            .unwrap();
+            let mut pm =
+                tiny_skia::Pixmap::new((w * scale).ceil() as u32, (h * scale).ceil() as u32)
+                    .unwrap();
             renderer.draw_picker(
                 &mut pm,
                 &p.scene(),
@@ -4101,7 +4222,10 @@ mod tests {
         items.push(("name-full-dark".to_string(), draw(&full, false, 1.0)));
         let mut placeholder = make(with_model());
         placeholder.handle(PickerEvent::Wheel { dy: -10_000.0 });
-        items.push(("name-placeholder-dark".to_string(), draw(&placeholder, false, 1.0)));
+        items.push((
+            "name-placeholder-dark".to_string(),
+            draw(&placeholder, false, 1.0),
+        ));
 
         // Scrolled half way, the heads pinned, a row hovered.
         let mut scrolled = make(input());
@@ -4119,8 +4243,14 @@ mod tests {
         parts.focus = Some(part(ModelPart::Effort, Surface::Widget));
         parts.focus_visible = true;
         parts.reveal_focus();
-        items.push(("version-disabled-dark".to_string(), draw(&parts, false, 1.0)));
-        items.push(("version-disabled-light".to_string(), draw(&parts, true, 1.0)));
+        items.push((
+            "version-disabled-dark".to_string(),
+            draw(&parts, false, 1.0),
+        ));
+        items.push((
+            "version-disabled-light".to_string(),
+            draw(&parts, true, 1.0),
+        ));
 
         vb::check("picker", items);
     }

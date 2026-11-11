@@ -533,15 +533,17 @@ on_startup = ""
 
     #[test]
     fn bad_model_values_fall_back_without_breaking_the_config() {
-        let text = format!(
-            "{CONFIG_0_7_0}\n[reads]\nsign_in = [\"claude\"]\npending = \"later\"\n"
-        );
+        let text =
+            format!("{CONFIG_0_7_0}\n[reads]\nsign_in = [\"claude\"]\npending = \"later\"\n");
         let text = text.replace(
             "show_forecast = false\n",
             "show_forecast = false\n\n[ui.model]\nwidget = [\"model\", \"colour\", 3, \"model\", \"effort\"]\nsource = \"psychic\"\n",
         );
         let config = load_text(&text);
-        assert_eq!(config.ui.model.widget, [ModelPart::Model, ModelPart::Effort]);
+        assert_eq!(
+            config.ui.model.widget,
+            [ModelPart::Model, ModelPart::Effort]
+        );
         assert_eq!(config.ui.model.source, Default::default());
         assert_eq!(config.reads.pending, PendingNotice::None);
         assert_eq!(config.window.pos_x, 1200);

@@ -138,8 +138,9 @@ pub fn model_label(
     let on = |p: ModelPart| parts.contains(&p);
     let n = models::name_parts(&info.id, provider, names.get(&info.id).map(String::as_str));
     let model = on(ModelPart::Model).then(|| n.model.clone());
-    let with_version = (on(ModelPart::Model) && on(ModelPart::Version) && n.with_version != n.model)
-        .then(|| n.with_version.clone());
+    let with_version =
+        (on(ModelPart::Model) && on(ModelPart::Version) && n.with_version != n.model)
+            .then(|| n.with_version.clone());
     let effort = on(ModelPart::Effort)
         .then(|| info.effort.clone())
         .flatten()
