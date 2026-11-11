@@ -689,6 +689,22 @@ fn model_rank(label: &str) -> u8 {
 mod tests {
     use super::*;
 
+    /// Switched on but not allowed to read the tool's own sign-in: the fetch
+    /// ends before any file, keyring entry or request.
+    #[tokio::test]
+    async fn without_tool_files_nothing_is_read() {
+        let p = AntigravityProvider::new(ProviderConfig {
+            id: "antigravity".to_string(),
+            enabled: true,
+            auth_method: crate::config::schema::AuthMethod::Subscription,
+            credential_label: String::new(),
+            alert_threshold: 80,
+            tool_files: false,
+        });
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::NotConfigured));
+    }
+
     #[test]
     fn a_rejected_token_forgets_the_cached_project() {
         let provider = AntigravityProvider::new(ProviderConfig {

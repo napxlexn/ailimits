@@ -394,6 +394,22 @@ fn product_label(product: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Switched on but not allowed to read the tool's own sign-in: the fetch
+    /// ends before any file, keyring entry or request.
+    #[tokio::test]
+    async fn without_tool_files_nothing_is_read() {
+        let p = GrokProvider::new(ProviderConfig {
+            id: "grok".to_string(),
+            enabled: true,
+            auth_method: crate::config::schema::AuthMethod::Subscription,
+            credential_label: String::new(),
+            alert_threshold: 80,
+            tool_files: false,
+        });
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::NotConfigured));
+    }
+
     /// One live request with the real Grok CLI login. Run explicitly:
     /// `cargo test grok_live_fetch -- --ignored --nocapture`. Prints the
     /// parsed numbers only; the token never leaves the provider.

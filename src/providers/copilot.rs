@@ -293,3 +293,24 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
 
     Ok(metrics)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No pasted token and `gh` not allowed: nothing is run or sent.
+    #[tokio::test]
+    async fn without_tool_files_gh_is_not_asked() {
+        let p = CopilotProvider::new(ProviderConfig {
+            id: "copilot".to_string(),
+            enabled: true,
+            auth_method: crate::config::schema::AuthMethod::Subscription,
+            credential_label: String::new(),
+            alert_threshold: 80,
+            tool_files: false,
+        });
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::NotConfigured));
+        assert!(p.gh_token_cache.lock().unwrap().is_none());
+    }
+}
