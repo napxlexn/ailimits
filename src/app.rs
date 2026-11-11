@@ -1664,6 +1664,7 @@ pub fn run() -> Result<()> {
                                 pc.enabled = true;
                             }
                             config.allow_sign_in(pid);
+                            crate::choices::show_provider_rows(&mut config, pid);
                             // The new session may be another account: no
                             // old numbers stand in for it.
                             provider_cache.remove(&ProviderId::Cursor);
@@ -1914,6 +1915,7 @@ pub fn run() -> Result<()> {
                         }
                         if now_enabled == Some(true) {
                             config.allow_sign_in(&pid);
+                            crate::choices::show_provider_rows(&mut config, &pid);
                         }
                         if now_enabled == Some(false) {
                             if let Some(provider_id) = ProviderId::from_config_id(&pid) {
@@ -1986,6 +1988,7 @@ pub fn run() -> Result<()> {
                                     // Pasting a key is the user setting the
                                     // provider up.
                                     config.allow_sign_in(&pid);
+                                    crate::choices::show_provider_rows(&mut config, &pid);
                                     refresh_providers(
                                         &config,
                                         &providers,

@@ -5,6 +5,7 @@
 // alone cannot be imported from tests.
 
 pub mod app;
+pub mod choices;
 pub mod config;
 pub mod consent;
 pub mod hooks;
