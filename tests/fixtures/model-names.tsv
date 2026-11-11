@@ -1,0 +1,160 @@
+# Model ids and official names from models.dev/api.json (fetched 2026-11-11),
+# with what the generic rule (rows.js modelWords + joinWords) makes of each id.
+# A fixture for the Rust port: the rule must reproduce the 'rule' column.
+provider	id	official	rule	verdict
+Claude	claude-opus-4-5-20251101	Claude Opus 4.5	Opus 4.5	same
+Claude	claude-opus-5-5	Claude Opus 5.5	Opus 5.5	same
+Claude	claude-haiku-4-5	Claude Haiku 4.5 (latest)	Haiku 4.5	date-or-latest-dropped
+Claude	claude-opus-4-6	Claude Opus 4.6	Opus 4.6	same
+Claude	claude-sonnet-4-5	Claude Sonnet 4.5 (latest)	Sonnet 4.5	date-or-latest-dropped
+Claude	claude-sonnet-4-5-20250929	Claude Sonnet 4.5	Sonnet 4.5	same
+Claude	claude-opus-5	Claude Opus 5	Opus 5	same
+Claude	claude-opus-4-7	Claude Opus 4.7	Opus 4.7	same
+Claude	claude-fable-5-2	Claude Fable 5.2	Fable 5.2	same
+Claude	claude-haiku-5-5	Claude Haiku 5.5	Haiku 5.5	same
+Claude	claude-fable-5-1	Claude Fable 5.1	Fable 5.1	same
+Claude	claude-opus-4-5	Claude Opus 4.5 (latest)	Opus 4.5	date-or-latest-dropped
+Claude	claude-fable-5	Claude Fable 5	Fable 5	same
+Claude	claude-sonnet-5	Claude Sonnet 5	Sonnet 5	same
+Claude	claude-sonnet-4-6	Claude Sonnet 4.6	Sonnet 4.6	same
+Claude	claude-haiku-4-5-20251001	Claude Haiku 4.5	Haiku 4.5	same
+Claude	claude-sonnet-5-5	Claude Sonnet 5.5	Sonnet 5.5	same
+Claude	claude-opus-4-8	Claude Opus 4.8	Opus 4.8	same
+Codex	gpt-5.1	GPT-5.1	GPT-5.1	same
+Codex	gpt-5.6-terra	GPT-5.6 Terra	GPT-5.6 Terra	same
+Codex	gpt-6-sol	GPT-6 Sol	GPT-6 Sol	same
+Codex	o3-pro	o3-pro	o3 Pro	same-words
+Codex	gpt-realtime-2.1	GPT-Realtime-2.1	GPT Realtime 2.1	same
+Codex	gpt-5.6-luna	GPT-5.6 Luna	GPT-5.6 Luna	same
+Codex	gpt-4.1	GPT-4.1	GPT-4.1	same
+Codex	gpt-5.3-codex	GPT-5.3 Codex	GPT-5.3 Codex	same
+Codex	gpt-image-1.5	gpt-image-1.5	GPT Image 1.5	same-words
+Codex	text-embedding-ada-002	text-embedding-ada-002	Text Embedding Ada 002	same-words
+Codex	gpt-5.4	GPT-5.4	GPT-5.4	same
+Codex	o4-mini	o4-mini	o4 Mini	same-words
+Codex	gpt-5.4-mini	GPT-5.4 mini	GPT-5.4 Mini	same-words
+Codex	gpt-4o-2024-05-13	GPT-4o (2024-05-13)	GPT-4o	date-or-latest-dropped
+Codex	gpt-4.1-mini	GPT-4.1 mini	GPT-4.1 Mini	same-words
+Codex	gpt-4o-2024-11-20	GPT-4o (2024-11-20)	GPT-4o	date-or-latest-dropped
+Codex	text-embedding-3-large	text-embedding-3-large	Text Embedding 3 Large	same-words
+Codex	gpt-4o	GPT-4o	GPT-4o	same
+Codex	gpt-5.4-pro	GPT-5.4 Pro	GPT-5.4 Pro	same
+Codex	gpt-5.2-pro	GPT-5.2 Pro	GPT-5.2 Pro	same
+Codex	gpt-5.6	GPT-5.6	GPT-5.6	same
+Codex	o1-pro	o1-pro	o1 Pro	same-words
+Codex	gpt-image-2	gpt-image-2	GPT Image 2	same-words
+Codex	gpt-3.5-turbo	GPT-3.5-turbo	GPT-3.5 Turbo	same-words
+Codex	chatgpt-image-latest	chatgpt-image-latest	Chatgpt Image	date-or-latest-dropped
+Codex	gpt-5-mini	GPT-5 Mini	GPT-5 Mini	same
+Codex	gpt-5-pro	GPT-5 Pro	GPT-5 Pro	same
+Codex	gpt-5.4-nano	GPT-5.4 nano	GPT-5.4 Nano	same-words
+Codex	gpt-6-astra	GPT-6 Astra	GPT-6 Astra	same
+Codex	gpt-4	GPT-4	GPT-4	same
+Codex	gpt-5	GPT-5	GPT-5	same
+Codex	gpt-6-luna	GPT-6 Luna	GPT-6 Luna	same
+Codex	gpt-6.1-terra	GPT-6.1 Terra	GPT-6.1 Terra	same
+Codex	gpt-5-nano	GPT-5 Nano	GPT-5 Nano	same
+Codex	o3	o3	o3	same
+Codex	o3-mini	o3-mini	o3 Mini	same-words
+Codex	gpt-5.6-sol	GPT-5.6 Sol	GPT-5.6 Sol	same
+Codex	gpt-5.5-pro	GPT-5.5 Pro	GPT-5.5 Pro	same
+Codex	text-embedding-3-small	text-embedding-3-small	Text Embedding 3 Small	same-words
+Codex	gpt-5.2	GPT-5.2	GPT-5.2	same
+Codex	gpt-5.3-codex-spark	GPT-5.3 Codex Spark	GPT-5.3 Codex Spark	same
+Codex	gpt-daybreak-red-latest	Daybreak Red	GPT Daybreak Red	different
+Codex	gpt-4.1-nano	GPT-4.1 nano	GPT-4.1 Nano	same-words
+Codex	gpt-6.1-sol	GPT-6.1 Sol	GPT-6.1 Sol	same
+Codex	o1	o1	o1	same
+Codex	gpt-4o-2024-08-06	GPT-4o (2024-08-06)	GPT-4o	date-or-latest-dropped
+Codex	gpt-daybreak-blue-latest	Daybreak Blue	GPT Daybreak Blue	different
+Codex	gpt-image-1-mini	gpt-image-1-mini	GPT Image 1 Mini	same-words
+Codex	gpt-4o-mini	GPT-4o mini	GPT-4o Mini	same-words
+Codex	gpt-4-turbo	GPT-4 Turbo	GPT-4 Turbo	same
+Codex	gpt-5.5	GPT-5.5	GPT-5.5	same
+Grok	grok-imagine-video-1.5-lite	Grok Imagine Video 1.5 Lite	Imagine Video 1.5 Lite	same
+Grok	grok-imagine-image	Grok Imagine Image	Imagine Image	same
+Grok	grok-4.6	Grok 4.6	Grok 4.6	same
+Grok	grok-4.7	Grok 4.7	Grok 4.7	same
+Grok	grok-4.5	Grok 4.5	Grok 4.5	same
+Grok	grok-imagine-video	Grok Imagine Video	Imagine Video	same
+Grok	grok-4.3	Grok 4.3	Grok 4.3	same
+Grok	grok-4.20-0309-non-reasoning	Grok 4.20 (Non-Reasoning)	Grok 4.20 Non Reasoning	same-words
+Grok	grok-imagine-video-1.5	Grok Imagine Video 1.5	Imagine Video 1.5	same
+Grok	grok-4.20-0309-reasoning	Grok 4.20 (Reasoning)	Grok 4.20 Reasoning	same-words
+Grok	grok-build-0.1	Grok Build 0.1	Build 0.1	same
+Grok	grok-4.20-multi-agent-0309	Grok 4.20 Multi-Agent	Grok 4.20 Multi Agent	same
+Antigravity	gemini-omni-flash-preview	Gemini Omni Flash Preview	Gemini Omni Flash Preview	same
+Antigravity	lyria-3-pro-preview	Lyria 3 Pro Preview	Lyria 3 Pro Preview	same
+Antigravity	gemini-2.5-flash-lite	Gemini 2.5 Flash-Lite	Gemini 2.5 Flash Lite	same
+Antigravity	gemini-pro-latest	Gemini Pro Latest	Gemini Pro	date-or-latest-dropped
+Antigravity	gemini-embedding-2	Gemini Embedding 2	Gemini Embedding 2	same
+Antigravity	gemini-3.5-flash	Gemini 3.5 Flash	Gemini 3.5 Flash	same
+Antigravity	gemini-4-carbon	Gemini 4 Carbon	Gemini 4 Carbon	same
+Antigravity	gemini-3.7-flash	Gemini 3.7 Flash	Gemini 3.7 Flash	same
+Antigravity	gemini-3.1-pro-preview-customtools	Gemini 3.1 Pro Preview Custom Tools	Gemini 3.1 Pro Preview Customtools	different
+Antigravity	gemini-4-argon	Gemini 4 Argon	Gemini 4 Argon	same
+Antigravity	gemini-3.1-flash-lite-preview	Gemini 3.1 Flash Lite Preview	Gemini 3.1 Flash Lite Preview	same
+Antigravity	gemini-2.5-pro	Gemini 2.5 Pro	Gemini 2.5 Pro	same
+Antigravity	gemma-4-31b-it	Gemma 4 31B IT	Gemma 4 31b It	same-words
+Antigravity	gemini-2.5-flash-preview-tts	Gemini 2.5 Flash Preview TTS	Gemini 2.5 Flash Preview TTS	same
+Antigravity	gemini-3.1-flash-live-preview	Gemini 3.1 Flash Live Preview	Gemini 3.1 Flash Live Preview	same
+Antigravity	gemini-2.5-pro-preview-tts	Gemini 2.5 Pro Preview TTS	Gemini 2.5 Pro Preview TTS	same
+Antigravity	deep-research-preview-04-2026	Deep Research Preview (Apr-21-2026)	Deep Research Preview	date-or-latest-dropped
+Antigravity	gemini-flash-lite-latest	Gemini Flash-Lite Latest	Gemini Flash Lite	date-or-latest-dropped
+Antigravity	gemini-embedding-001	Gemini Embedding 001	Gemini Embedding 001	same
+Antigravity	gemini-3-pro-image	Nano Banana Pro	Gemini 3 Pro Image	different
+Antigravity	gemini-3.5-flash-lite	Gemini 3.5 Flash Lite	Gemini 3.5 Flash Lite	same
+Antigravity	gemini-3-flash-preview	Gemini 3 Flash Preview	Gemini 3 Flash Preview	same
+Antigravity	gemini-3.6-flash	Gemini 3.6 Flash	Gemini 3.6 Flash	same
+Antigravity	gemini-3.1-flash-image	Nano Banana 2	Gemini 3.1 Flash Image	different
+Antigravity	deep-research-max-preview-04-2026	Deep Research Max Preview (Apr-21-2026)	Deep Research Max Preview	date-or-latest-dropped
+Antigravity	gemini-3.1-flash-tts-preview	Gemini 3.1 Flash TTS Preview	Gemini 3.1 Flash TTS Preview	same
+Antigravity	gemini-3.1-flash-lite	Gemini 3.1 Flash Lite	Gemini 3.1 Flash Lite	same
+Antigravity	gemini-2.5-computer-use-preview-10-2025	Gemini 2.5 Computer Use Preview 10-2025	Gemini 2.5 Computer Use Preview	date-or-latest-dropped
+Antigravity	gemma-4-26b-a4b-it	Gemma 4 26B A4B IT	Gemma 4 26b A4b It	same-words
+Antigravity	gemini-2.5-flash-image	Nano Banana	Gemini 2.5 Flash Image	different
+Antigravity	gemini-3.1-flash-lite-image	Nano Banana 2 Lite	Gemini 3.1 Flash Lite Image	different
+Antigravity	gemini-flash-latest	Gemini Flash Latest	Gemini Flash	date-or-latest-dropped
+Antigravity	gemini-3.8-flash	Gemini 3.8 Flash	Gemini 3.8 Flash	same
+Antigravity	gemini-3.1-pro-preview	Gemini 3.1 Pro Preview	Gemini 3.1 Pro Preview	same
+Antigravity	gemini-3.5-live-translate-preview	Gemini 3.5 Live Translate Preview	Gemini 3.5 Live Translate Preview	same
+Antigravity	lyria-3-clip-preview	Lyria 3 Clip Preview	Lyria 3 Clip Preview	same
+Antigravity	gemini-2.5-flash	Gemini 2.5 Flash	Gemini 2.5 Flash	same
+Copilot	claude-opus-4.7	Claude Opus 4.7	Claude Opus 4.7	same
+Copilot	claude-fable-5.1	Claude Fable 5.1	Claude Fable 5.1	same
+Copilot	gpt-5.6-terra	GPT-5.6 Terra	GPT-5.6 Terra	same
+Copilot	gpt-6-sol	GPT-6 Sol	GPT-6 Sol	same
+Copilot	claude-fable-5.2	Claude Fable 5.2	Claude Fable 5.2	same
+Copilot	grok-4.6	Grok 4.6	Grok 4.6	same
+Copilot	grok-4.7	Grok 4.7	Grok 4.7	same
+Copilot	gpt-5.6-luna	GPT-5.6 Luna	GPT-5.6 Luna	same
+Copilot	grok-4.5	Grok 4.5	Grok 4.5	same
+Copilot	gpt-5.3-codex	GPT-5.3 Codex	GPT-5.3 Codex	same
+Copilot	gpt-5.4	GPT-5.4	GPT-5.4	same
+Copilot	gemini-3.5-flash	Gemini 3.5 Flash	Gemini 3.5 Flash	same
+Copilot	gemini-4-carbon	Gemini 4 Carbon	Gemini 4 Carbon	same
+Copilot	gpt-5.4-mini	GPT-5.4 mini	GPT-5.4 Mini	same-words
+Copilot	gemini-3.7-flash	Gemini 3.7 Flash	Gemini 3.7 Flash	same
+Copilot	gemini-4-argon	Gemini 4 Argon	Gemini 4 Argon	same
+Copilot	claude-sonnet-5.5	Claude Sonnet 5.5	Claude Sonnet 5.5	same
+Copilot	gpt-5-mini	GPT-5 Mini	GPT-5 Mini	same
+Copilot	claude-sonnet-4.6	Claude Sonnet 4.6	Claude Sonnet 4.6	same
+Copilot	claude-opus-5	Claude Opus 5	Claude Opus 5	same
+Copilot	gpt-5.4-nano	GPT-5.4 nano	GPT-5.4 Nano	same-words
+Copilot	claude-opus-5.5	Claude Opus 5.5	Claude Opus 5.5	same
+Copilot	gpt-6-astra	GPT-6 Astra	GPT-6 Astra	same
+Copilot	kimi-k3	Kimi K3	Kimi k3	same-words
+Copilot	gpt-6-luna	GPT-6 Luna	GPT-6 Luna	same
+Copilot	claude-haiku-5.5	Claude Haiku 5.5	Claude Haiku 5.5	same
+Copilot	gpt-6.1-terra	GPT-6.1 Terra	GPT-6.1 Terra	same
+Copilot	claude-haiku-4.5	Claude Haiku 4.5 (latest)	Claude Haiku 4.5	date-or-latest-dropped
+Copilot	claude-opus-4.8	Claude Opus 4.8	Claude Opus 4.8	same
+Copilot	gemini-3.6-flash	Gemini 3.6 Flash	Gemini 3.6 Flash	same
+Copilot	gpt-5.6-sol	GPT-5.6 Sol	GPT-5.6 Sol	same
+Copilot	claude-fable-5	Claude Fable 5	Claude Fable 5	same
+Copilot	gpt-6.1-sol	GPT-6.1 Sol	GPT-6.1 Sol	same
+Copilot	mai-code-1.1-flash	MAI-Code-1.1-Flash	Mai Code 1.1 Flash	same-words
+Copilot	claude-sonnet-5	Claude Sonnet 5	Claude Sonnet 5	same
+Copilot	gemini-3.8-flash	Gemini 3.8 Flash	Gemini 3.8 Flash	same
+Copilot	kimi-k2.7-code	Kimi K2.7 Code	Kimi K2.7 Code	same
+Copilot	gpt-5.5	GPT-5.5	GPT-5.5	same

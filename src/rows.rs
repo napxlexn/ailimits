@@ -445,7 +445,7 @@ mod tests {
         let e = model_label(&i, &p, &[ModelPart::Effort], &names).unwrap();
         assert_eq!(e.steps(), ["xhigh"]);
         let me = model_label(&i, &p, &[ModelPart::Model, ModelPart::Effort], &names).unwrap();
-        assert_eq!(me.full().as_deref(), Some("Opus 5.5 · xhigh"));
+        assert_eq!(me.full().as_deref(), Some("Opus · xhigh"));
         // An empty effort is no effort.
         let blank = model_label(&info("x", Some("  ")), &p, &[ModelPart::Effort], &names);
         assert!(blank.is_none());
