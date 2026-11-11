@@ -2872,6 +2872,12 @@ mod tests {
 use super::picker::{Ink, PickerScene, Shape as PickerShape};
 use super::theme::PickerTheme;
 
+/// The glyphs the picker has drawn, rasterized once. The picker's window
+/// owns it, so it goes when the window does; a repaint (a hover moving to
+/// another row) then costs the blending, not the rasterizing.
+#[derive(Default)]
+pub struct PickerGlyphs(HashMap<fontdue::layout::GlyphRasterConfig, (fontdue::Metrics, Vec<u8>)>);
+
 #[allow(clippy::items_after_test_module)]
 impl Renderer {
     /// Paint the picker into `pixmap`, the window at `scale` (its DPI scale
@@ -2882,10 +2888,11 @@ impl Renderer {
         scene: &PickerScene,
         theme: &PickerTheme,
         scale: f32,
+        glyphs: &mut PickerGlyphs,
     ) {
         pixmap.fill(tiny_skia::Color::TRANSPARENT);
         for s in &scene.chrome {
-            self.picker_shape(pixmap, s, theme, scale);
+            self.picker_shape(pixmap, s, theme, scale, glyphs);
         }
         let vp = scene.viewport;
         let (vx, vy) = ((vp.x * scale).round(), (vp.y * scale).round());
@@ -2893,7 +2900,7 @@ impl Renderer {
         let vh = ((vp.y + vp.h) * scale).round() - vy;
         if let Some(mut list) = Pixmap::new(vw.max(1.0) as u32, vh.max(1.0) as u32) {
             for s in &scene.body {
-                self.picker_shape(&mut list, s, theme, scale);
+                self.picker_shape(&mut list, s, theme, scale, glyphs);
             }
             pixmap.draw_pixmap(
                 vx as i32,
@@ -2905,11 +2912,18 @@ impl Renderer {
             );
         }
         for s in &scene.overlay {
-            self.picker_shape(pixmap, s, theme, scale);
+            self.picker_shape(pixmap, s, theme, scale, glyphs);
         }
     }
 
-    fn picker_shape(&self, pm: &mut Pixmap, shape: &PickerShape, theme: &PickerTheme, s: f32) {
+    fn picker_shape(
+        &self,
+        pm: &mut Pixmap,
+        shape: &PickerShape,
+        theme: &PickerTheme,
+        s: f32,
+        glyphs: &mut PickerGlyphs,
+    ) {
         let sc = |r: &Rect| Rect {
             x: r.x * s,
             y: r.y * s,
@@ -2947,6 +2961,7 @@ impl Renderer {
                 alpha,
             } => self.picker_text(
                 pm,
+                glyphs,
                 text,
                 (x * s, y * s),
                 size * s,
@@ -2993,7 +3008,12 @@ impl Renderer {
                 }
             }
             PickerShape::Shadow { rect, radius } => {
+                // Concentric rings whose alphas compound, as the tray
+                // tooltip's shadow. The box is opaque and covers the middle,
+                // so each ring is filled around it only (even-odd, the box a
+                // hole): the same pixels for a fraction of the work.
                 let r = sc(rect);
+                let hole = rounded_rect_path(r, radius * s);
                 for (spread, alpha) in theme.shadow {
                     let sp = spread * s;
                     let ring = Rect {
@@ -3002,7 +3022,22 @@ impl Renderer {
                         w: r.w + sp * 2.0,
                         h: r.h + sp * 2.0,
                     };
-                    self.fill_rect(pm, ring, Color::rgba(0, 0, 0, alpha), radius * s + sp);
+                    let mut pb = PathBuilder::new();
+                    pb.push_path(&rounded_rect_path(ring, radius * s + sp));
+                    pb.push_path(&hole);
+                    let Some(path) = pb.finish() else {
+                        continue;
+                    };
+                    let mut paint = Paint::default();
+                    paint.set_color(Color::rgba(0, 0, 0, alpha).to_skia_color());
+                    paint.anti_alias = true;
+                    pm.fill_path(
+                        &path,
+                        &paint,
+                        tiny_skia::FillRule::EvenOdd,
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
         }
@@ -3057,9 +3092,11 @@ impl Renderer {
     /// italic): bold lends 70% of each pixel's coverage to its right
     /// neighbour (about a semibold), italic shears 12 degrees about the
     /// baseline, both with fractional coverage so the edges stay smooth.
+    #[allow(clippy::too_many_arguments)]
     fn picker_text(
         &self,
         pm: &mut Pixmap,
+        glyphs: &mut PickerGlyphs,
         text: &str,
         at: (f32, f32),
         size: f32,
@@ -3080,7 +3117,11 @@ impl Renderer {
             if g.width == 0 || g.height == 0 {
                 continue;
             }
-            let (m, bitmap) = self.font.rasterize_config(g.key);
+            let (m, bitmap) = glyphs
+                .0
+                .entry(g.key)
+                .or_insert_with(|| self.font.rasterize_config(g.key));
+            let (m, bitmap) = (*m, &*bitmap);
             let gx = (at.0 + g.x).round() as i32;
             let gy = (at.1 + g.y).round() as i32;
             for row in 0..m.height {

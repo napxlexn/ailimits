@@ -1,6 +1,6 @@
-// ui/picker.rs — the "Rows and models" window: the app's own layered window,
-// drawn by the renderer, that chooses rows, model labels and model names, and
-// asks before each read of another tool's files.
+// ui/picker.rs — the "Rows and models" window: the app's own window, drawn
+// by the renderer, that chooses rows, model labels and model names, and asks
+// before each read of another tool's files.
 //
 // The picker never reads or writes config.toml or any other file. It shows a
 // `PickerInput` the app gives it and answers with `PickerAction`s; the app
@@ -19,8 +19,17 @@
 
 use crate::config::schema::{ModelPart, ModelSource, Reads, Surface, UiModel};
 use crate::ui::layout::Rect;
+use crate::ui::renderer::{PickerGlyphs, Renderer};
+use crate::ui::theme::PickerTheme;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
+use std::rc::Rc;
+use tao::dpi::{PhysicalPosition, PhysicalSize};
+use tao::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use tao::event_loop::EventLoopWindowTarget;
+use tao::keyboard::{Key, KeyCode, ModifiersState};
+use tao::window::{CursorIcon, Window, WindowBuilder, WindowId};
 
 /// What the picker opens as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -714,6 +723,23 @@ pub struct Picker {
     /// `NoticeDone` was sent.
     notice_done: bool,
     dirty: bool,
+    /// Bumped by every new input; part of the layout's cache key.
+    input_gen: u64,
+    /// The last layout and the state it was made from: hover, focus and
+    /// presses do not move anything, so a pointer move reuses it.
+    layout: RefCell<Option<(LayoutKey, Rc<Frame>)>>,
+}
+
+/// Everything a layout depends on besides the input.
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutKey {
+    input: u64,
+    scroll: u32,
+    max_h: u32,
+    ask: Option<ReadKind>,
+    reviewed: bool,
+    /// The edit's model, text and "full" flag: the field's hint follows it.
+    edit: Option<(String, String, bool)>,
 }
 
 /// What a point is over.
@@ -745,6 +771,8 @@ impl Picker {
             reviewed: false,
             notice_done: false,
             dirty: true,
+            input_gen: 0,
+            layout: RefCell::new(None),
         };
         // Enter answers the notice with its default button.
         if p.view() == View::Notice {
@@ -757,6 +785,7 @@ impl Picker {
     /// an open question and an edit in progress stay.
     pub fn set_input(&mut self, input: PickerInput) {
         self.input = input;
+        self.input_gen += 1;
         if let Some(e) = &self.edit {
             if !self.input.models.iter().any(|m| m.model_id == e.model_id) {
                 self.edit = None;
@@ -802,6 +831,11 @@ impl Picker {
 
     /// Feed one event; returns what the app should do, in order.
     pub fn handle(&mut self, event: PickerEvent) -> Vec<PickerAction> {
+        // Only a pointer that moves leaves the layout as it was.
+        let relayout = !matches!(
+            event,
+            PickerEvent::PointerMove { .. } | PickerEvent::PointerLeave
+        );
         let out = match event {
             PickerEvent::PointerMove { x, y } => {
                 let before = self.hover_state();
@@ -830,7 +864,9 @@ impl Picker {
             PickerEvent::Paste(t) => self.paste(&t),
             PickerEvent::FocusLost | PickerEvent::CloseRequested => self.close(),
         };
-        self.settle();
+        if relayout {
+            self.settle();
+        }
         out
     }
 
@@ -1176,8 +1212,36 @@ impl Picker {
 
     // ─── Layout ──────────────────────────────────────────────────
 
-    /// Lay out the whole window for the current state.
-    fn frame(&self) -> Frame {
+    fn layout_key(&self) -> LayoutKey {
+        LayoutKey {
+            input: self.input_gen,
+            scroll: self.scroll.to_bits(),
+            max_h: self.max_box_h.to_bits(),
+            ask: self.ask.as_ref().map(|a| a.kind.clone()),
+            reviewed: self.reviewed,
+            edit: self
+                .edit
+                .as_ref()
+                .map(|e| (e.model_id.clone(), e.text.clone(), e.full)),
+        }
+    }
+
+    /// The whole window laid out for the current state; the last layout
+    /// when nothing it depends on changed.
+    fn frame(&self) -> Rc<Frame> {
+        let key = self.layout_key();
+        if let Some((k, f)) = &*self.layout.borrow() {
+            if *k == key {
+                return f.clone();
+            }
+        }
+        let f = Rc::new(self.build_frame());
+        *self.layout.borrow_mut() = Some((key, f.clone()));
+        f
+    }
+
+    /// Lay out the whole window.
+    fn build_frame(&self) -> Frame {
         let view = self.view();
         let mut flow = Flow::new();
         match view {
@@ -1767,7 +1831,12 @@ impl Picker {
                         list.extend(i.session.map(String::from));
                     }
                 }
-                let hosts = info.map_or(String::new(), |i| i.hosts.join(" and "));
+                let goes = match info.map(|i| i.hosts.join(" and ")) {
+                    Some(hosts) if !hosts.is_empty() => {
+                        format!(" and goes only to {hosts}, to ask for your usage")
+                    }
+                    _ => String::new(),
+                };
                 (
                     format!("Read {tool}’s sign-in?"),
                     format!(
@@ -1776,7 +1845,7 @@ impl Picker {
                     ),
                     list,
                     format!(
-                        "The token stays on this PC and goes only to {hosts}, to ask for your usage. It is never changed or refreshed. Untick to stop; details in Privacy."
+                        "The token stays on this PC{goes}. It is never changed or refreshed. Untick to stop; details in Privacy."
                     ),
                 )
             }
@@ -2393,18 +2462,18 @@ impl Picker {
         else {
             return;
         };
-        // A field is revealed with its label above it.
-        let top = if matches!(t, Target::Field(_)) {
-            r.y - lh(SIZE_TEXT) - 6.0
+        // A field is revealed with its label above and its hint below.
+        let (top, end) = if matches!(t, Target::Field(_)) {
+            (r.y - lh(SIZE_TEXT) - 6.0, bottom(&r) + 4.0 + lh(SIZE_NOTE))
         } else {
-            r.y
+            (r.y, bottom(&r))
         };
         // Scrolled to the top edge, a row sits under the pinned heads.
         let list_top = f.viewport.y + COLS_H;
         if top < list_top {
             self.scroll = f.scroll - (list_top - top);
-        } else if bottom(&r) > bottom(&f.viewport) {
-            self.scroll = f.scroll + (bottom(&r) - bottom(&f.viewport)) + 4.0;
+        } else if end > bottom(&f.viewport) {
+            self.scroll = f.scroll + (end - bottom(&f.viewport)) + 4.0;
         }
         self.settle();
     }
@@ -2724,16 +2793,6 @@ pub fn place(
 
 // ─── Window ──────────────────────────────────────────────────────
 
-use crate::ui::renderer::Renderer;
-use crate::ui::theme::PickerTheme;
-use std::num::NonZeroU32;
-use std::rc::Rc;
-use tao::dpi::{PhysicalPosition, PhysicalSize};
-use tao::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
-use tao::event_loop::EventLoopWindowTarget;
-use tao::keyboard::{Key, KeyCode, ModifiersState};
-use tao::window::{CursorIcon, Window, WindowBuilder, WindowId};
-
 /// Logical pixels per wheel notch: three lines of 16.
 const WHEEL_NOTCH: f32 = 48.0;
 /// Between the anchor and the box, logical pixels.
@@ -2754,6 +2813,8 @@ pub struct PickerWindow {
     renderer: Rc<Renderer>,
     picker: Picker,
     pixmap: tiny_skia::Pixmap,
+    /// Rasterized glyphs, kept while the window is open.
+    glyphs: PickerGlyphs,
     scale: f64,
     theme: PickerTheme,
     work: Option<(i32, i32, i32, i32)>,
@@ -2844,6 +2905,7 @@ impl PickerWindow {
             renderer,
             picker,
             pixmap,
+            glyphs: PickerGlyphs::default(),
             scale,
             theme: PickerTheme::for_system(crate::platform::system_uses_light_theme()),
             work,
@@ -2910,8 +2972,9 @@ impl PickerWindow {
             WindowEvent::Focused(false) => self.had_focus.then_some(PickerEvent::FocusLost),
             WindowEvent::CloseRequested => Some(PickerEvent::CloseRequested),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                // The size follows in the next redraw.
+                // The size follows in the next redraw; glyphs come anew.
                 self.scale = *scale_factor;
+                self.glyphs = PickerGlyphs::default();
                 if let Some(w) = self.work {
                     self.picker.set_max_height(max_box_height(w, self.scale));
                 }
@@ -2923,7 +2986,12 @@ impl PickerWindow {
                 self.window.request_redraw();
                 None
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(s) => {
+                // Sized by someone else (Windows after a DPI change): the
+                // next redraw sets the size the picker needs.
+                if (s.width, s.height) != self.size {
+                    self.size = (0, 0);
+                }
                 self.window.request_redraw();
                 None
             }
@@ -2959,8 +3027,13 @@ impl PickerWindow {
             self.resize(want);
         }
         let scene = self.picker.scene();
-        self.renderer
-            .draw_picker(&mut self.pixmap, &scene, &self.theme, self.scale as f32);
+        self.renderer.draw_picker(
+            &mut self.pixmap,
+            &scene,
+            &self.theme,
+            self.scale as f32,
+            &mut self.glyphs,
+        );
         // Copy the pixmap into softbuffer: RGBA to 0xAARRGGBB, as app.rs does.
         if let Ok(mut buffer) = self.surface.buffer_mut() {
             for (dst, src) in buffer.iter_mut().zip(self.pixmap.pixels().iter()) {
@@ -3195,8 +3268,9 @@ mod tests {
 
     /// A target's area in window coordinates, whether it can be used or not.
     fn area(p: &Picker, t: &Target) -> Option<(Layer, Rect)> {
-        p.frame().els.into_iter().find_map(|(layer, el)| {
-            let (et, r) = match &el {
+        p.frame().els.iter().find_map(|(layer, el)| {
+            let layer = *layer;
+            let (et, r) = match el {
                 El::Tick { target, cell, .. } => (target.clone(), *cell),
                 El::Radio { target, rect, .. }
                 | El::Field { target, rect, .. }
@@ -3863,6 +3937,42 @@ mod tests {
         assert!(joined.contains(r"\.claude\"));
     }
 
+    /// What input costs with the real font: a pointer move (hover, cursor
+    /// shape) and a repaint at 150%. `cargo test --release picker_input_cost
+    /// -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn picker_input_cost() {
+        let renderer = Rc::new(Renderer::new().expect("a system font"));
+        let r = renderer.clone();
+        let mut p = Picker::new(with_model(), move |t, s| r.text_width(t, s));
+        let n = 200;
+        let start = std::time::Instant::now();
+        for i in 0..n {
+            p.handle(PickerEvent::PointerMove {
+                x: 100.0 + (i % 50) as f32,
+                y: 100.0 + (i % 300) as f32,
+            });
+            p.wants_text_cursor();
+        }
+        let per_move = start.elapsed() / n;
+        let (w, h) = p.window_size();
+        let mut pm = tiny_skia::Pixmap::new((w * 1.5).ceil() as u32, (h * 1.5).ceil() as u32)
+            .unwrap();
+        let mut glyphs = PickerGlyphs::default();
+        let start = std::time::Instant::now();
+        renderer.draw_picker(&mut pm, &p.scene(), &PickerTheme::dark(), 1.5, &mut glyphs);
+        let first = start.elapsed();
+        let start = std::time::Instant::now();
+        for _ in 0..20 {
+            renderer.draw_picker(&mut pm, &p.scene(), &PickerTheme::dark(), 1.5, &mut glyphs);
+        }
+        let per_paint = start.elapsed() / 20;
+        println!(
+            "pointer move {per_move:?}; at 150%: first paint {first:?}, repaint {per_paint:?}"
+        );
+    }
+
     // ─── Visual baseline ─────────────────────────────────────────
 
     /// The picker, pinned: see ui/visual_baseline.rs. New looks only (the
@@ -3878,7 +3988,13 @@ mod tests {
                 (h * scale).ceil() as u32,
             )
             .unwrap();
-            renderer.draw_picker(&mut pm, &p.scene(), &PickerTheme::for_system(light), scale);
+            renderer.draw_picker(
+                &mut pm,
+                &p.scene(),
+                &PickerTheme::for_system(light),
+                scale,
+                &mut PickerGlyphs::default(),
+            );
             pm
         };
         let make = |input: PickerInput| {
