@@ -2820,8 +2820,8 @@ pub struct PickerWindow {
     work: Option<(i32, i32, i32, i32)>,
     pos: (i32, i32),
     size: (u32, u32),
-    /// The cursor in the window, physical pixels.
-    cursor: (f64, f64),
+    /// The cursor in the window, physical pixels, once it moved there.
+    cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
     /// A focus loss counts as a click outside only after the focus came.
     had_focus: bool,
@@ -2911,7 +2911,7 @@ impl PickerWindow {
             work,
             pos,
             size,
-            cursor: (0.0, 0.0),
+            cursor: None,
             modifiers: ModifiersState::empty(),
             had_focus: false,
             text_cursor: false,
@@ -2931,22 +2931,27 @@ impl PickerWindow {
         let at = |p: (f64, f64)| (p.0 as f32 / s, p.1 as f32 / s);
         let ev = match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
-                let (x, y) = at(self.cursor);
+                self.cursor = Some((position.x, position.y));
+                let (x, y) = at((position.x, position.y));
                 Some(PickerEvent::PointerMove { x, y })
             }
-            WindowEvent::CursorLeft { .. } => Some(PickerEvent::PointerLeave),
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = None;
+                Some(PickerEvent::PointerLeave)
+            }
+            // A press before any move (the window appeared under a still
+            // cursor) has no position: it is not taken for a click outside.
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let (x, y) = at(self.cursor);
-                Some(match state {
+            } => self.cursor.map(|c| {
+                let (x, y) = at(c);
+                match state {
                     ElementState::Pressed => PickerEvent::PointerDown { x, y },
                     _ => PickerEvent::PointerUp { x, y },
-                })
-            }
+                }
+            }),
             WindowEvent::MouseWheel { delta, .. } => Some(PickerEvent::Wheel {
                 dy: match delta {
                     MouseScrollDelta::LineDelta(_, lines) => lines * WHEEL_NOTCH,
