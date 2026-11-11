@@ -299,3 +299,86 @@ impl Dimensions {
     /// Horizontal padding.
     pub const PADDING_H: f32 = 11.1;
 }
+
+// ─── Picker ──────────────────────────────────────────────────────
+
+/// Colours of the "Rows and models" window (ui/picker.rs). It follows the
+/// system's light or dark theme like a Windows 11 flyout; the values are the
+/// workshop mock's (design/workshop/countdown/page.html, `.rpk`). Separate
+/// from `ComputedTheme`: the widget keeps its one dark look.
+#[derive(Debug, Clone)]
+pub struct PickerTheme {
+    /// The box.
+    pub surface: Color,
+    /// Hairlines: the box, buttons, fields.
+    pub border: Color,
+    pub text: Color,
+    /// Notes, hints, column heads, an unticked box's outline.
+    pub muted: Color,
+    pub accent: Color,
+    /// Text and marks on the accent.
+    pub on_accent: Color,
+    /// The wash of a hovered row, a field, a secondary button.
+    pub hover: Color,
+    pub separator: Color,
+    /// Shadow rings around a box, outermost first: (spread px, alpha). The
+    /// alphas compound, as in the tray tooltip's shadow.
+    pub shadow: [(f32, u8); 6],
+    /// How far the shadow falls below the box.
+    pub shadow_drop: f32,
+}
+
+impl PickerTheme {
+    pub fn dark() -> Self {
+        Self {
+            surface: Color::rgba(44, 44, 44, 255),
+            border: Color::rgba(62, 62, 62, 255),
+            text: Color::rgba(255, 255, 255, 255),
+            muted: Color::rgba(197, 197, 197, 255),
+            accent: Color::rgba(76, 194, 255, 255),
+            on_accent: Color::rgba(0, 0, 0, 255),
+            hover: Color::rgba(255, 255, 255, 15),
+            separator: Color::rgba(62, 62, 62, 255),
+            shadow: [
+                (10.0, 3),
+                (8.0, 5),
+                (6.0, 7),
+                (4.0, 10),
+                (2.0, 14),
+                (1.0, 18),
+            ],
+            shadow_drop: 3.0,
+        }
+    }
+
+    pub fn light() -> Self {
+        Self {
+            surface: Color::rgba(249, 249, 249, 255),
+            border: Color::rgba(217, 217, 217, 255),
+            text: Color::rgba(27, 27, 27, 255),
+            muted: Color::rgba(95, 95, 95, 255),
+            accent: Color::rgba(0, 95, 184, 255),
+            on_accent: Color::rgba(255, 255, 255, 255),
+            hover: Color::rgba(0, 0, 0, 11),
+            separator: Color::rgba(225, 225, 225, 255),
+            shadow: [
+                (10.0, 1),
+                (8.0, 2),
+                (6.0, 3),
+                (4.0, 4),
+                (2.0, 6),
+                (1.0, 8),
+            ],
+            shadow_drop: 3.0,
+        }
+    }
+
+    /// The theme for the system's setting (`platform::system_uses_light_theme`).
+    pub fn for_system(light: bool) -> Self {
+        if light {
+            Self::light()
+        } else {
+            Self::dark()
+        }
+    }
+}

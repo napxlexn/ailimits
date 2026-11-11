@@ -2857,3 +2857,285 @@ mod tests {
         assert_eq!(active.label, "Weekly");
     }
 }
+
+// ─── Picker ──────────────────────────────────────────────────────
+//
+// The "Rows and models" window (ui/picker.rs) lays itself out as shapes in
+// logical pixels; this paints them at the window's scale factor in the
+// colours of `PickerTheme`. The text is the widget's own font: bold and
+// italic are made from it (a slight spread to the right, a shear), so no
+// second font file is loaded.
+//
+// It sits after the tests on purpose: a section of its own, apart from the
+// widget's drawing above.
+
+use super::picker::{Ink, PickerScene, Shape as PickerShape};
+use super::theme::PickerTheme;
+
+#[allow(clippy::items_after_test_module)]
+impl Renderer {
+    /// Paint the picker into `pixmap`, the window at `scale` (its DPI scale
+    /// factor): the chrome, the list clipped to its viewport, the overlay.
+    pub fn draw_picker(
+        &self,
+        pixmap: &mut Pixmap,
+        scene: &PickerScene,
+        theme: &PickerTheme,
+        scale: f32,
+    ) {
+        pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        for s in &scene.chrome {
+            self.picker_shape(pixmap, s, theme, scale);
+        }
+        let vp = scene.viewport;
+        let (vx, vy) = ((vp.x * scale).round(), (vp.y * scale).round());
+        let vw = ((vp.x + vp.w) * scale).round() - vx;
+        let vh = ((vp.y + vp.h) * scale).round() - vy;
+        if let Some(mut list) = Pixmap::new(vw.max(1.0) as u32, vh.max(1.0) as u32) {
+            for s in &scene.body {
+                self.picker_shape(&mut list, s, theme, scale);
+            }
+            pixmap.draw_pixmap(
+                vx as i32,
+                vy as i32,
+                list.as_ref(),
+                &tiny_skia::PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        }
+        for s in &scene.overlay {
+            self.picker_shape(pixmap, s, theme, scale);
+        }
+    }
+
+    fn picker_shape(&self, pm: &mut Pixmap, shape: &PickerShape, theme: &PickerTheme, s: f32) {
+        let sc = |r: &Rect| Rect {
+            x: r.x * s,
+            y: r.y * s,
+            w: r.w * s,
+            h: r.h * s,
+        };
+        match shape {
+            PickerShape::Fill {
+                rect,
+                radius,
+                ink,
+                alpha,
+            } => self.fill_rect(pm, sc(rect), picker_ink(theme, *ink, *alpha), radius * s),
+            PickerShape::Stroke {
+                rect,
+                radius,
+                width,
+                ink,
+                alpha,
+            } => self.picker_outline(
+                pm,
+                sc(rect),
+                radius * s,
+                width * s,
+                picker_ink(theme, *ink, *alpha),
+            ),
+            PickerShape::Text {
+                x,
+                y,
+                text,
+                size,
+                ink,
+                bold,
+                italic,
+                alpha,
+            } => self.picker_text(
+                pm,
+                text,
+                (x * s, y * s),
+                size * s,
+                picker_ink(theme, *ink, *alpha),
+                (*bold, *italic),
+            ),
+            PickerShape::Check { rect, on, alpha } => {
+                let r = sc(rect);
+                if *on {
+                    self.fill_rect(pm, r, picker_ink(theme, Ink::Accent, *alpha), 4.0 * s);
+                    // The mock's mark: a 12 x 12 path, centred.
+                    let (ox, oy) = (r.x + (r.w - 12.0 * s) / 2.0, r.y + (r.h - 12.0 * s) / 2.0);
+                    let mut pb = PathBuilder::new();
+                    pb.move_to(ox + 2.2 * s, oy + 6.3 * s);
+                    pb.line_to(ox + 4.8 * s, oy + 8.8 * s);
+                    pb.line_to(ox + 9.8 * s, oy + 3.4 * s);
+                    if let Some(path) = pb.finish() {
+                        self.picker_line(pm, &path, 1.6 * s, picker_ink(theme, Ink::OnAccent, *alpha));
+                    }
+                } else {
+                    self.picker_outline(pm, r, 4.0 * s, s, picker_ink(theme, Ink::Muted, *alpha));
+                }
+            }
+            PickerShape::Radio { rect, on, alpha } => {
+                let r = sc(rect);
+                let (cx, cy, rad) = (r.x + r.w / 2.0, r.y + r.h / 2.0, r.w / 2.0);
+                if *on {
+                    self.picker_disc(pm, cx, cy, rad, picker_ink(theme, Ink::Accent, *alpha));
+                    self.picker_disc(pm, cx, cy, rad - 5.0 * s, picker_ink(theme, Ink::OnAccent, *alpha));
+                } else if let Some(path) = PathBuilder::from_circle(cx, cy, rad - 0.5 * s) {
+                    self.picker_line(pm, &path, s, picker_ink(theme, Ink::Muted, *alpha));
+                }
+            }
+            PickerShape::Cross { rect, ink } => {
+                let r = sc(rect);
+                let (cx, cy, d) = (r.x + r.w / 2.0, r.y + r.h / 2.0, 5.0 * s);
+                let mut pb = PathBuilder::new();
+                pb.move_to(cx - d, cy - d);
+                pb.line_to(cx + d, cy + d);
+                pb.move_to(cx + d, cy - d);
+                pb.line_to(cx - d, cy + d);
+                if let Some(path) = pb.finish() {
+                    self.picker_line(pm, &path, s, picker_ink(theme, *ink, 1.0));
+                }
+            }
+            PickerShape::Shadow { rect, radius } => {
+                let r = sc(rect);
+                for (spread, alpha) in theme.shadow {
+                    let sp = spread * s;
+                    let ring = Rect {
+                        x: r.x - sp,
+                        y: r.y - sp + theme.shadow_drop * s,
+                        w: r.w + sp * 2.0,
+                        h: r.h + sp * 2.0,
+                    };
+                    self.fill_rect(pm, ring, Color::rgba(0, 0, 0, alpha), radius * s + sp);
+                }
+            }
+        }
+    }
+
+    /// A rounded outline `width` wide, inside `r`.
+    fn picker_outline(&self, pm: &mut Pixmap, r: Rect, radius: f32, width: f32, color: Color) {
+        let half = width / 2.0;
+        let inner = Rect {
+            x: r.x + half,
+            y: r.y + half,
+            w: r.w - width,
+            h: r.h - width,
+        };
+        if inner.w <= 0.0 || inner.h <= 0.0 {
+            return;
+        }
+        let path = rounded_rect_path(inner, (radius - half).max(0.0));
+        self.picker_line(pm, &path, width, color);
+    }
+
+    fn picker_line(&self, pm: &mut Pixmap, path: &tiny_skia::Path, width: f32, color: Color) {
+        let mut paint = Paint::default();
+        paint.set_color(color.to_skia_color());
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke {
+            width,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..Default::default()
+        };
+        pm.stroke_path(path, &paint, &stroke, Transform::identity(), None);
+    }
+
+    fn picker_disc(&self, pm: &mut Pixmap, cx: f32, cy: f32, r: f32, color: Color) {
+        let Some(path) = PathBuilder::from_circle(cx, cy, r.max(0.5)) else {
+            return;
+        };
+        let mut paint = Paint::default();
+        paint.set_color(color.to_skia_color());
+        paint.anti_alias = true;
+        pm.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    /// One line of text with its line box's top at `at`. `style` is (bold,
+    /// italic): bold lends 70% of each pixel's coverage to its right
+    /// neighbour (about a semibold), italic shears 12 degrees about the
+    /// baseline, both with fractional coverage so the edges stay smooth.
+    fn picker_text(
+        &self,
+        pm: &mut Pixmap,
+        text: &str,
+        at: (f32, f32),
+        size: f32,
+        color: Color,
+        style: (bool, bool),
+    ) {
+        let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
+        tl.append(&[&self.font], &TextStyle::new(text, size, 0));
+        let baseline = tl
+            .lines()
+            .and_then(|l| l.first().map(|l| l.baseline_y))
+            .unwrap_or(size);
+        let (pw, ph) = (pm.width() as i32, pm.height() as i32);
+        let spread = if style.0 { 0.7 } else { 0.0 };
+        let slant = if style.1 { 0.21 } else { 0.0 };
+        let mut acc: Vec<f32> = Vec::new();
+        for g in tl.glyphs() {
+            if g.width == 0 || g.height == 0 {
+                continue;
+            }
+            let (m, bitmap) = self.font.rasterize_config(g.key);
+            let gx = (at.0 + g.x).round() as i32;
+            let gy = (at.1 + g.y).round() as i32;
+            for row in 0..m.height {
+                let py = gy + row as i32;
+                if py < 0 || py >= ph {
+                    continue;
+                }
+                let shift = slant * (baseline - (g.y + row as f32 + 0.5));
+                let whole = shift.floor();
+                let frac = shift - whole;
+                acc.clear();
+                acc.resize(m.width + 3, 0.0);
+                let mut prev = 0.0f32;
+                for col in 0..=m.width {
+                    let c = if col < m.width {
+                        bitmap[row * m.width + col] as f32
+                    } else {
+                        0.0
+                    };
+                    let cov = c.max(prev * spread);
+                    prev = c;
+                    if cov > 0.0 {
+                        acc[col] += cov * (1.0 - frac);
+                        acc[col + 1] += cov * frac;
+                    }
+                }
+                for (i, &a) in acc.iter().enumerate() {
+                    let px = gx + whole as i32 + i as i32;
+                    if a <= 0.0 || px < 0 || px >= pw {
+                        continue;
+                    }
+                    let alpha = (a.min(255.0) * color.a as f32 / 255.0) as u8;
+                    if alpha > 0 {
+                        blend_pixel(pm, px as u32, py as u32, color, alpha);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An ink's colour in the picker theme, its alpha scaled by `alpha`.
+fn picker_ink(theme: &PickerTheme, ink: Ink, alpha: f32) -> Color {
+    let c = match ink {
+        Ink::Surface => theme.surface,
+        Ink::Border => theme.border,
+        Ink::Text => theme.text,
+        Ink::Muted => theme.muted,
+        Ink::Accent => theme.accent,
+        Ink::OnAccent => theme.on_accent,
+        Ink::Hover => theme.hover,
+        Ink::Separator => theme.separator,
+    };
+    Color {
+        a: (c.a as f32 * alpha).round().clamp(0.0, 255.0) as u8,
+        ..c
+    }
+}
