@@ -6,7 +6,15 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 
 /// Config path: %APPDATA%\AiLimits\config.toml.
+///
+/// Debug builds only: `AILIMITS_CONFIG_DIR` puts the config (and the cache
+/// and log beside it) in another folder, so a fresh install or an upgrade can
+/// be tried without touching the real one. Release builds ignore it.
 pub fn config_path() -> PathBuf {
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("AILIMITS_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return PathBuf::from(dir).join("config.toml");
+    }
     dirs::config_dir()
         // Fall back to the current directory if %APPDATA% is unavailable.
         .unwrap_or_else(|| PathBuf::from("."))
