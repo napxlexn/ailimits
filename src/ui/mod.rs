@@ -1,5 +1,6 @@
 pub mod context_menu;
 pub mod layout;
+pub mod picker;
 pub mod renderer;
 pub mod taskbar_panel;
 pub mod theme;

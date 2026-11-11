@@ -36,6 +36,10 @@ pub struct Config {
     pub notifications: NotificationConfig,
     #[serde(default)]
     pub hooks: HooksConfig,
+    /// What the user allowed the app to read of other tools' files. Nothing
+    /// of theirs is read before it is allowed here.
+    #[serde(default)]
+    pub reads: Reads,
 }
 
 impl Default for Config {
@@ -45,12 +49,83 @@ impl Default for Config {
             window: WindowConfig::default(),
             ui: UIConfig::default(),
             // IMPORTANT: the default config MUST contain every provider,
-            // otherwise the widget is empty on first launch.
+            // otherwise the menu has nothing to offer on first launch.
             providers: default_providers(),
             notifications: NotificationConfig::default(),
             hooks: HooksConfig::default(),
+            reads: Reads::default(),
         }
     }
+}
+
+impl Config {
+    /// Whether the user allowed reading this provider's sign-in (the other
+    /// tool's token file, `gh auth token`, Cursor's editor database).
+    pub fn sign_in_allowed(&self, provider_id: &str) -> bool {
+        let id = canonical_provider_id(provider_id);
+        self.reads
+            .sign_in
+            .iter()
+            .any(|p| canonical_provider_id(p) == id)
+    }
+
+    /// Record that the user allowed reading this provider's sign-in.
+    pub fn allow_sign_in(&mut self, provider_id: &str) {
+        if !self.sign_in_allowed(provider_id) {
+            self.reads
+                .sign_in
+                .push(canonical_provider_id(provider_id).to_string());
+        }
+    }
+
+    /// A provider that may fetch: switched on AND allowed to read its
+    /// sign-in. Everything that decides whether a provider runs or shows
+    /// goes through this one test.
+    pub fn provider_active(&self, pc: &ProviderConfig) -> bool {
+        pc.enabled && self.sign_in_allowed(&pc.id)
+    }
+}
+
+/// The current id for a config provider id ("gemini" became "antigravity").
+fn canonical_provider_id(id: &str) -> &str {
+    match id {
+        "gemini" => "antigravity",
+        other => other,
+    }
+}
+
+/// Reads of other tools' files, each allowed by the user before it happens
+/// (asked once, naming the file). See docs/en/CONFIG.md, `[reads]`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct Reads {
+    /// Providers whose sign-in may be read, by config id.
+    #[serde(default)]
+    pub sign_in: Vec<String>,
+    /// The tools' own settings files, for the model and effort they are set
+    /// to (Claude Code settings.json, Codex config.toml...).
+    #[serde(default)]
+    pub tool_settings: bool,
+    /// The end of the newest session file, for the model last used (Claude
+    /// Code, Codex CLI).
+    #[serde(default)]
+    pub last_session: bool,
+    /// A one-time window still owed: the welcome on a fresh install, the
+    /// notice after the update that introduced `[reads]`.
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub pending: PendingNotice,
+}
+
+/// The one-time window the app still has to show.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingNotice {
+    #[default]
+    None,
+    /// Fresh install: the picker opens by itself, titled as a welcome.
+    Welcome,
+    /// Upgraded from a version that read without asking: one window lists
+    /// every file read and every host contacted. Reading goes on meanwhile.
+    UpdateNotice,
 }
 
 /// User-configured shell commands run on usage events.
@@ -197,6 +272,13 @@ pub struct UIConfig {
     /// users plan around, the projection is optional extra.
     #[serde(default)]
     pub show_forecast: bool,
+    /// Which rows the widget and the tooltip show. Absent: one row per
+    /// provider, as before rows could be chosen.
+    #[serde(default, skip_serializing_if = "UiRows::is_default")]
+    pub rows: UiRows,
+    /// The model, version and effort labels. Absent: none shown.
+    #[serde(default, skip_serializing_if = "UiModel::is_default")]
+    pub model: UiModel,
 }
 
 impl Default for UIConfig {
@@ -211,8 +293,110 @@ impl Default for UIConfig {
             width_scale: WidthScale::Full,
             column_flow: ColumnFlow::Row,
             show_forecast: false,
+            rows: UiRows::default(),
+            model: UiModel::default(),
         }
     }
+}
+
+/// The rows chosen for each surface, by row id: a provider's own row is its
+/// config id ("claude"), an extra row is provider.part ("claude.opus"; the
+/// catalogue is `crate::rows::SUB_ROWS`). `None` keeps the default: every
+/// provider's own row, no extra rows. Unknown ids are kept and ignored, so a
+/// newer version's rows survive a round trip through an older one.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct UiRows {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<Vec<String>>,
+}
+
+impl UiRows {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Model labels: which parts each surface shows, where the model comes from,
+/// and the names the user gave models.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct UiModel {
+    #[serde(default, deserialize_with = "de_parts")]
+    pub widget: Vec<ModelPart>,
+    #[serde(default, deserialize_with = "de_parts")]
+    pub tooltip: Vec<ModelPart>,
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub source: ModelSource,
+    /// Model id as the tool stores it -> the name to show instead of the
+    /// automatic one. Limited to what fits the narrowest place the widget
+    /// draws a model name (`crate::rows::name_fits`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<String, String>,
+}
+
+impl UiModel {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The parts on for one surface.
+    pub fn parts(&self, surface: Surface) -> &[ModelPart] {
+        match surface {
+            Surface::Widget => &self.widget,
+            Surface::Tooltip => &self.tooltip,
+        }
+    }
+}
+
+/// The two surfaces whose rows and labels are chosen separately. The taskbar
+/// panel and the tray icon keep one entry per provider and no labels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Surface {
+    Widget,
+    Tooltip,
+}
+
+/// One part of a model label: "Opus" (model), "5.5" (version, shown only
+/// with the model), "xhigh" (effort, may be shown alone).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelPart {
+    Model,
+    Version,
+    Effort,
+}
+
+/// Where the model comes from.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelSource {
+    /// The model set in the tool's settings file.
+    #[default]
+    Configured,
+    /// The model of the newest session (Claude Code, Codex CLI); the others
+    /// keep showing the configured one.
+    LastUsed,
+}
+
+/// A list of model parts where an unknown entry is skipped instead of failing
+/// the whole config; duplicates collapse.
+fn de_parts<'de, D>(deserializer: D) -> Result<Vec<ModelPart>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = toml::Value::deserialize(deserializer)?;
+    let mut out = Vec::new();
+    if let toml::Value::Array(items) = raw {
+        for item in items {
+            if let Ok(part) = ModelPart::deserialize(item) {
+                if !out.contains(&part) {
+                    out.push(part);
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

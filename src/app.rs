@@ -411,10 +411,18 @@ async fn save_provider_cache(cache: HashMap<ProviderId, ProviderData>) -> Result
 // ─── Helpers ─────────────────────────────────────────────────────
 
 /// Build provider instances + alert thresholds from the config.
+///
+/// A provider the user has not allowed to read its sign-in is built switched
+/// off: its fetch returns `NotConfigured` before it touches any file, the
+/// keyring, `gh` or the network.
 fn build_providers(config: &Config) -> (Vec<Arc<dyn Provider>>, HashMap<ProviderId, u8>) {
     let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
     let mut thresholds: HashMap<ProviderId, u8> = HashMap::new();
     for pc in &config.providers {
+        let pc = &crate::config::schema::ProviderConfig {
+            enabled: config.provider_active(pc),
+            ..pc.clone()
+        };
         let (provider, id): (Arc<dyn Provider>, ProviderId) = match pc.id.as_str() {
             "claude" => (
                 Arc::new(ClaudeProvider::new(pc.clone())),
@@ -470,8 +478,9 @@ fn feedback(title: &str, body: &str) {
     }
 }
 
-/// Providers visible in the widget: enabled and connected. Disabled
-/// (enabled=false) and not-connected (NotConfigured) ones are not rendered.
+/// Providers visible in the widget: enabled, allowed and connected. Disabled
+/// (enabled=false), not allowed to read their sign-in, and not-connected
+/// (NotConfigured) ones are not rendered.
 fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
     display
         .iter()
@@ -480,7 +489,7 @@ fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> 
                 .providers
                 .iter()
                 .find(|p| ProviderId::from_config_id(&p.id) == Some(d.id.clone()))
-                .is_some_and(|p| p.enabled);
+                .is_some_and(|p| config.provider_active(p));
             enabled && !matches!(d.status, ProviderStatus::NotConfigured)
         })
         // A window whose reset has provably passed is shown as ≈0%.
@@ -1497,10 +1506,13 @@ pub fn run() -> Result<()> {
                     AppCommand::CursorSignIn(outcome) => match outcome {
                         SignInOutcome::SignedIn(_) => {
                             let pid = "cursor";
-                            // Signing in says the user wants the row.
+                            // Signing in says the user wants the row, and
+                            // the session is the app's own: nothing else of
+                            // Cursor's is needed.
                             if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
                                 pc.enabled = true;
                             }
+                            config.allow_sign_in(pid);
                             // The new session may be another account: no
                             // old numbers stand in for it.
                             provider_cache.remove(&ProviderId::Cursor);
@@ -1710,6 +1722,11 @@ pub fn run() -> Result<()> {
                             pc.enabled = !pc.enabled;
                             now_enabled = Some(pc.enabled);
                         }
+                        // Ticking a provider on in the menu is the user
+                        // asking for its row, which needs its sign-in.
+                        if now_enabled == Some(true) {
+                            config.allow_sign_in(&pid);
+                        }
                         if now_enabled == Some(false) {
                             if let Some(provider_id) = ProviderId::from_config_id(&pid) {
                                 provider_cache.remove(&provider_id);
@@ -1773,6 +1790,9 @@ pub fn run() -> Result<()> {
                                             pc.auth_method = AuthMethod::ApiKey;
                                         }
                                     }
+                                    // Pasting a key is the user setting the
+                                    // provider up.
+                                    config.allow_sign_in(&pid);
                                     refresh_providers(
                                         &config,
                                         &providers,

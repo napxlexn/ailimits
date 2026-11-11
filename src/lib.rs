@@ -6,10 +6,13 @@
 
 pub mod app;
 pub mod config;
+pub mod consent;
 pub mod hooks;
+pub mod models;
 pub mod monitor;
 pub mod notifications;
 pub mod platform;
 pub mod providers;
+pub mod rows;
 pub mod ui;
 pub mod updater;

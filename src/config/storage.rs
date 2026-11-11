@@ -19,7 +19,8 @@ pub async fn load_or_default() -> Result<Config> {
     let path = config_path();
 
     if !path.exists() {
-        let default = Config::default();
+        let mut default = Config::default();
+        settle_reads(&mut default, Origin::FreshInstall);
         // First-run persistence is BEST-EFFORT: an unwritable %APPDATA%
         // (full disk, locked-down/roaming profile, AV quarantine) must not
         // stop the widget — it runs fine in-memory on defaults and shows
@@ -46,11 +47,14 @@ pub async fn load_or_default() -> Result<Config> {
         content = tokio::fs::read_to_string(&path).await;
     }
     let parsed = match content {
-        Ok(content) => toml::from_str::<Config>(&content).map_err(|e| ("parse", e.to_string())),
+        Ok(content) => toml::from_str::<Config>(&content)
+            .map(|cfg| (cfg, has_reads_table(&content)))
+            .map_err(|e| ("parse", e.to_string())),
         Err(e) => Err(("read", e.to_string())),
     };
-    let mut config = match parsed {
-        Ok(cfg) => cfg,
+    let (mut config, origin) = match parsed {
+        Ok((cfg, true)) => (cfg, Origin::Current),
+        Ok((cfg, false)) => (cfg, Origin::Upgrade),
         Err((what, e)) => {
             tracing::warn!("Config {what} error: {e}, using defaults");
             // Preserve the file: a single bad line must not be silently
@@ -63,10 +67,20 @@ pub async fn load_or_default() -> Result<Config> {
             } else {
                 tracing::warn!("set the unusable config aside as {}", backup.display());
             }
-            Config::default()
+            // Whatever the file allowed is unknown now, so nothing is read
+            // until the user chooses again: the safe side of consent.
+            (Config::default(), Origin::FreshInstall)
         }
     };
 
+    migrate(&mut config, origin);
+
+    Ok(config)
+}
+
+/// Bring a loaded config up to date: renamed providers, providers added
+/// since it was written, and the `[reads]` state its origin calls for.
+pub(crate) fn migrate(config: &mut Config, origin: Origin) {
     // Migration: the Gemini provider became Antigravity (2026-07) — rename
     // the config id in place so the entry keeps its settings and the
     // append-missing pass below does not create a duplicate.
@@ -87,7 +101,59 @@ pub async fn load_or_default() -> Result<Config> {
         }
     }
 
-    Ok(config)
+    // After the provider passes above, so an upgrade allows exactly the
+    // providers that version would have read.
+    settle_reads(config, origin);
+}
+
+/// Where a loaded config came from, as far as reading consent goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Origin {
+    /// No usable config: nothing has been allowed yet.
+    FreshInstall,
+    /// A config written before `[reads]` existed (0.7.0 and older). Those
+    /// versions read every enabled provider's sign-in without asking.
+    Upgrade,
+    /// A config that already records what was allowed.
+    Current,
+}
+
+/// Whether the TOML text has a top-level `[reads]` table. Asked of text that
+/// already parsed as a `Config`, so it parses again.
+fn has_reads_table(content: &str) -> bool {
+    content
+        .parse::<toml::Table>()
+        .is_ok_and(|t| t.contains_key("reads"))
+}
+
+/// Put the `[reads]` section in the state the origin calls for.
+///
+/// - Fresh install: nothing allowed, the welcome is owed.
+/// - Upgrade: the providers that were reading keep reading (every enabled
+///   one, as the old version did), and the one-time notice is owed. Not
+///   "the providers with cached data": a cache entry expires with its reset,
+///   so someone back after a week would find providers silently gone.
+/// - Current: left exactly as the user left it.
+pub(crate) fn settle_reads(config: &mut Config, origin: Origin) {
+    match origin {
+        Origin::FreshInstall => {
+            config.reads = Default::default();
+            config.reads.pending = super::schema::PendingNotice::Welcome;
+        }
+        Origin::Upgrade => {
+            let enabled: Vec<String> = config
+                .providers
+                .iter()
+                .filter(|p| p.enabled)
+                .map(|p| p.id.clone())
+                .collect();
+            for id in enabled {
+                config.allow_sign_in(&id);
+            }
+            config.reads.pending = super::schema::PendingNotice::UpdateNotice;
+        }
+        Origin::Current => {}
+    }
 }
 
 /// Save the config to its default path.
@@ -262,5 +328,222 @@ pub async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             let _ = tokio::fs::remove_file(&tmp).await;
             Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::{ModelPart, PendingNotice};
+
+    /// What `load_or_default` does with config text, minus the disk.
+    fn load_text(content: &str) -> Config {
+        let mut config: Config = toml::from_str(content).expect("parses");
+        let origin = if has_reads_table(content) {
+            Origin::Current
+        } else {
+            Origin::Upgrade
+        };
+        migrate(&mut config, origin);
+        config
+    }
+
+    /// A config as 0.7.0 writes it (toml::to_string_pretty of its Config):
+    /// Copilot switched off, the rest on.
+    const CONFIG_0_7_0: &str = r#"
+[general]
+update_interval_secs = 60
+indicator = "panel_rows"
+auto_update = true
+panel_offset_x = 0
+panel_offset_y = 0
+panel_display = "primary"
+
+[window]
+pos_x = 1200
+pos_y = 80
+opacity = 0.45
+pinned = true
+locked = false
+
+[ui]
+palette = "ocean"
+saturation = 55
+brightness = 100
+monochrome = false
+layout = "vertical"
+detail = "medium"
+width_scale = "full"
+column_flow = "row"
+show_forecast = false
+
+[[providers]]
+id = "claude"
+enabled = true
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 80
+
+[[providers]]
+id = "codex"
+enabled = true
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 80
+
+[[providers]]
+id = "copilot"
+enabled = false
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 85
+
+[[providers]]
+id = "antigravity"
+enabled = true
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 80
+
+[[providers]]
+id = "grok"
+enabled = true
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 80
+
+[[providers]]
+id = "cursor"
+enabled = true
+auth_method = "subscription"
+credential_label = ""
+alert_threshold = 80
+
+[notifications]
+enabled = true
+cooldown_minutes = 15
+
+[hooks]
+on_threshold = ""
+on_reset = ""
+on_startup = ""
+"#;
+
+    #[test]
+    fn an_upgrade_keeps_every_enabled_provider_running() {
+        let config = load_text(CONFIG_0_7_0);
+        assert_eq!(
+            config.reads.sign_in,
+            ["claude", "codex", "antigravity", "grok", "cursor"]
+        );
+        assert_eq!(config.reads.pending, PendingNotice::UpdateNotice);
+        assert!(!config.reads.tool_settings && !config.reads.last_session);
+        for p in &config.providers {
+            assert_eq!(config.provider_active(p), p.enabled, "{}", p.id);
+        }
+        // Everything else is as the user left it.
+        assert_eq!(config.window.pos_x, 1200);
+        assert!(config.window.pinned);
+        assert_eq!(config.ui.detail, crate::config::schema::DetailLevel::Medium);
+        assert_eq!(config.ui.rows, Default::default());
+        assert_eq!(config.ui.model, Default::default());
+    }
+
+    #[test]
+    fn an_older_config_gets_its_new_providers_allowed_like_the_old_version_did() {
+        // 0.6: Gemini under its old id, no Grok or Cursor yet. 0.7.0 would
+        // have appended both switched on and read them.
+        let config = load_text(
+            "[[providers]]\nid = \"gemini\"\nenabled = true\n\n[[providers]]\nid = \"claude\"\nenabled = false\n",
+        );
+        assert!(config.sign_in_allowed("antigravity"));
+        assert!(config.sign_in_allowed("gemini"));
+        assert!(!config.sign_in_allowed("claude"));
+        assert!(config.sign_in_allowed("grok"));
+        assert!(config.sign_in_allowed("cursor"));
+        assert!(config.sign_in_allowed("codex"));
+    }
+
+    #[test]
+    fn a_current_config_is_left_as_the_user_left_it() {
+        let text = format!(
+            "{CONFIG_0_7_0}\n[reads]\nsign_in = [\"codex\"]\ntool_settings = true\nlast_session = false\npending = \"none\"\n"
+        );
+        let config = load_text(&text);
+        assert_eq!(config.reads.sign_in, ["codex"]);
+        assert!(config.reads.tool_settings);
+        assert_eq!(config.reads.pending, PendingNotice::None);
+        let active: Vec<&str> = config
+            .providers
+            .iter()
+            .filter(|p| config.provider_active(p))
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(active, ["codex"]);
+    }
+
+    #[test]
+    fn an_empty_reads_table_still_counts_as_answered() {
+        // The user unticked everything: that is a choice, not an upgrade.
+        let text = format!("{CONFIG_0_7_0}\n[reads]\n");
+        let config = load_text(&text);
+        assert!(config.reads.sign_in.is_empty());
+        assert_eq!(config.reads.pending, PendingNotice::None);
+    }
+
+    #[test]
+    fn a_fresh_install_reads_nothing_and_owes_the_welcome() {
+        let mut config = Config::default();
+        settle_reads(&mut config, Origin::FreshInstall);
+        assert!(config.reads.sign_in.is_empty());
+        assert_eq!(config.reads.pending, PendingNotice::Welcome);
+        assert!(!config.providers.iter().any(|p| config.provider_active(p)));
+        // The providers stay switched on: ticking one only needs the read.
+        assert!(config.providers.iter().all(|p| p.enabled));
+    }
+
+    #[test]
+    fn the_default_config_writes_no_new_ui_tables() {
+        // Someone who never opens the picker keeps a config.toml without
+        // [ui.rows] or [ui.model]; only [reads] is new.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("[ui.rows]"), "{text}");
+        assert!(!text.contains("[ui.model"), "{text}");
+        assert!(text.contains("[reads]"), "{text}");
+    }
+
+    #[test]
+    fn rows_and_model_round_trip() {
+        let mut config = load_text(CONFIG_0_7_0);
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.opus".into()]);
+        config.ui.model.tooltip = vec![ModelPart::Model, ModelPart::Effort];
+        config.ui.model.source = crate::config::schema::ModelSource::LastUsed;
+        config
+            .ui
+            .model
+            .names
+            .insert("claude-opus-5-5".into(), "Opus \"5\"".into());
+        let text = toml::to_string_pretty(&config).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.ui.rows, config.ui.rows);
+        assert_eq!(back.ui.model, config.ui.model);
+        assert_eq!(back.reads, config.reads);
+        assert!(has_reads_table(&text));
+    }
+
+    #[test]
+    fn bad_model_values_fall_back_without_breaking_the_config() {
+        let text = format!(
+            "{CONFIG_0_7_0}\n[reads]\nsign_in = [\"claude\"]\npending = \"later\"\n"
+        );
+        let text = text.replace(
+            "show_forecast = false\n",
+            "show_forecast = false\n\n[ui.model]\nwidget = [\"model\", \"colour\", 3, \"model\", \"effort\"]\nsource = \"psychic\"\n",
+        );
+        let config = load_text(&text);
+        assert_eq!(config.ui.model.widget, [ModelPart::Model, ModelPart::Effort]);
+        assert_eq!(config.ui.model.source, Default::default());
+        assert_eq!(config.reads.pending, PendingNotice::None);
+        assert_eq!(config.window.pos_x, 1200);
     }
 }

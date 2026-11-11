@@ -299,6 +299,8 @@ fn set(provider: Option<&str>) -> Result<()> {
             p.auth_method = AuthMethod::ApiKey;
         }
     }
+    // Setting a key up is the user asking for the provider.
+    config.allow_sign_in(provider);
     save_config(&config)?;
 
     println!("Key for '{provider}' stored in Credential Manager (label: {label})");
@@ -433,7 +435,23 @@ fn login(provider: Option<&str>) -> Result<()> {
         }
         session::SignInOutcome::Failed(e) => bail!("Cursor sign-in failed: {e}"),
     }
-    println!("→ The widget uses it from its next update");
+    // Signing in is the user asking for the Cursor row. A widget that had it
+    // switched off or not allowed only learns that from the config.
+    let mut config = load_config()?;
+    let ready = config
+        .providers
+        .iter()
+        .any(|p| p.id == "cursor" && config.provider_active(p));
+    if ready {
+        println!("→ The widget uses it from its next update");
+    } else {
+        if let Some(p) = config.providers.iter_mut().find(|p| p.id == "cursor") {
+            p.enabled = true;
+        }
+        config.allow_sign_in("cursor");
+        save_config(&config)?;
+        println!("→ Restart the widget to apply");
+    }
     Ok(())
 }
 

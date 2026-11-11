@@ -922,12 +922,7 @@ impl Renderer {
         tl.append(&[&self.font], &TextStyle::new(text, size, 0));
 
         // Text width for alignment.
-        let text_w: f32 = tl
-            .glyphs()
-            .iter()
-            .last()
-            .map(|g| g.x + g.width as f32)
-            .unwrap_or(0.0);
+        let text_w = laid_out_width(&tl);
 
         let offset_x = match align {
             Align::Left => x,
@@ -955,6 +950,26 @@ impl Renderer {
             }
         }
     }
+}
+
+impl Renderer {
+    /// The width `draw_text` gives `text` at `size`, in pixels: the measure
+    /// every "does it fit" decision uses, so a label that is judged to fit is
+    /// exactly as wide when drawn.
+    pub fn text_width(&self, text: &str, size: f32) -> f32 {
+        let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
+        tl.append(&[&self.font], &TextStyle::new(text, size, 0));
+        laid_out_width(&tl)
+    }
+}
+
+/// The right edge of the last glyph of a laid-out line.
+fn laid_out_width(tl: &TextLayout) -> f32 {
+    tl.glyphs()
+        .iter()
+        .last()
+        .map(|g| g.x + g.width as f32)
+        .unwrap_or(0.0)
 }
 
 /// Rounded rectangle path.

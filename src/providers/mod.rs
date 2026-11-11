@@ -45,6 +45,18 @@ impl ProviderId {
         }
     }
 
+    /// The id this provider has in config.toml.
+    pub fn config_id(&self) -> &'static str {
+        match self {
+            ProviderId::Claude => "claude",
+            ProviderId::Codex => "codex",
+            ProviderId::Copilot => "copilot",
+            ProviderId::Antigravity => "antigravity",
+            ProviderId::Grok => "grok",
+            ProviderId::Cursor => "cursor",
+        }
+    }
+
     /// From a config id string.
     pub fn from_config_id(id: &str) -> Option<Self> {
         match id {
