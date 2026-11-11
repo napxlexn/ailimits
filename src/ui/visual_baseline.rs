@@ -6,10 +6,12 @@
 // the rows-and-models work: a feature may add new looks, but with the default
 // config nothing that exists today may change by a single pixel.
 //
-// Record or update (only for a look that is meant to change, after review):
+// Record a NEW group (a look that did not exist in 0.7.0):
 //     UPDATE_BASELINE=1 cargo test visual_baseline
-// On a mismatch the PNGs of the changed entries land in
-// %TEMP%\ailimits-visual\<group>\ for a side-by-side look.
+// The 0.7.0 groups (`PINNED`) ignore that: they change only on the owner's
+// decision, with UPDATE_PINNED_BASELINE=1. On a mismatch the PNGs of the
+// changed entries land in %TEMP%\ailimits-visual\<group>\ for a side-by-side
+// look; DUMP_VISUAL=1 writes every entry there, for a contact sheet.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,6 +39,10 @@ fn digest(pm: &Pixmap) -> String {
     format!("{}x{} {h:016x}", pm.width(), pm.height())
 }
 
+/// The groups recorded from 0.7.0: with the default config nothing in them
+/// may change.
+const PINNED: &[&str] = &["widget", "panel", "tray"];
+
 fn baseline_path(group: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -59,7 +65,19 @@ pub(crate) fn check(group: &str, items: Vec<(String, Pixmap)>) {
     }
 
     let path = baseline_path(group);
-    if std::env::var_os("UPDATE_BASELINE").is_some() {
+    let dump = std::env::temp_dir().join("ailimits-visual").join(group);
+    if std::env::var_os("DUMP_VISUAL").is_some() {
+        std::fs::create_dir_all(&dump).unwrap();
+        for (name, pm) in &pixmaps {
+            std::fs::write(dump.join(format!("{name}.png")), pm.encode_png().unwrap()).unwrap();
+        }
+    }
+    let update = if PINNED.contains(&group) {
+        std::env::var_os("UPDATE_PINNED_BASELINE").is_some()
+    } else {
+        std::env::var_os("UPDATE_BASELINE").is_some()
+    };
+    if update {
         let mut text = format!(
             "# Visual baseline '{group}': name, size, FNV-1a of the RGBA pixels.\n\
              # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.\n"
@@ -86,7 +104,6 @@ pub(crate) fn check(group: &str, items: Vec<(String, Pixmap)>) {
         .collect();
 
     let mut problems = Vec::new();
-    let dump = std::env::temp_dir().join("ailimits-visual").join(group);
     for (name, d) in &got {
         match want.get(name) {
             Some(w) if w == d => {}
