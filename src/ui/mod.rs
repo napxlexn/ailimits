@@ -5,3 +5,5 @@ pub mod taskbar_panel;
 pub mod theme;
 pub mod tray;
 pub mod window;
+#[cfg(test)]
+pub(crate) mod visual_baseline;

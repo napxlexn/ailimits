@@ -1,0 +1,26 @@
+# Visual baseline 'panel': name, size, FNV-1a of the RGBA pixels.
+# Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
+levels-bottom-100-dark 100x48 99525f441fc99de6
+levels-bottom-100-light 100x48 d77a7aa1a173067f
+levels-bottom-150-dark 150x72 17624856add5ca71
+levels-bottom-150-light 150x72 8c2f7d3cfe80dba2
+levels-side-100-dark 62x96 3388bdf2a7a37b65
+levels-side-100-light 62x96 840bb377d9786806
+single-bottom-100-dark 100x48 3f82a2837403f3b7
+single-bottom-100-light 100x48 1c20b8b74624c76b
+single-bottom-150-dark 150x72 5a5ed2c4fe8930c8
+single-bottom-150-light 150x72 7a714cb8d10d53ff
+single-side-100-dark 62x96 6f7cd681f42ba05f
+single-side-100-light 62x96 7e05ef16cb80adf3
+states-bottom-100-dark 100x48 954c2ae2084714e1
+states-bottom-100-light 100x48 6e1319eb611faac6
+states-bottom-150-dark 150x72 00c8cf9379eb4026
+states-bottom-150-light 150x72 355a497f39603593
+states-side-100-dark 62x96 b374433c49d7dceb
+states-side-100-light 62x96 002018394cfc29df
+typical-bottom-100-dark 100x48 dc2c6895eb3f6867
+typical-bottom-100-light 100x48 f08917d05ddb7717
+typical-bottom-150-dark 150x72 ace67fc94e059636
+typical-bottom-150-light 150x72 9b43cc724d780fb6
+typical-side-100-dark 62x96 e017ec4be4e0560f
+typical-side-100-light 62x96 57c1c296353df0c2

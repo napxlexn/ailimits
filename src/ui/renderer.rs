@@ -1556,6 +1556,157 @@ mod tests {
         }
     }
 
+    /// Draw one widget the way app.rs does.
+    #[allow(clippy::too_many_arguments)]
+    fn baseline_widget(
+        renderer: &Renderer,
+        providers: &[ProviderData],
+        layout: crate::config::schema::Layout,
+        detail: DetailLevel,
+        scale: crate::config::schema::WidthScale,
+        flow: crate::config::schema::ColumnFlow,
+        ui: &crate::config::schema::UIConfig,
+        opacity: f32,
+        cursor: Option<(f32, f32)>,
+        forecasts: &HashMap<ProviderId, chrono::DateTime<Utc>>,
+        errors: &HashMap<ProviderId, String>,
+    ) -> Pixmap {
+        let win = crate::ui::layout::compute(&layout, &detail, &scale, &flow, providers.len());
+        let mut pm = Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+        let theme = ComputedTheme::compute(ui);
+        renderer.draw(
+            &mut pm, &win, &theme, providers, opacity, &detail, cursor, forecasts, errors,
+        );
+        pm
+    }
+
+    /// The widget, pinned: every layout x detail x width/flow for every
+    /// fixture set, every palette, the colour controls, both opacity ends,
+    /// hover, a forecast and the empty widget. See ui/visual_baseline.rs.
+    #[test]
+    fn visual_baseline_widget() {
+        use crate::config::schema::{ColumnFlow, Layout, Palette, UIConfig, WidthScale};
+        use crate::ui::visual_baseline as vb;
+
+        let renderer = Renderer::new().expect("a system font");
+        let ui = UIConfig::default();
+        let none_f = HashMap::new();
+        let none_e = HashMap::new();
+        let details = [
+            ("compact", DetailLevel::Compact),
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ];
+        let mut items = Vec::new();
+
+        for (set, providers) in vb::sets() {
+            for (dname, detail) in details.clone() {
+                for (wname, scale) in [
+                    ("100", WidthScale::Full),
+                    ("075", WidthScale::ThreeQuarters),
+                    ("050", WidthScale::Half),
+                ] {
+                    let pm = baseline_widget(
+                        &renderer, &providers, Layout::Vertical, detail.clone(), scale,
+                        ColumnFlow::Row, &ui, 0.45, None, &none_f, &none_e,
+                    );
+                    items.push((format!("{set}-rows-{dname}-{wname}"), pm));
+                }
+                for (fname, flow) in [("side", ColumnFlow::Row), ("stacked", ColumnFlow::Column)] {
+                    let pm = baseline_widget(
+                        &renderer, &providers, Layout::Horizontal, detail.clone(),
+                        WidthScale::Full, flow, &ui, 0.45, None, &none_f, &none_e,
+                    );
+                    items.push((format!("{set}-columns-{dname}-{fname}"), pm));
+                }
+            }
+        }
+
+        let typical = vb::typical();
+        let medium = |ui: &UIConfig, opacity: f32, cursor: Option<(f32, f32)>| {
+            baseline_widget(
+                &renderer, &typical, Layout::Vertical, DetailLevel::Medium, WidthScale::Full,
+                ColumnFlow::Row, ui, opacity, cursor, &none_f, &none_e,
+            )
+        };
+        for (pname, palette) in [
+            ("default", Palette::Default),
+            ("ocean", Palette::Ocean),
+            ("sunset", Palette::Sunset),
+            ("forest", Palette::Forest),
+            ("neon", Palette::Neon),
+            ("ice", Palette::Ice),
+            ("rose", Palette::Rose),
+            ("slate", Palette::Slate),
+        ] {
+            let ui = UIConfig { palette, ..UIConfig::default() };
+            items.push((format!("palette-{pname}"), medium(&ui, 0.45, None)));
+        }
+        let mono = UIConfig { monochrome: true, ..UIConfig::default() };
+        items.push(("monochrome".to_string(), medium(&mono, 0.45, None)));
+        let dim = UIConfig { brightness: 40, saturation: 0, ..UIConfig::default() };
+        items.push(("brightness40-saturation0".to_string(), medium(&dim, 0.45, None)));
+        let vivid = UIConfig { brightness: 100, saturation: 100, ..UIConfig::default() };
+        items.push(("brightness100-saturation100".to_string(), medium(&vivid, 0.45, None)));
+        items.push(("opacity-010".to_string(), medium(&ui, 0.10, None)));
+        items.push(("opacity-085".to_string(), medium(&ui, 0.85, None)));
+
+        // Hover over the first row: the long window takes the row.
+        items.push(("hover-medium".to_string(), medium(&ui, 0.45, Some((30.0, 12.0)))));
+        for (dname, detail) in details.clone() {
+            let pm = baseline_widget(
+                &renderer, &typical, Layout::Horizontal, detail, WidthScale::Full,
+                ColumnFlow::Row, &ui, 0.45, Some((20.0, 20.0)), &none_f, &none_e,
+            );
+            items.push((format!("hover-columns-{dname}"), pm));
+        }
+        // Hover over an aged row: the stored failure and its action.
+        let states = vb::states();
+        let mut errors = HashMap::new();
+        errors.insert(ProviderId::Copilot, "offline, retrying".to_string());
+        for (dname, detail) in details.clone() {
+            let win = crate::ui::layout::compute(
+                &Layout::Vertical, &detail, &WidthScale::Full, &ColumnFlow::Row, states.len(),
+            );
+            let BodyLayout::Vertical { rows, .. } = &win.body else { unreachable!() };
+            let last = rows[states.len() - 1];
+            let pm = baseline_widget(
+                &renderer, &states, Layout::Vertical, detail, WidthScale::Full, ColumnFlow::Row,
+                &ui, 0.45, Some((last.x + 10.0, last.y + 5.0)), &none_f, &errors,
+            );
+            items.push((format!("hover-aged-{dname}"), pm));
+        }
+
+        // A forecast fills the reset slot when no reset is known.
+        let mut no_reset = vb::single();
+        for m in &mut no_reset[0].metrics {
+            m.reset_at = None;
+        }
+        let mut forecasts = HashMap::new();
+        forecasts.insert(
+            ProviderId::Claude,
+            Utc::now() + chrono::Duration::seconds(90 * 60 + 30),
+        );
+        for (dname, detail) in details.clone() {
+            let pm = baseline_widget(
+                &renderer, &no_reset, Layout::Vertical, detail, WidthScale::Full,
+                ColumnFlow::Row, &ui, 0.45, None, &forecasts, &none_e,
+            );
+            items.push((format!("forecast-{dname}"), pm));
+        }
+
+        // Nothing to show: the guidance line.
+        for (dname, detail) in details {
+            let pm = baseline_widget(
+                &renderer, &[], Layout::Vertical, detail, WidthScale::Full, ColumnFlow::Row,
+                &ui, 0.45, None, &none_f, &none_e,
+            );
+            items.push((format!("empty-{dname}"), pm));
+        }
+
+        vb::check("widget", items);
+    }
+
     fn pct_metric(label: &str, pct: u64, window: MetricWindow) -> Metric {
         Metric {
             label: label.into(),

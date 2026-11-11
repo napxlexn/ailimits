@@ -839,6 +839,32 @@ mod tests {
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderId, ProviderStatus};
     use chrono::Utc;
 
+    /// The taskbar panel, pinned: every fixture set on a bottom bar at 100%
+    /// and 150% and on a side bar, dark and light, painted the way `redraw`
+    /// paints. See ui/visual_baseline.rs.
+    #[test]
+    fn visual_baseline_panel() {
+        use crate::ui::visual_baseline as vb;
+        let mut items = Vec::new();
+        for light in [false, true] {
+            let (fg, track) = theme_ink(light);
+            let ink = if light { "light" } else { "dark" };
+            for (set, providers) in vb::sets() {
+                for (sname, w, h, vertical) in [
+                    ("bottom-100", 100, 48, false),
+                    ("bottom-150", 150, 72, false),
+                    ("side-100", 62, 96, true),
+                ] {
+                    let mut pm = Pixmap::new(w, h).unwrap();
+                    pm.fill(color(0, 0, 0, HIT_ALPHA));
+                    paint_rows(&mut pm, vertical, &first_two(&providers), fg, track);
+                    items.push((format!("{set}-{sname}-{ink}"), pm));
+                }
+            }
+        }
+        vb::check("panel", items);
+    }
+
     fn data(id: ProviderId, pct: u64) -> ProviderData {
         ProviderData {
             id,

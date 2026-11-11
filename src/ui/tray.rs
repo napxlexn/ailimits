@@ -904,7 +904,15 @@ fn fill_path(pm: &mut Pixmap, pb: PathBuilder, c: tiny_skia::Color) {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The last pixmap made into an icon, kept for the visual baseline.
+    static LAST_ICON: std::cell::RefCell<Option<Pixmap>> = const { std::cell::RefCell::new(None) };
+}
+
 fn to_icon(pm: &Pixmap) -> Result<Icon> {
+    #[cfg(test)]
+    LAST_ICON.with(|c| *c.borrow_mut() = Some(pm.clone()));
     Icon::from_rgba(demultiply(pm), ICON_SIZE, ICON_SIZE).map_err(|e| anyhow::anyhow!("icon: {e}"))
 }
 
@@ -923,6 +931,36 @@ mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderId};
     use chrono::Utc;
+
+    /// The tray, pinned: the neutral dot, the rings and the stacked icon for
+    /// every fixture set, and the hover tooltip at three bar heights, on a
+    /// dark and a light taskbar. See ui/visual_baseline.rs.
+    #[test]
+    fn visual_baseline_tray() {
+        use crate::ui::visual_baseline as vb;
+        let theme = ComputedTheme::compute(&crate::config::schema::UIConfig::default());
+        let take = || LAST_ICON.with(|c| c.borrow_mut().take().expect("an icon was drawn"));
+        let mut items = Vec::new();
+        for light in [false, true] {
+            let ink = if light { "light" } else { "dark" };
+            neutral_icon(light).unwrap();
+            items.push((format!("neutral-{ink}"), take()));
+            for (set, providers) in vb::sets() {
+                draw_ring_icon(&providers, light).unwrap();
+                items.push((format!("rings-{set}-{ink}"), take()));
+                for n in 1..=providers.len().min(4) {
+                    let first: Vec<ProviderData> = providers.iter().take(n).cloned().collect();
+                    draw_stacked_icon(&first, &theme, light).unwrap();
+                    items.push((format!("stacked-{set}-{n}-{ink}"), take()));
+                }
+                for bar in [40.0, 48.0, 72.0] {
+                    let pm = render_tooltip(&tooltip(&providers), bar, light);
+                    items.push((format!("tooltip-{set}-{bar}-{ink}"), pm));
+                }
+            }
+        }
+        vb::check("tray", items);
+    }
 
     fn data(id: ProviderId, pct: u64) -> ProviderData {
         ProviderData {
