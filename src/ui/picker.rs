@@ -810,6 +810,24 @@ impl Picker {
         (f.width, f.height)
     }
 
+    /// Ask about a provider's sign-in at once, as ticking its row would: for
+    /// the Providers menu's Enabled tick. Allow then sends only
+    /// `Allow(SignIn)`; nothing is asked when it is allowed already.
+    pub fn ask_sign_in(&mut self, provider: &str) {
+        let row = canonical(provider).to_string();
+        if self.allowed(&row) {
+            return;
+        }
+        self.open_question(
+            ReadKind::SignIn(row.clone()),
+            Vec::new(),
+            Target::Row {
+                row,
+                surface: Surface::Widget,
+            },
+        );
+    }
+
     /// Whether anything visible changed since the last call.
     pub fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
@@ -3018,6 +3036,20 @@ impl PickerWindow {
         actions
     }
 
+    /// Ask about a provider's sign-in at once (`Picker::ask_sign_in`), and
+    /// bring the window forward.
+    pub fn ask_sign_in(&mut self, provider: &str) {
+        self.picker.ask_sign_in(provider);
+        self.picker.take_dirty();
+        self.window.set_focus();
+        self.window.request_redraw();
+    }
+
+    /// Bring the window forward (opened again from the menu).
+    pub fn focus(&self) {
+        self.window.set_focus();
+    }
+
     /// The app applied an action: show the new state.
     pub fn set_input(&mut self, input: PickerInput) {
         self.picker.set_input(input);
@@ -3306,6 +3338,29 @@ mod tests {
         let mut out = p.handle(PickerEvent::PointerDown { x, y });
         out.extend(p.handle(PickerEvent::PointerUp { x, y }));
         out
+    }
+
+    /// The Providers menu's Enabled tick asks the same question; Allow sends
+    /// only the allowance, Cancel nothing, and an allowed provider is not
+    /// asked at all.
+    #[test]
+    fn the_menu_can_ask_for_a_sign_in() {
+        let mut p = picker(input());
+        p.ask_sign_in("claude");
+        assert!(p.ask.is_none(), "claude is allowed already");
+        p.ask_sign_in("cursor");
+        assert!(p.ask.is_some());
+        assert_eq!(
+            click(&mut p, &Target::Allow),
+            [PickerAction::Allow(ReadKind::SignIn("cursor".into()))]
+        );
+        assert!(p.ask.is_none());
+        // The old id of an allowed provider is allowed too.
+        p.ask_sign_in("gemini");
+        assert!(p.ask.is_none());
+        p.ask_sign_in("cursor");
+        assert!(click(&mut p, &Target::Cancel).is_empty());
+        assert!(p.ask.is_none());
     }
 
     fn key(p: &mut Picker, k: PickerKey) -> Vec<PickerAction> {

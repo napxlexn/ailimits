@@ -6,7 +6,7 @@
 
 use crate::{
     config::{
-        schema::{AuthMethod, Config, Surface},
+        schema::{AuthMethod, Config, PendingNotice, Surface},
         storage,
     },
     hooks,
@@ -33,6 +33,7 @@ use crate::{
     ui::{
         context_menu::{ContextMenu, MenuAction},
         layout,
+        picker::{PickerAction, PickerInput, PickerMode, PickerWindow, ReadKind, ScreenRect},
         renderer::{format_duration, Renderer},
         taskbar_panel::TaskbarPanel,
         theme::ComputedTheme,
@@ -621,6 +622,58 @@ fn refresh_models(
     }
 }
 
+/// What the picker opens as: the welcome or the update notice while one is
+/// owed, the welcome too while nothing is chosen, otherwise the plain picker.
+fn picker_mode_for(config: &Config) -> PickerMode {
+    match config.reads.pending {
+        PendingNotice::Welcome => PickerMode::Welcome,
+        PendingNotice::UpdateNotice => PickerMode::UpdateNotice,
+        PendingNotice::None if rows::nothing_chosen(config) => PickerMode::Welcome,
+        PendingNotice::None => PickerMode::Normal,
+    }
+}
+
+/// Where the picker opens: beside the widget while it is on screen,
+/// otherwise at the cursor (on the menu or the tray icon just clicked).
+fn picker_anchor(window: &tao::window::Window, widget_visible: bool) -> ScreenRect {
+    if widget_visible {
+        if let Ok(p) = window.outer_position() {
+            let s = window.outer_size();
+            return ScreenRect {
+                x: p.x,
+                y: p.y,
+                w: s.width as i32,
+                h: s.height as i32,
+            };
+        }
+    }
+    let c = window
+        .cursor_position()
+        .unwrap_or(PhysicalPosition::new(0.0, 0.0));
+    ScreenRect {
+        x: c.x as i32,
+        y: c.y as i32,
+        w: 1,
+        h: 1,
+    }
+}
+
+/// Open the picker window; a failure is logged and leaves the app as it was.
+fn open_picker_window<T: 'static>(
+    target: &tao::event_loop::EventLoopWindowTarget<T>,
+    renderer: &Rc<Renderer>,
+    input: PickerInput,
+    anchor: ScreenRect,
+) -> Option<PickerWindow> {
+    match PickerWindow::open(target, renderer.clone(), input, anchor) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            warn!("the picker did not open: {e}");
+            None
+        }
+    }
+}
+
 /// Rebuild the providers after a config change — the list is shared
 /// with the scheduler.
 fn refresh_providers(
@@ -969,7 +1022,8 @@ pub fn run() -> Result<()> {
     // The layout is computed from VISIBLE providers, not all of them.
     // The rows measure their text for the layout, so the renderer comes
     // first. No model is read yet: the readers arrive with their consent.
-    let renderer = Renderer::new()?;
+    // Shared with the picker window, which draws with the same font.
+    let renderer = Rc::new(Renderer::new()?);
     let mut models = Models::new();
     let mut shape = widget_shape(&config, &display, &models, &renderer);
     let mut win_layout = layout::compute(
@@ -1179,10 +1233,123 @@ pub fn run() -> Result<()> {
     };
     let mut saver_at_exit = Some(saver);
 
+    // The picker: open only while in use. On a fresh install it opens by
+    // itself as the welcome, after the update that added [reads] as the
+    // one-time notice.
+    let mut found_tools: Vec<&'static str> = Vec::new();
+    let mut picker_mode = picker_mode_for(&config);
+    // A provider the Providers menu asked about: once allowed, its own row
+    // comes back wherever rows were chosen.
+    let mut menu_asked: Option<String> = None;
+    let mut picker: Option<PickerWindow> = None;
+    if config.reads.pending != PendingNotice::None {
+        found_tools = crate::consent::found_tools();
+        picker = open_picker_window(
+            &event_loop,
+            &renderer,
+            crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools),
+            picker_anchor(&window, window_visible),
+        );
+    }
+
     info!("AI Limits Widget ready");
 
     // 11. The event loop — never returns.
-    event_loop.run(move |event, _target, control_flow| {
+    event_loop.run(move |event, target, control_flow| {
+        // The picker, wired: its input, opening it, and applying what it
+        // asks for to the config and every surface at once.
+        macro_rules! picker_input {
+            () => {
+                crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools)
+            };
+        }
+        macro_rules! refresh_picker {
+            () => {
+                if picker.is_some() {
+                    let input = picker_input!();
+                    if let Some(p) = picker.as_mut() {
+                        p.set_input(input);
+                    }
+                }
+            };
+        }
+        macro_rules! open_picker {
+            ($ask:expr) => {{
+                let ask: Option<String> = $ask;
+                if picker.is_none() {
+                    picker_mode = picker_mode_for(&config);
+                    found_tools = crate::consent::found_tools();
+                    picker = open_picker_window(
+                        target,
+                        &renderer,
+                        picker_input!(),
+                        picker_anchor(&window, window_visible),
+                    );
+                } else if let Some(p) = picker.as_ref() {
+                    p.focus();
+                }
+                if let (Some(p), Some(id)) = (picker.as_mut(), ask) {
+                    p.ask_sign_in(&id);
+                }
+            }};
+        }
+        macro_rules! apply_picker_actions {
+            ($actions:expr) => {{
+                let mut changed = false;
+                for action in $actions {
+                    let done = crate::choices::apply(&mut config, &action);
+                    match &action {
+                        PickerAction::NoticeDone => picker_mode = PickerMode::Normal,
+                        PickerAction::Allow(ReadKind::SignIn(p))
+                            if menu_asked.as_deref() == Some(p.as_str()) =>
+                        {
+                            crate::choices::show_provider_rows(&mut config, p);
+                            menu_asked = None;
+                        }
+                        _ => {}
+                    }
+                    if done.close {
+                        if let Some(p) = picker.take() {
+                            p.close();
+                        }
+                        menu_asked = None;
+                    }
+                    if let Some(pid) = &done.provider {
+                        refresh_providers(&config, &providers, &mut thresholds, &mut display, pid);
+                        fetch_one(&providers, &cmd_tx, &runtime, pid);
+                    }
+                    if done.models {
+                        refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
+                    }
+                    changed |= done.changed;
+                }
+                if changed {
+                    save_config(config.clone());
+                    shape = widget_shape(&config, &display, &models, &renderer);
+                    apply_ui_change(
+                        &config,
+                        &mut win_layout,
+                        &mut theme,
+                        &mut pixmap,
+                        &mut surface,
+                        &window,
+                        &mut win_state,
+                        &menu,
+                        &shape,
+                    );
+                    tray.set_first_install(
+                        rows::nothing_chosen(&config),
+                        &visible_data(&config, &display),
+                    );
+                    tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
+                    panel.update(&visible_data(&config, &display), true);
+                    menu.sync(&config, win_state.pinned);
+                    window.request_redraw();
+                }
+                refresh_picker!();
+            }};
+        }
+
         #[cfg(target_os = "windows")]
         {
             let next = [recheck_at, tooltip_at].into_iter().flatten().min();
@@ -1272,6 +1439,26 @@ pub fn run() -> Result<()> {
             }
             // The embedded panel's own events: a left-click toggles the
             // overlay (like the tray icon), a right-click opens the menu.
+            // The picker's own window: before every other window arm, which
+            // would take its events (and its close) for the widget's.
+            Event::WindowEvent {
+                window_id, event, ..
+            } if picker.as_ref().is_some_and(|p| p.id() == window_id) => {
+                let actions = picker
+                    .as_mut()
+                    .map(|p| p.handle_window_event(&event))
+                    .unwrap_or_default();
+                if !actions.is_empty() {
+                    apply_picker_actions!(actions);
+                }
+            }
+
+            Event::RedrawRequested(id) if picker.as_ref().is_some_and(|p| p.id() == id) => {
+                if let Some(p) = picker.as_mut() {
+                    p.redraw();
+                }
+            }
+
             Event::WindowEvent {
                 window_id, event, ..
             } if window_id == panel.window_id() => {
@@ -1397,7 +1584,13 @@ pub fn run() -> Result<()> {
                         }
                     }
                     (ElementState::Released, MouseButton::Left) => {
-                        if win_state.end_drag() {
+                        // "Choose what to show / Click here": a click that
+                        // did not drag opens the picker.
+                        let dragged = win_state.end_drag();
+                        if !dragged && rows::nothing_chosen(&config) {
+                            open_picker!(None);
+                        }
+                        if dragged {
                             // Persist the position to the config.
                             config.window.pos_x = win_state.pos.0.round() as i32;
                             config.window.pos_y = win_state.pos.1.round() as i32;
@@ -1653,6 +1846,7 @@ pub fn run() -> Result<()> {
                         window.request_redraw();
                         tray.update(&visible_data(&config, &display), &theme, false);
                         panel.update(&visible_data(&config, &display), false);
+                        refresh_picker!();
                     }
                     AppCommand::CursorSignIn(outcome) => match outcome {
                         SignInOutcome::SignedIn(_) => {
@@ -1733,6 +1927,7 @@ pub fn run() -> Result<()> {
                                 );
                             }
                             window.request_redraw();
+                            refresh_picker!();
                         }
                     }
                     AppCommand::Quit => *control_flow = ControlFlow::Exit,
@@ -1848,7 +2043,7 @@ pub fn run() -> Result<()> {
                 }
 
                 UserEvent::Menu(id) => match menu.action_for(&id) {
-                    Some(MenuAction::OpenPicker) => {}
+                    Some(MenuAction::OpenPicker) => open_picker!(None),
                     Some(MenuAction::Quit) => *control_flow = ControlFlow::Exit,
                     Some(MenuAction::OpenProjectPage) => {
                         crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);
@@ -1897,12 +2092,18 @@ pub fn run() -> Result<()> {
                         save_config(config.clone());
                         window.request_redraw();
                     }
+                    // Never allowed to read its sign-in: ask first, in the
+                    // picker, naming the file and the host. The tick stays
+                    // off until the answer.
+                    Some(MenuAction::ToggleProvider(pid)) if !config.sign_in_allowed(&pid) => {
+                        menu.sync(&config, win_state.pinned);
+                        menu_asked = Some(pid.clone());
+                        open_picker!(Some(pid));
+                    }
                     Some(MenuAction::ToggleProvider(pid)) => {
                         // The tick shows whether the provider runs (switched
-                        // on and allowed), so a click flips exactly that: an
-                        // unticked provider is switched on and allowed (the
-                        // user asking for its row, which needs its sign-in),
-                        // a ticked one is switched off.
+                        // on and allowed; allowed it is, see the arm above),
+                        // so a click flips exactly that.
                         let mut now_enabled = None;
                         let was_active = config
                             .providers
@@ -1914,7 +2115,6 @@ pub fn run() -> Result<()> {
                             now_enabled = Some(pc.enabled);
                         }
                         if now_enabled == Some(true) {
-                            config.allow_sign_in(&pid);
                             crate::choices::show_provider_rows(&mut config, &pid);
                         }
                         if now_enabled == Some(false) {
