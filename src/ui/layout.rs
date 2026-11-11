@@ -457,7 +457,14 @@ mod tests {
         ];
 
         for (detail, scale, want) in cases {
-            let got = compute(&Layout::Vertical, &detail, &scale, &ColumnFlow::Row, &Shape::plain(2)).row_tier;
+            let got = compute(
+                &Layout::Vertical,
+                &detail,
+                &scale,
+                &ColumnFlow::Row,
+                &Shape::plain(2),
+            )
+            .row_tier;
             assert_eq!(
                 got, want,
                 "{detail:?} at {scale:?}: expected {want:?}, got {got:?}"
@@ -609,7 +616,13 @@ mod tests {
     }
 
     fn compute_columns(detail: &DetailLevel, flow: &ColumnFlow, n: usize) -> WindowLayout {
-        compute(&Layout::Horizontal, detail, &WidthScale::Full, flow, &Shape::plain(n))
+        compute(
+            &Layout::Horizontal,
+            detail,
+            &WidthScale::Full,
+            flow,
+            &Shape::plain(n),
+        )
     }
 
     // ─── Shape: the lines models take ─────────────────────────────
@@ -691,7 +704,11 @@ mod tests {
     fn only_a_row_with_a_model_ever_gets_a_line() {
         let rows = [session(false), weekly(false), count(false)];
         for layout in [Layout::Vertical, Layout::Horizontal] {
-            for detail in [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded] {
+            for detail in [
+                DetailLevel::Compact,
+                DetailLevel::Medium,
+                DetailLevel::Expanded,
+            ] {
                 let ui = ui(layout.clone(), detail, WidthScale::Half, ColumnFlow::Row);
                 assert_eq!(lines(&ui, &rows), [false, false, false]);
             }
@@ -712,7 +729,14 @@ mod tests {
     #[test]
     fn medium_shares_the_meta_line_unless_it_is_taken_or_too_full() {
         let rows = [session(true), weekly(true), count(true)];
-        let at = |scale| ui(Layout::Vertical, DetailLevel::Medium, scale, ColumnFlow::Row);
+        let at = |scale| {
+            ui(
+                Layout::Vertical,
+                DetailLevel::Medium,
+                scale,
+                ColumnFlow::Row,
+            )
+        };
         // A count takes the left part at every width; a weekly's
         // "Weekly: 23h 59min" leaves too little only when narrow.
         assert_eq!(lines(&at(WidthScale::Full), &rows), [false, false, true]);
@@ -722,10 +746,27 @@ mod tests {
     #[test]
     fn a_model_line_grows_only_its_own_row() {
         let rows = [session(false), weekly(true), session(false)];
-        let ui = ui(Layout::Vertical, DetailLevel::Expanded, WidthScale::Full, ColumnFlow::Row);
+        let ui = ui(
+            Layout::Vertical,
+            DetailLevel::Expanded,
+            WidthScale::Full,
+            ColumnFlow::Row,
+        );
         let shape = Shape::of(&ui, &rows, false, mono);
-        let with = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &shape);
-        let without = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &Shape::plain(3));
+        let with = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &shape,
+        );
+        let without = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &Shape::plain(3),
+        );
         let (BodyLayout::Vertical { rows: a, .. }, BodyLayout::Vertical { rows: b, .. }) =
             (&with.body, &without.body)
         else {
@@ -737,13 +778,21 @@ mod tests {
         assert!((with.height - without.height - MODEL_LINE_H).abs() < 0.01);
         assert!(with.model_lines[0].is_none());
         let line = with.model_lines[1].expect("the weekly row's line");
-        assert_eq!(line.y, a[1].y + b[1].h, "the line is the band the row grew by");
+        assert_eq!(
+            line.y,
+            a[1].y + b[1].h,
+            "the line is the band the row grew by"
+        );
     }
 
     #[test]
     fn columns_side_by_side_grow_once_and_stacked_grow_per_column() {
         let rows = [session(true), weekly(false), count(true)];
-        for detail in [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded] {
+        for detail in [
+            DetailLevel::Compact,
+            DetailLevel::Medium,
+            DetailLevel::Expanded,
+        ] {
             for (flow, grows) in [
                 (ColumnFlow::Row, MODEL_COL_LINE_H),
                 (ColumnFlow::Column, 2.0 * MODEL_COL_LINE_H),
@@ -752,7 +801,13 @@ mod tests {
                 let shape = Shape::of(&ui, &rows, false, mono);
                 assert_eq!(shape.model_lines, [true, false, true]);
                 let with = compute(&ui.layout, &ui.detail, &ui.width_scale, &flow, &shape);
-                let without = compute(&ui.layout, &ui.detail, &ui.width_scale, &flow, &Shape::plain(3));
+                let without = compute(
+                    &ui.layout,
+                    &ui.detail,
+                    &ui.width_scale,
+                    &flow,
+                    &Shape::plain(3),
+                );
                 assert!(
                     (with.height - without.height - grows).abs() < 0.01,
                     "{detail:?} {flow:?}: grew {} px",
@@ -778,12 +833,24 @@ mod tests {
         let ui = UIConfig::default();
         let choose = Shape::of(&ui, &[], true, mono);
         assert!(choose.choose);
-        let win = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &choose);
+        let win = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &choose,
+        );
         assert!(matches!(win.body, BodyLayout::Choose { .. }));
         // Rows win over the first-install box (they cannot both be).
         assert!(!Shape::of(&ui, &[session(false)], true, mono).choose);
         // Nothing to show but something chosen: today's one-row box.
-        let empty = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &Shape::plain(0));
+        let empty = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &Shape::plain(0),
+        );
         let BodyLayout::Vertical { rows, .. } = &empty.body else {
             panic!("rows body");
         };

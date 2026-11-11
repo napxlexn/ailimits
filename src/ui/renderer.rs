@@ -567,7 +567,12 @@ impl Renderer {
                 } else {
                     self.text_width(&right, META_SIZE)
                 };
-                (row.x, meta_y, layout::medium_model_room(row.w, right_w), META_SIZE)
+                (
+                    row.x,
+                    meta_y,
+                    layout::medium_model_room(row.w, right_w),
+                    META_SIZE,
+                )
             }
             (None, true) => return,
         };
@@ -1846,15 +1851,33 @@ mod tests {
                     ("050", WidthScale::Half),
                 ] {
                     let pm = baseline_widget(
-                        &renderer, &providers, Layout::Vertical, detail.clone(), scale,
-                        ColumnFlow::Row, &ui, 0.45, None, &none_f, &none_e,
+                        &renderer,
+                        &providers,
+                        Layout::Vertical,
+                        detail.clone(),
+                        scale,
+                        ColumnFlow::Row,
+                        &ui,
+                        0.45,
+                        None,
+                        &none_f,
+                        &none_e,
                     );
                     items.push((format!("{set}-rows-{dname}-{wname}"), pm));
                 }
                 for (fname, flow) in [("side", ColumnFlow::Row), ("stacked", ColumnFlow::Column)] {
                     let pm = baseline_widget(
-                        &renderer, &providers, Layout::Horizontal, detail.clone(),
-                        WidthScale::Full, flow, &ui, 0.45, None, &none_f, &none_e,
+                        &renderer,
+                        &providers,
+                        Layout::Horizontal,
+                        detail.clone(),
+                        WidthScale::Full,
+                        flow,
+                        &ui,
+                        0.45,
+                        None,
+                        &none_f,
+                        &none_e,
                     );
                     items.push((format!("{set}-columns-{dname}-{fname}"), pm));
                 }
@@ -1864,8 +1887,17 @@ mod tests {
         let typical = vb::typical();
         let medium = |ui: &UIConfig, opacity: f32, cursor: Option<(f32, f32)>| {
             baseline_widget(
-                &renderer, &typical, Layout::Vertical, DetailLevel::Medium, WidthScale::Full,
-                ColumnFlow::Row, ui, opacity, cursor, &none_f, &none_e,
+                &renderer,
+                &typical,
+                Layout::Vertical,
+                DetailLevel::Medium,
+                WidthScale::Full,
+                ColumnFlow::Row,
+                ui,
+                opacity,
+                cursor,
+                &none_f,
+                &none_e,
             )
         };
         for (pname, palette) in [
@@ -1878,24 +1910,56 @@ mod tests {
             ("rose", Palette::Rose),
             ("slate", Palette::Slate),
         ] {
-            let ui = UIConfig { palette, ..UIConfig::default() };
+            let ui = UIConfig {
+                palette,
+                ..UIConfig::default()
+            };
             items.push((format!("palette-{pname}"), medium(&ui, 0.45, None)));
         }
-        let mono = UIConfig { monochrome: true, ..UIConfig::default() };
+        let mono = UIConfig {
+            monochrome: true,
+            ..UIConfig::default()
+        };
         items.push(("monochrome".to_string(), medium(&mono, 0.45, None)));
-        let dim = UIConfig { brightness: 40, saturation: 0, ..UIConfig::default() };
-        items.push(("brightness40-saturation0".to_string(), medium(&dim, 0.45, None)));
-        let vivid = UIConfig { brightness: 100, saturation: 100, ..UIConfig::default() };
-        items.push(("brightness100-saturation100".to_string(), medium(&vivid, 0.45, None)));
+        let dim = UIConfig {
+            brightness: 40,
+            saturation: 0,
+            ..UIConfig::default()
+        };
+        items.push((
+            "brightness40-saturation0".to_string(),
+            medium(&dim, 0.45, None),
+        ));
+        let vivid = UIConfig {
+            brightness: 100,
+            saturation: 100,
+            ..UIConfig::default()
+        };
+        items.push((
+            "brightness100-saturation100".to_string(),
+            medium(&vivid, 0.45, None),
+        ));
         items.push(("opacity-010".to_string(), medium(&ui, 0.10, None)));
         items.push(("opacity-085".to_string(), medium(&ui, 0.85, None)));
 
         // Hover over the first row: the long window takes the row.
-        items.push(("hover-medium".to_string(), medium(&ui, 0.45, Some((30.0, 12.0)))));
+        items.push((
+            "hover-medium".to_string(),
+            medium(&ui, 0.45, Some((30.0, 12.0))),
+        ));
         for (dname, detail) in details.clone() {
             let pm = baseline_widget(
-                &renderer, &typical, Layout::Horizontal, detail, WidthScale::Full,
-                ColumnFlow::Row, &ui, 0.45, Some((20.0, 20.0)), &none_f, &none_e,
+                &renderer,
+                &typical,
+                Layout::Horizontal,
+                detail,
+                WidthScale::Full,
+                ColumnFlow::Row,
+                &ui,
+                0.45,
+                Some((20.0, 20.0)),
+                &none_f,
+                &none_e,
             );
             items.push((format!("hover-columns-{dname}"), pm));
         }
@@ -1905,14 +1969,28 @@ mod tests {
         errors.insert(ProviderId::Copilot, "offline, retrying".to_string());
         for (dname, detail) in details.clone() {
             let win = crate::ui::layout::compute(
-                &Layout::Vertical, &detail, &WidthScale::Full, &ColumnFlow::Row,
+                &Layout::Vertical,
+                &detail,
+                &WidthScale::Full,
+                &ColumnFlow::Row,
                 &crate::ui::layout::Shape::plain(states.len()),
             );
-            let BodyLayout::Vertical { rows, .. } = &win.body else { unreachable!() };
+            let BodyLayout::Vertical { rows, .. } = &win.body else {
+                unreachable!()
+            };
             let last = rows[states.len() - 1];
             let pm = baseline_widget(
-                &renderer, &states, Layout::Vertical, detail, WidthScale::Full, ColumnFlow::Row,
-                &ui, 0.45, Some((last.x + 10.0, last.y + 5.0)), &none_f, &errors,
+                &renderer,
+                &states,
+                Layout::Vertical,
+                detail,
+                WidthScale::Full,
+                ColumnFlow::Row,
+                &ui,
+                0.45,
+                Some((last.x + 10.0, last.y + 5.0)),
+                &none_f,
+                &errors,
             );
             items.push((format!("hover-aged-{dname}"), pm));
         }
@@ -1929,8 +2007,17 @@ mod tests {
         );
         for (dname, detail) in details.clone() {
             let pm = baseline_widget(
-                &renderer, &no_reset, Layout::Vertical, detail, WidthScale::Full,
-                ColumnFlow::Row, &ui, 0.45, None, &forecasts, &none_e,
+                &renderer,
+                &no_reset,
+                Layout::Vertical,
+                detail,
+                WidthScale::Full,
+                ColumnFlow::Row,
+                &ui,
+                0.45,
+                None,
+                &forecasts,
+                &none_e,
             );
             items.push((format!("forecast-{dname}"), pm));
         }
@@ -1938,8 +2025,17 @@ mod tests {
         // Nothing to show: the guidance line.
         for (dname, detail) in details {
             let pm = baseline_widget(
-                &renderer, &[], Layout::Vertical, detail, WidthScale::Full, ColumnFlow::Row,
-                &ui, 0.45, None, &none_f, &none_e,
+                &renderer,
+                &[],
+                Layout::Vertical,
+                detail,
+                WidthScale::Full,
+                ColumnFlow::Row,
+                &ui,
+                0.45,
+                None,
+                &none_f,
+                &none_e,
             );
             items.push((format!("empty-{dname}"), pm));
         }
@@ -2088,7 +2184,8 @@ mod tests {
         choose: bool,
         cursor: Option<(f32, f32)>,
     ) -> Pixmap {
-        let shape = crate::ui::layout::Shape::of(ui, rows, choose, |t, s| renderer.text_width(t, s));
+        let shape =
+            crate::ui::layout::Shape::of(ui, rows, choose, |t, s| renderer.text_width(t, s));
         let win = crate::ui::layout::compute(
             &ui.layout,
             &ui.detail,
@@ -2133,7 +2230,8 @@ mod tests {
                 };
                 out.push((format!("rows-{dname}-{wname}"), ui));
             }
-            for (fname, column_flow) in [("side", ColumnFlow::Row), ("stacked", ColumnFlow::Column)] {
+            for (fname, column_flow) in [("side", ColumnFlow::Row), ("stacked", ColumnFlow::Column)]
+            {
                 let ui = UIConfig {
                     layout: Layout::Horizontal,
                     detail: detail.clone(),
@@ -2162,20 +2260,35 @@ mod tests {
 
         // Every extra row, in every layout: names step to their short forms.
         let all = [
-            "claude", "claude.opus", "claude.sonnet", "codex", "grok", "grok.build",
-            "antigravity", "antigravity.cg", "copilot", "cursor", "cursor.bot",
+            "claude",
+            "claude.opus",
+            "claude.sonnet",
+            "codex",
+            "grok",
+            "grok.build",
+            "antigravity",
+            "antigravity.cg",
+            "copilot",
+            "cursor",
+            "cursor.bot",
         ];
         let extra = widget_rows(&fixture, Some(&all), None);
         assert_eq!(extra.len(), all.len());
         for (name, ui) in every_layout() {
-            items.push((format!("extra-{name}"), rows_widget(&renderer, &extra, &ui, false, None)));
+            items.push((
+                format!("extra-{name}"),
+                rows_widget(&renderer, &extra, &ui, false, None),
+            ));
         }
 
         // Model labels: the whole label in every layout, each step of it in
         // Medium and Expanded rows and the Medium columns.
         let full = widget_rows(&fixture, None, Some(Parts::Full));
         for (name, ui) in every_layout() {
-            items.push((format!("labels-full-{name}"), rows_widget(&renderer, &full, &ui, false, None)));
+            items.push((
+                format!("labels-full-{name}"),
+                rows_widget(&renderer, &full, &ui, false, None),
+            ));
         }
         for (pname, parts) in [
             ("noeffort", Parts::NoEffort),
@@ -2203,11 +2316,21 @@ mod tests {
         let longest = vec![
             ProviderData {
                 id: ProviderId::Claude,
-                ..data(vec![pct_reset("Session", 25, MetricWindow::Session, 23 * 3600 + 59 * 60)])
+                ..data(vec![pct_reset(
+                    "Session",
+                    25,
+                    MetricWindow::Session,
+                    23 * 3600 + 59 * 60,
+                )])
             },
             ProviderData {
                 id: ProviderId::Grok,
-                ..data(vec![pct_reset("Weekly", 12, MetricWindow::Long, 23 * 3600 + 59 * 60)])
+                ..data(vec![pct_reset(
+                    "Weekly",
+                    12,
+                    MetricWindow::Long,
+                    23 * 3600 + 59 * 60,
+                )])
             },
         ];
         let mut longest_rows = widget_rows(&longest, None, None);
@@ -2235,7 +2358,10 @@ mod tests {
         // A count (Copilot's requests on the meta line's left) with a model:
         // the model takes a line of its own even in Medium.
         let count = widget_rows(&fixture, Some(&["copilot", "codex"]), Some(Parts::Full));
-        for (dname, detail) in [("medium", DetailLevel::Medium), ("expanded", DetailLevel::Expanded)] {
+        for (dname, detail) in [
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
             for (wname, width_scale) in [("100", WidthScale::Full), ("050", WidthScale::Half)] {
                 let ui = UIConfig {
                     detail: detail.clone(),
@@ -2262,7 +2388,10 @@ mod tests {
         // Every honest state with a label: loading, sign-in trouble, offline
         // (the meta line is free), estimated, aged (the age owns the slot).
         let aged_rows = widget_rows(&vb::states(), None, Some(Parts::Full));
-        for (dname, detail) in [("medium", DetailLevel::Medium), ("expanded", DetailLevel::Expanded)] {
+        for (dname, detail) in [
+            ("medium", DetailLevel::Medium),
+            ("expanded", DetailLevel::Expanded),
+        ] {
             let ui = UIConfig {
                 detail,
                 ..UIConfig::default()
@@ -2288,8 +2417,14 @@ mod tests {
                 detail,
                 ..UIConfig::default()
             };
-            items.push((format!("scenario-mix-{dname}"), rows_widget(&renderer, &mix, &ui, false, None)));
-            items.push((format!("scenario-small-{dname}"), rows_widget(&renderer, &small, &ui, false, None)));
+            items.push((
+                format!("scenario-mix-{dname}"),
+                rows_widget(&renderer, &mix, &ui, false, None),
+            ));
+            items.push((
+                format!("scenario-small-{dname}"),
+                rows_widget(&renderer, &small, &ui, false, None),
+            ));
         }
 
         // A fresh install with nothing chosen, whatever the layout.
@@ -2298,10 +2433,88 @@ mod tests {
                 layout,
                 ..UIConfig::default()
             };
-            items.push((format!("first-install-{lname}"), rows_widget(&renderer, &[], &ui, true, None)));
+            items.push((
+                format!("first-install-{lname}"),
+                rows_widget(&renderer, &[], &ui, true, None),
+            ));
         }
 
         vb::check("widget-rows", items);
+    }
+
+    /// What a repaint costs: the rows built from the data (as app.rs does on
+    /// every repaint) and the draw, with the default config and with every
+    /// label on; and the shape, which the app builds on a data update only.
+    /// Run: `cargo test --release time_draw -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn time_draw() {
+        use crate::config::schema::{ColumnFlow, Config, Layout, Surface, UIConfig, WidthScale};
+        use crate::ui::layout::{compute, Shape};
+        use std::time::Instant;
+
+        let renderer = Renderer::new().expect("a system font");
+        let providers = crate::ui::visual_baseline::typical();
+        let config = Config::default();
+        let models = crate::models::Models::new();
+        let measure = |t: &str, s: f32| renderer.text_width(t, s);
+        let n = 2000;
+        for (name, layout, detail) in [
+            ("rows-compact", Layout::Vertical, DetailLevel::Compact),
+            ("rows-medium", Layout::Vertical, DetailLevel::Medium),
+            ("rows-expanded", Layout::Vertical, DetailLevel::Expanded),
+            ("columns-medium", Layout::Horizontal, DetailLevel::Medium),
+        ] {
+            let ui = UIConfig {
+                layout,
+                detail: detail.clone(),
+                ..UIConfig::default()
+            };
+            let theme = ComputedTheme::compute(&ui);
+            for labelled in [false, true] {
+                let build = || {
+                    // app.rs: `visible_data` (a fresh Vec), then the rows.
+                    let visible: Vec<ProviderData> = providers.to_vec();
+                    let mut rows =
+                        crate::rows::visible_rows(&config, &visible, Surface::Widget, &models);
+                    if labelled {
+                        for row in &mut rows {
+                            row.model = label_for(&row.provider, Parts::Full);
+                        }
+                    }
+                    rows
+                };
+                let rows = build();
+                let shape = Shape::of(&ui, &rows, false, measure);
+                let win = compute(
+                    &ui.layout,
+                    &ui.detail,
+                    &WidthScale::Full,
+                    &ColumnFlow::Row,
+                    &shape,
+                );
+                let mut pm =
+                    Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                let (none_f, none_e) = (HashMap::new(), HashMap::new());
+                let started = Instant::now();
+                for _ in 0..n {
+                    let rows = build();
+                    renderer.draw(
+                        &mut pm, &win, &theme, &rows, 0.45, &detail, None, &none_f, &none_e,
+                    );
+                }
+                let per_draw = started.elapsed().as_secs_f64() * 1e6 / n as f64;
+                let started = Instant::now();
+                for _ in 0..n {
+                    std::hint::black_box(Shape::of(&ui, &rows, false, measure));
+                }
+                let per_shape = started.elapsed().as_secs_f64() * 1e6 / n as f64;
+                println!(
+                    "{name}{}: rows + draw {per_draw:.1} us, shape {per_shape:.1} us",
+                    if labelled { " labelled" } else { "" }
+                );
+            }
+        }
     }
 
     // ─── Model names: the places they are drawn ───────────────────
@@ -2330,7 +2543,10 @@ mod tests {
                 ],
             ),
             of(ProviderId::Grok, vec![with_reset("Weekly", 12, Long, 23)]),
-            of(ProviderId::Antigravity, vec![with_reset("Gemini", 30, Long, 23)]),
+            of(
+                ProviderId::Antigravity,
+                vec![with_reset("Gemini", 30, Long, 23)],
+            ),
             of(
                 ProviderId::Copilot,
                 vec![Metric {
@@ -2371,10 +2587,18 @@ mod tests {
             effort: None,
         };
         let rows = rows_of_every_form(&label);
-        let details = [DetailLevel::Compact, DetailLevel::Medium, DetailLevel::Expanded];
+        let details = [
+            DetailLevel::Compact,
+            DetailLevel::Medium,
+            DetailLevel::Expanded,
+        ];
         let mut configs = Vec::new();
         for detail in &details {
-            for scale in [WidthScale::Full, WidthScale::ThreeQuarters, WidthScale::Half] {
+            for scale in [
+                WidthScale::Full,
+                WidthScale::ThreeQuarters,
+                WidthScale::Half,
+            ] {
                 configs.push(UIConfig {
                     layout: Layout::Vertical,
                     detail: detail.clone(),
@@ -2395,7 +2619,13 @@ mod tests {
         let mut places = Vec::new();
         for ui in &configs {
             let shape = Shape::of(ui, &rows, false, measure);
-            let win = compute(&ui.layout, &ui.detail, &ui.width_scale, &ui.column_flow, &shape);
+            let win = compute(
+                &ui.layout,
+                &ui.detail,
+                &ui.width_scale,
+                &ui.column_flow,
+                &shape,
+            );
             let columns = ui.layout == Layout::Horizontal;
             let rects = match &win.body {
                 BodyLayout::Vertical { rows, .. } => rows.clone(),
@@ -2514,7 +2744,9 @@ mod tests {
             for (at, room, size) in &places {
                 let shown = renderer.fit_label(&label, *size, *room);
                 assert!(
-                    shown.as_deref().is_some_and(|s| s.starts_with(name.as_str())),
+                    shown
+                        .as_deref()
+                        .is_some_and(|s| s.starts_with(name.as_str())),
                     "{name:?} at {at}: shown as {shown:?}"
                 );
             }

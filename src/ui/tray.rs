@@ -306,7 +306,10 @@ pub(crate) fn tooltip_lines(rows: &[RowView], first_install: bool) -> Vec<TipLin
         };
         if let Some(reset) = row.data.headline_reset() {
             let secs = reset.signed_duration_since(now).num_seconds();
-            line.push_str(&format!(" ({})", crate::ui::renderer::format_duration(secs)));
+            line.push_str(&format!(
+                " ({})",
+                crate::ui::renderer::format_duration(secs)
+            ));
         }
         if let Some(label) = row.model.as_ref().and_then(ModelLabel::full) {
             line.push_str(" · ");
@@ -863,7 +866,14 @@ pub(crate) fn render_tooltip_lines(lines: &[TipLine], bar_h: f32, light: bool) -
         let band_top = inset + pad_top + (line_h + gap) * i as f32;
         let cap_y = band_top + (line_h - cap_h) / 2.0;
         let x = inset + pad_x + if line.indent { indent } else { 0.0 };
-        draw_text_at(&mut pm, &line.text, x, cap_y + (ink_top - cap_top), size, ink);
+        draw_text_at(
+            &mut pm,
+            &line.text,
+            x,
+            cap_y + (ink_top - cap_top),
+            size,
+            ink,
+        );
     }
     pm
 }
@@ -929,15 +939,7 @@ fn paint_tip_box(
         (color(46, 46, 46, TIP_FILL_ALPHA), color(255, 255, 255, 255))
     };
     if light {
-        fill_round_rect(
-            pm,
-            inset,
-            inset,
-            box_w,
-            box_h,
-            radius,
-            color(0, 0, 0, 36),
-        );
+        fill_round_rect(pm, inset, inset, box_w, box_h, radius, color(0, 0, 0, 36));
         fill_round_rect(
             pm,
             inset + 1.0,
@@ -1563,7 +1565,11 @@ mod tests {
     fn extra_rows_or_a_label_give_one_row_per_line() {
         let providers = crate::ui::visual_baseline::typical();
         let mut config = Config::default();
-        config.ui.rows.tooltip = Some(vec!["claude".into(), "codex".into(), "antigravity.cg".into()]);
+        config.ui.rows.tooltip = Some(vec![
+            "claude".into(),
+            "codex".into(),
+            "antigravity.cg".into(),
+        ]);
         let mut rows = tip_rows(&config, &providers);
         rows[0].model = Some(opus(Some("xhigh")));
         let lines = tooltip_lines(&rows, false);
@@ -1590,7 +1596,10 @@ mod tests {
         assert_eq!(tooltip(&[], false), "AI Limits");
         assert_eq!(tooltip(&[], true), "AI Limits: choose what to show");
         // Before anything is chosen the panel's tooltip says the same.
-        assert_eq!(tooltip_lines(&[], true)[0].text, "AI Limits: choose what to show");
+        assert_eq!(
+            tooltip_lines(&[], true)[0].text,
+            "AI Limits: choose what to show"
+        );
     }
 
     #[test]
@@ -1603,7 +1612,8 @@ mod tests {
         let joined: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(joined.join(" · "), long, "nothing lost, nothing cut");
         for l in &lines[..lines.len() - 1] {
-            let w = text_extent(&l.text, TIP_FONT_PX).0 + if l.indent { TIP_WRAP_INDENT } else { 0.0 };
+            let w =
+                text_extent(&l.text, TIP_FONT_PX).0 + if l.indent { TIP_WRAP_INDENT } else { 0.0 };
             assert!(w <= TIP_WRAP_PX, "{:?} is {w} px", l.text);
         }
         // One part wider than the limit on its own stays whole.
@@ -1679,11 +1689,23 @@ mod tests {
     #[test]
     fn visual_baseline_tooltip_rows() {
         use crate::ui::visual_baseline as vb;
-        let mix = labelled_rows(&["claude", "claude.opus", "claude.sonnet", "codex", "copilot"], true);
+        let mix = labelled_rows(
+            &["claude", "claude.opus", "claude.sonnet", "codex", "copilot"],
+            true,
+        );
         let every = labelled_rows(
             &[
-                "claude", "claude.opus", "claude.sonnet", "codex", "grok", "grok.build",
-                "antigravity", "antigravity.cg", "copilot", "cursor", "cursor.bot",
+                "claude",
+                "claude.opus",
+                "claude.sonnet",
+                "codex",
+                "grok",
+                "grok.build",
+                "antigravity",
+                "antigravity.cg",
+                "copilot",
+                "cursor",
+                "cursor.bot",
             ],
             true,
         );

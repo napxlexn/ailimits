@@ -29,6 +29,7 @@ use crate::{
         key_label_for, usage_token_label_for, Metric, MetricWindow, Provider, ProviderData,
         ProviderId, ProviderStatus,
     },
+    rows::{self, RowView},
     ui::{
         context_menu::{ContextMenu, MenuAction},
         layout,
@@ -38,7 +39,6 @@ use crate::{
         tray::Tray,
         window::WindowState,
     },
-    rows::{self, RowView},
     updater,
 };
 use anyhow::{Context as AnyhowContext, Result};
@@ -985,7 +985,10 @@ pub fn run() -> Result<()> {
             }
         }));
     }
-    tray.set_first_install(rows::nothing_chosen(&config), &visible_data(&config, &display));
+    tray.set_first_install(
+        rows::nothing_chosen(&config),
+        &visible_data(&config, &display),
+    );
     tray.set_mode(
         config.general.indicator,
         &menu.menu,
