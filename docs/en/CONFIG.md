@@ -88,6 +88,41 @@ column_flow = "row"
 # Never replaces the reset countdown — shown only when no future reset is known.
 show_forecast = false
 
+# Rows (menu: Rows and models...). Written only once chosen; without it
+# every provider has one row, as before. A provider's own row is its id, an
+# extra row is provider.part, and only these exist, each where the provider
+# meters it on its own: claude.opus, claude.sonnet (weekly, on plans that
+# have them), antigravity.cg (the Claude and GPT pool), grok.build,
+# cursor.bot (Grok Bot). The widget and the tooltip are chosen separately;
+# the taskbar panel and the tray icon keep one entry per provider. Unknown
+# ids are ignored and kept.
+[ui.rows]
+widget  = ["claude", "claude.opus", "codex"]
+tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
+
+# Model labels (menu: Rows and models...). Parts per surface: "model",
+# "version" (only with "model"), "effort" (may go alone). Empty: no label.
+# Showing them reads each tool's settings file, so the first tick asks
+# first ([reads] tool_settings). The widget draws the label on a line of its
+# own in Expanded and in the columns layout, and in what the reset leaves of
+# the meta line in Medium; Compact leaves it to the tooltip. Narrow places
+# drop effort first, then the version, then the model; a word is never cut.
+# source: "configured" (the model set in the tool) or "last_used" (the
+# newest Claude Code or Codex CLI session; asks first, [reads] last_session;
+# other tools keep showing the configured model).
+[ui.model]
+widget  = ["model"]
+tooltip = ["model", "version", "effort"]
+source  = "configured"
+
+# Your own names for models, by the id the tool stores. The automatic name
+# comes from one rule with no table (claude-opus-5-5 -> "Opus 5.5"), so a
+# new model needs no update. A name must fit the narrowest place the widget
+# draws a model name, about ten ordinary characters; the picker stops typing
+# there. An empty name brings the automatic one back.
+[ui.model.names]
+"claude-opus-5-5" = "Opus 5.5"
+
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"
 # is a legacy id, renamed to "antigravity" on load). A default provider missing
@@ -153,6 +188,24 @@ on_threshold = ""
 on_reset = ""
 # Fires once after the first successful fetch:
 on_startup = ""
+
+# What the app may read of other tools' files. Nothing of theirs is read
+# before it is allowed here, and each is asked once, naming the file and the
+# only host the token goes to (see "What is read, and when" below).
+[reads]
+# Providers whose sign-in may be read. A provider that is not listed is
+# switched off without touching anything. Ticking a provider in the picker or
+# in the Providers menu asks; pasting a key or signing in to Cursor counts as
+# allowing it.
+sign_in       = ["claude", "codex", "grok"]
+# The tools' settings files, for the model and effort ([ui.model]).
+tool_settings = false
+# The end of the newest Claude Code / Codex CLI session file, for the model
+# last used ([ui.model] source = "last_used").
+last_session  = false
+# A one-time window still owed: "welcome" (fresh install), "update_notice"
+# (the first start after updating from 0.7.0 or older), or "none".
+pending       = "none"
 ```
 
 ## Secrets
@@ -167,6 +220,24 @@ in the Windows Credential Manager under service `ailimits`:
 | `codex_usage_token` | manual ChatGPT/Codex usage token |
 | `copilot_pat` | GitHub PAT (used instead of the gh CLI) |
 | `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (menu: *Sign in to Cursor...* / *Sign out of Cursor*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
+
+## What is read, and when
+
+Every read of another tool's file is optional and asked for first:
+
+- **A fresh install reads nothing.** The widget and the tray say "Choose what
+  to show", and the picker opens by itself with the tools found on this PC
+  marked (found by whether their folder exists; nothing inside is opened).
+  The first tick of each tool asks once, naming the file and the host.
+- **After updating from 0.7.0 or older** nothing stops: the providers that
+  were switched on keep reading as before (`sign_in` is filled with them),
+  and one window lists every file read and every host contacted, once.
+- **A config that cannot be read** is set aside as `config.toml.corrupt` and
+  the app starts as a fresh install: what the lost file allowed is unknown,
+  so nothing is read until chosen again.
+
+The files and hosts per provider are in [PROVIDERS.md](PROVIDERS.md) and in
+`src/consent.rs`, the text the questions show.
 
 The Rust structs live in `src/config/schema.rs` — that file is the single
 source of truth for the schema.
