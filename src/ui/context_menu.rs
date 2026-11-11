@@ -70,6 +70,8 @@ pub enum MenuAction {
     SignOutCursor,
     /// Open the project's GitHub page in the browser.
     OpenProjectPage,
+    /// Open the "Rows and models" picker.
+    OpenPicker,
     Quit,
 }
 
@@ -150,6 +152,7 @@ pub struct ContextMenu {
     interval_items: Vec<(CheckMenuItem, u64)>,
     /// Per-provider enable toggles.
     provider_toggles: Vec<(CheckMenuItem, String)>,
+    picker_item: MenuItem,
     /// Auth method choice: only Claude has options.
     auth_method_items: Vec<(CheckMenuItem, String, AuthMethod)>,
     paste_key_items: Vec<(MenuItem, String)>,
@@ -380,7 +383,7 @@ impl ContextMenu {
                 .unwrap_or("?");
             let sub = Submenu::new(display, true);
 
-            let toggle = CheckMenuItem::new("Enabled", true, pc.enabled, None);
+            let toggle = CheckMenuItem::new("Enabled", true, config.provider_active(pc), None);
             sub.append(&toggle)?;
             provider_toggles.push((toggle, pc.id.clone()));
 
@@ -447,6 +450,7 @@ impl ContextMenu {
             providers_submenu.append(&sub)?;
         }
 
+        let picker_item = MenuItem::new("Rows and models...", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
         // The version line doubles as the way to the project. The words stay
         // plain, since a native menu paints an item's text itself and dims
@@ -481,6 +485,7 @@ impl ContextMenu {
         menu.append(&saturation_submenu)?;
         menu.append(&interval_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&picker_item)?;
         menu.append(&providers_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
@@ -505,6 +510,7 @@ impl ContextMenu {
             saturation_items,
             interval_items,
             provider_toggles,
+            picker_item,
             auth_method_items,
             paste_key_items,
             remove_key_items,
@@ -642,6 +648,8 @@ impl ContextMenu {
             Some(MenuAction::TogglePin)
         } else if *event_id == self.quit_item.id() {
             Some(MenuAction::Quit)
+        } else if *event_id == self.picker_item.id() {
+            Some(MenuAction::OpenPicker)
         } else if *event_id == self.version_item.id() {
             Some(MenuAction::OpenProjectPage)
         } else {
@@ -701,13 +709,15 @@ impl ContextMenu {
         self.forecast_item.set_checked(config.ui.show_forecast);
         self.auto_update_item
             .set_checked(config.general.auto_update);
+        // Ticked only while the provider actually runs: switched on AND
+        // allowed to read its sign-in.
         for (item, id) in &self.provider_toggles {
-            let enabled = config
+            let active = config
                 .providers
                 .iter()
                 .find(|p| p.id == *id)
-                .is_some_and(|p| p.enabled);
-            item.set_checked(enabled);
+                .is_some_and(|p| config.provider_active(p));
+            item.set_checked(active);
         }
         for (item, id, method) in &self.auth_method_items {
             let active = config

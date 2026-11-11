@@ -10,9 +10,9 @@ use crate::{
         storage,
     },
     hooks,
-    models::Models,
+    models::{ModelReader, Models},
     monitor::{
-        scheduler::{Scheduler, SharedInterval, SharedProviders},
+        scheduler::{CycleHook, Scheduler, SharedInterval, SharedProviders},
         trend::Trend,
     },
     notifications::toast::ToastNotifier,
@@ -64,6 +64,9 @@ pub enum AppCommand {
     UpdateProvider(ProviderData),
     /// A Cursor sign-in from the menu has ended.
     CursorSignIn(SignInOutcome),
+    /// The model labels were read (models/): each provider's model id and
+    /// effort, nothing else of the files.
+    Models(Models),
     /// Quit the application.
     Quit,
 }
@@ -526,6 +529,98 @@ fn widget_shape(
     )
 }
 
+/// What the model readers are asked for.
+#[derive(Debug, Clone, PartialEq)]
+struct ModelRequest {
+    reads: crate::config::schema::Reads,
+    source: crate::config::schema::ModelSource,
+    ids: Vec<ProviderId>,
+}
+
+/// The model readers and what they are asked for, shared with the polling
+/// cycle.
+struct ModelJob {
+    reader: ModelReader,
+    request: Option<ModelRequest>,
+}
+
+type SharedModelJob = Arc<std::sync::Mutex<ModelJob>>;
+
+/// What to read for the model labels, or None when nothing is to be read:
+/// no label part is on, or no model read is allowed.
+fn model_request(config: &Config) -> Option<ModelRequest> {
+    let model = &config.ui.model;
+    let reads = &config.reads;
+    let parts_on = !model.widget.is_empty() || !model.tooltip.is_empty();
+    let sessions = model.source == crate::config::schema::ModelSource::LastUsed && reads.last_session;
+    if !parts_on || !(reads.tool_settings || sessions) {
+        return None;
+    }
+    let ids = config
+        .providers
+        .iter()
+        .filter(|p| config.provider_active(p))
+        .filter_map(|p| ProviderId::from_config_id(&p.id))
+        .collect();
+    Some(ModelRequest {
+        reads: reads.clone(),
+        source: model.source,
+        ids,
+    })
+}
+
+/// Read the models on a blocking thread and hand them to the event loop as
+/// `AppCommand::Models`. Nothing at all happens while nothing is requested.
+fn spawn_model_read(
+    job: &SharedModelJob,
+    tx: &mpsc::Sender<AppCommand>,
+    rt: &tokio::runtime::Handle,
+) {
+    let requested = job
+        .lock()
+        .map(|j| j.request.is_some())
+        .unwrap_or_else(|p| p.into_inner().request.is_some());
+    if !requested {
+        return;
+    }
+    let job = job.clone();
+    let tx = tx.clone();
+    rt.spawn_blocking(move || {
+        let models = {
+            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            let Some(req) = j.request.clone() else {
+                return;
+            };
+            j.reader.read(&req.reads, req.source, &req.ids)
+        };
+        let _ = tx.blocking_send(AppCommand::Models(models));
+    });
+}
+
+/// Point the model readers at what the config now asks for and read at
+/// once, or, when nothing is to be read any more, drop what is shown.
+/// Returns whether `models` changed here (a read lands later, as
+/// `AppCommand::Models`).
+fn refresh_models(
+    job: &SharedModelJob,
+    config: &Config,
+    models: &mut Models,
+    tx: &mpsc::Sender<AppCommand>,
+    rt: &tokio::runtime::Handle,
+) -> bool {
+    let request = model_request(config);
+    let none = request.is_none();
+    job.lock().unwrap_or_else(|p| p.into_inner()).request = request;
+    if none {
+        let changed = !models.is_empty();
+        models.clear();
+        changed
+    } else {
+        spawn_model_read(job, tx, rt);
+        false
+    }
+}
+
 /// Rebuild the providers after a config change — the list is shared
 /// with the scheduler.
 fn refresh_providers(
@@ -848,7 +943,20 @@ pub fn run() -> Result<()> {
     // from the menu.
     let update_interval: SharedInterval =
         Arc::new(AtomicU64::new(config.general.update_interval_secs));
-    let scheduler = Scheduler::new(providers.clone(), update_interval.clone(), cmd_tx.clone());
+    // The model labels are re-read on the polling cycle, never on a timer
+    // of their own, and only as far as `[reads]` allows (`model_request`).
+    let model_job: SharedModelJob = Arc::new(std::sync::Mutex::new(ModelJob {
+        reader: ModelReader::new(),
+        request: model_request(&config),
+    }));
+    let cycle_hook: CycleHook = {
+        let job = model_job.clone();
+        let tx = cmd_tx.clone();
+        let rt = runtime.handle().clone();
+        Arc::new(move || spawn_model_read(&job, &tx, &rt))
+    };
+    let scheduler = Scheduler::new(providers.clone(), update_interval.clone(), cmd_tx.clone())
+        .with_cycle_hook(cycle_hook);
     runtime.spawn(scheduler.run());
 
     // 4b. Background auto-updater — polls GitHub Releases and silently installs
@@ -862,7 +970,7 @@ pub fn run() -> Result<()> {
     // The rows measure their text for the layout, so the renderer comes
     // first. No model is read yet: the readers arrive with their consent.
     let renderer = Renderer::new()?;
-    let models = Models::new();
+    let mut models = Models::new();
     let mut shape = widget_shape(&config, &display, &models, &renderer);
     let mut win_layout = layout::compute(
         &config.ui.layout,
@@ -1567,6 +1675,7 @@ pub fn run() -> Result<()> {
                                 &mut display,
                                 pid,
                             );
+                            refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                             shape = widget_shape(&config, &display, &models, &renderer);
                             apply_ui_change(
                                 &config,
@@ -1602,6 +1711,29 @@ pub fn run() -> Result<()> {
                             feedback("AI Limits", "Cursor sign-in failed");
                         }
                     },
+                    AppCommand::Models(read) => {
+                        // A read that began before its request was withdrawn
+                        // is stale: nothing is shown once reading stops.
+                        if model_request(&config).is_some() && read != models {
+                            models = read;
+                            let new_shape = widget_shape(&config, &display, &models, &renderer);
+                            if new_shape != shape {
+                                shape = new_shape;
+                                apply_ui_change(
+                                    &config,
+                                    &mut win_layout,
+                                    &mut theme,
+                                    &mut pixmap,
+                                    &mut surface,
+                                    &window,
+                                    &mut win_state,
+                                    &menu,
+                                    &shape,
+                                );
+                            }
+                            window.request_redraw();
+                        }
+                    }
                     AppCommand::Quit => *control_flow = ControlFlow::Exit,
                 },
 
@@ -1715,6 +1847,7 @@ pub fn run() -> Result<()> {
                 }
 
                 UserEvent::Menu(id) => match menu.action_for(&id) {
+                    Some(MenuAction::OpenPicker) => {}
                     Some(MenuAction::Quit) => *control_flow = ControlFlow::Exit,
                     Some(MenuAction::OpenProjectPage) => {
                         crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);
@@ -1764,13 +1897,21 @@ pub fn run() -> Result<()> {
                         window.request_redraw();
                     }
                     Some(MenuAction::ToggleProvider(pid)) => {
+                        // The tick shows whether the provider runs (switched
+                        // on and allowed), so a click flips exactly that: an
+                        // unticked provider is switched on and allowed (the
+                        // user asking for its row, which needs its sign-in),
+                        // a ticked one is switched off.
                         let mut now_enabled = None;
+                        let was_active = config
+                            .providers
+                            .iter()
+                            .find(|p| p.id == pid)
+                            .map(|p| config.provider_active(p));
                         if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
-                            pc.enabled = !pc.enabled;
+                            pc.enabled = was_active != Some(true);
                             now_enabled = Some(pc.enabled);
                         }
-                        // Ticking a provider on in the menu is the user
-                        // asking for its row, which needs its sign-in.
                         if now_enabled == Some(true) {
                             config.allow_sign_in(&pid);
                         }
@@ -1781,6 +1922,7 @@ pub fn run() -> Result<()> {
                             }
                         }
                         refresh_providers(&config, &providers, &mut thresholds, &mut display, &pid);
+                        refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                         // A disabled provider disappears immediately → resize.
                         shape = widget_shape(&config, &display, &models, &renderer);
                         apply_ui_change(
@@ -1851,6 +1993,7 @@ pub fn run() -> Result<()> {
                                         &mut display,
                                         &pid,
                                     );
+                                    refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                                     menu.sync(&config, win_state.pinned);
                                     save_config(config.clone());
                                     fetch_one(&providers, &cmd_tx, &runtime, &pid);
@@ -2194,6 +2337,34 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The model readers are asked for nothing unless a label part is on AND
+    /// a model read is allowed; then only for the providers that run.
+    #[test]
+    fn model_request_needs_a_part_and_a_read() {
+        use crate::config::schema::{ModelPart, ModelSource};
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        config.allow_sign_in("codex");
+        assert!(model_request(&config).is_none());
+        config.ui.model.tooltip = vec![ModelPart::Model];
+        // A part alone reads nothing.
+        assert!(model_request(&config).is_none());
+        // Last used without its own read reads nothing either.
+        config.ui.model.source = ModelSource::LastUsed;
+        assert!(model_request(&config).is_none());
+        config.reads.last_session = true;
+        let req = model_request(&config).unwrap();
+        assert_eq!(req.ids, [ProviderId::Claude, ProviderId::Codex]);
+        // Settings allowed, parts off: nothing.
+        config.ui.model.tooltip.clear();
+        config.reads.tool_settings = true;
+        assert!(model_request(&config).is_none());
+        config.ui.model.widget = vec![ModelPart::Effort];
+        // A provider switched off is not read.
+        config.providers.iter_mut().find(|p| p.id == "codex").unwrap().enabled = false;
+        assert_eq!(model_request(&config).unwrap().ids, [ProviderId::Claude]);
+    }
     use crate::providers::MetricUnit;
 
     fn pct(label: &str, used: u64, window: MetricWindow) -> Metric {
