@@ -79,8 +79,12 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   add yourself, and that session, are stored in Windows Credential Manager.
   The app connects only to the providers' own endpoints and sends no
   telemetry.
-- **No setup.** Your normal CLI use keeps the tokens valid, so there is
-  nothing to configure. Only Cursor asks you to sign in once, from the menu.
+- **Asks before it reads.** Nothing that belongs to another tool is read
+  until you allow it, and each question names the file and where its token
+  is sent. See [What is read, and when](docs/en/CONFIG.md#what-is-read-and-when).
+- **Little setup.** On first launch you tick the tools to show. After that
+  your normal CLI use keeps their tokens valid, so there is nothing else to
+  configure. Only Cursor asks you to sign in once, from the menu.
 - **Low load, measured on the running app.** 0.012% of one CPU core, no GPU
   use (it renders on the CPU), about 45 MB of memory, no raised timer resolution,
   a 3 MB exe. Reproduce it with `bench/perf_audit.ps1`; the full numbers are
@@ -130,21 +134,28 @@ copy does not self-update: its package manager, or you, updates it.
 > "Windows protected your PC". Click **More info → Run anyway**. You can
 > verify the download against the SHA-256 published on each release.
 
-The installer contains no keys or tokens. On first launch the widget looks for
-the auth sources listed below.
+The installer contains no keys or tokens. On first launch the widget reads
+none of the auth sources listed below until you allow it.
 
 ## Quick start
 
-1. **Run it.** On first launch it finds the CLIs you already use (Claude Code,
-   Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions, the Grok
-   CLI) and starts showing usage. Nothing to configure. For Cursor,
-   right-click, **Providers**, **Cursor**, *Sign in to Cursor...* once.
+1. **Run it.** On first launch a welcome window opens (the same one as
+   *Rows and models...* in the menu), with the CLIs you already use marked
+   as found (Claude Code, Codex, `gh`, Antigravity CLI, still-supported
+   Gemini CLI sessions, the Grok CLI). Tick the ones to show; each asks once
+   before it reads that tool's sign-in. For Cursor, right-click,
+   **Providers**, **Cursor**, *Sign in to Cursor...* once. Updating from
+   0.7.0 needs nothing: the providers you had keep working, and one window
+   lists what is read.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
    snap to the nearest screen edge. `Lock position` in the right-click menu
    pins it.
 3. **Set the look.** Right-click for detail level (Compact, Medium, Expanded),
    bar layout (vertical or horizontal), palette, opacity, brightness and
-   saturation. The animations above show each one.
+   saturation. The animations above show each one. *Rows and models...*
+   picks the rows the widget and the panel's tooltip show (extra rows such as
+   Claude's Opus week included) and an optional label with the model in use:
+   model, version, effort.
 4. **Hover a provider row** to swap its reset countdown for its weekly limit.
    A greyed or `≈` row shows the reason and the fix instead, for example
    `token expired, run Claude Code`.
@@ -158,7 +169,7 @@ the auth sources listed below.
 
 The widget never asks you to log in, except once for Cursor. It monitors
 **subscription** limits by reusing the tokens the official CLI tools keep on
-your machine, strictly read-only:
+your machine, strictly read-only and only once you allow each one:
 
 | Provider | Automatic source (default) | To enable it |
 |---|---|---|
@@ -253,7 +264,8 @@ Arrangement (in a row / in a column, vertical bars only), `Lock position` and
 `Always on top` (two independent toggles), Palette (monochrome + 8 colors), Background opacity, Brightness,
 Saturation, Forecast (burn-rate "~time to limit", off by default), Update
 interval (1 / 5 / 15 / 30 min), `Automatic updates` (silent background
-self-update, on by default), Indicator, per-provider settings, Quit.
+self-update, on by default), Indicator, `Rows and models...` (rows, model
+labels, model names), per-provider settings, Quit.
 
 ### Taskbar indicator
 

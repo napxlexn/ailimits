@@ -291,8 +291,8 @@ SuperGrok Limit" that grok.com's Usage page shows. A period type other than
 weekly is labelled `Daily` / `Monthly`, or `Limit` when unknown. Each
 `productUsage` entry follows as its own long-window metric: that product's
 share of the same limit (`GrokBuild` → `Build`; other names, such as Chat,
-pass through). The widget does not draw the products yet; they are kept in
-the data for a later per-product view.
+pass through). Build has a row of its own (`grok.build`) that can be ticked
+in *Rows and models...*; the other products stay in the data.
 
 The body is protobuf JSON, which leaves zero values out: before any use the
 same call answered with no `creditUsagePercent` and no `productUsage` at all.
@@ -449,7 +449,8 @@ length, else `Included`.
 `nextResetTimestampUtc`. A missing percent is 0% only beside a known period
 and `hasAvailableUsage: true`; a body with everything left out (an account
 without Grok Bot) gives no metric. It is a session-window metric, so it
-never takes over the headline, and no surface draws it yet. On the
+never takes over the headline; it shows as a row of its own (`cursor.bot`)
+when ticked in *Rows and models...*. On the
 verified account Grok, Cursor and Grok Bot share ONE weekly pool (the same
 reset, the same percentage); how to show that is an open decision, so
 `isUnified` is carried as the metric's `unified_pool` for a later display

@@ -105,7 +105,8 @@ tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
 # Showing them reads each tool's settings file, so the first tick asks
 # first ([reads] tool_settings). The widget draws the label on a line of its
 # own in Expanded and in the columns layout, and in what the reset leaves of
-# the meta line in Medium; Compact leaves it to the tooltip. Narrow places
+# the meta line in Medium (a line of its own there too when that room is
+# narrower than a name); Compact leaves it to the tooltip. Narrow places
 # drop effort first, then the version, then the model; a word is never cut.
 # source: "configured" (the model set in the tool) or "last_used" (the
 # newest Claude Code or Codex CLI session; asks first, [reads] last_session;
@@ -191,7 +192,7 @@ on_startup = ""
 
 # What the app may read of other tools' files. Nothing of theirs is read
 # before it is allowed here, and each is asked once, naming the file and the
-# only host the token goes to (see "What is read, and when" below).
+# only hosts the token goes to (see "What is read, and when" below).
 [reads]
 # Providers whose sign-in may be read. Ticking a provider in the picker or
 # in the Providers menu asks first; unticking every row of a provider in the
@@ -236,7 +237,9 @@ Every read of another tool's file is optional and asked for first:
   The first tick of each tool asks once, naming the file and the host.
 - **After updating from 0.7.0 or older** nothing stops: the providers that
   were switched on keep reading as before (`sign_in` is filled with them),
-  and one window lists every file read and every host contacted, once.
+  and one window lists every file read and every host contacted, once. A
+  provider the old version did not have (Grok and Cursor, for 0.7.0) is
+  added switched off and asks when you tick it.
 - **A config that cannot be read** is set aside as `config.toml.corrupt` and
   the app starts as a fresh install: what the lost file allowed is unknown,
   so nothing is read until chosen again. An empty config, or one with no

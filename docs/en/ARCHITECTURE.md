@@ -7,13 +7,28 @@ A single-threaded **tao event loop** plus a small **tokio runtime**
 ```
 main.rs ── single-instance guard, logging, app::run()
    │
-app.rs ─── owns everything: config, display data, window, menu
-   ├── monitor/scheduler.rs   tokio task: fetch_all → sleep(interval) loop
+app.rs ─── owns everything: config, display data, window, menu, picker
+   ├── monitor/scheduler.rs   tokio task: fetch_all → sleep(interval) loop;
+   │                          a CycleHook runs after each cycle's fetches
    │     └── providers/       claude.rs / codex.rs / copilot.rs / antigravity.rs /
    │                          grok.rs / cursor.rs (+ cursor/session.rs: the
    │                          widget's own Cursor sign-in and session)
+   ├── rows.rs                which rows the widget and the tooltip show:
+   │                          SUB_ROWS (extra rows), the model label in parts,
+   │                          the width limit for model names (NAME_SLOTS)
+   ├── choices.rs             what the picker shows, and what each of its
+   │                          actions does to the config (pure: no window, no files)
+   ├── consent.rs             the files and hosts each read question names
+   │                          (READ_INFO); found_tools only checks folders exist
+   ├── models/                model labels: settings.rs (each tool's settings
+   │                          file), session.rs (the newest session's tail),
+   │                          files.rs (capped reads, change stamps), name.rs
+   │                          (the generic name rule, no table of names)
+   ├── ui/picker.rs           the "Rows and models" window: Picker (a pure state
+   │                          machine) + PickerWindow (a thin tao window)
    ├── ui/renderer.rs         tiny-skia drawing (the ONLY place that draws)
-   ├── ui/layout.rs           zone rectangles per layout/detail level
+   ├── ui/layout.rs           zone rectangles per layout/detail level, and the
+   │                          Shape (rows + model lines) a re-layout follows
    ├── ui/theme.rs            all colors (the ONLY source of colors)
    ├── ui/context_menu.rs     native muda menu
    ├── ui/tray.rs             tray icon, shared glyph + tooltip painting
@@ -27,7 +42,8 @@ app.rs ─── owns everything: config, display data, window, menu
    │                          (testable, no Win32 calls)
    ├── platform/sqlite.rs     read-only lookups in another app's SQLite
    │                          database (Cursor's state.vscdb) via winsqlite3
-   ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save
+   ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save,
+   │                          the [reads] migration
    └── notifications/toast.rs Windows toasts
 ```
 
@@ -43,13 +59,46 @@ app.rs ─── owns everything: config, display data, window, menu
    ├─ toast check (threshold + cooldown)
    ├─ provider-cache merge / persist (unexpired metrics survive restarts)
    ├─ stale-data retention (errors never wipe real data)
-   └─ visible_data() → layout resize if a row appeared/disappeared → redraw
+   └─ visible_data() → rows::visible_rows() → layout::Shape;
+      re-layout only when the Shape changed → redraw
 ```
 
 Menu clicks travel the same way: `muda::MenuEvent` → proxy →
 `UserEvent::Menu` → handlers mutate the config, rebuild providers
 (`SharedProviders` is an `Arc<RwLock<Vec<Arc<dyn Provider>>>>` shared with
 the scheduler), save the config, and request a redraw.
+
+The model labels are read on the same cycle:
+
+```
+[Scheduler] fetch_all → CycleHook → spawn_model_read
+        ModelJob { reader, request: (generation, ModelRequest) }
+                  │ spawn_blocking: ModelReader::read — only what [reads]
+                  │ allows, a file again only if its mtime or length changed
+        tokio mpsc → AppCommand::Models(generation, Models)
+                  │
+   [event loop] older generation → dropped; else layout::Shape → redraw
+```
+
+`model_request` is `None` while no label part is ticked or no model read is
+allowed, and then the hook does nothing. Every change of what is asked
+(`refresh_models`) bumps the generation, so a read that started before it
+never lands. The request and the reader have separate locks: the event loop
+only ever takes the request, for a moment, and a slow disk holds only the
+blocking thread.
+
+The picker is a second window that exists only while open. Its window events
+are matched by `WindowId` ahead of the widget's arms and go to
+`PickerWindow::handle_window_event`, which feeds the pure `Picker` and returns
+`PickerAction`s. `choices::apply` turns each into a config change plus an
+`Applied` (rebuild and fetch a provider, re-read the models, save and
+re-lay, close); app.rs then updates the widget, the panel, the tray and the
+menu at once and hands the picker a fresh `PickerInput`. The picker never
+touches a file. It opens from the menu (*Rows and models...*), from a click
+on the widget's "Choose what to show", by itself at start while
+`[reads] pending` owes the welcome or the update notice, and from the
+Providers menu when a provider never allowed is ticked (on that provider's
+question).
 
 ## Key decisions
 
@@ -95,6 +144,46 @@ the scheduler), save the config, and request a redraw.
   always runs between two pauses, so live data older than an earlier pause
   belongs to a provider that failed, and greying it sooner is honest. Disk
   cache entries (no monotonic anchor) keep the wall-clock rule.
+- **Consent is one config table read in two places.** `Config::provider_active`
+  (switched on AND allowed by `[reads] sign_in` or `app_sign_in`) decides
+  whether a provider runs or shows at all; a provider allowed nothing is
+  built switched off and returns `NotConfigured` before it touches a file,
+  the keyring, `gh` or the network. `build_providers` also sets
+  `ProviderConfig::tool_files` from `sign_in` alone (never saved), and each
+  provider checks it before any source that belongs to the other tool: its
+  token file, its Credential Manager entry, `gh auth token`, Cursor's
+  `state.vscdb`. A provider set up only with the app's own sign-in (a pasted
+  key or usage token, the menu's Cursor sign-in) uses that and never falls back to the
+  tool's files. Unticking every row of a provider in the picker calls
+  `Config::revoke`. The text of each question comes from `consent::READ_INFO`,
+  and a test holds its hosts to the URLs in the provider sources.
+- **Where a config came from decides what is allowed** (`storage::Origin`,
+  settled by `settle_reads` after `migrate`'s rename and append-missing
+  passes). `FreshInstall` (no file, an unreadable one set aside as
+  `config.toml.corrupt`, an empty or providerless one) clears `[reads]`,
+  switches every provider off, so a downgraded version reads nothing either,
+  and owes the welcome. `Upgrade` (`[[providers]]` without `[reads]`: 0.7.0
+  and older) allows every provider the file has switched on and owes the
+  one-time notice. The append pass adds a missing provider switched off on
+  any origin: the version that wrote the file did not know it, so never
+  read it. `Current` is left exactly as the user left it.
+- **The default look is pinned.** With `[ui.rows]` and `[ui.model]` unset,
+  `rows::visible_rows` yields one row per provider carrying its data
+  untouched, and the panel's tooltip is the old single line. A test-only
+  module (`ui/visual_baseline.rs`) holds the widget, the panel, the tray icon
+  and the hover tooltip, rendered with the default config, to pixmap hashes
+  recorded from 0.7.0, and fails on any changed pixel.
+- **Model names are held to real widths, not a character count.**
+  `rows::NAME_SLOTS` lists the narrowest places the renderer draws a model
+  name (width and font size); `name_fits` measures with
+  `Renderer::text_width`, the same measure `draw_text` uses, so a renamed
+  model shows in full at every size. A renderer test holds the list to the
+  geometry.
+- **The picker is a pure state machine behind a thin window.** `Picker` takes
+  `PickerEvent`s and returns `PickerAction`s plus a `PickerScene` of shapes,
+  all unit-tested without a window; `PickerWindow` presents it through
+  softbuffer like the widget, repaints only on input and has no timer. It
+  reads the clipboard only on Ctrl+V into a name field being edited.
 
 ## Resource footprint (measured, not estimated)
 

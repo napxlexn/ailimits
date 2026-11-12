@@ -2,6 +2,65 @@
 
 Notable, user-visible changes. Dates are release dates.
 
+## Unreleased
+
+### Added
+
+- **Rows and models, a window of its own.** Right-click, *Rows and
+  models...*: every row there is in one list, with a Widget column and a
+  Tooltip column, so the widget and the panel's tooltip are chosen
+  separately. A tick shows at once, with no restart. The window also
+  opens by itself on a first start, and from a click on the widget while
+  nothing is chosen yet. With the rows and labels left as they are, the
+  widget, the panel and the tray look exactly as before.
+- **Extra rows where a provider meters a part on its own.** Claude's Opus
+  and Sonnet weeks (on plans that have them), Antigravity's Claude and GPT
+  pool, Grok Build and Cursor's Grok Bot can each be a row of their own,
+  under their provider. A row the provider is not reporting right now can
+  still be ticked; it appears once the provider reports it. The taskbar
+  panel and the tray icon keep one entry per provider.
+- **Model labels.** Three separate ticks - Model, Version, Effort - add the
+  model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
+  chosen separately for the widget and the tooltip. The model comes either
+  from the tool's settings file ("As set in the tool") or, for Claude Code
+  and Codex CLI, from the end of the newest session ("Last used"); the other
+  tools keep showing the configured model. Expanded rows and the columns
+  layout give the label a line of its own, Medium puts it beside the reset
+  (on a line of its own where that leaves too little room), Compact leaves
+  it to the tooltip. Where room runs out the effort goes first, then the
+  version, then the model; a word is never cut. The files are read on the
+  existing update cycle, with no timer of their own, and only again when
+  one changed.
+- **Model names you choose.** The automatic name is made from the id the
+  tool stores by one rule, with no table of names, so a new model needs no
+  update (`claude-opus-5-5` reads "Opus 5.5"). Any model can be renamed in
+  the window. Typing stops where the name would no longer fit the narrowest
+  place the widget draws it, so a renamed model shows in full at every
+  size. Clearing the field brings the automatic name back.
+
+### Changed
+
+- **Nothing that belongs to another tool is read before you allow it.**
+  Each tool's sign-in, the settings files and the session files are asked
+  about once, before their first read, and the question names the files
+  and where a token is sent. A fresh install reads nothing: the widget and
+  the tray say "Choose what to show", and the window opens with the tools
+  found on this PC marked - found by whether their folder exists, with
+  nothing inside opened. A fresh install also switches every provider off,
+  so an older version started on the same settings reads nothing either.
+  The app's own `config.toml`, if it cannot be read, is set aside as
+  `config.toml.corrupt` and counts as a fresh install, since what it allowed
+  is unknown.
+- **An update keeps what worked.** The providers switched on keep reading
+  without a question, nothing has to be ticked again, and one window, shown
+  once, lists every file read and every host contacted. A provider the
+  earlier version did not have starts switched off and asks when ticked.
+- **Unticking stops reading.** Untick every row of a provider and nothing of
+  it is read any more until it is ticked and allowed again; unticking Model,
+  Version and Effort stops the model reads. A key or usage token you paste,
+  or the menu's Cursor sign-in, allows that alone: such a provider never
+  falls back to the tool's own files.
+
 ## 0.7.0 - 2026-09-23
 
 ### Added
