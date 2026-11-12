@@ -102,18 +102,20 @@ pub(crate) fn migrate(config: &mut Config, origin: Origin) {
     }
 
     // Migration: ensure every default provider exists so newly-added ones
-    // appear in the menu for users with an older config. Missing providers
-    // are appended with their default (opt-in) state; existing entries are
-    // left untouched.
+    // appear in the menu for users with an older config. A provider the
+    // file does not have is one the version that wrote it did not know (it
+    // writes its whole list back), so it never read it: it is appended
+    // switched off, and ticking it asks. Existing entries are left untouched.
     let defaults = Config::default().providers;
-    for d in defaults {
+    for mut d in defaults {
         if !config.providers.iter().any(|p| p.id == d.id) {
+            d.enabled = false;
             config.providers.push(d);
         }
     }
 
     // After the provider passes above, so an upgrade allows exactly the
-    // providers that version would have read.
+    // providers that version read: its enabled ones, none of the appended.
     settle_reads(config, origin);
 }
 
@@ -375,7 +377,8 @@ mod tests {
     }
 
     /// A config as 0.7.0 writes it (toml::to_string_pretty of its Config):
-    /// Copilot switched off, the rest on.
+    /// its four providers, Copilot switched off, the rest on. Grok and
+    /// Cursor came after 0.7.0.
     const CONFIG_0_7_0: &str = r#"
 [general]
 update_interval_secs = 60
@@ -431,20 +434,6 @@ auth_method = "subscription"
 credential_label = ""
 alert_threshold = 80
 
-[[providers]]
-id = "grok"
-enabled = true
-auth_method = "subscription"
-credential_label = ""
-alert_threshold = 80
-
-[[providers]]
-id = "cursor"
-enabled = true
-auth_method = "subscription"
-credential_label = ""
-alert_threshold = 80
-
 [notifications]
 enabled = true
 cooldown_minutes = 15
@@ -458,10 +447,13 @@ on_startup = ""
     #[test]
     fn an_upgrade_keeps_every_enabled_provider_running() {
         let config = load_text(CONFIG_0_7_0);
-        assert_eq!(
-            config.reads.sign_in,
-            ["claude", "codex", "antigravity", "grok", "cursor"]
-        );
+        assert_eq!(config.reads.sign_in, ["claude", "codex", "antigravity"]);
+        // Providers 0.7.0 did not have are added, but off and not allowed:
+        // that version never read them.
+        for id in ["grok", "cursor"] {
+            let p = config.providers.iter().find(|p| p.id == id).unwrap();
+            assert!(!p.enabled && !config.provider_active(p), "{id}");
+        }
         assert_eq!(config.reads.pending, PendingNotice::UpdateNotice);
         assert!(!config.reads.tool_settings && !config.reads.last_session);
         for p in &config.providers {
@@ -476,18 +468,27 @@ on_startup = ""
     }
 
     #[test]
-    fn an_older_config_gets_its_new_providers_allowed_like_the_old_version_did() {
-        // 0.6: Gemini under its old id, no Grok or Cursor yet. 0.7.0 would
-        // have appended both switched on and read them.
+    fn an_older_config_allows_only_the_providers_it_had_switched_on() {
+        // An old config: Gemini under its old id, Claude off, nothing else.
+        // The version that wrote it read Gemini alone; every provider it
+        // did not have is added off and not allowed.
         let config = load_text(
             "[[providers]]\nid = \"gemini\"\nenabled = true\n\n[[providers]]\nid = \"claude\"\nenabled = false\n",
         );
         assert!(config.sign_in_allowed("antigravity"));
         assert!(config.sign_in_allowed("gemini"));
-        assert!(!config.sign_in_allowed("claude"));
-        assert!(config.sign_in_allowed("grok"));
-        assert!(config.sign_in_allowed("cursor"));
-        assert!(config.sign_in_allowed("codex"));
+        assert_eq!(config.reads.sign_in, ["antigravity"]);
+        let active: Vec<&str> = config
+            .providers
+            .iter()
+            .filter(|p| config.provider_active(p))
+            .map(|p| p.id.as_str())
+            .collect();
+        assert_eq!(active, ["antigravity"]);
+        for id in ["codex", "copilot", "grok", "cursor"] {
+            let p = config.providers.iter().find(|p| p.id == id).unwrap();
+            assert!(!p.enabled, "{id} appended switched on");
+        }
     }
 
     #[test]

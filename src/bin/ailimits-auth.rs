@@ -309,7 +309,8 @@ fn set(provider: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Store a manual usage token without touching config/auth_method.
+/// Store a manual usage token. The auth method is left alone: the token is a
+/// source the provider tries first, under either method.
 fn set_usage_token(provider: Option<&str>) -> Result<()> {
     let provider =
         provider.context("specify a provider: ailimits-auth set-usage-token <claude|codex>")?;
@@ -327,6 +328,15 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
         .context("keyring unavailable")?
         .set_password(token)
         .context("failed to store the usage token in Credential Manager")?;
+
+    // The token is the app's own source: storing it sets the provider up
+    // with it, as a key does, and allows nothing of the tool's files.
+    let mut config = load_config()?;
+    if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
+        p.enabled = true;
+    }
+    config.allow_app_sign_in(provider);
+    save_config(&config)?;
 
     println!("{provider} usage token stored (label: {label})");
     println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");

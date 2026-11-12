@@ -1287,6 +1287,43 @@ pub fn run() -> Result<()> {
                 }
             };
         }
+        // A provider set up with the app's own sign-in (a pasted key or
+        // usage token): allowed that alone, not the tool's files, then
+        // every surface follows at once.
+        macro_rules! set_up_with_app_sign_in {
+            ($pid:expr) => {{
+                let pid: &str = $pid;
+                config.allow_app_sign_in(pid);
+                crate::choices::show_provider_rows(&mut config, pid);
+                refresh_providers(&config, &providers, &mut thresholds, &mut display, pid);
+                refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
+                // A first provider on a fresh install:
+                // the widget leaves "Choose what to show"
+                // now, not at the first data.
+                shape = widget_shape(&config, &display, &models, &renderer);
+                apply_ui_change(
+                    &config,
+                    &mut win_layout,
+                    &mut theme,
+                    &mut pixmap,
+                    &mut surface,
+                    &window,
+                    &mut win_state,
+                    &menu,
+                    &shape,
+                );
+                tray.set_first_install(
+                    rows::nothing_chosen(&config),
+                    &visible_data(&config, &display),
+                );
+                tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
+                menu.sync(&config, win_state.pinned);
+                save_config(config.clone());
+                fetch_one(&providers, &cmd_tx, &runtime, pid);
+                window.request_redraw();
+                refresh_picker!();
+            }};
+        }
         macro_rules! open_picker {
             ($ask:expr) => {{
                 let ask: Option<String> = $ask;
@@ -2219,51 +2256,7 @@ pub fn run() -> Result<()> {
                                     // provider up with the app's own key:
                                     // that allows the key, not the tool's
                                     // files.
-                                    config.allow_app_sign_in(&pid);
-                                    crate::choices::show_provider_rows(&mut config, &pid);
-                                    refresh_providers(
-                                        &config,
-                                        &providers,
-                                        &mut thresholds,
-                                        &mut display,
-                                        &pid,
-                                    );
-                                    refresh_models(
-                                        &model_job,
-                                        &config,
-                                        &mut models,
-                                        &cmd_tx,
-                                        runtime.handle(),
-                                    );
-                                    // A first provider on a fresh install:
-                                    // the widget leaves "Choose what to show"
-                                    // now, not at the first data.
-                                    shape = widget_shape(&config, &display, &models, &renderer);
-                                    apply_ui_change(
-                                        &config,
-                                        &mut win_layout,
-                                        &mut theme,
-                                        &mut pixmap,
-                                        &mut surface,
-                                        &window,
-                                        &mut win_state,
-                                        &menu,
-                                        &shape,
-                                    );
-                                    tray.set_first_install(
-                                        rows::nothing_chosen(&config),
-                                        &visible_data(&config, &display),
-                                    );
-                                    tray.sync_providers(
-                                        &menu.menu,
-                                        &visible_data(&config, &display),
-                                        &theme,
-                                    );
-                                    menu.sync(&config, win_state.pinned);
-                                    save_config(config.clone());
-                                    fetch_one(&providers, &cmd_tx, &runtime, &pid);
-                                    window.request_redraw();
-                                    refresh_picker!();
+                                    set_up_with_app_sign_in!(&pid);
                                     feedback("AI Limits", &format!("Key for {pid} stored"));
                                 }
                                 Err(e) => {
@@ -2314,9 +2307,15 @@ pub fn run() -> Result<()> {
                                 .and_then(|e| e.set_password(&token))
                             {
                                 Ok(()) => {
-                                    // No config change: the usage token is just an
-                                    // extra source the provider tries first.
-                                    fetch_one(&providers, &cmd_tx, &runtime, &pid);
+                                    // The usage token is the app's own source,
+                                    // tried before the tool's files: storing it
+                                    // sets the provider up the way a key does.
+                                    if let Some(pc) =
+                                        config.providers.iter_mut().find(|p| p.id == pid)
+                                    {
+                                        pc.enabled = true;
+                                    }
+                                    set_up_with_app_sign_in!(&pid);
                                     feedback("AI Limits", &format!("Usage token for {pid} stored"));
                                 }
                                 Err(e) => {
