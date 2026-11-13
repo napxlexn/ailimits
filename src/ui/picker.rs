@@ -96,8 +96,9 @@ pub struct RowChoice {
     pub provider: &'static str,
     /// "Claude" or "Claude · Opus".
     pub name: &'static str,
-    /// "Today's row", "Weekly, a limit of its own".
-    pub note: &'static str,
+    /// "Today's row", "Weekly, a limit of its own", or the provider's own
+    /// short status ("token expired") as the widget words it.
+    pub note: std::borrow::Cow<'static, str>,
     /// The provider reports this row's metric right now. A row without it
     /// can still be ticked; it appears when the metric does.
     pub has_data: bool,
@@ -3313,7 +3314,7 @@ mod tests {
                 id,
                 provider: id,
                 name,
-                note,
+                note: note.into(),
                 has_data: true,
             });
             let pid = ProviderId::from_config_id(id).unwrap();
@@ -3322,7 +3323,7 @@ mod tests {
                     id: s.id,
                     provider: id,
                     name: s.names[0],
-                    note: s.note,
+                    note: s.note.into(),
                     has_data: true,
                 });
             }

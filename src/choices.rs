@@ -208,11 +208,16 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
     out
 }
 
-/// The note under a provider's own row in the picker.
-fn base_note(data: Option<&ProviderData>) -> &'static str {
+/// The note under a provider's own row in the picker: in an error, the
+/// widget's own words for it (`renderer::error_words`), so the two never
+/// disagree; before any data, "No data yet".
+fn base_note(data: Option<&ProviderData>) -> std::borrow::Cow<'static, str> {
     match data.map(|d| &d.status) {
-        Some(ProviderStatus::Ok) => "Today's row",
-        _ => "No data yet",
+        Some(ProviderStatus::Ok) => "Today's row".into(),
+        Some(status) => crate::ui::renderer::error_words(status)
+            .filter(|w| !w.trim().is_empty())
+            .unwrap_or_else(|| "No data yet".into()),
+        None => "No data yet".into(),
     }
 }
 
@@ -247,7 +252,7 @@ pub fn picker_input(
                 id: sub.id,
                 provider: pid.config_id(),
                 name: sub.names[0],
-                note: sub.note,
+                note: sub.note.into(),
                 has_data: has,
             });
         }
@@ -257,8 +262,9 @@ pub fn picker_input(
         let Some(pid) = ProviderId::from_config_id(&pc.id) else {
             continue;
         };
-        if let Some(info) = models.get(&pid) {
-            // Two tools on the same model id share one name: one field.
+        if let Some(info) = models.get(&pid).filter(|info| !info.id.is_empty()) {
+            // Two tools on the same model id share one name: one field. An
+            // effort with no model (an empty id) has no name to change.
             if model_choices.iter().any(|c| c.model_id == info.id) {
                 continue;
             }

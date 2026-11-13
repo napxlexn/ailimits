@@ -136,11 +136,17 @@ pub fn model_label(
     names: &BTreeMap<String, String>,
 ) -> Option<ModelLabel> {
     let on = |p: ModelPart| parts.contains(&p);
-    let n = models::name_parts(&info.id, provider, names.get(&info.id).map(String::as_str));
-    let model = on(ModelPart::Model).then(|| n.model.clone());
-    let with_version =
-        (on(ModelPart::Model) && on(ModelPart::Version) && n.with_version != n.model)
-            .then(|| n.with_version.clone());
+    // An empty id: the tool stores an effort but no model; no model to name.
+    let n = (!info.id.is_empty())
+        .then(|| models::name_parts(&info.id, provider, names.get(&info.id).map(String::as_str)));
+    let model = n
+        .as_ref()
+        .filter(|_| on(ModelPart::Model))
+        .map(|n| n.model.clone());
+    let with_version = n
+        .as_ref()
+        .filter(|n| on(ModelPart::Model) && on(ModelPart::Version) && n.with_version != n.model)
+        .map(|n| n.with_version.clone());
     let effort = on(ModelPart::Effort)
         .then(|| info.effort.clone())
         .flatten()
@@ -452,6 +458,12 @@ mod tests {
         // An empty effort is no effort.
         let blank = model_label(&info("x", Some("  ")), &p, &[ModelPart::Effort], &names);
         assert!(blank.is_none());
+        // No model written (an empty id): the effort alone, whatever is ticked.
+        let all = [ModelPart::Model, ModelPart::Version, ModelPart::Effort];
+        let bare = model_label(&info("", Some("xhigh")), &p, &all, &names).unwrap();
+        assert_eq!(bare.steps(), ["xhigh"]);
+        let model_only = model_label(&info("", Some("xhigh")), &p, &[ModelPart::Model], &names);
+        assert!(model_only.is_none());
     }
 
     #[test]

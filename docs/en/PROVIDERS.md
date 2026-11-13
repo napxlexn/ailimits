@@ -504,16 +504,21 @@ Each read is asked for first and is off by default:
 Shapes verified 2026-11-11 on the owner's PC, key names only:
 
 - Claude Code: no top-level `model` while the default model is in use (the
-  default is written nowhere, so there is no label); the effort is kept per
-  model under `modelSettings`. A context option is dropped from the id
+  default is written nowhere, so the label is the effort alone, from the
+  top-level `effortLevel`); the effort is kept per model under
+  `modelSettings`. A context option is dropped from the id
   (`opus[1m]` reads as `opus`), so one rename covers both.
 - Codex CLI: `model` and `model_reasoning_effort` at the top level; a model
   set only in a `[profiles.*]` table is not read.
 - Grok CLI: `[models] default_reasoning_effort` present; `[models] default`
   is from the CLI's own docs (`user-guide/05-configuration.md`) and was not
-  set there (the CLI's built-in default: no label).
+  set there (the CLI's built-in default: the label is the effort alone).
 - Copilot CLI: `model` (`"auto"`); `effortLevel` from its docs, not set there.
-- Antigravity CLI: `model`, stored as the label the CLI shows.
+- Antigravity CLI: `model`, stored as the label the CLI shows; it is shown
+  as written, never split at its hyphens (`GPT-OSS 120B (Medium)`).
+
+A file with an effort but no model gives the effort alone ("xhigh"), and no
+name to rename.
 
 Never read for labels: `%USERPROFILE%\.claude.json`,
 `%USERPROFILE%\.copilot\config.json`, `command-history-state.json`, any
@@ -541,9 +546,10 @@ model. Only the last 64 KB of the newest file is read.
   configured model. In the uncompressed sessions the last model record sat
   2 KB to 850 KB from the end, so a tail often holds none.
 
-No model in the tail: the label keeps what the same file said before, else
-falls back to the configured model when `tool_settings` allows, else shows
-nothing.
+No model in the tail: the label keeps the model last found, in this file
+or in the session before it (a session just started has no answer yet),
+else falls back to the configured model when `tool_settings` allows, else
+shows nothing.
 
 ### Bounds and failures
 

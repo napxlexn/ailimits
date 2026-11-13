@@ -20,7 +20,9 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelInfo {
     /// The id as the tool stores it: "claude-opus-5-5", "gpt-6.1-sol",
-    /// Antigravity's label "Claude Sonnet 4.6 (Thinking)".
+    /// Antigravity's label "Claude Sonnet 4.6 (Thinking)". Empty when the
+    /// tool stores an effort but no model (its default model is not
+    /// written): the effort then shows alone.
     pub id: String,
     /// The effort as the tool stores it ("xhigh", "high"), if it has one.
     pub effort: Option<String>,
@@ -165,21 +167,18 @@ impl ModelReader {
             self.sessions.remove(id);
             return None;
         };
-        let before = self
-            .sessions
-            .get(id)
-            .filter(|seen| seen.path == path)
-            .map(|seen| (seen.stamp, seen.info.clone()));
-        if let Some((seen_stamp, info)) = &before {
-            if *seen_stamp == stamp {
-                return info.clone();
+        if let Some(seen) = self.sessions.get(id) {
+            if seen.path == path && seen.stamp == stamp {
+                return seen.info.clone();
             }
         }
-        // A tail without a model record (one long answer can fill 64 KB)
-        // keeps what the same file said before.
+        // A tail without a model record keeps the model last found: one long
+        // answer can fill 64 KB, and a session just started has no answer
+        // yet, so the previous session's model is still the one last used.
+        let before = self.sessions.get(id).and_then(|seen| seen.info.clone());
         let info = files::read_tail(&path, files::TAIL_LEN)
             .and_then(|tail| parse(&tail))
-            .or_else(|| before.and_then(|(_, info)| info));
+            .or(before);
         self.sessions.insert(
             id.clone(),
             Seen {
@@ -209,7 +208,9 @@ impl Homes {
     /// From the environment; None without a home folder, so that no path is
     /// ever taken relative to the working directory.
     fn from_env() -> Option<Self> {
-        let user = dirs::home_dir().filter(|p| p.is_absolute())?;
+        let user = test_home()
+            .or_else(dirs::home_dir)
+            .filter(|p| p.is_absolute())?;
         let tool = |var: &str, dir: &str| env_dir(var).unwrap_or_else(|| user.join(dir));
         Some(Homes {
             codex: tool("CODEX_HOME", ".codex"),
@@ -254,6 +255,18 @@ fn settings_file(homes: &Homes, id: &ProviderId) -> Option<(PathBuf, SettingsPar
         ProviderId::Cursor => return None,
     };
     Some(file)
+}
+
+/// Debug builds only: `AILIMITS_MODEL_HOME` stands in for %USERPROFILE% when
+/// the model labels are read, so a live test can show prepared settings and
+/// sessions without touching the tools' own files. Sign-in reads are not
+/// affected. Release builds never look at it.
+fn test_home() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        env_dir("AILIMITS_MODEL_HOME")
+    } else {
+        None
+    }
 }
 
 /// A folder named by an environment variable, when set to an absolute path.
@@ -487,6 +500,32 @@ mod tests {
         assert!(fresh
             .read(&reads(false, true), ModelSource::LastUsed, &ids)
             .is_empty());
+    }
+
+    #[test]
+    fn a_new_session_without_an_answer_keeps_the_model_last_used() {
+        let dir = TempDir::new("next");
+        let answer = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n";
+        let first = dir.write(".claude/projects/p/a.jsonl", answer);
+        touch(&first, 120);
+        let mut r = reader(&dir);
+        let ids = [ProviderId::Claude];
+        let m = r.read(&reads(false, true), ModelSource::LastUsed, &ids);
+        assert_eq!(m[&ProviderId::Claude].id, "claude-opus-5-5");
+        // A session just started: the user's first message, no answer yet.
+        dir.write(
+            ".claude/projects/p/b.jsonl",
+            "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+        );
+        let m = r.read(&reads(false, true), ModelSource::LastUsed, &ids);
+        assert_eq!(m[&ProviderId::Claude].id, "claude-opus-5-5");
+        // Its first answer takes over.
+        dir.write(
+            ".claude/projects/p/b.jsonl",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-5-5\"}}\n",
+        );
+        let m = r.read(&reads(false, true), ModelSource::LastUsed, &ids);
+        assert_eq!(m[&ProviderId::Claude].id, "claude-sonnet-5-5");
     }
 
     #[test]

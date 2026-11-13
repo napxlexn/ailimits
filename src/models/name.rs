@@ -14,7 +14,14 @@ use super::NameParts;
 /// into the model and the model with its version. `provider` is the
 /// provider's display name ("Claude"), dropped from the front of an id.
 pub(super) fn name_parts(id: &str, provider: &str, rename: Option<&str>) -> NameParts {
-    let words: Vec<String> = match rename.map(str::trim).filter(|s| !s.is_empty()) {
+    let typed = rename
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        // A tool that stores a display label rather than an id (Antigravity:
+        // "GPT-OSS 120B (Medium)") has its words already: taken as they are,
+        // like a rename, never split at its hyphens. An id has no spaces.
+        .or_else(|| Some(id.trim()).filter(|s| s.contains(char::is_whitespace)));
+    let words: Vec<String> = match typed {
         // A rename keeps its words as typed: no capitals, no dropped parts.
         Some(own) => own
             .split(|c: char| c.is_whitespace() || c == '\u{feff}')
@@ -290,6 +297,15 @@ mod tests {
                 "Claude Sonnet".into(),
                 "Claude Sonnet 4.6 (Thinking)".into()
             )
+        );
+        // Hyphens inside a label stay where the tool put them.
+        assert_eq!(
+            parts("GPT-OSS 120B (Medium)", "Antigravity"),
+            ("GPT-OSS".into(), "GPT-OSS 120B (Medium)".into())
+        );
+        assert_eq!(
+            parts("Gemini 3.1 Pro (High)", "Antigravity"),
+            ("Gemini".into(), "Gemini 3.1 Pro (High)".into())
         );
     }
 

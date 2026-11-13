@@ -24,10 +24,11 @@ Notable, user-visible changes. Dates are release dates.
   chosen separately for the widget and the tooltip. The model comes either
   from the tool's settings file ("As set in the tool") or, for Claude Code
   and Codex CLI, from the end of the newest session ("Last used"); the other
-  tools keep showing the configured model. Expanded rows and the columns
-  layout give the label a line of its own, Medium puts it beside the reset
-  (on a line of its own where that leaves too little room), Compact leaves
-  it to the tooltip. Where room runs out the effort goes first, then the
+  tools keep showing the configured model. A tool left on its default
+  model, which it does not write down, shows its effort alone. Expanded
+  rows and the columns layout give the label a line of its own, Medium puts
+  it beside the reset (on a line of its own where that leaves too little
+  room), Compact leaves it to the tooltip. Where room runs out the effort goes first, then the
   version, then the model; a word is never cut. The files are read on the
   existing update cycle, with no timer of their own, and only again when
   one changed.

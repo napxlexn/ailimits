@@ -13,6 +13,9 @@
 //   from its docs, not set there.
 // - Antigravity CLI settings.json (.gemini\antigravity-cli): top-level
 //   `model`, stored as the display label ("Claude Sonnet 4.6 (Thinking)").
+// A file with an effort but no model (Claude Code and Grok CLI as the owner
+// has them: the default model is not written) gives the effort alone, with
+// an empty id.
 
 use super::files::{clean, clean_toml};
 use super::ModelInfo;
@@ -22,13 +25,26 @@ use serde_json::Value;
 /// (`modelSettings.<model>.effortLevel`, else the top-level `effortLevel`).
 pub(super) fn claude(bytes: &[u8]) -> Option<ModelInfo> {
     let root: Value = serde_json::from_slice(bytes).ok()?;
-    let id = claude_model_id(&clean(root.get("model"))?)?;
-    let per_model = root
-        .get("modelSettings")
-        .and_then(|m| m.get(id.as_str()))
-        .and_then(|m| m.get("effortLevel"));
+    let id = clean(root.get("model")).and_then(|m| claude_model_id(&m));
+    let per_model = id.as_deref().and_then(|id| {
+        root.get("modelSettings")
+            .and_then(|m| m.get(id))
+            .and_then(|m| m.get("effortLevel"))
+    });
     let effort = clean(per_model).or_else(|| clean(root.get("effortLevel")));
-    Some(ModelInfo { id, effort })
+    found(id, effort)
+}
+
+/// The model with its effort, the effort alone (an empty id) when no model
+/// is written, or None when the file has neither.
+fn found(id: Option<String>, effort: Option<String>) -> Option<ModelInfo> {
+    if id.is_none() && effort.is_none() {
+        return None;
+    }
+    Some(ModelInfo {
+        id: id.unwrap_or_default(),
+        effort,
+    })
 }
 
 /// A Claude Code model id without its context option: "opus[1m]" -> "opus".
@@ -47,10 +63,10 @@ pub(super) fn claude_model_id(id: &str) -> Option<String> {
 /// Codex CLI `config.toml`: top-level `model`, `model_reasoning_effort`.
 pub(super) fn codex(bytes: &[u8]) -> Option<ModelInfo> {
     let root = toml_table(bytes)?;
-    Some(ModelInfo {
-        id: clean_toml(root.get("model"))?,
-        effort: clean_toml(root.get("model_reasoning_effort")),
-    })
+    found(
+        clean_toml(root.get("model")),
+        clean_toml(root.get("model_reasoning_effort")),
+    )
 }
 
 /// Grok CLI `config.toml`: `[models] default`, `[models]
@@ -58,19 +74,16 @@ pub(super) fn codex(bytes: &[u8]) -> Option<ModelInfo> {
 pub(super) fn grok(bytes: &[u8]) -> Option<ModelInfo> {
     let root = toml_table(bytes)?;
     let models = root.get("models")?.as_table()?;
-    Some(ModelInfo {
-        id: clean_toml(models.get("default"))?,
-        effort: clean_toml(models.get("default_reasoning_effort")),
-    })
+    found(
+        clean_toml(models.get("default")),
+        clean_toml(models.get("default_reasoning_effort")),
+    )
 }
 
 /// Copilot CLI `settings.json`: `model`, `effortLevel`.
 pub(super) fn copilot(bytes: &[u8]) -> Option<ModelInfo> {
     let root: Value = serde_json::from_slice(bytes).ok()?;
-    Some(ModelInfo {
-        id: clean(root.get("model"))?,
-        effort: clean(root.get("effortLevel")),
-    })
+    found(clean(root.get("model")), clean(root.get("effortLevel")))
 }
 
 /// Antigravity CLI `settings.json`: `model`, a display label. No effort is
@@ -173,9 +186,14 @@ mod tests {
         let both = br#"{"model": "opus", "effortLevel": "low",
                         "modelSettings": {"opus": {"effortLevel": "high"}}}"#;
         assert_eq!(claude(both), info("opus", Some("high")));
-        // No model chosen (the owner's PC): nothing to show.
+        // No model chosen and no effort that applies to the default: nothing.
         let none = br#"{"modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
         assert_eq!(claude(none), None);
+        // The owner's PC: no model written, a top-level effort: the effort.
+        assert_eq!(
+            claude(br#"{"effortLevel": "xhigh", "theme": "dark"}"#),
+            info("", Some("xhigh"))
+        );
         // A wrong effort type is no effort; the model still shows.
         let odd = br#"{"model": "sonnet", "effortLevel": 3, "modelSettings": []}"#;
         assert_eq!(claude(odd), info("sonnet", None));
@@ -191,6 +209,11 @@ mod tests {
         assert_eq!(codex(b"model = \"o3\""), info("o3", None));
         // A model only in a profile is not the configured one.
         assert_eq!(codex(b"[profiles.fast]\nmodel = \"gpt-5.4-mini\"\n"), None);
+        // An effort with no model: the effort.
+        assert_eq!(
+            codex(b"model_reasoning_effort = \"low\"\n"),
+            info("", Some("low"))
+        );
         // Broken TOML anywhere in the file: nothing.
         assert_eq!(codex(b"model = \"gpt-6.1\"\n[broken\n"), None);
     }
@@ -199,10 +222,10 @@ mod tests {
     fn grok_reads_the_models_table() {
         let file = b"[cli]\ninstaller = \"x\"\n\n[models]\ndefault = \"grok-4.5\"\ndefault_reasoning_effort = \"high\"\n";
         assert_eq!(grok(file), info("grok-4.5", Some("high")));
-        // The owner's PC: an effort but no model chosen.
+        // The owner's PC: an effort but no model chosen: the effort.
         assert_eq!(
             grok(b"[models]\ndefault_reasoning_effort = \"high\"\n"),
-            None
+            info("", Some("high"))
         );
         // A top-level `default` is not the model.
         assert_eq!(grok(b"default = \"grok-4.5\"\n"), None);
@@ -217,6 +240,10 @@ mod tests {
         assert_eq!(
             copilot(br#"{"model": "gpt-5.5", "effortLevel": "high"}"#),
             info("gpt-5.5", Some("high"))
+        );
+        assert_eq!(
+            copilot(br#"{"effortLevel": "medium"}"#),
+            info("", Some("medium"))
         );
         assert_eq!(
             antigravity(

@@ -551,10 +551,20 @@ impl Renderer {
         } else {
             DetailLevel::Medium
         };
+        // Expanded, a row in error says so on the bar line and leaves its
+        // meta line empty: the label takes that line rather than leaving a
+        // gap above it.
+        let meta_empty = expanded
+            && hovered_reason.is_none()
+            && !matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated);
         let (x, y, room, size) = match (model_line, expanded) {
             (Some(line), _) => (
                 line.x,
-                meta_y + layout::MODEL_LINE_H,
+                if meta_empty {
+                    meta_y
+                } else {
+                    meta_y + layout::MODEL_LINE_H
+                },
                 line.w,
                 model_size(&detail, false),
             ),
@@ -954,7 +964,7 @@ impl Renderer {
                 self.draw_dot_at(pixmap, bar.x + 3.0, bar.y + bar.h / 2.0, theme.mid.bar);
                 self.draw_text(
                     pixmap,
-                    "check the key",
+                    error_words(&data.status).as_deref().unwrap_or_default(),
                     bar.x + 10.0,
                     text_y,
                     9.0,
@@ -963,17 +973,10 @@ impl Renderer {
                     span - 10.0,
                 );
             }
-            ProviderStatus::NetworkError(msg) => {
-                // A short provider message beats a generic "offline";
-                // long technical ones collapse.
-                let text = if msg.chars().count() <= 32 {
-                    msg.as_str()
-                } else {
-                    "⚠ offline"
-                };
+            ProviderStatus::NetworkError(_) => {
                 self.draw_text(
                     pixmap,
-                    text,
+                    error_words(&data.status).as_deref().unwrap_or_default(),
                     bar.x,
                     text_y,
                     9.0,
@@ -1137,6 +1140,20 @@ fn column_name_size(detail: &DetailLevel) -> f32 {
         DetailLevel::Compact => 9.5,
         DetailLevel::Medium => 10.5,
         DetailLevel::Expanded => 11.5,
+    }
+}
+
+/// What the widget says of a provider in error, in place of its bar: a
+/// short provider message as it is ("token expired"), a long technical one
+/// collapsed, a rejected key as the action. None for any other status. The
+/// picker says the same of the provider's row.
+pub fn error_words(status: &ProviderStatus) -> Option<std::borrow::Cow<'static, str>> {
+    match status {
+        ProviderStatus::AuthError(_) => Some("check the key".into()),
+        // A short provider message beats a generic "offline".
+        ProviderStatus::NetworkError(msg) if msg.chars().count() <= 32 => Some(msg.clone().into()),
+        ProviderStatus::NetworkError(_) => Some("⚠ offline".into()),
+        _ => None,
     }
 }
 

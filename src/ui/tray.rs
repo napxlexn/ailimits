@@ -312,7 +312,9 @@ pub(crate) fn tooltip_lines(rows: &[RowView], first_install: bool) -> Vec<TipLin
             ));
         }
         if let Some(label) = row.model.as_ref().and_then(ModelLabel::full) {
-            line.push_str(" · ");
+            // After the no-data dot the label follows with a space: "Grok •
+            // Grok 4.3", never "• ·".
+            line.push_str(if line.ends_with('•') { " " } else { " · " });
             line.push_str(&label);
         }
         out.extend(wrap_tip_line(&line));
@@ -1583,6 +1585,25 @@ mod tests {
             ]
         );
         assert!(lines.iter().all(|l| !l.indent));
+    }
+
+    /// A row without a number keeps its dot, and its label follows the dot
+    /// with a space: never "• ·".
+    #[test]
+    fn a_label_after_the_no_data_dot_takes_no_second_dot() {
+        let providers = crate::ui::visual_baseline::typical();
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(vec!["claude".into(), "codex".into()]);
+        let mut rows = tip_rows(&config, &providers);
+        rows[0].data.status = ProviderStatus::NetworkError("token expired".into());
+        rows[0].data.metrics.clear();
+        rows[0].model = Some(opus(Some("xhigh")));
+        let texts: Vec<String> = tooltip_lines(&rows, false)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(texts[0], "Claude • Opus 5.5 · xhigh");
+        assert!(texts.iter().all(|t| !t.contains("• ·")));
     }
 
     /// The tray icon's own text lists providers only, whatever the rows.
