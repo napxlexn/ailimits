@@ -21,7 +21,7 @@ where
     Ok(T::deserialize(raw).unwrap_or_default())
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -59,8 +59,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The config of a first start, as `storage` settles it: every provider
+    /// listed but switched off, nothing allowed, the welcome owed. What a
+    /// new install really runs on (`Config::default()` is the raw template
+    /// before that, every provider on).
+    pub fn fresh_install() -> Self {
+        let mut config = Config::default();
+        super::storage::settle_reads(&mut config, super::storage::Origin::FreshInstall);
+        config
+    }
+
     /// Whether the user allowed reading this provider's sign-in (the other
-    /// tool's token file, `gh auth token`, Cursor's editor database).
+    /// tool's token file, its Credential Manager entry, `gh auth token`).
     pub fn sign_in_allowed(&self, provider_id: &str) -> bool {
         let id = canonical_provider_id(provider_id);
         self.reads
@@ -140,12 +150,15 @@ pub struct Reads {
     #[serde(default)]
     pub sign_in: Vec<String>,
     /// Providers set up with the app's own sign-in only (a pasted key or
-    /// token, the menu's Cursor sign-in): they use that and read nothing of
-    /// the tool's files.
+    /// token, the menu's Cursor sign-in): they use that, and the tool's own
+    /// sign-in is never read for them. Their tool's settings file is still
+    /// read for the model label when `tool_settings` allows it, as for
+    /// every running provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub app_sign_in: Vec<String>,
     /// The tools' own settings files, for the model and effort they are set
-    /// to (Claude Code settings.json, Codex config.toml...).
+    /// to (Claude Code settings.json, Codex config.toml, Cursor's state
+    /// database...), for every running provider, however it signs in.
     #[serde(default)]
     pub tool_settings: bool,
     /// The end of the newest session file, for the model last used (Claude
@@ -176,7 +189,7 @@ pub enum PendingNotice {
 /// Empty strings disable the hook (the default). This is intentionally
 /// config.toml-only — there is no menu/clipboard path, so a malicious
 /// clipboard string can never become an auto-run command.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HooksConfig {
     /// Run when a provider crosses its alert threshold (shares the toast cooldown).
     #[serde(default)]
@@ -214,13 +227,13 @@ fn default_providers() -> Vec<ProviderConfig> {
         base("antigravity", true, AuthMethod::Subscription, "", 80),
         // Grok — SuperGrok subscription via the Grok CLI's auth.json.
         base("grok", true, AuthMethod::Subscription, "", 80),
-        // Cursor — the widget's own session (menu: Sign in to Cursor...),
-        // else the editor's plain token. Hidden until one of them exists.
+        // Cursor — the widget's own session only (menu: Sign in to
+        // Cursor..., or ailimits-auth login cursor). Hidden until it exists.
         base("cursor", true, AuthMethod::Subscription, "", 80),
     ]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeneralConfig {
     #[serde(default = "default_update_interval")]
     pub update_interval_secs: u64,
@@ -260,7 +273,7 @@ impl Default for GeneralConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowConfig {
     #[serde(default = "default_pos_x")]
     pub pos_x: i32,
@@ -288,7 +301,7 @@ impl Default for WindowConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UIConfig {
     #[serde(default, deserialize_with = "de_enum_or_default")]
     pub palette: Palette,
@@ -443,7 +456,7 @@ where
     Ok(out)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
     #[serde(default = "default_true")]
@@ -457,15 +470,15 @@ pub struct ProviderConfig {
     #[serde(default = "default_threshold")]
     pub alert_threshold: u8,
     /// Whether the provider may read the other tool's own sign-in: its token
-    /// file, its Credential Manager entry, `gh auth token`, Cursor's editor
-    /// database. Set from `[reads] sign_in` when the provider is built (see
+    /// file, its Credential Manager entry, `gh auth token`. Set from
+    /// `[reads] sign_in` when the provider is built (see
     /// app.rs `build_providers`); never saved. Without it a provider uses
     /// only what is the app's own, and otherwise reports nothing.
     #[serde(skip)]
     pub tool_files: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NotificationConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
