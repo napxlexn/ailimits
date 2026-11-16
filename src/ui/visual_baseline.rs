@@ -2,22 +2,58 @@
 //
 // Each surface module renders its default-config states with the fixtures
 // below and hands the pixmaps to `check`, which compares a hash of every one
-// with tests/visual/<group>.txt. The baseline was recorded from 0.7.0 before
-// the rows-and-models work: a feature may add new looks, but with the default
-// config nothing that exists today may change by a single pixel.
+// with tests/visual/<group>.txt.
+//
+// Where the pinned groups come from. `widget`, `panel` and `tray` (`PINNED`)
+// were recorded in 3e8aa80 (2026-11-11) on the rows-and-models branch, not
+// rendered from the 0.7.0 tag, and they hold the looks of that commit. These
+// differ from 0.7.0 on purpose:
+//   - ac17bd2: stale data greys before its reset, not only after it;
+//   - a755fe3: the taskbar panel inks a stale or estimated row dimmer;
+//   - 9eada81: data counts as stale once the update interval plus a minute
+//     has passed;
+//   - 387fc59: a provably passed reset reads as about 0 at once, without
+//     waiting to go stale;
+//   - 3d6093c: hovering a stale row whose error retries by itself
+//     ("offline, retrying") shows just that, where 0.7.0 added the
+//     provider's action ("offline, retrying — check gh auth").
+// The owner approved the first four (2026-11-16); the fifth was found by the
+// comparison below. The fixtures also use what came after 0.7.0 (the Grok and
+// Cursor providers, `unified_pool`, `extra_only`), so these very files
+// cannot be rendered by 0.7.0. What the pins promise since 3e8aa80: with the
+// default config nothing in these groups changes by a single pixel; a
+// feature may add new looks, in groups of its own.
+//
+// Against 0.7.0 itself (2026-11-16): the 0.7.0 tag and this tree rendered
+// the same fixtures cut down to what 0.7.0 can draw (no Grok or Cursor rows,
+// no new fields), plus a set of network errors and a set that puts the
+// estimated and the stale row first, through these very tests. Of 116 widget,
+// 36 panel and 84 tray entries, 83 widget, 30 panel and all 84 tray entries
+// came out byte-identical. The rest differ only in the stale row (ac17bd2),
+// in the panel's stale and estimated rows (a755fe3) and in the hover text
+// over the stale row (3d6093c). 9eada81 and 387fc59 change when data counts
+// as stale or reset, not how it is drawn, so no fixture shows them.
+//
+// The hashes depend on the UI font (renderer::FONT_CANDIDATES, the first one
+// that loads). tests/visual/font.txt records the font they were made with;
+// on a machine that renders with another one no hash could match, so every
+// group is skipped there with a visible "font differs, baseline not
+// comparable" warning instead of failing — and nothing can be recorded.
 //
 // Record a NEW group (a look that did not exist in 0.7.0):
 //     UPDATE_BASELINE=1 cargo test visual_baseline
-// The 0.7.0 groups (`PINNED`) ignore that: they change only on the owner's
+// The pinned groups (`PINNED`) ignore that: they change only on the owner's
 // decision, with UPDATE_PINNED_BASELINE=1. On a mismatch the PNGs of the
 // changed entries land in %TEMP%\ailimits-visual\<group>\ for a side-by-side
 // look; DUMP_VISUAL=1 writes every entry there, for a contact sheet.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
+use ring::digest::{digest as sha256, SHA256};
 use tiny_skia::Pixmap;
 
 use crate::providers::{
@@ -41,15 +77,99 @@ fn digest(pm: &Pixmap) -> String {
     format!("{}x{} {h:016x}", pm.width(), pm.height())
 }
 
-/// The groups recorded from 0.7.0: with the default config nothing in them
-/// may change.
+/// The groups of the looks 0.7.0 already had (recorded in 3e8aa80, see the
+/// top of the file): with the default config nothing in them may change.
 const PINNED: &[&str] = &["widget", "panel", "tray"];
 
-fn baseline_path(group: &str) -> PathBuf {
+fn visual_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("visual")
-        .join(format!("{group}.txt"))
+}
+
+fn baseline_path(group: &str) -> PathBuf {
+    visual_dir().join(format!("{group}.txt"))
+}
+
+/// A font as the baselines know it: the file's name and the SHA-256 of its
+/// bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FontId {
+    file: String,
+    sha256: String,
+}
+
+impl std::fmt::Display for FontId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.file, self.sha256)
+    }
+}
+
+/// The font the baselines were recorded with: the first line of
+/// tests/visual/font.txt that is not a comment, `<file> <sha256>`.
+fn parse_font_record(text: &str) -> Option<FontId> {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))?;
+    let (file, sha) = line.split_once(' ')?;
+    let sha = sha.trim().to_ascii_lowercase();
+    (sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit())).then(|| FontId {
+        file: file.to_string(),
+        sha256: sha,
+    })
+}
+
+/// The font this machine renders with: the first of the renderer's
+/// candidates that reads and parses, exactly as `load_ui_font` picks it.
+fn font_here() -> Option<FontId> {
+    crate::ui::renderer::FONT_CANDIDATES
+        .iter()
+        .find_map(|path| {
+            let data = std::fs::read(path).ok()?;
+            let sha = crate::updater::hex_lower(sha256(&SHA256, &data).as_ref());
+            fontdue::Font::from_bytes(data, fontdue::FontSettings::default()).ok()?;
+            let file = Path::new(path).file_name()?.to_string_lossy().into_owned();
+            Some(FontId { file, sha256: sha })
+        })
+}
+
+/// Whether this machine renders with the recorded font: Err says how it
+/// differs. Decided once per test run.
+fn font_check() -> &'static Result<(), String> {
+    static FONT: OnceLock<Result<(), String>> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let path = visual_dir().join("font.txt");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("no font record at {}", path.display()));
+        let recorded = parse_font_record(&text)
+            .unwrap_or_else(|| panic!("{} names no font: `<file> <sha256>`", path.display()));
+        match font_here() {
+            Some(here) if here == recorded => Ok(()),
+            Some(here) => Err(format!(
+                "font differs, baseline not comparable: recorded with `{recorded}`, this \
+                 machine renders with `{here}`"
+            )),
+            None => Err(format!(
+                "font differs, baseline not comparable: recorded with `{recorded}`, this \
+                 machine has none of the renderer's fonts"
+            )),
+        }
+    })
+}
+
+/// A warning that shows in `cargo test` output even for a passing test (the
+/// harness captures `eprintln!`, not the stream itself), and on GitHub as an
+/// annotation.
+fn warn_visible(text: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr().lock(), "warning: {text}");
+    if std::env::var_os("GITHUB_ACTIONS").is_some() {
+        let _ = writeln!(
+            std::io::stdout().lock(),
+            "::warning title=Visual baseline::{text}"
+        );
+    }
 }
 
 /// Compare every pixmap with the recorded baseline of `group`.
@@ -79,7 +199,15 @@ pub(crate) fn check(group: &str, items: Vec<(String, Pixmap)>) {
     } else {
         std::env::var_os("UPDATE_BASELINE").is_some()
     };
+    let font = font_check();
     if update {
+        if let Err(why) = font {
+            panic!(
+                "not recording visual baseline '{group}': {why}. Every group is recorded with \
+                 the font in tests/visual/font.txt; if this machine's font is the reference \
+                 from now on, put its line there and record every group again."
+            );
+        }
         let mut text = format!(
             "# Visual baseline '{group}': name, size, FNV-1a of the RGBA pixels.\n\
              # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.\n"
@@ -122,6 +250,17 @@ pub(crate) fn check(group: &str, items: Vec<(String, Pixmap)>) {
         if !got.contains_key(name) {
             problems.push(format!("missing, no longer rendered: {name}"));
         }
+    }
+    if let Err(why) = font {
+        // No hash can match with another font: say so, and do not fail.
+        warn_visible(&format!(
+            "visual baseline '{group}' skipped — {why} ({} of {} entries differ here; PNGs \
+             of those in {})",
+            problems.len(),
+            got.len(),
+            dump.display()
+        ));
+        return;
     }
     assert!(
         problems.is_empty(),
@@ -293,4 +432,52 @@ pub(crate) fn sets() -> Vec<(&'static str, Vec<ProviderData>)> {
         ("states", states()),
         ("single", single()),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_font_record_names_one_font_by_its_hash() {
+        let text = std::fs::read_to_string(visual_dir().join("font.txt")).unwrap();
+        let font = parse_font_record(&text).expect("tests/visual/font.txt names a font");
+        assert_eq!(font.file, "segoeui.ttf");
+        assert_eq!(font.sha256.len(), 64);
+        // The renderer must still pick that file first where it exists.
+        assert!(crate::ui::renderer::FONT_CANDIDATES
+            .first()
+            .is_some_and(|p| p.ends_with(&font.file)));
+    }
+
+    #[test]
+    fn a_font_record_is_read_strictly() {
+        let sha = "704eada12961a27fd271f7d3b09e2066520e758390c1776744eff430fee30f6e";
+        let want = FontId {
+            file: "segoeui.ttf".into(),
+            sha256: sha.into(),
+        };
+        let upper = format!("# comment\n\n  segoeui.ttf {}  \r\n", sha.to_uppercase());
+        assert_eq!(parse_font_record(&upper), Some(want.clone()));
+        assert_eq!(
+            parse_font_record(&format!("segoeui.ttf {sha}\narial.ttf {sha}")),
+            Some(want),
+            "the first line counts"
+        );
+        let short = format!("segoeui.ttf {}", &sha[..8]);
+        let not_hex = format!("segoeui.ttf {}zz", &sha[..62]);
+        for bad in ["", "# only a comment", "segoeui.ttf", &short, &not_hex] {
+            assert_eq!(parse_font_record(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn this_machine_renders_with_some_font() {
+        // Where it is the recorded one the groups compare; where it is not,
+        // they are skipped with a warning. Either way the check decides
+        // without failing.
+        let here = font_here().expect("a UI font");
+        assert_eq!(here.sha256.len(), 64);
+        let _ = font_check();
+    }
 }

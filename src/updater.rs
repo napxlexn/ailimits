@@ -1,16 +1,34 @@
 // updater.rs — background auto-update.
 //
-// Polls the GitHub Releases API and, when a newer release publishes a Windows
-// installer, downloads it, verifies its SHA-256 against the release metadata,
-// then hands off to the installer for a silent, in-place upgrade and exits.
+// Only a copy that our own installer put on disk updates itself. A Store
+// package, a Scoop or portable copy and a dev build stop before anything else
+// (`channel`), so they never ask the network anything: the Store, Scoop or a
+// fresh download updates those.
+//
+// An installer copy asks the GitHub Releases API once a day. When a newer
+// release publishes the Windows installer it downloads it and checks two
+// things before running it: the SHA-256 GitHub reports for the asset, and the
+// Ed25519 signature the release pipeline made with the release key. The
+// public half of that key is built in here (`RELEASE_KEYS`); the private half
+// lives only with the owner and in the release secret. An installer without a
+// signature, or with one that does not verify, is refused — never installed.
+//
+// The handoff starts the installer itself, with no script in between: its
+// path goes to CreateProcessW as UTF-16, so a Cyrillic, `&` or `%` profile or
+// TEMP path works like any other, and the switches are plain ASCII. The app
+// then exits so its files can be replaced, and the installer starts the new
+// version itself (`RELAUNCH_SWITCH`, read by installer/ailimits.iss). Each
+// attempt is written down first (`ATTEMPT_FILE`, beside the config): a version
+// whose attempt did not end with that version running is never tried again by
+// itself, so a failing upgrade cannot take the widget down after every start.
 //
 // The whole feature is gated behind the `auto_update` config flag (a menu
 // toggle), passed in as a shared atomic so the loop honours live changes.
-// Integrity is enforced: a release without a `sha256` asset digest, or a
-// download whose hash does not match, is refused — never installed.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ring::digest::{digest, SHA256};
+use ring::signature::{UnparsedPublicKey, ED25519};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -26,18 +44,150 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// HTTP timeout — generous enough to download the installer (~4 MB).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// A newer release with a hash-verifiable Windows installer asset.
-struct Update {
-    version: String,
-    asset_url: String,
-    sha256: String,
+/// The release signing keys this build trusts: Ed25519 public keys. A
+/// signature names its key by `key_id`, so a later key can be added here
+/// (and the old one dropped a release after) without breaking an update.
+/// The private key is never in the repository: the owner keeps it, and the
+/// release workflow signs with it from the `AILIMITS_RELEASE_SIGNING_KEY`
+/// secret (tools/release_sign.rs).
+pub const RELEASE_KEYS: &[[u8; 32]] = &[
+    // Key id 1507bd92b1a4bb7b, made 2026-11-16.
+    [
+        0x86, 0x91, 0x88, 0x60, 0x23, 0x42, 0x6a, 0x4f, 0x88, 0x27, 0x79, 0xd7, 0x54, 0xfe, 0xaf,
+        0x85, 0x0e, 0x97, 0x7d, 0x5e, 0x70, 0x71, 0x00, 0x13, 0xc0, 0x92, 0xe4, 0xac, 0xa0, 0x2c,
+        0x0d, 0xd9,
+    ],
+];
+
+/// What a signature asset's name adds to the signed file's:
+/// `AiLimits-Setup-0.7.1.exe.sig`.
+pub const SIGNATURE_SUFFIX: &str = ".sig";
+
+/// The first word of a signature file: its format, so a later one can be told
+/// apart.
+const SIGNATURE_FORMAT: &str = "ailimits-signature-v1";
+
+/// A signature file is one short line; anything longer is not one.
+const SIGNATURE_MAX_BYTES: usize = 1024;
+
+/// Asks the installer to start the app again once the upgrade is done. The
+/// installer reads it as `{param:RELAUNCH}` (installer/ailimits.iss, [Run]),
+/// and only in a silent run.
+pub(crate) const RELAUNCH_SWITCH: &str = "/RELAUNCH=1";
+
+/// The installer's switches: a silent upgrade that closes whatever still
+/// holds the app's files, never restarts Windows, and starts the app again.
+/// ASCII only — nothing from any path is part of the command line but the
+/// installer's own path, which Windows receives as UTF-16.
+const INSTALLER_SWITCHES: &[&str] = &[
+    "/VERYSILENT",
+    "/SUPPRESSMSGBOXES",
+    "/NORESTART",
+    "/CLOSEAPPLICATIONS",
+    RELAUNCH_SWITCH,
+];
+
+/// The record of the last update attempt, beside the config.
+const ATTEMPT_FILE: &str = "update-attempt.json";
+
+/// The handoff script 0.6.0 to 0.7.0 wrote to %TEMP%. Where it failed (a
+/// Cyrillic or `&` path) it stayed behind, beside the installer it fetched.
+const LEGACY_SCRIPT: &str = "ailimits-update.cmd";
+
+/// A version as the updater compares it.
+type Version = (u32, u32, u32);
+
+/// How this copy of the app is updated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Channel {
+    /// Put on disk by our installer: it updates itself.
+    Installer,
+    /// A Microsoft Store package: the Store updates it.
+    Store,
+    /// Scoop, the portable zip or a dev build: updated through that channel.
+    Unmanaged,
 }
 
-/// Background loop: check on an interval while `enabled` is true. On a confirmed,
-/// hash-verified newer release it installs and exits the process, so a successful
-/// upgrade never returns here.
+/// The channel, from the two local facts it depends on. Pure for testing.
+fn channel_of(packaged: bool, managed: bool) -> Channel {
+    if packaged {
+        // A Store copy's files sit in a read-only package directory: an
+        // installer run there could not replace them and would leave a
+        // second, unmanaged copy beside the managed one.
+        Channel::Store
+    } else if managed {
+        Channel::Installer
+    } else {
+        // A Scoop/portable/dev copy running the installer would not update
+        // the running copy at all — it would create a SECOND install in the
+        // Inno directory and relaunch that one, leaving the manager-owned
+        // copy stale and the user with two AI Limits.
+        Channel::Unmanaged
+    }
+}
+
+/// How this copy is updated. Decided from local facts only — the package
+/// identity and the installer's own uninstall entry — never the network.
+pub fn channel() -> Channel {
+    channel_of(
+        crate::platform::is_packaged(),
+        running_from_managed_install(),
+    )
+}
+
+/// Whether this copy updates itself: the only copies the Auto-update menu
+/// item does anything for.
+pub fn self_update_supported() -> bool {
+    channel() == Channel::Installer
+}
+
+/// A newer release with a verifiable Windows installer.
+struct Update {
+    /// The version, without a leading `v`.
+    version: String,
+    /// The installer's download URL.
+    installer_url: String,
+    /// The SHA-256 GitHub reports for the installer, hex.
+    sha256: String,
+    /// The signature's download URL.
+    signature_url: String,
+}
+
+/// Background loop: check on an interval while `enabled` is true. On a
+/// confirmed, verified newer release it installs and exits the process, so a
+/// successful upgrade never returns here.
 pub async fn run(enabled: Arc<AtomicBool>) {
+    // Before anything else: a copy something else updates never asks the
+    // network anything, whatever the Auto-update setting says.
+    match channel() {
+        Channel::Installer => {}
+        Channel::Store => {
+            info!("auto-update: this copy is a Store package — the Store updates it");
+            return;
+        }
+        Channel::Unmanaged => {
+            info!(
+                "auto-update: this copy is not managed by the installer (portable, Scoop or a \
+                 dev build) — update it through its own channel"
+            );
+            return;
+        }
+    }
     tokio::time::sleep(INITIAL_DELAY).await;
+
+    let current = current_version();
+    let state = state_dir();
+    match settle_attempt(&state, current) {
+        Settled::Nothing => {}
+        Settled::Installed(v) => info!("auto-update: now running v{v}, the update finished"),
+        Settled::Failed(v) => warn!(
+            "auto-update: the update to v{v} did not finish (still running v{}); it is not \
+             tried again by itself — install it from https://github.com/{REPO}/releases",
+            env!("CARGO_PKG_VERSION")
+        ),
+    }
+    remove_legacy_leftovers(&std::env::temp_dir(), current);
+
     let client = match build_client() {
         Ok(c) => c,
         Err(e) => {
@@ -47,7 +197,7 @@ pub async fn run(enabled: Arc<AtomicBool>) {
     };
     loop {
         if enabled.load(Ordering::Relaxed) {
-            if let Err(e) = check_and_install(&client).await {
+            if let Err(e) = check_and_install(&client, &state, current).await {
                 // A failed check is non-fatal: log and try again next cycle.
                 debug!("auto-update check skipped: {e:#}");
             }
@@ -64,8 +214,23 @@ fn build_client() -> Result<reqwest::Client> {
         .context("build updater HTTP client")
 }
 
-async fn check_and_install(client: &reqwest::Client) -> Result<()> {
-    let Some(update) = fetch_latest(client).await? else {
+/// The running build's version.
+fn current_version() -> Version {
+    parse_version(env!("CARGO_PKG_VERSION")).expect("crate version parses")
+}
+
+/// Where the attempt record lives: the folder of the config (and the cache
+/// and log), which the uninstaller removes.
+fn state_dir() -> PathBuf {
+    let config = crate::config::storage::config_path();
+    config
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+async fn check_and_install(client: &reqwest::Client, state: &Path, current: Version) -> Result<()> {
+    let Some(update) = fetch_latest(client, current).await? else {
         return Ok(());
     };
     info!(
@@ -73,39 +238,39 @@ async fn check_and_install(client: &reqwest::Client) -> Result<()> {
         update.version,
         env!("CARGO_PKG_VERSION")
     );
-    // A Store copy is updated by the Store: its files sit in a read-only
-    // package directory, so an installer run there could not replace them
-    // and would leave a second, unmanaged copy beside the managed one.
-    if crate::platform::is_packaged() {
-        info!("skipping silent self-update: this copy is a Store package — the Store updates it");
-        return Ok(());
-    }
-    // Only a copy that our OWN installer put on disk may silently reinstall
-    // itself. A Scoop/portable/dev copy running the installer would not update
-    // the running copy at all — it would create a SECOND install in the Inno
-    // directory and relaunch that one, leaving the manager-owned copy stale
-    // and the user with two AI Limits. Those copies are updated by whatever
-    // installed them (scoop update, a fresh zip, cargo build).
-    if !running_from_managed_install() {
+    if attempt_failed(state, &update.version, current) {
         info!(
-            "skipping silent self-update: this copy is not managed by the installer              (portable, Scoop or a dev build) — update it through its own channel"
+            "skipping v{}: its update did not finish the last time — it is not tried again by \
+             itself",
+            update.version
         );
         return Ok(());
     }
+
     let installer = download_and_verify(client, &update).await?;
-    info!("update verified; launching installer for a silent upgrade");
+    // Written down BEFORE the handoff: should the upgrade fail, the next
+    // start knows, and does not try this version again.
+    let attempt = Attempt {
+        version: update.version.clone(),
+        installer: installer.clone(),
+    };
+    if let Err(e) = record_attempt(state, &attempt) {
+        let _ = std::fs::remove_file(&installer);
+        return Err(e.context("record the update attempt — not installing without it"));
+    }
+    info!("update verified; starting the installer for a silent upgrade");
     // Diverges on success: the installer replaces this process. A failed
     // handoff must NOT take the app down — stay on the current version.
     if let Err(e) = launch_installer_and_exit(&installer) {
         warn!("update handoff failed, staying on the current version: {e:#}");
+        let _ = std::fs::remove_file(&installer);
     }
     Ok(())
 }
 
-/// Query the latest release; return Some only when it is strictly newer than the
-/// running build AND carries an `AiLimits-Setup-*.exe` asset with a usable
-/// sha256 digest.
-async fn fetch_latest(client: &reqwest::Client) -> Result<Option<Update>> {
+/// Query the latest release; Some only when it is strictly newer than the
+/// running build and carries a verifiable installer (see `release_update`).
+async fn fetch_latest(client: &reqwest::Client, current: Version) -> Result<Option<Update>> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body: serde_json::Value = client
         .get(&url)
@@ -115,42 +280,60 @@ async fn fetch_latest(client: &reqwest::Client) -> Result<Option<Update>> {
         .error_for_status()?
         .json()
         .await?;
+    release_update(&body, current)
+}
 
-    let tag = body
+/// The update a release offers: None when it is not newer than `current`;
+/// an error when it is newer but its installer cannot be verified — no
+/// `AiLimits-Setup-<version>.exe`, no sha256 digest for it, or no signature
+/// beside it. Pure on its inputs for testability.
+fn release_update(release: &serde_json::Value, current: Version) -> Result<Option<Update>> {
+    let tag = release
         .get("tag_name")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let latest = parse_version(tag).context("unparseable release tag")?;
-    let current = parse_version(env!("CARGO_PKG_VERSION")).expect("crate version parses");
     if latest <= current {
         return Ok(None);
     }
+    let version = normalize(tag);
+    let name = installer_file_name(&version);
 
-    let asset =
-        installer_asset(&body).context("release has no AiLimits-Setup-*.exe installer asset")?;
-
-    let asset_url = asset
-        .get("browser_download_url")
-        .and_then(|v| v.as_str())
-        .context("installer asset has no download url")?
-        .to_string();
+    let installer =
+        named_asset(release, &name).with_context(|| format!("release has no {name} asset"))?;
+    let installer_url = download_url(installer)?;
     // GitHub reports the asset digest as "sha256:<hex>". No digest → refuse.
-    let sha256 = asset
+    let sha256 = installer
         .get("digest")
         .and_then(|v| v.as_str())
         .and_then(|d| d.strip_prefix("sha256:"))
         .context("installer asset has no sha256 digest — refusing to install unverified")?
         .to_string();
+    let signature =
+        named_asset(release, &format!("{name}{SIGNATURE_SUFFIX}")).with_context(|| {
+            format!("release has no signature for {name} — refusing to install it unsigned")
+        })?;
+    let signature_url = download_url(signature)?;
 
     Ok(Some(Update {
-        version: normalize(tag),
-        asset_url,
+        version,
+        installer_url,
         sha256,
+        signature_url,
     }))
 }
 
-/// The release's installer asset: the first one named like our installer.
-fn installer_asset(release: &serde_json::Value) -> Option<&serde_json::Value> {
+/// The installer's file name for a version: installer/ailimits.iss
+/// `OutputBaseFilename`. The release workflow checks the tag, Cargo.toml and
+/// the installer script agree, and the signature covers this name, so an
+/// installer published under another version's name does not verify.
+pub fn installer_file_name(version: &str) -> String {
+    format!("AiLimits-Setup-{version}.exe")
+}
+
+/// The release asset with exactly this name (ignoring case). Any other asset
+/// — another `.exe` included — is never run as the installer.
+fn named_asset<'a>(release: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
     release
         .get("assets")
         .and_then(|v| v.as_array())
@@ -159,23 +342,38 @@ fn installer_asset(release: &serde_json::Value) -> Option<&serde_json::Value> {
         .find(|a| {
             a.get("name")
                 .and_then(|v| v.as_str())
-                .is_some_and(is_installer_name)
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
         })
 }
 
-/// Whether an asset name is our installer's: `AiLimits-Setup-<version>.exe`
-/// (installer/ailimits.iss `OutputBaseFilename`), in any case. Any other
-/// `.exe` a release might carry is never run as the installer with
-/// `/VERYSILENT`, whatever its digest.
-fn is_installer_name(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    name.starts_with("ailimits-setup-") && name.ends_with(".exe")
+fn download_url(asset: &serde_json::Value) -> Result<String> {
+    asset
+        .get("browser_download_url")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .context("release asset has no download url")
 }
 
-/// Download the installer, verify its SHA-256, and write it to a temp path.
+/// Download the signature and the installer, verify both checks, and write
+/// the installer to a temp path.
 async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Result<PathBuf> {
+    let signature = client
+        .get(&update.signature_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    if signature.len() > SIGNATURE_MAX_BYTES {
+        bail!("the installer's signature file is not one — refusing");
+    }
+    let signature = String::from_utf8(signature.to_vec())
+        .map_err(|_| anyhow!("the installer's signature file is not text — refusing"))?;
+    // Read before the 4 MB download: a malformed signature fails here.
+    ReleaseSignature::parse(&signature)?;
+
     let bytes = client
-        .get(&update.asset_url)
+        .get(&update.installer_url)
         .send()
         .await?
         .error_for_status()?
@@ -189,13 +387,178 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
             update.sha256
         );
     }
+    let name = installer_file_name(&update.version);
+    verify_release(&name, &bytes, &signature)
+        .with_context(|| format!("{name} failed its signature check — refusing to install it"))?;
 
-    let dest = std::env::temp_dir().join(format!("AiLimits-Setup-{}.exe", update.version));
+    let dest = std::env::temp_dir().join(&name);
     tokio::fs::write(&dest, &bytes)
         .await
         .with_context(|| format!("write installer to {}", dest.display()))?;
     Ok(dest)
 }
+
+// ─── Release signatures ──────────────────────────────────────────
+
+/// What a release signature signs: the published file's name and the SHA-256
+/// of its bytes. The name carries the version, so a signed installer cannot
+/// be passed off as another version.
+pub fn signed_message(file_name: &str, sha256: &[u8]) -> Vec<u8> {
+    format!(
+        "AI Limits release signature v1\nfile {file_name}\nsha256 {}\n",
+        hex_lower(sha256)
+    )
+    .into_bytes()
+}
+
+/// A key's id: the first 8 bytes of the SHA-256 of the public key.
+pub fn key_id(public_key: &[u8; 32]) -> [u8; 8] {
+    let mut id = [0u8; 8];
+    id.copy_from_slice(&digest(&SHA256, public_key).as_ref()[..8]);
+    id
+}
+
+/// The text of a signature file: format, key id and signature, one line.
+pub fn encode_signature(key: &[u8; 8], signature: &[u8; 64]) -> String {
+    format!(
+        "{SIGNATURE_FORMAT} {} {}\n",
+        hex_lower(key),
+        hex_lower(signature)
+    )
+}
+
+/// A signature file, read.
+struct ReleaseSignature {
+    key: [u8; 8],
+    signature: [u8; 64],
+}
+
+impl ReleaseSignature {
+    fn parse(text: &str) -> Result<Self> {
+        let mut parts = text.split_whitespace();
+        let (Some(format), Some(key), Some(signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            bail!("not a release signature");
+        };
+        if format != SIGNATURE_FORMAT {
+            bail!("unknown release signature format {format:?}");
+        }
+        let key = hex_decode(key)
+            .and_then(|k| <[u8; 8]>::try_from(k).ok())
+            .context("release signature has no readable key id")?;
+        let signature = hex_decode(signature)
+            .and_then(|s| <[u8; 64]>::try_from(s).ok())
+            .context("release signature is not readable")?;
+        Ok(Self { key, signature })
+    }
+}
+
+/// Check `bytes`, published as `file_name`, against the text of its
+/// signature file, with the release keys built into this exe.
+pub fn verify_release(file_name: &str, bytes: &[u8], signature: &str) -> Result<()> {
+    verify_with_keys(RELEASE_KEYS, file_name, bytes, signature)
+}
+
+fn verify_with_keys(
+    keys: &[[u8; 32]],
+    file_name: &str,
+    bytes: &[u8],
+    signature: &str,
+) -> Result<()> {
+    let signature = ReleaseSignature::parse(signature)?;
+    let key = keys
+        .iter()
+        .find(|k| key_id(k) == signature.key)
+        .context("signed with a key this build does not trust")?;
+    let message = signed_message(file_name, digest(&SHA256, bytes).as_ref());
+    UnparsedPublicKey::new(&ED25519, key)
+        .verify(&message, &signature.signature)
+        .map_err(|_| anyhow!("the signature does not match {file_name}"))
+}
+
+// ─── Attempts ────────────────────────────────────────────────────
+
+/// One update attempt: the version it installs and where its installer is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Attempt {
+    version: String,
+    installer: PathBuf,
+}
+
+/// What the attempt record says at startup.
+#[derive(Debug, PartialEq)]
+enum Settled {
+    /// No attempt on record.
+    Nothing,
+    /// The attempted version (or a later one) is running: it worked.
+    Installed(String),
+    /// An older version is still running: the attempt did not finish.
+    Failed(String),
+}
+
+fn record_attempt(state: &Path, attempt: &Attempt) -> Result<()> {
+    std::fs::create_dir_all(state).with_context(|| format!("create {}", state.display()))?;
+    let text = serde_json::to_string(attempt).context("write the attempt record")?;
+    let path = state.join(ATTEMPT_FILE);
+    std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))
+}
+
+fn read_attempt(state: &Path) -> Option<Attempt> {
+    let text = std::fs::read_to_string(state.join(ATTEMPT_FILE)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Settle the attempt on record against the running version: a finished one
+/// is forgotten, a failed one is kept so it is not tried again. Either way
+/// its downloaded installer is deleted (an installer that is still running
+/// cannot be, and is tried again on the next start). An unreadable record is
+/// dropped.
+fn settle_attempt(state: &Path, current: Version) -> Settled {
+    let path = state.join(ATTEMPT_FILE);
+    if !path.exists() {
+        return Settled::Nothing;
+    }
+    let Some(attempt) = read_attempt(state) else {
+        let _ = std::fs::remove_file(&path);
+        return Settled::Nothing;
+    };
+    let Some(version) = parse_version(&attempt.version) else {
+        let _ = std::fs::remove_file(&path);
+        return Settled::Nothing;
+    };
+    let gone = match std::fs::remove_file(&attempt.installer) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    if version <= current {
+        if gone {
+            let _ = std::fs::remove_file(&path);
+        }
+        Settled::Installed(attempt.version)
+    } else {
+        Settled::Failed(attempt.version)
+    }
+}
+
+/// Whether `version` was attempted before and did not install: the record
+/// names it and the running build is still older.
+fn attempt_failed(state: &Path, version: &str, current: Version) -> bool {
+    read_attempt(state).is_some_and(|a| {
+        a.version == version && parse_version(&a.version).is_some_and(|v| v > current)
+    })
+}
+
+/// What a failed handoff of 0.6.0 to 0.7.0 left in `temp`: the script, and
+/// the installer of the version now running. Nothing else is touched.
+fn remove_legacy_leftovers(temp: &Path, current: Version) {
+    let _ = std::fs::remove_file(temp.join(LEGACY_SCRIPT));
+    let (major, minor, patch) = current;
+    let installer = installer_file_name(&format!("{major}.{minor}.{patch}"));
+    let _ = std::fs::remove_file(temp.join(installer));
+}
+
+// ─── Handoff ─────────────────────────────────────────────────────
 
 /// Where the Inno uninstall entry says the app is installed, if it exists.
 /// Written by the installer itself (per-user key, `{AppId}_is1`), so it is
@@ -273,58 +636,32 @@ fn running_from_managed_install() -> bool {
     false
 }
 
-/// The handoff script: force-close this process, run the installer silently,
-/// relaunch `relaunch` (when known), then delete the installer and itself.
-/// Pure on its inputs for testability.
-fn handoff_script(installer: &Path, relaunch: Option<&Path>) -> String {
-    let inst = installer.display();
-    let relaunch = relaunch
-        .map(|p| format!("start \"\" \"{}\"\r\n", p.display()))
-        .unwrap_or_default();
-    format!(
-        "@echo off\r\n\
-         taskkill /im ailimits.exe /f >nul 2>&1\r\n\
-         ping -n 2 127.0.0.1 >nul\r\n\
-         \"{inst}\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART\r\n\
-         {relaunch}\
-         del /q \"{inst}\" >nul 2>&1\r\n\
-         del /q \"%~f0\" >nul 2>&1\r\n"
-    )
+/// The installer, started directly: no shell and no script, so no path is
+/// ever written into text a code page could mangle. Pure for testability.
+fn installer_command(installer: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(installer);
+    command
+        .args(INSTALLER_SWITCHES)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    command
 }
 
-/// Hand off to the downloaded installer for a silent, in-place upgrade, then exit.
+/// Start the downloaded installer for a silent, in-place upgrade, then exit.
 ///
-/// The running exe holds a lock on itself, so a detached `cmd` shell (which does
-/// NOT lock our files) drives the sequence: force-close this process, run the
-/// installer silently, relaunch the freshly installed exe, then delete the
-/// downloaded installer. We spawn it detached and exit immediately so the
-/// installer never races our own file lock.
+/// The running exe holds a lock on its own file, so the app leaves at once:
+/// the installer spends far longer unpacking itself than this process takes
+/// to end, and `/CLOSEAPPLICATIONS` closes it should it still be there. The
+/// installer then replaces the files in the directory its uninstall entry
+/// names — the one this copy runs from (see `channel`) — and starts the app
+/// from there (`RELAUNCH_SWITCH`).
 #[cfg(target_os = "windows")]
 fn launch_installer_and_exit(installer: &Path) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    // CREATE_NO_WINDOW | DETACHED_PROCESS — no console flash, survives our exit.
-    const FLAGS: u32 = 0x0800_0000 | 0x0000_0008;
-
-    // Relaunch the running exe itself. An update only gets here from inside
-    // the directory the installer's own uninstall entry names (see
-    // `running_from_managed_install`), and the silent upgrade rewrites that
-    // directory, so this path IS the freshly installed exe, whether the
-    // install went to the default location or a custom one.
-    let script = handoff_script(installer, std::env::current_exe().ok().as_deref());
-
-    let bat = std::env::temp_dir().join("ailimits-update.cmd");
-    std::fs::write(&bat, script)
-        .with_context(|| format!("write the update script to {}", bat.display()))?;
-
-    // Absolute interpreter: a planted cmd.exe in the working directory must
-    // not be able to hijack the handoff (same rule as hooks.rs).
-    std::process::Command::new(crate::hooks::system_cmd_exe())
-        .raw_arg(format!("/C \"{}\"", bat.display()))
-        .creation_flags(FLAGS)
+    installer_command(installer)
         .spawn()
-        .context("spawn the update handoff")?;
-
-    // The handoff is running; leave so the installer can replace our files.
+        .context("start the installer")?;
+    // The installer is running; leave so it can replace our files.
     std::process::exit(0);
 }
 
@@ -334,9 +671,11 @@ fn launch_installer_and_exit(_installer: &Path) -> Result<()> {
     anyhow::bail!("no installer handoff on this platform")
 }
 
+// ─── Small helpers ───────────────────────────────────────────────
+
 /// Parse "v1.2.3" / "1.2.3" into a comparable tuple; any pre-release/build
 /// suffix is ignored (releases ship plain `vX.Y.Z` tags).
-fn parse_version(tag: &str) -> Option<(u32, u32, u32)> {
+fn parse_version(tag: &str) -> Option<Version> {
     let core = tag.trim().trim_start_matches(['v', 'V']);
     let core = core.split(['-', '+']).next().unwrap_or(core);
     let mut parts = core.split('.');
@@ -346,12 +685,13 @@ fn parse_version(tag: &str) -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-/// The version string without a leading `v`, for display and the temp filename.
+/// The version string without a leading `v`, for display and the file name.
 fn normalize(tag: &str) -> String {
     tag.trim().trim_start_matches(['v', 'V']).to_string()
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
+/// Lower-case hex of `bytes`.
+pub fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write;
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
@@ -360,9 +700,82 @@ fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
+/// Bytes from hex (either case); None on an odd length or a non-hex digit.
+pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    let (pairs, odd) = text.as_bytes().as_chunks::<2>();
+    if !odd.is_empty() {
+        return None;
+    }
+    let nibble = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    pairs
+        .iter()
+        .map(|&[high, low]| Some((nibble(high)? << 4) | nibble(low)?))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ring::rand::SystemRandom;
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+
+    /// Paths an update has to survive: Cyrillic, `&`, `%`, brackets, spaces
+    /// and the other characters a batch file reads as syntax.
+    const AWKWARD_DIRS: &[&str] = &[
+        "Вася Пупкін",
+        "Tom&Jerry",
+        "100% done",
+        "dir (x86) [1]",
+        "a^b!c;d,e=f",
+        "Їжак & Co (100%)",
+    ];
+
+    /// A throwaway signing key, never the release key.
+    fn test_key() -> Ed25519KeyPair {
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap()
+    }
+
+    fn public(key: &Ed25519KeyPair) -> [u8; 32] {
+        key.public_key().as_ref().try_into().unwrap()
+    }
+
+    fn sign(key: &Ed25519KeyPair, name: &str, bytes: &[u8]) -> String {
+        let message = signed_message(name, digest(&SHA256, bytes).as_ref());
+        let signature: [u8; 64] = key.sign(&message).as_ref().try_into().unwrap();
+        encode_signature(&key_id(&public(key)), &signature)
+    }
+
+    /// A fresh folder under %TEMP% whose name holds `awkward`.
+    fn temp_dir_named(awkward: &str, test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ailimits-updater-{test}-{}-{awkward}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn release(tag: &str, assets: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "tag_name": tag, "assets": assets })
+    }
+
+    fn asset(name: &str, digest: Option<&str>) -> serde_json::Value {
+        let mut a = serde_json::json!({
+            "name": name,
+            "browser_download_url": format!("https://example.invalid/{name}"),
+        });
+        if let Some(d) = digest {
+            a["digest"] = serde_json::Value::String(d.to_string());
+        }
+        a
+    }
 
     #[test]
     fn parses_tags_with_and_without_prefix() {
@@ -385,34 +798,6 @@ mod tests {
     }
 
     #[test]
-    fn only_the_setup_exe_is_taken_for_the_installer() {
-        assert!(is_installer_name("AiLimits-Setup-0.7.1.exe"));
-        assert!(is_installer_name("ailimits-setup-0.7.1.EXE"));
-        for name in [
-            "ailimits.exe",
-            "ailimits-auth.exe",
-            "AiLimits-Portable-0.7.1.exe",
-            "Setup-AiLimits-0.7.1.exe",
-            "evil-AiLimits-Setup-0.7.1.exe",
-            "AiLimits-Setup-0.7.1.exe.sha256",
-            "AiLimits-Setup-0.7.1.zip",
-        ] {
-            assert!(!is_installer_name(name), "{name} is not the installer");
-        }
-
-        // Another .exe listed first must not be picked over the installer.
-        let release = serde_json::json!({"tag_name": "v9.9.9", "assets": [
-            {"name": "ailimits-auth.exe", "browser_download_url": "https://example.invalid/a"},
-            {"name": "AiLimits-Setup-9.9.9.exe", "browser_download_url": "https://example.invalid/s"}
-        ]});
-        let asset = installer_asset(&release).expect("the setup asset");
-        assert_eq!(asset["name"], "AiLimits-Setup-9.9.9.exe");
-
-        let without = serde_json::json!({"assets": [{"name": "ailimits.exe"}]});
-        assert!(installer_asset(&without).is_none());
-    }
-
-    #[test]
     fn hex_lower_matches_known_vector() {
         // SHA-256("") — the canonical empty-input digest.
         let d = digest(&SHA256, b"");
@@ -420,6 +805,42 @@ mod tests {
             hex_lower(d.as_ref()),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
+    }
+
+    #[test]
+    fn hex_decodes_what_it_encodes_and_nothing_else() {
+        let bytes = [0x00, 0x7f, 0x80, 0xff, 0x12, 0xab];
+        assert_eq!(hex_decode(&hex_lower(&bytes)).unwrap(), bytes);
+        assert_eq!(hex_decode("ABcd").unwrap(), [0xab, 0xcd]);
+        assert_eq!(hex_decode(""), Some(vec![]));
+        assert_eq!(hex_decode("abc"), None, "odd length");
+        assert_eq!(hex_decode("zz"), None, "not hex");
+        assert_eq!(hex_decode("ая"), None, "not ASCII");
+    }
+
+    // ─── Which copies update themselves (C-11) ───────────────────
+
+    #[test]
+    fn only_an_installer_copy_updates_itself() {
+        assert_eq!(channel_of(false, true), Channel::Installer);
+        assert_eq!(channel_of(true, false), Channel::Store);
+        // A Store package is the Store's, wherever it seems to sit.
+        assert_eq!(channel_of(true, true), Channel::Store);
+        assert_eq!(channel_of(false, false), Channel::Unmanaged);
+    }
+
+    #[tokio::test]
+    async fn a_copy_the_installer_did_not_place_stands_down_at_once() {
+        // The test binary sits in target\, never in the installer's
+        // directory: the loop must end before its first delay, so before
+        // any request could be made (the first one waits 30 s).
+        assert_ne!(channel(), Channel::Installer);
+        let ran = tokio::time::timeout(
+            Duration::from_millis(500),
+            run(Arc::new(AtomicBool::new(true))),
+        )
+        .await;
+        assert!(ran.is_ok(), "run() returned without waiting or asking");
     }
 
     #[test]
@@ -462,28 +883,327 @@ mod tests {
         let _ = std::fs::remove_file(&elsewhere);
     }
 
-    #[test]
-    fn the_handoff_relaunches_exactly_the_exe_it_is_given() {
-        // A custom install directory: the relaunch names the running exe and
-        // nothing else, no guess at the default location.
-        let installer = Path::new(r"C:\Temp\AiLimits-Setup-9.9.9.exe");
-        let running = Path::new(r"D:\Tools\AI Limits\ailimits.exe");
-        let script = handoff_script(installer, Some(running));
+    // ─── What a release must carry (C-02) ────────────────────────
 
-        assert!(script.contains("start \"\" \"D:\\Tools\\AI Limits\\ailimits.exe\"\r\n"));
-        assert_eq!(script.matches("start ").count(), 1, "one relaunch only");
-        assert!(!script.contains("AppData"), "no guessed default location");
-        // The installer runs silently first, the relaunch after it.
-        let install = script
-            .find("\"C:\\Temp\\AiLimits-Setup-9.9.9.exe\" /VERYSILENT")
-            .expect("the installer line");
-        assert!(install < script.find("start ").unwrap());
+    #[test]
+    fn a_newer_release_with_a_signed_installer_is_an_update() {
+        let r = release(
+            "v9.9.9",
+            serde_json::json!([
+                asset("ailimits-auth.exe", Some("sha256:00")),
+                asset("AiLimits-Setup-9.9.9.exe", Some("sha256:abc123")),
+                asset("AiLimits-Setup-9.9.9.exe.sig", None),
+                asset("AiLimits-Portable-9.9.9.zip", Some("sha256:ff")),
+            ]),
+        );
+        let u = release_update(&r, (0, 7, 0)).unwrap().expect("an update");
+        assert_eq!(u.version, "9.9.9");
+        assert_eq!(
+            u.installer_url,
+            "https://example.invalid/AiLimits-Setup-9.9.9.exe"
+        );
+        assert_eq!(u.sha256, "abc123");
+        assert_eq!(
+            u.signature_url,
+            "https://example.invalid/AiLimits-Setup-9.9.9.exe.sig"
+        );
     }
 
     #[test]
-    fn the_handoff_skips_the_relaunch_when_the_exe_is_unknown() {
-        let script = handoff_script(Path::new(r"C:\Temp\setup.exe"), None);
-        assert!(!script.contains("start "));
-        assert!(script.contains("/VERYSILENT"));
+    fn the_same_or_an_older_release_is_no_update() {
+        let r = release("v0.7.0", serde_json::json!([]));
+        assert!(release_update(&r, (0, 7, 0)).unwrap().is_none());
+        assert!(release_update(&r, (0, 7, 1)).unwrap().is_none());
+    }
+
+    #[test]
+    fn an_unsigned_or_unverifiable_release_is_refused() {
+        let installer = asset("AiLimits-Setup-9.9.9.exe", Some("sha256:abc"));
+        let signature = asset("AiLimits-Setup-9.9.9.exe.sig", None);
+
+        let unsigned = release("v9.9.9", serde_json::json!([installer.clone()]));
+        let e = release_update(&unsigned, (0, 7, 0)).err().expect("refused");
+        assert!(format!("{e:#}").contains("unsigned"), "{e:#}");
+
+        let no_digest = release(
+            "v9.9.9",
+            serde_json::json!([asset("AiLimits-Setup-9.9.9.exe", None), signature.clone()]),
+        );
+        assert!(release_update(&no_digest, (0, 7, 0)).is_err());
+
+        // Only the installer named for the tag is taken: not another .exe,
+        // and not an installer for some other version.
+        for other in [
+            "ailimits.exe",
+            "ailimits-auth.exe",
+            "AiLimits-Setup-0.7.1.exe",
+            "evil-AiLimits-Setup-9.9.9.exe",
+            "AiLimits-Setup-9.9.9.exe.sig",
+        ] {
+            let r = release(
+                "v9.9.9",
+                serde_json::json!([asset(other, Some("sha256:abc")), signature.clone()]),
+            );
+            assert!(release_update(&r, (0, 7, 0)).is_err(), "{other} taken");
+        }
+
+        // The name is matched without regard to case.
+        let shouty = release(
+            "v9.9.9",
+            serde_json::json!([
+                asset("ailimits-setup-9.9.9.EXE", Some("sha256:abc")),
+                asset("AILIMITS-SETUP-9.9.9.EXE.SIG", None)
+            ]),
+        );
+        assert!(release_update(&shouty, (0, 7, 0)).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_signed_installer_verifies_and_any_change_does_not() {
+        let key = test_key();
+        let keys = [public(&key)];
+        let name = "AiLimits-Setup-9.9.9.exe";
+        let bytes = b"an installer".as_slice();
+        let signature = sign(&key, name, bytes);
+
+        assert!(verify_with_keys(&keys, name, bytes, &signature).is_ok());
+        // Another file.
+        assert!(verify_with_keys(&keys, name, b"an installeR", &signature).is_err());
+        // The same file under another version's name.
+        assert!(verify_with_keys(&keys, "AiLimits-Setup-9.9.10.exe", bytes, &signature).is_err());
+        // Only the signer's own key verifies it.
+        let other = public(&test_key());
+        assert!(verify_with_keys(&[other], name, bytes, &signature).is_err());
+        // A key this build does not know.
+        let stranger = test_key();
+        let foreign = sign(&stranger, name, bytes);
+        let e = verify_with_keys(&keys, name, bytes, &foreign).unwrap_err();
+        assert!(format!("{e:#}").contains("does not trust"), "{e:#}");
+        // A flipped bit in the signature.
+        let mut tampered = signature.clone().into_bytes();
+        let last = tampered.len() - 2;
+        tampered[last] = if tampered[last] == b'0' { b'1' } else { b'0' };
+        let tampered = String::from_utf8(tampered).unwrap();
+        assert!(verify_with_keys(&keys, name, bytes, &tampered).is_err());
+    }
+
+    #[test]
+    fn a_signature_file_is_one_line_of_a_known_format() {
+        let key = test_key();
+        let signature = sign(&key, "f", b"x");
+        assert!(signature.is_ascii());
+        assert_eq!(signature.lines().count(), 1);
+        assert!(signature.starts_with("ailimits-signature-v1 "));
+        assert!(ReleaseSignature::parse(&signature).is_ok());
+        // Whitespace around it (a CRLF from an editor) does not matter.
+        assert!(ReleaseSignature::parse(&format!("  {}\r\n", signature.trim())).is_ok());
+
+        for bad in [
+            "",
+            "ailimits-signature-v1",
+            "ailimits-signature-v2 0011223344556677 00",
+            "ailimits-signature-v1 00112233 00",
+            "ailimits-signature-v1 0011223344556677 zz",
+            "minisign signature",
+        ] {
+            assert!(ReleaseSignature::parse(bad).is_err(), "{bad:?} parsed");
+        }
+        let extra = format!("{} trailing", signature.trim());
+        assert!(ReleaseSignature::parse(&extra).is_err());
+    }
+
+    #[test]
+    fn the_built_in_release_key_is_a_real_key() {
+        assert!(!RELEASE_KEYS.is_empty());
+        for key in RELEASE_KEYS {
+            assert_ne!(key, &[0u8; 32], "a placeholder, not a key");
+            // A signature by some other key is refused under it, so the key
+            // at least parses as a point the verifier accepts to try.
+            let stranger = test_key();
+            let foreign = sign(&stranger, "f", b"x");
+            assert!(verify_release("f", b"x", &foreign).is_err());
+        }
+        let ids: std::collections::HashSet<_> = RELEASE_KEYS.iter().map(key_id).collect();
+        assert_eq!(ids.len(), RELEASE_KEYS.len(), "key ids are unique");
+        // The id the comment beside the key gives.
+        assert_eq!(hex_lower(&key_id(&RELEASE_KEYS[0])), "1507bd92b1a4bb7b");
+    }
+
+    // ─── The handoff (C-01) ──────────────────────────────────────
+
+    #[test]
+    fn the_installer_starts_directly_whatever_the_path() {
+        for awkward in AWKWARD_DIRS {
+            let installer = Path::new(r"C:\Users")
+                .join(awkward)
+                .join(r"AppData\Local\Temp")
+                .join("AiLimits-Setup-9.9.9.exe");
+            let command = installer_command(&installer);
+            // The installer itself is the program — no cmd.exe, no script —
+            // and its path is handed over as it is, UTF-16 to CreateProcessW.
+            assert_eq!(command.get_program(), installer.as_os_str(), "{awkward}");
+            let args: Vec<&str> = command
+                .get_args()
+                .map(|a| a.to_str().expect("an ASCII switch"))
+                .collect();
+            assert_eq!(args, INSTALLER_SWITCHES, "{awkward}");
+            assert!(args.iter().all(|a| a.is_ascii() && a.starts_with('/')));
+            assert!(
+                args.iter().all(|a| !a.contains(awkward)),
+                "no path in the switches"
+            );
+        }
+    }
+
+    #[test]
+    fn the_upgrade_is_silent_closes_the_app_and_brings_it_back() {
+        for switch in [
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/CLOSEAPPLICATIONS",
+        ] {
+            assert!(INSTALLER_SWITCHES.contains(&switch), "{switch}");
+        }
+        assert!(INSTALLER_SWITCHES.contains(&RELAUNCH_SWITCH));
+    }
+
+    #[test]
+    fn the_installer_relaunches_on_the_switch_the_updater_passes() {
+        // installer/ailimits.iss must start the app again on exactly this
+        // switch, in a silent run only: without it a self-update would leave
+        // the widget closed.
+        let iss = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("installer/ailimits.iss"),
+        )
+        .expect("the installer script");
+        let (name, value) = RELAUNCH_SWITCH
+            .trim_start_matches('/')
+            .split_once('=')
+            .unwrap();
+        assert!(
+            iss.contains(&format!("ExpandConstant('{{param:{name}|0}}') = '{value}'")),
+            "ailimits.iss reads {RELAUNCH_SWITCH}"
+        );
+        assert!(iss.contains("WizardSilent"), "a silent run only");
+        let relaunch = iss
+            .lines()
+            .find(|l| l.contains("Check: RelaunchAfterUpdate"))
+            .expect("a [Run] entry for the relaunch");
+        assert!(relaunch.contains(r#"Filename: "{app}\{#AppExe}""#));
+        assert!(relaunch.contains("nowait"), "the installer must not wait");
+        assert!(
+            !relaunch.contains("skipifsilent"),
+            "it is for the silent run"
+        );
+    }
+
+    // ─── Attempts (C-01) ─────────────────────────────────────────
+
+    #[test]
+    fn a_finished_attempt_is_forgotten_and_its_installer_deleted() {
+        for (i, awkward) in AWKWARD_DIRS.iter().enumerate() {
+            let state = temp_dir_named(awkward, &format!("ok{i}"));
+            let installer = state.join("AiLimits-Setup-0.7.1.exe");
+            std::fs::write(&installer, b"stub").unwrap();
+            let attempt = Attempt {
+                version: "0.7.1".into(),
+                installer: installer.clone(),
+            };
+            record_attempt(&state, &attempt).unwrap();
+            assert_eq!(read_attempt(&state), Some(attempt), "{awkward}");
+
+            assert_eq!(
+                settle_attempt(&state, (0, 7, 1)),
+                Settled::Installed("0.7.1".into())
+            );
+            assert!(!installer.exists(), "{awkward}: installer deleted");
+            assert!(!state.join(ATTEMPT_FILE).exists(), "{awkward}: record gone");
+            assert_eq!(settle_attempt(&state, (0, 7, 1)), Settled::Nothing);
+            std::fs::remove_dir_all(&state).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_failed_attempt_is_kept_and_not_tried_again() {
+        for (i, awkward) in AWKWARD_DIRS.iter().enumerate() {
+            let state = temp_dir_named(awkward, &format!("fail{i}"));
+            let installer = state.join("AiLimits-Setup-0.7.2.exe");
+            std::fs::write(&installer, b"stub").unwrap();
+            record_attempt(
+                &state,
+                &Attempt {
+                    version: "0.7.2".into(),
+                    installer: installer.clone(),
+                },
+            )
+            .unwrap();
+
+            // Still on 0.7.1 at the next start: the upgrade did not happen.
+            assert_eq!(
+                settle_attempt(&state, (0, 7, 1)),
+                Settled::Failed("0.7.2".into())
+            );
+            assert!(!installer.exists(), "{awkward}: the 4 MB do not stay");
+            assert!(state.join(ATTEMPT_FILE).exists(), "{awkward}: remembered");
+            assert!(attempt_failed(&state, "0.7.2", (0, 7, 1)));
+            // A later release is tried as usual.
+            assert!(!attempt_failed(&state, "0.7.3", (0, 7, 1)));
+            // Once it runs (installed by hand), the record is settled.
+            assert_eq!(
+                settle_attempt(&state, (0, 7, 2)),
+                Settled::Installed("0.7.2".into())
+            );
+            assert!(!attempt_failed(&state, "0.7.2", (0, 7, 2)));
+            std::fs::remove_dir_all(&state).unwrap();
+        }
+    }
+
+    #[test]
+    fn no_record_or_a_broken_one_means_nothing_failed() {
+        let state = temp_dir_named("plain", "none");
+        assert_eq!(settle_attempt(&state, (0, 7, 1)), Settled::Nothing);
+        assert!(!attempt_failed(&state, "0.7.2", (0, 7, 1)));
+
+        for broken in ["", "{", "{\"version\":\"x\",\"installer\":\"y\"}", "[]"] {
+            std::fs::write(state.join(ATTEMPT_FILE), broken).unwrap();
+            assert!(!attempt_failed(&state, "0.7.2", (0, 7, 1)), "{broken:?}");
+            assert_eq!(settle_attempt(&state, (0, 7, 1)), Settled::Nothing);
+            assert!(!state.join(ATTEMPT_FILE).exists(), "{broken:?} dropped");
+        }
+        std::fs::remove_dir_all(&state).unwrap();
+    }
+
+    #[test]
+    fn a_record_can_be_written_into_a_folder_that_does_not_exist_yet() {
+        let root = temp_dir_named("Вася & (100%)", "mkdir");
+        let state = root.join("AiLimits");
+        let attempt = Attempt {
+            version: "9.9.9".into(),
+            installer: root.join("Їжак").join("AiLimits-Setup-9.9.9.exe"),
+        };
+        record_attempt(&state, &attempt).unwrap();
+        assert_eq!(read_attempt(&state), Some(attempt));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn only_the_old_handoff_leftovers_are_cleaned() {
+        let temp = temp_dir_named("Tom&Jerry (Вася) 100%", "legacy");
+        let script = temp.join(LEGACY_SCRIPT);
+        let stale = temp.join("AiLimits-Setup-0.7.1.exe");
+        let newer = temp.join("AiLimits-Setup-0.7.2.exe");
+        let other = temp.join("something-else.cmd");
+        for f in [&script, &stale, &newer, &other] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        remove_legacy_leftovers(&temp, (0, 7, 1));
+        assert!(!script.exists());
+        assert!(!stale.exists(), "the installer of the running version");
+        assert!(newer.exists(), "not the running version's: left alone");
+        assert!(other.exists(), "not ours: left alone");
+        // Nothing there is not an error.
+        remove_legacy_leftovers(&temp, (0, 7, 1));
+        std::fs::remove_dir_all(&temp).unwrap();
     }
 }

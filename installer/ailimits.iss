@@ -69,18 +69,35 @@ Root: HKCU; Subkey: "Software\Classes\AppUserModelId\napxlexn.AILimits"; ValueTy
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:RunApp}"; \
     Flags: nowait postinstall skipifsilent
+; The app's own silent self-update (src/updater.rs) exits so its files can be
+; replaced and asks for itself back with /RELAUNCH=1: start it again from the
+; directory just installed. A plain silent install (winget, Chocolatey) does
+; not pass the switch and starts nothing, as before.
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [UninstallRun]
 ; Stop the widget before uninstalling.
 Filename: "taskkill"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "KillWidget"
 ; Remove the app-created secrets from Credential Manager (API keys, PATs,
-; usage tokens) — without this they would outlive the uninstall. A missing
-; entry is a no-op (exit 0). Runs before files are deleted.
+; usage tokens, the app's own Cursor session) — without this they would
+; outlive the uninstall. A missing entry is a no-op (exit 0); nothing here
+; touches the network. Runs before files are deleted. Every label the app
+; writes must be removed here: tests/uninstall_labels_test.rs checks it.
 Filename: "{app}\ailimits-auth.exe"; Parameters: "remove claude"; Flags: runhidden; RunOnceId: "RmKeyClaude"
 Filename: "{app}\ailimits-auth.exe"; Parameters: "remove copilot"; Flags: runhidden; RunOnceId: "RmKeyCopilot"
 Filename: "{app}\ailimits-auth.exe"; Parameters: "remove-usage-token claude"; Flags: runhidden; RunOnceId: "RmUsageClaude"
 Filename: "{app}\ailimits-auth.exe"; Parameters: "remove-usage-token codex"; Flags: runhidden; RunOnceId: "RmUsageCodex"
+Filename: "{app}\ailimits-auth.exe"; Parameters: "logout cursor"; Flags: runhidden; RunOnceId: "RmCursorSession"
 
 [UninstallDelete]
 ; Remove the user config and cache as well.
 Type: filesandordirs; Name: "{userappdata}\AiLimits"
+
+[Code]
+// The [Run] relaunch after the app's own silent self-update: only in a silent
+// run, and only when the updater passed /RELAUNCH=1 (src/updater.rs,
+// RELAUNCH_SWITCH). An interactive install has its own "Launch" checkbox.
+function RelaunchAfterUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
+end;

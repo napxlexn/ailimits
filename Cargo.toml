@@ -25,6 +25,12 @@ path = "src/bin/ailimits-auth.rs"
 name = "ailimits"
 path = "src/lib.rs"
 
+[[example]]
+# The release signing tool (the release workflow, the owner's key setup).
+# An example, so it is never built into the app or shipped.
+name = "release-sign"
+path = "tools/release_sign.rs"
+
 [dependencies]
 # --- Window and UI ---
 # Cross-platform event loop and windows.
@@ -47,8 +53,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "fs", "process",
 # --- HTTP ---
 # HTTP client with TLS (rustls, no OpenSSL).
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-# SHA-256 for the auto-updater's installer integrity check. Already in the tree
-# via rustls (transitively) — a direct dep here adds no new crate, only access.
+# SHA-256 and the Ed25519 release signature for the auto-updater's installer
+# checks. Already in the tree via rustls (transitively) — a direct dep here
+# adds no new crate, only access.
 ring = "0.17"
 
 # --- Serialization ---
