@@ -5,12 +5,16 @@
 // (READ-ONLY, never refreshed), used for one undocumented endpoint: the CLI
 // proxy's billing call in its credits format.
 
-use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{
+    clean_label, generation_of, status_words, tool_home, transport_error, unless_superseded,
+    Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
 /// Undocumented SuperGrok usage endpoint the Grok CLI itself calls — verified
@@ -23,7 +27,12 @@ const TOKEN_AUTH_VALUE: &str = "xai-grok-cli";
 
 pub struct GrokProvider {
     config: ProviderConfig,
-    http: reqwest::Client,
+    /// Never follows a 3xx — keeps the bearer token from leaking to a
+    /// redirected host. The billing endpoint returns 200 directly.
+    net: Net,
+    /// The Grok CLI's login file, read only when allowed.
+    login_path: Option<PathBuf>,
+    generation: &'static AtomicU64,
 }
 
 /// What the Grok CLI's login file holds for the widget.
@@ -57,14 +66,24 @@ impl std::fmt::Debug for GrokLogin {
 
 impl GrokProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            // Never follow a 3xx — keeps the bearer token from leaking to a
-            // redirected host. The billing endpoint returns 200 directly.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
-        Self { config, http }
+        Self {
+            config,
+            net: Net::new(),
+            login_path: login_path(),
+            generation: generation_of(&ProviderId::Grok),
+        }
+    }
+
+    /// A provider that sends to a local test server and reads the login
+    /// file the test wrote.
+    #[cfg(test)]
+    fn for_test(config: ProviderConfig, server: &str, login_path: Option<PathBuf>) -> Self {
+        Self {
+            config,
+            net: Net::local(server),
+            login_path,
+            generation: Box::leak(Box::new(AtomicU64::new(0))),
+        }
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -81,10 +100,14 @@ impl GrokProvider {
     /// whenever it runs, the widget must never rotate it.
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
         // The Grok CLI's login is its own: only when the user allowed it.
-        if !self.config.tool_files {
+        let Some(path) = self
+            .login_path
+            .as_deref()
+            .filter(|_| self.config.tool_files)
+        else {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
-        }
-        let token = match read_grok_login().await {
+        };
+        let token = match read_grok_login(path).await {
             Ok(GrokLogin::Token { key, .. }) => key,
             // No session at all — the row stays hidden until `grok` signs in.
             Ok(GrokLogin::Missing) => {
@@ -110,8 +133,9 @@ impl GrokProvider {
         };
 
         let resp = match self
+            .net
             .http
-            .get(BILLING_URL)
+            .get(self.net.url(BILLING_URL))
             .bearer_auth(&token)
             .header(TOKEN_AUTH_HEADER, TOKEN_AUTH_VALUE)
             .header("Accept", "application/json")
@@ -119,7 +143,11 @@ impl GrokProvider {
             .await
         {
             Ok(r) => r,
-            Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
+            Err(e) => {
+                warn!("grok billing request failed: {e}");
+                let words = transport_error(&e).to_string();
+                return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
+            }
         };
         let code = resp.status().as_u16();
         // Only a 200 carries a body worth reading. One cut off mid-transfer
@@ -127,7 +155,11 @@ impl GrokProvider {
         let body = if code == 200 {
             match resp.text().await {
                 Ok(body) => body,
-                Err(e) => return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
+                Err(e) => {
+                    warn!("grok billing body read failed: {e}");
+                    let words = transport_error(&e).to_string();
+                    return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
+                }
             }
         } else {
             String::new()
@@ -147,27 +179,33 @@ impl Provider for GrokProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        self.fetch_via_subscription().await
+        let started = self.generation.load(Ordering::SeqCst);
+        let data = self.fetch_via_subscription().await?;
+        unless_superseded(data, started, self.generation)
     }
 }
 
-/// The Grok CLI's home: `GROK_HOME` when set, otherwise `%USERPROFILE%\.grok`
-/// — the CLI's own rule (its docs, user-guide/05-configuration.md).
-fn grok_home() -> PathBuf {
-    match std::env::var_os("GROK_HOME").filter(|v| !v.is_empty()) {
-        Some(home) => PathBuf::from(home),
-        None => dirs::home_dir().unwrap_or_default().join(".grok"),
-    }
+/// Where the Grok CLI keeps its login: auth.json in the CLI's home —
+/// `GROK_HOME` when it names an absolute folder, otherwise
+/// `%USERPROFILE%\.grok` (the CLI's own rule, its docs,
+/// user-guide/05-configuration.md). A relative `GROK_HOME` is the CLI's
+/// working directory's business, which the app cannot know: it is not
+/// followed, the same as for the model label (models/mod.rs). None without
+/// an absolute home folder.
+pub fn login_path() -> Option<PathBuf> {
+    tool_home("GROK_HOME", ".grok").map(|home| home.join("auth.json"))
 }
 
-/// Where the Grok CLI keeps its login.
+/// Where the Grok CLI keeps its login, for the consent text and
+/// `ailimits-auth status`: `login_path`, or an empty path when there is
+/// none (which names no file and reads as missing).
 pub fn auth_path() -> PathBuf {
-    grok_home().join("auth.json")
+    login_path().unwrap_or_default()
 }
 
 /// Read the Grok CLI login. A missing file is `Missing`, not an error.
-async fn read_grok_login() -> Result<GrokLogin> {
-    let content = match tokio::fs::read_to_string(auth_path()).await {
+async fn read_grok_login(path: &Path) -> Result<GrokLogin> {
+    let content = match tokio::fs::read_to_string(path).await {
         Ok(content) => content,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(GrokLogin::Missing),
         Err(e) => return Err(e.into()),
@@ -250,10 +288,7 @@ pub fn billing_outcome(code: u16, body: &str) -> (ProviderStatus, Vec<Metric>) {
         ),
         other => {
             warn!("grok billing returned HTTP {other}");
-            (
-                ProviderStatus::NetworkError(format!("HTTP {other}")),
-                vec![],
-            )
+            (ProviderStatus::NetworkError(status_words(other)), vec![])
         }
     }
 }
@@ -273,8 +308,9 @@ pub fn billing_outcome(code: u16, body: &str) -> (ProviderStatus, Vec<Metric>) {
 /// and only then; without the period it is an unknown schema (empty list).
 ///
 /// The first metric is the whole subscription limit. Each product's share of
-/// it follows as its own long-window metric, the place Claude's Opus and
-/// Sonnet pools take; nothing draws them yet.
+/// it follows as its own long-window metric, shown only by its extra row
+/// (`Metric::extra_only`; Grok Build's is "grok.build"): the Grok row looks
+/// the same whether the server lists products or not.
 pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
     let value: serde_json::Value = serde_json::from_str(body)?;
     let Some(config) = value.get("config").filter(|c| c.is_object()) else {
@@ -321,7 +357,7 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
             let Some(name) = entry
                 .get("product")
                 .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
+                .and_then(product_label)
             else {
                 continue;
             };
@@ -334,14 +370,14 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
                 },
             };
             metrics.push(Metric {
-                label: product_label(name),
+                label: name,
                 used: share,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at,
                 window: MetricWindow::Long,
                 unified_pool: false,
-                extra_only: false,
+                extra_only: true,
             });
         }
     }
@@ -384,11 +420,14 @@ fn period_label(kind: &str) -> &'static str {
 }
 
 /// Compact product name for the widget's narrow rows: "GrokBuild" → "Build".
-/// The row already says Grok; any other name passes through unchanged.
-fn product_label(product: &str) -> String {
-    match product.strip_prefix("Grok") {
-        Some(rest) if !rest.is_empty() => rest.to_string(),
-        _ => product.to_string(),
+/// The row already says Grok; any other name passes through, cleaned (no
+/// control characters, 32 characters at most). None for one with nothing
+/// left to show.
+fn product_label(product: &str) -> Option<String> {
+    let name = clean_label(product)?;
+    match name.strip_prefix("Grok") {
+        Some(rest) if !rest.trim().is_empty() => Some(rest.trim().to_string()),
+        _ => Some(name),
     }
 }
 
@@ -410,6 +449,103 @@ mod tests {
         });
         let data = p.fetch().await.unwrap();
         assert!(matches!(data.status, ProviderStatus::NotConfigured));
+    }
+
+    use crate::providers::test_server::{Reply, TempHome, TestServer};
+
+    fn config(tool_files: bool) -> ProviderConfig {
+        ProviderConfig {
+            id: "grok".to_string(),
+            enabled: true,
+            auth_method: Default::default(),
+            credential_label: String::new(),
+            tool_files,
+            alert_threshold: 80,
+        }
+    }
+
+    /// A Grok CLI home with a made-up session valid until 2100.
+    fn grok_home() -> TempHome {
+        let home = TempHome::new("grok");
+        home.write(
+            "auth.json",
+            r#"{"https://issuer.invalid::client": {"key": "grok-token", "expires_at": "2100-01-01T00:00:00Z"}}"#,
+        );
+        home
+    }
+
+    const BILLING_BODY: &str = r#"{"config": {"currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "start": "2099-01-01T00:00:00Z", "end": "2099-01-08T00:00:00Z"}, "creditUsagePercent": 12.0, "productUsage": [{"product": "GrokBuild", "usagePercent": 3.0}]}}"#;
+
+    fn message(data: &ProviderData) -> String {
+        match &data.status {
+            ProviderStatus::NetworkError(m) | ProviderStatus::AuthError(m) => m.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn one_request_per_cycle_and_honest_failures() {
+        let home = grok_home();
+        let path = Some(home.path().join("auth.json"));
+        let server = TestServer::start();
+        server.route("/v1/billing", vec![Reply::ok(BILLING_BODY)]);
+        let p = GrokProvider::for_test(config(true), &server.base, path.clone());
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::Ok));
+        assert_eq!(server.count("/v1/billing"), 1);
+        assert_eq!(server.seen()[0].auth.as_deref(), Some("Bearer grok-token"));
+        // The product's share is for its extra row only.
+        assert!(!data.metrics[0].extra_only);
+        assert!(data.metrics[1].extra_only);
+        assert_eq!(data.metrics[1].label, "Build");
+
+        for (reply, words) in [
+            (Reply::Hangup, "offline, retrying"),
+            (Reply::status(502), "HTTP 502, retrying"),
+            (Reply::status(429), "rate-limited, retrying"),
+            (Reply::status(401), "token rejected"),
+        ] {
+            let server = TestServer::start();
+            server.route("/v1/billing", vec![reply]);
+            let p = GrokProvider::for_test(config(true), &server.base, path.clone());
+            assert_eq!(message(&p.fetch().await.unwrap()), words);
+        }
+    }
+
+    #[tokio::test]
+    async fn without_tool_files_the_login_is_not_read_or_sent() {
+        let home = grok_home();
+        let server = TestServer::start();
+        server.route("/v1/billing", vec![Reply::ok(BILLING_BODY)]);
+        let p = GrokProvider::for_test(
+            config(false),
+            &server.base,
+            Some(home.path().join("auth.json")),
+        );
+        assert!(matches!(
+            p.fetch().await.unwrap().status,
+            ProviderStatus::NotConfigured
+        ));
+        assert!(server.seen().is_empty());
+    }
+
+    #[test]
+    fn the_login_lives_in_the_clis_home_and_never_a_relative_one() {
+        let path = login_path().expect("a home folder");
+        assert!(path.is_absolute());
+        assert_eq!(auth_path(), path);
+    }
+
+    #[test]
+    fn product_names_are_cleaned() {
+        assert_eq!(product_label("GrokBuild").as_deref(), Some("Build"));
+        assert_eq!(product_label("Grok").as_deref(), Some("Grok"));
+        assert_eq!(
+            product_label("Imagine\u{1b}[31m").as_deref(),
+            Some("Imagine[31m")
+        );
+        assert_eq!(product_label(" \u{7} "), None);
+        assert_eq!(product_label(&"P".repeat(70)).map(|s| s.len()), Some(32));
     }
 
     /// One live request with the real Grok CLI login. Run explicitly:

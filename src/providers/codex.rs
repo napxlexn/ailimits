@@ -3,15 +3,23 @@
 //
 // Token sources, in order:
 //   1. manual usage token from Credential Manager ("codex_usage_token")
-//   2. the Codex CLI token from auth.json (READ-ONLY, never refreshed)
+//   2. the Codex CLI token from auth.json in the CLI's home (READ-ONLY,
+//      never refreshed): CODEX_HOME when it names an absolute folder,
+//      otherwise %USERPROFILE%\.codex
 // Both are used for a single undocumented endpoint: wham/usage.
 
-use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{
+    generation_of, keyring_secret, status_words, tool_home, transport_error, unless_superseded,
+    Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+    Refusals, SecretSource,
+};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tracing::warn;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, warn};
 
 /// Undocumented ChatGPT subscription usage endpoint — verified 2026-06-10, HTTP 200.
 const WHAM_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -21,28 +29,49 @@ const USAGE_TOKEN_LABEL: &str = "codex_usage_token";
 
 pub struct CodexProvider {
     config: ProviderConfig,
-    http: reqwest::Client,
+    /// Never follows a 3xx — keeps the bearer token from leaking to a
+    /// redirected host. The endpoint returns 200 directly.
+    net: Net,
+    /// The app's own usage token (Credential Manager), read each cycle.
+    usage_token: SecretSource,
+    /// The Codex CLI's sign-in, read only when allowed.
+    auth_path: Option<PathBuf>,
+    /// A stored usage token the endpoint refused: not sent again for a
+    /// while, so it costs no second request each cycle.
+    refused: Refusals,
+    generation: &'static AtomicU64,
 }
 
 impl CodexProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            // Never follow a 3xx — keeps the bearer token from leaking to a
-            // redirected host. These endpoints return 200 directly.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
-        Self { config, http }
+        Self {
+            config,
+            net: Net::new(),
+            usage_token: keyring_secret(USAGE_TOKEN_LABEL),
+            auth_path: auth_path(),
+            refused: Refusals::default(),
+            generation: generation_of(&ProviderId::Codex),
+        }
     }
 
-    /// Manual usage token; tried before the Codex CLI token.
-    fn get_usage_token(&self) -> Option<String> {
-        keyring::Entry::new("ailimits", USAGE_TOKEN_LABEL)
-            .and_then(|e| e.get_password())
-            .ok()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
+    /// A provider that sends to a local test server and finds its sources
+    /// where the test put them.
+    #[cfg(test)]
+    fn for_test(
+        config: ProviderConfig,
+        server: &str,
+        usage_token: Option<&str>,
+        auth_path: Option<PathBuf>,
+    ) -> Self {
+        let token = usage_token.map(str::to_string);
+        Self {
+            config,
+            net: Net::local(server),
+            usage_token: Box::new(move || token.clone()),
+            auth_path,
+            refused: Refusals::default(),
+            generation: Box::leak(Box::new(AtomicU64::new(0))),
+        }
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -57,82 +86,138 @@ impl CodexProvider {
 
     /// ChatGPT subscription usage. The CLI token is read-only: Codex CLI
     /// refreshes it itself, the widget must never rotate it.
-    async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        // 1. Manual usage token, if stored. Rejected → fall through to
-        // auth.json, keeping the reason for when nothing stands behind it.
+    async fn fetch_via_subscription(&self) -> ProviderData {
+        // 1. Manual usage token, if stored. Refused → fall through to
+        // auth.json, keeping the reason for when nothing stands behind it;
+        // a token refused lately is not sent again (`REFUSED_TOKEN_PAUSE`).
+        // Any other outcome ends the cycle: an answer is the row, and a
+        // request that got no answer says nothing about the token — the
+        // CLI's would go to the same host. One usage request per cycle.
         let mut usage_token_failure = None;
-        if let Some(token) = self.get_usage_token() {
-            match self.fetch_usage(&token).await {
-                Ok(Some(data)) => return Ok(data),
-                Ok(None) => {
-                    warn!("stored Codex usage token was rejected, falling back");
-                    usage_token_failure = Some(ProviderStatus::AuthError(
-                        "usage token rejected".to_string(),
-                    ));
-                }
-                Err(e) => {
-                    warn!("stored Codex usage token fetch failed: {e}");
-                    usage_token_failure = Some(ProviderStatus::NetworkError(e.to_string()));
+        if let Some(token) = (self.usage_token)() {
+            let refused = ProviderStatus::AuthError("usage token rejected".to_string());
+            if self.refused.paused(&token) {
+                debug!("the stored Codex usage token was refused lately; not sent");
+                usage_token_failure = Some(refused);
+            } else {
+                match self.fetch_usage(&token).await {
+                    Usage::Answer(data) => return data,
+                    Usage::Refused => {
+                        warn!("stored Codex usage token was rejected, falling back");
+                        self.refused.note(&token);
+                        usage_token_failure = Some(refused);
+                    }
+                    Usage::NoAnswer(words) => {
+                        return self.data(ProviderStatus::NetworkError(words.to_string()), vec![]);
+                    }
                 }
             }
         }
 
         // 2. Codex CLI token, only when the user allowed reading it.
-        if !self.config.tool_files {
-            return Ok(self.data(status_without_cli_token(usage_token_failure, false), vec![]));
-        }
-        let token = match read_codex_token().await {
+        let Some(path) = self.auth_path.as_deref().filter(|_| self.config.tool_files) else {
+            return self.data(status_without_cli_token(usage_token_failure, false), vec![]);
+        };
+        let token = match read_codex_token(path).await {
             Ok(Some(t)) => t,
             Ok(None) => {
-                return Ok(self.data(status_without_cli_token(usage_token_failure, false), vec![]));
+                return self.data(status_without_cli_token(usage_token_failure, false), vec![]);
             }
             Err(e) => {
                 warn!("codex auth.json unreadable: {e}");
-                return Ok(self.data(status_without_cli_token(usage_token_failure, true), vec![]));
+                return self.data(status_without_cli_token(usage_token_failure, true), vec![]);
             }
         };
 
         match self.fetch_usage(&token).await {
-            Ok(Some(data)) => Ok(data),
-            Ok(None) => Ok(self.data(
-                ProviderStatus::AuthError("token expired — run Codex CLI once".to_string()),
+            Usage::Answer(data) => data,
+            // Codex CLI refreshes its token when it runs; the hover adds
+            // "run Codex CLI". Not "check the key": no key was given.
+            Usage::Refused => self.data(
+                ProviderStatus::NetworkError("token expired".to_string()),
                 vec![],
-            )),
-            Err(e) => Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![])),
+            ),
+            Usage::NoAnswer(words) => {
+                self.data(ProviderStatus::NetworkError(words.to_string()), vec![])
+            }
         }
     }
 
-    /// One usage request. Ok(None) = the token was rejected (401/403).
-    async fn fetch_usage(&self, token: &str) -> Result<Option<ProviderData>> {
-        let resp = self
+    /// One usage request.
+    async fn fetch_usage(&self, token: &str) -> Usage {
+        let resp = match self
+            .net
             .http
-            .get(WHAM_USAGE_URL)
+            .get(self.net.url(WHAM_USAGE_URL))
             .bearer_auth(token)
             .header("User-Agent", "ailimits-widget")
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("codex usage request failed: {e}");
+                return Usage::NoAnswer(transport_error(&e));
+            }
+        };
 
         match resp.status().as_u16() {
             200 => {
-                let body = resp.text().await?;
-                let metrics = parse_wham_usage(&body)?;
+                let body = match resp.text().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        warn!("codex usage body read failed: {e}");
+                        return Usage::NoAnswer(transport_error(&e));
+                    }
+                };
+                let metrics = match parse_wham_usage(&body) {
+                    Ok(metrics) => metrics,
+                    Err(e) => {
+                        // serde names a position in the body, never its content.
+                        warn!("wham/usage body is not JSON: {e}");
+                        Vec::new()
+                    }
+                };
                 if metrics.is_empty() {
                     // Undocumented endpoint: an unknown schema is an honest error,
                     // not invented numbers.
-                    return Ok(Some(self.data(
+                    return Usage::Answer(self.data(
                         ProviderStatus::NetworkError("unrecognized wham/usage schema".to_string()),
                         vec![],
-                    )));
+                    ));
                 }
-                Ok(Some(self.data(ProviderStatus::Ok, metrics)))
+                Usage::Answer(self.data(ProviderStatus::Ok, metrics))
             }
-            401 | 403 => Ok(None),
-            other => Ok(Some(self.data(
-                ProviderStatus::NetworkError(format!("HTTP {other}")),
-                vec![],
-            ))),
+            401 | 403 => Usage::Refused,
+            other => {
+                warn!("wham/usage returned HTTP {other}");
+                Usage::Answer(self.data(ProviderStatus::NetworkError(status_words(other)), vec![]))
+            }
         }
     }
+}
+
+/// One read-only usage request to check a pasted usage token before it is
+/// stored (`providers::check_usage_token`).
+pub(crate) async fn check_usage_token(net: &Net, token: &str) -> super::TokenCheck {
+    super::token_check(
+        net.http
+            .get(net.url(WHAM_USAGE_URL))
+            .bearer_auth(token)
+            .header("User-Agent", "ailimits-widget")
+            .send()
+            .await,
+    )
+}
+
+/// What one usage request came to.
+enum Usage {
+    /// The row: numbers, or an honest error the server's answer explains.
+    Answer(ProviderData),
+    /// 401/403: the token is not accepted.
+    Refused,
+    /// No HTTP answer: the row's words for it.
+    NoAnswer(&'static str),
 }
 
 #[async_trait]
@@ -145,7 +230,9 @@ impl Provider for CodexProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        self.fetch_via_subscription().await
+        let started = self.generation.load(Ordering::SeqCst);
+        let data = self.fetch_via_subscription().await;
+        unless_superseded(data, started, self.generation)
     }
 }
 
@@ -166,19 +253,23 @@ pub fn status_without_cli_token(
     usage_token_failure.unwrap_or(ProviderStatus::NotConfigured)
 }
 
-/// Read the Codex CLI access token: %USERPROFILE%\.codex\auth.json → tokens.access_token.
+/// Where the Codex CLI keeps its sign-in: auth.json in the CLI's home —
+/// `CODEX_HOME` when it names an absolute folder, otherwise
+/// %USERPROFILE%\.codex. The same folder the model label is read from
+/// (models/mod.rs). None without an absolute home folder.
+pub fn auth_path() -> Option<PathBuf> {
+    tool_home("CODEX_HOME", ".codex").map(|home| home.join("auth.json"))
+}
+
+/// Read the Codex CLI access token: auth.json → tokens.access_token.
 /// Ok(None) if the file or the token is missing.
 ///
 /// Structure verified 2026-06-10: {"auth_mode": ..., "tokens": {"access_token": ...}, ...}
-async fn read_codex_token() -> Result<Option<String>> {
-    let path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".codex")
-        .join("auth.json");
+async fn read_codex_token(path: &Path) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let content = tokio::fs::read_to_string(&path).await?;
+    let content = tokio::fs::read_to_string(path).await?;
     let value: serde_json::Value = serde_json::from_str(&content)?;
     Ok(value
         .get("tokens")
@@ -235,4 +326,145 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
     push_window("secondary_window", "Weekly", MetricWindow::Long);
 
     Ok(metrics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::test_server::{Reply, TempHome, TestServer};
+
+    fn config(tool_files: bool) -> ProviderConfig {
+        ProviderConfig {
+            id: "codex".to_string(),
+            enabled: true,
+            auth_method: Default::default(),
+            credential_label: String::new(),
+            tool_files,
+            alert_threshold: 80,
+        }
+    }
+
+    const USAGE_BODY: &str = r#"{"rate_limit": {"primary_window": {"used_percent": 1, "reset_at": 4102444800}, "secondary_window": {"used_percent": 28, "reset_at": 4102444800}}}"#;
+
+    fn codex_home() -> TempHome {
+        let home = TempHome::new("codex");
+        home.write(
+            "auth.json",
+            r#"{"auth_mode": "chatgpt", "tokens": {"access_token": "cli-token"}}"#,
+        );
+        home
+    }
+
+    fn message(data: &ProviderData) -> String {
+        match &data.status {
+            ProviderStatus::NetworkError(m) | ProviderStatus::AuthError(m) => m.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_usage_token_is_left_out_for_half_an_hour() {
+        let server = TestServer::start();
+        server.route(
+            "/backend-api/wham/usage",
+            vec![Reply::status(401), Reply::ok(USAGE_BODY)],
+        );
+        let home = codex_home();
+        let p = CodexProvider::for_test(
+            config(true),
+            &server.base,
+            Some("stored-token"),
+            Some(home.path().join("auth.json")),
+        );
+        for _ in 0..3 {
+            assert!(matches!(
+                p.fetch().await.unwrap().status,
+                ProviderStatus::Ok
+            ));
+        }
+        let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(
+            auths,
+            [
+                "Bearer stored-token",
+                "Bearer cli-token",
+                "Bearer cli-token",
+                "Bearer cli-token"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_cli_token_says_expired_not_check_the_key() {
+        let server = TestServer::start();
+        server.route("/backend-api/wham/usage", vec![Reply::status(401)]);
+        let home = codex_home();
+        let p = CodexProvider::for_test(
+            config(true),
+            &server.base,
+            None,
+            Some(home.path().join("auth.json")),
+        );
+        let data = p.fetch().await.unwrap();
+        assert!(
+            matches!(&data.status, ProviderStatus::NetworkError(m) if m == "token expired"),
+            "{:?}",
+            data.status
+        );
+    }
+
+    #[tokio::test]
+    async fn no_answer_and_server_errors_read_honestly() {
+        let home = codex_home();
+        for (reply, words) in [
+            (Reply::Hangup, "offline, retrying"),
+            (Reply::status(503), "HTTP 503, retrying"),
+            (Reply::status(429), "rate-limited, retrying"),
+            (Reply::ok("<html>"), "unrecognized wham/usage schema"),
+        ] {
+            let server = TestServer::start();
+            server.route("/backend-api/wham/usage", vec![reply]);
+            let p = CodexProvider::for_test(
+                config(true),
+                &server.base,
+                None,
+                Some(home.path().join("auth.json")),
+            );
+            assert_eq!(message(&p.fetch().await.unwrap()), words);
+        }
+    }
+
+    #[tokio::test]
+    async fn without_tool_files_auth_json_is_not_read_or_sent() {
+        let server = TestServer::start();
+        server.route("/backend-api/wham/usage", vec![Reply::ok(USAGE_BODY)]);
+        let home = codex_home();
+        let p = CodexProvider::for_test(
+            config(false),
+            &server.base,
+            None,
+            Some(home.path().join("auth.json")),
+        );
+        assert!(matches!(
+            p.fetch().await.unwrap().status,
+            ProviderStatus::NotConfigured
+        ));
+        assert!(server.seen().is_empty());
+    }
+
+    /// The sign-in is read from the CLI's home, the folder the model label
+    /// comes from too; never relative to the working directory.
+    #[test]
+    fn the_sign_in_lives_in_the_clis_home() {
+        let path = auth_path().expect("a home folder");
+        assert!(path.is_absolute());
+        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("auth.json"));
+        match std::env::var_os("CODEX_HOME").map(PathBuf::from) {
+            Some(home) if home.is_absolute() => assert_eq!(path, home.join("auth.json")),
+            _ => assert_eq!(
+                path,
+                dirs::home_dir().unwrap().join(".codex").join("auth.json")
+            ),
+        }
+    }
 }
