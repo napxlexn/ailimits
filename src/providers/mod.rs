@@ -6,7 +6,7 @@ pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod grok;
-mod proxy;
+pub(crate) mod proxy;
 #[cfg(test)]
 mod test_server;
 
