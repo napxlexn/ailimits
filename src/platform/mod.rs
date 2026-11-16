@@ -139,6 +139,33 @@ pub fn shift_held() -> bool {
     }
 }
 
+/// Whether the window in front fills its whole monitor (a game, a video,
+/// a slide show): a window that would open by itself waits. False off
+/// Windows.
+pub fn foreground_fills_its_monitor() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::foreground_fills_its_monitor()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
+/// Ask the copy of the app that is already running to show its widget.
+/// Returns whether it was reached. False off Windows.
+pub fn wake_running_instance() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        win::wake_running_instance()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Seconds since the last keyboard/mouse input (0 if unknown / unsupported).
 /// When the workstation is locked there is no input, so this grows past the
 /// idle threshold within a few minutes — covering both idle and lock with a

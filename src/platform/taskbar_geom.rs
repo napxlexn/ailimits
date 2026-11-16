@@ -168,9 +168,53 @@ pub fn should_fall_back(
     scrim_here || covered || fullscreen_here || unavailable
 }
 
+/// Whether a window rectangle covers a whole monitor: a game, a video or a
+/// browser gone fullscreen, a slide show. A maximised window leaves the
+/// taskbar out and does not.
+pub fn covers_monitor(window: Rect, mon: Rect) -> bool {
+    window.0 <= mon.0 && window.1 <= mon.1 && window.2 >= mon.2 && window.3 >= mon.3
+}
+
+/// Window classes of the shell's own surfaces that are the size of a
+/// monitor: the desktop, the taskbars, Task View. Being in front, they are
+/// no fullscreen app.
+pub fn is_shell_surface(class: &str) -> bool {
+    matches!(
+        class,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "XamlExplorerHostIslandWindow"
+            | "ForegroundStaging"
+            | "MultitaskingViewFrame"
+            | "Windows.UI.Core.CoreWindow"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_window_over_the_whole_monitor_is_fullscreen() {
+        let mon = (0, 0, 2560, 1440);
+        assert!(covers_monitor((0, 0, 2560, 1440), mon));
+        // Exclusive modes and some games overshoot by a few pixels.
+        assert!(covers_monitor((-8, -8, 2568, 1448), mon));
+        // Maximised: the taskbar stays out.
+        assert!(!covers_monitor((0, 0, 2560, 1392), mon));
+        // Fullscreen on the other monitor.
+        assert!(!covers_monitor((2560, 0, 5120, 1440), mon));
+    }
+
+    #[test]
+    fn the_desktop_in_front_is_not_a_fullscreen_app() {
+        assert!(is_shell_surface("Progman"));
+        assert!(is_shell_surface("WorkerW"));
+        assert!(!is_shell_surface("UnrealWindow"));
+        assert!(!is_shell_surface("Chrome_WidgetWin_1"));
+    }
 
     /// The reserve has to grow with the bar, or it under-reserves on a
     /// high-DPI taskbar and the panel lands on the clock anyway.

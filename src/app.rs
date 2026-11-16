@@ -4,30 +4,26 @@
 //   Thread 1: the tao event loop — window events, rendering, AppCommand.
 //   Thread 2+: the tokio runtime — the scheduler and provider fetches.
 
+mod cache;
+mod clipboard;
+mod model_job;
+mod provider_set;
+
 use crate::{
     config::{
         schema::{AuthMethod, Config, PendingNotice, Surface},
         storage,
     },
     hooks,
-    models::{ModelReader, Models},
+    models::Models,
     monitor::{
-        scheduler::{CycleHook, Scheduler, SharedInterval, SharedProviders},
+        scheduler::{CycleHook, Scheduler, SharedInterval},
         trend::Trend,
     },
-    notifications::toast::ToastNotifier,
+    notifications::{alerts::AlertBook, toast::ToastNotifier},
     providers::{
-        antigravity::AntigravityProvider,
-        claude::ClaudeProvider,
-        codex::CodexProvider,
-        copilot::CopilotProvider,
-        cursor::{
-            session::{self as cursor_session, SignInOutcome},
-            CursorProvider,
-        },
-        grok::GrokProvider,
-        key_label_for, usage_token_label_for, Metric, MetricWindow, Provider, ProviderData,
-        ProviderId, ProviderStatus,
+        cursor::session::{self as cursor_session, SignInOutcome},
+        key_label_for, usage_token_label_for, ProviderData, ProviderId, ProviderStatus,
     },
     rows::{self, RowView},
     ui::{
@@ -43,12 +39,19 @@ use crate::{
     updater,
 };
 use anyhow::{Context as AnyhowContext, Result};
-use chrono::{Duration, Utc};
+use cache::{
+    cacheable_provider_data, load_provider_cache, merge_cached_metrics, prune_provider_cache_map,
+    CacheLedger, FileJob, FileWriter,
+};
+use chrono::Utc;
+use clipboard::{read_clipboard_secret, SecretKind};
+use model_job::{refresh_models, spawn_model_read, ModelJob};
+use provider_set::{ProviderSet, Rebuilt};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -56,13 +59,15 @@ use tao::{
     window::WindowBuilder,
 };
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// Commands for the event loop.
 #[derive(Debug)]
 pub enum AppCommand {
-    /// Update a single provider's data.
-    UpdateProvider(ProviderData),
+    /// Update a single provider's data, made by the provider instance built
+    /// under `serial` (`monitor::scheduler::ProviderSlot`): an update from an
+    /// instance that has since been replaced is dropped.
+    UpdateProvider { data: ProviderData, serial: u64 },
     /// A Cursor sign-in from the menu has ended.
     CursorSignIn(SignInOutcome),
     /// The model labels were read (models/): each provider's model id and
@@ -101,6 +106,9 @@ pub enum UserEvent {
     /// on the monitor that went.
     #[cfg(target_os = "windows")]
     DisplaysChanged,
+    /// The app was started again while running (`main.rs`): show the
+    /// widget, so the second start visibly does something.
+    ShowWidget,
 }
 
 /// Tray interactions we care about.
@@ -265,222 +273,6 @@ fn loading_data(id: ProviderId) -> ProviderData {
     }
 }
 
-// ─── Provider cache ──────────────────────────────────────────────
-// Metrics with a still-future reset survive widget restarts: after a
-// relaunch the row shows the last real value (greyed, with its age) even if
-// the source is temporarily unavailable, instead of an error text.
-
-fn provider_cache_path() -> std::path::PathBuf {
-    storage::config_path().with_file_name("provider-cache.json")
-}
-
-fn cache_metric_is_valid(metric: &Metric) -> bool {
-    // Past its reset the number is dead: the window rolled over.
-    metric
-        .reset_at
-        .is_some_and(|reset| reset + Duration::minutes(1) > Utc::now())
-        && metric.percentage().is_some()
-}
-
-fn prune_provider_cache_entry(data: &ProviderData) -> Option<ProviderData> {
-    if !matches!(data.status, ProviderStatus::Ok) {
-        return None;
-    }
-
-    let metrics: Vec<Metric> = data
-        .metrics
-        .iter()
-        .filter(|metric| cache_metric_is_valid(metric))
-        .cloned()
-        .collect();
-
-    (!metrics.is_empty()).then(|| ProviderData {
-        metrics,
-        ..data.clone()
-    })
-}
-
-fn cacheable_provider_data(data: &ProviderData) -> Option<ProviderData> {
-    prune_provider_cache_entry(data)
-}
-
-/// Whether a live metric already occupies the slot a cached metric would fill.
-///
-/// The label is authoritative when both sides have one. Beyond that, only
-/// session-window metrics may collapse onto a shared slot by unit: providers
-/// rename those rows between fetches (Antigravity follows Google's model
-/// rotation), whereas long windows are distinct named pools — Claude reports
-/// Weekly, Opus and Sonnet at once — so two differently-labelled long metrics
-/// are always different slots.
-fn metrics_match_slot(a: &Metric, b: &Metric) -> bool {
-    if a.label.eq_ignore_ascii_case(&b.label) {
-        return true;
-    }
-    if matches!(a.window, MetricWindow::Long) || matches!(b.window, MetricWindow::Long) {
-        return false;
-    }
-    std::mem::discriminant(&a.unit) == std::mem::discriminant(&b.unit)
-}
-
-fn merge_cached_metrics(mut data: ProviderData, cached: Option<&ProviderData>) -> ProviderData {
-    let Some(cached) = cached else {
-        return data;
-    };
-    if data.id != cached.id || !matches!(cached.status, ProviderStatus::Ok) {
-        return data;
-    }
-
-    for cached_metric in &cached.metrics {
-        if !data
-            .metrics
-            .iter()
-            .any(|metric| metrics_match_slot(metric, cached_metric))
-        {
-            data.metrics.push(cached_metric.clone());
-        }
-    }
-    data
-}
-
-fn prune_provider_cache_map(cache: &mut HashMap<ProviderId, ProviderData>) -> bool {
-    let before: HashMap<ProviderId, usize> = cache
-        .iter()
-        .map(|(id, data)| (id.clone(), data.metrics.len()))
-        .collect();
-    let pruned: HashMap<ProviderId, ProviderData> = cache
-        .values()
-        .filter_map(prune_provider_cache_entry)
-        .map(|data| (data.id.clone(), data))
-        .collect();
-    let changed = before.len() != pruned.len()
-        || pruned.iter().any(|(id, data)| {
-            before
-                .get(id)
-                .is_none_or(|metric_count| *metric_count != data.metrics.len())
-        });
-    *cache = pruned;
-    changed
-}
-
-async fn load_provider_cache() -> HashMap<ProviderId, ProviderData> {
-    let path = provider_cache_path();
-    let content = match tokio::fs::read_to_string(&path).await {
-        Ok(content) => content,
-        Err(_) => return HashMap::new(),
-    };
-
-    match serde_json::from_str::<Vec<ProviderData>>(&content) {
-        Ok(items) => items
-            .into_iter()
-            .filter_map(|data| prune_provider_cache_entry(&data))
-            .map(|data| (data.id.clone(), data))
-            .collect(),
-        Err(e) => {
-            warn!("provider cache parse failed: {e}");
-            HashMap::new()
-        }
-    }
-}
-
-async fn save_provider_cache(cache: HashMap<ProviderId, ProviderData>) -> Result<()> {
-    let path = provider_cache_path();
-    let mut items: Vec<ProviderData> = cache
-        .into_values()
-        .filter_map(|data| prune_provider_cache_entry(&data))
-        .collect();
-
-    if items.is_empty() {
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    items.sort_by_key(|d| match d.id {
-        ProviderId::Claude => 0,
-        ProviderId::Codex => 1,
-        ProviderId::Copilot => 2,
-        ProviderId::Antigravity => 3,
-        ProviderId::Grok => 4,
-        ProviderId::Cursor => 5,
-    });
-    let content = serde_json::to_string_pretty(&items)?;
-    storage::atomic_write(&path, content.as_bytes()).await?;
-    Ok(())
-}
-
-// ─── Helpers ─────────────────────────────────────────────────────
-
-/// Build provider instances + alert thresholds from the config.
-///
-/// A provider the user has allowed nothing for is built switched off: its
-/// fetch returns `NotConfigured` before it touches any file, the keyring,
-/// `gh` or the network. One set up only with the app's own sign-in (a pasted
-/// key, the menu's Cursor sign-in) runs without `tool_files`: it uses that
-/// alone and never falls back to the tool's files.
-fn build_providers(config: &Config) -> (Vec<Arc<dyn Provider>>, HashMap<ProviderId, u8>) {
-    let mut providers: Vec<Arc<dyn Provider>> = Vec::new();
-    let mut thresholds: HashMap<ProviderId, u8> = HashMap::new();
-    for pc in &config.providers {
-        let pc = &crate::config::schema::ProviderConfig {
-            enabled: config.provider_active(pc),
-            tool_files: config.sign_in_allowed(&pc.id),
-            ..pc.clone()
-        };
-        let (provider, id): (Arc<dyn Provider>, ProviderId) = match pc.id.as_str() {
-            "claude" => (
-                Arc::new(ClaudeProvider::new(pc.clone())),
-                ProviderId::Claude,
-            ),
-            "codex" => (Arc::new(CodexProvider::new(pc.clone())), ProviderId::Codex),
-            "copilot" => (
-                Arc::new(CopilotProvider::new(pc.clone())),
-                ProviderId::Copilot,
-            ),
-            // "gemini" is the pre-rename config id; storage::load migrates
-            // it, this arm just covers a config edited back by hand.
-            "antigravity" | "gemini" => (
-                Arc::new(AntigravityProvider::new(pc.clone())),
-                ProviderId::Antigravity,
-            ),
-            "grok" => (Arc::new(GrokProvider::new(pc.clone())), ProviderId::Grok),
-            "cursor" => (
-                Arc::new(CursorProvider::new(pc.clone())),
-                ProviderId::Cursor,
-            ),
-            other => {
-                warn!("unknown provider '{other}' in config, skipping");
-                continue;
-            }
-        };
-        thresholds.insert(id, pc.alert_threshold);
-        providers.push(provider);
-    }
-    (providers, thresholds)
-}
-
-/// Read a key/token from the clipboard, with validation.
-fn read_clipboard_key() -> Result<String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|e| anyhow::anyhow!("clipboard unavailable: {e}"))?;
-    let text = clipboard
-        .get_text()
-        .map_err(|_| anyhow::anyhow!("clipboard is empty or holds no text"))?;
-    let key = text.trim().to_string();
-    // A rough sanity check that this looks like a key.
-    if key.len() < 10 || key.len() > 500 || key.chars().any(|c| c.is_control() || c.is_whitespace())
-    {
-        anyhow::bail!("clipboard content does not look like a key");
-    }
-    Ok(key)
-}
-
 /// Quiet toast feedback for menu actions.
 fn feedback(title: &str, body: &str) {
     if let Err(e) = ToastNotifier::show(title, body) {
@@ -532,108 +324,6 @@ fn widget_shape(
         rows::nothing_chosen(config),
         |text, size| renderer.text_width(text, size),
     )
-}
-
-/// What the model readers are asked for.
-#[derive(Debug, Clone, PartialEq)]
-struct ModelRequest {
-    reads: crate::config::schema::Reads,
-    source: crate::config::schema::ModelSource,
-    ids: Vec<ProviderId>,
-}
-
-/// The model readers and what they are asked for, shared with the polling
-/// cycle. Two locks: the request is only ever held for a moment (the event
-/// loop takes it), the reader for a whole read (blocking threads only), so
-/// a slow disk can never stall the window.
-struct ModelJob {
-    reader: std::sync::Mutex<ModelReader>,
-    /// What to read, and its generation: a read is shown only if no newer
-    /// request came while it ran.
-    request: std::sync::Mutex<(u64, Option<ModelRequest>)>,
-}
-
-type SharedModelJob = Arc<ModelJob>;
-
-impl ModelJob {
-    fn request(&self) -> std::sync::MutexGuard<'_, (u64, Option<ModelRequest>)> {
-        self.request.lock().unwrap_or_else(|p| p.into_inner())
-    }
-}
-
-/// What to read for the model labels, or None when nothing is to be read:
-/// no label part is on, or no model read is allowed.
-fn model_request(config: &Config) -> Option<ModelRequest> {
-    let model = &config.ui.model;
-    let reads = &config.reads;
-    let parts_on = !model.widget.is_empty() || !model.tooltip.is_empty();
-    let sessions =
-        model.source == crate::config::schema::ModelSource::LastUsed && reads.last_session;
-    if !parts_on || !(reads.tool_settings || sessions) {
-        return None;
-    }
-    let ids = config
-        .providers
-        .iter()
-        .filter(|p| config.provider_active(p))
-        .filter_map(|p| ProviderId::from_config_id(&p.id))
-        .collect();
-    Some(ModelRequest {
-        reads: reads.clone(),
-        source: model.source,
-        ids,
-    })
-}
-
-/// Read the models on a blocking thread and hand them to the event loop as
-/// `AppCommand::Models`. Nothing at all happens while nothing is requested.
-fn spawn_model_read(
-    job: &SharedModelJob,
-    tx: &mpsc::Sender<AppCommand>,
-    rt: &tokio::runtime::Handle,
-) {
-    let (generation, request) = job.request().clone();
-    let Some(req) = request else {
-        return;
-    };
-    let job = job.clone();
-    let tx = tx.clone();
-    rt.spawn_blocking(move || {
-        let models = job
-            .reader
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .read(&req.reads, req.source, &req.ids);
-        let _ = tx.blocking_send(AppCommand::Models(generation, models));
-    });
-}
-
-/// Point the model readers at what the config now asks for and read at
-/// once, or, when nothing is to be read any more, drop what is shown.
-/// Returns whether `models` changed here (a read lands later, as
-/// `AppCommand::Models`).
-fn refresh_models(
-    job: &SharedModelJob,
-    config: &Config,
-    models: &mut Models,
-    tx: &mpsc::Sender<AppCommand>,
-    rt: &tokio::runtime::Handle,
-) -> bool {
-    let request = model_request(config);
-    let none = request.is_none();
-    {
-        let mut slot = job.request();
-        slot.0 += 1;
-        slot.1 = request;
-    }
-    if none {
-        let changed = !models.is_empty();
-        models.clear();
-        changed
-    } else {
-        spawn_model_read(job, tx, rt);
-        false
-    }
 }
 
 /// What the picker opens as: the welcome or the update notice while one is
@@ -688,52 +378,44 @@ fn open_picker_window<T: 'static>(
     }
 }
 
-/// Rebuild the providers after a config change — the list is shared
-/// with the scheduler.
-fn refresh_providers(
-    config: &Config,
-    providers: &SharedProviders,
-    thresholds: &mut HashMap<ProviderId, u8>,
-    display: &mut [ProviderData],
-    changed_id: &str,
-) {
-    let (built, new_thresholds) = build_providers(config);
-    *thresholds = new_thresholds;
-    match providers.write() {
-        Ok(mut guard) => *guard = built,
-        Err(poisoned) => *poisoned.into_inner() = built,
-    }
-    // The changed provider's row → Loading until a fresh fetch lands.
-    if let Some(pid) = ProviderId::from_config_id(changed_id) {
-        if let Some(slot) = display.iter_mut().find(|d| d.id == pid) {
-            *slot = loading_data(pid);
-        }
+/// Whether the welcome or the update notice opens by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoOpen {
+    /// Nothing is owed, or the picker is already open.
+    No,
+    Now,
+    /// A fullscreen app is in front - a game, a video, a slide show. The
+    /// window would land on top of it and take its keyboard: it waits until
+    /// the app is no longer in front.
+    Later,
+}
+
+/// Whether to open the owed window now. `fullscreen` is asked only when
+/// something is owed.
+fn auto_open(
+    pending: PendingNotice,
+    picker_open: bool,
+    fullscreen: impl FnOnce() -> bool,
+) -> AutoOpen {
+    if pending == PendingNotice::None || picker_open {
+        AutoOpen::No
+    } else if fullscreen() {
+        AutoOpen::Later
+    } else {
+        AutoOpen::Now
     }
 }
 
-/// Out-of-band fetch of a single provider.
-fn fetch_one(
-    providers: &SharedProviders,
-    cmd_tx: &mpsc::Sender<AppCommand>,
-    runtime: &tokio::runtime::Runtime,
-    changed_id: &str,
-) {
-    let target = ProviderId::from_config_id(changed_id);
-    let list: Vec<Arc<dyn Provider>> = match providers.read() {
-        Ok(g) => g.clone(),
-        Err(p) => p.into_inner().clone(),
-    };
-    for provider in list {
-        if Some(provider.id()) != target {
-            continue;
-        }
-        let tx = cmd_tx.clone();
-        runtime.spawn(async move {
-            if let Ok(data) = provider.fetch().await {
-                let _ = tx.send(AppCommand::UpdateProvider(data)).await;
-            }
-        });
-    }
+/// `alerts.json`: which threshold alerts were given, so a restart does not
+/// repeat them (notifications/alerts.rs).
+fn alerts_path() -> std::path::PathBuf {
+    storage::config_path().with_file_name("alerts.json")
+}
+
+fn load_alert_book() -> AlertBook {
+    std::fs::read_to_string(alerts_path())
+        .map(|text| AlertBook::from_json(&text))
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "windows")]
@@ -873,15 +555,23 @@ fn toggle_or_raise_widget(
         *window_visible = false;
         window.set_visible(false);
     } else {
-        *window_visible = true;
-        window.set_visible(true);
-        #[cfg(target_os = "windows")]
-        {
-            apply_windows_glass(window);
-            crate::platform::bring_to_front(window.hwnd());
-        }
-        window.request_redraw();
+        show_widget(window, window_visible);
     }
+}
+
+/// Show the overlay and raise it to the front of its band, without taking
+/// the focus.
+fn show_widget(window: &tao::window::Window, window_visible: &mut bool) {
+    #[cfg(target_os = "windows")]
+    use tao::platform::windows::WindowExtWindows;
+    *window_visible = true;
+    window.set_visible(true);
+    #[cfg(target_os = "windows")]
+    {
+        apply_windows_glass(window);
+        crate::platform::bring_to_front(window.hwnd());
+    }
+    window.request_redraw();
 }
 
 /// Apply a live UI change: recompute the layout/theme, resize the window
@@ -945,8 +635,8 @@ fn apply_ui_change(
 /// Entry point — run the application.
 pub fn run() -> Result<()> {
     // 1. The tokio runtime + the config. 2 workers instead of one-per-core:
-    // we make 3 light HTTP requests per cycle; the default 32 workers would
-    // waste ~30 threads and RAM.
+    // a cycle is one light HTTP request per provider that runs; the default
+    // one-per-core workers would waste threads and RAM.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -988,23 +678,37 @@ pub fn run() -> Result<()> {
 
     // 3. Providers — ALL from the config, including disabled ones: a disabled
     // provider's fetch returns NotConfigured instantly, with no network call.
-    // The list is shared with the scheduler and rebuilt live from the menu.
-    let (built, mut thresholds) = build_providers(&config);
+    // The list is shared with the scheduler and rebuilt live from the menu,
+    // only where the config changed (provider_set.rs).
+    let mut providers = ProviderSet::new(&config);
     let mut provider_cache = runtime.block_on(load_provider_cache());
-    let mut display: Vec<ProviderData> = built
-        .iter()
-        .map(|p| {
-            let id = p.id();
+    let mut display: Vec<ProviderData> = providers
+        .ids()
+        .into_iter()
+        .map(|id| {
             provider_cache
                 .get(&id)
                 .cloned()
                 .unwrap_or_else(|| loading_data(id))
         })
         .collect();
-    let providers: SharedProviders = Arc::new(RwLock::new(built));
     if display.is_empty() {
         anyhow::bail!("no providers in config");
     }
+    // The cache file is written by one writer, only when it is behind
+    // (cache.rs `CacheLedger`); a cycle's answers settle into one write.
+    let mut cache_ledger = CacheLedger::new(&provider_cache);
+    let cache_writer = FileWriter::spawn(
+        runtime.handle(),
+        cache::provider_cache_path(),
+        std::time::Duration::from_secs(2),
+    );
+    let mut cache_writer_at_exit = Some(cache_writer);
+    // The threshold alerts given, kept across restarts.
+    let mut alert_book = load_alert_book();
+    let alert_writer =
+        FileWriter::spawn(runtime.handle(), alerts_path(), std::time::Duration::ZERO);
+    let mut alert_writer_at_exit = Some(alert_writer);
 
     // 4. The background scheduler; the interval is shared — changed live
     // from the menu.
@@ -1012,17 +716,14 @@ pub fn run() -> Result<()> {
         Arc::new(AtomicU64::new(config.general.update_interval_secs));
     // The model labels are re-read on the polling cycle, never on a timer
     // of their own, and only as far as `[reads]` allows (`model_request`).
-    let model_job: SharedModelJob = Arc::new(ModelJob {
-        reader: std::sync::Mutex::new(ModelReader::new()),
-        request: std::sync::Mutex::new((0, model_request(&config))),
-    });
+    let model_job = ModelJob::new(&config);
     let cycle_hook: CycleHook = {
         let job = model_job.clone();
         let tx = cmd_tx.clone();
         let rt = runtime.handle().clone();
         Arc::new(move || spawn_model_read(&job, &tx, &rt))
     };
-    let scheduler = Scheduler::new(providers.clone(), update_interval.clone(), cmd_tx.clone())
+    let scheduler = Scheduler::new(providers.shared(), update_interval.clone(), cmd_tx.clone())
         .with_cycle_hook(cycle_hook);
     runtime.spawn(scheduler.run());
 
@@ -1110,8 +811,6 @@ pub fn run() -> Result<()> {
 
     let mut pixmap = tiny_skia::Pixmap::new(buf_w, buf_h).context("pixmap alloc failed")?;
 
-    // Per-provider threshold-event cooldown (shared by toast and on_threshold).
-    let mut last_toast: HashMap<ProviderId, std::time::Instant> = HashMap::new();
     // Previous primary % per provider, for reset-edge detection.
     let mut last_pct: HashMap<ProviderId, f32> = HashMap::new();
     // Whether the on_startup hook has fired (once after the first success).
@@ -1226,14 +925,6 @@ pub fn run() -> Result<()> {
     let mut cursor_inside_window = false;
 
     let rt_handle = runtime.handle().clone();
-    let cache_rt_handle = rt_handle.clone();
-    let save_cached_providers = move |cache: HashMap<ProviderId, ProviderData>| {
-        cache_rt_handle.spawn(async move {
-            if let Err(e) = save_provider_cache(cache).await {
-                warn!("provider cache save failed: {e}");
-            }
-        });
-    };
 
     // Save the config in the background through a single serialised writer
     // (storage::spawn_saver): a burst coalesces to the latest config on a
@@ -1256,14 +947,29 @@ pub fn run() -> Result<()> {
     // comes back wherever rows were chosen.
     let mut menu_asked: Option<String> = None;
     let mut picker: Option<PickerWindow> = None;
-    if config.reads.pending != PendingNotice::None {
-        found_tools = crate::consent::found_tools();
-        picker = open_picker_window(
-            &event_loop,
-            &renderer,
-            crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools),
-            picker_anchor(&window, window_visible),
-        );
+    // An owed window held back while a fullscreen app is in front; it opens
+    // when that app is no longer in front (a foreground change, the next
+    // provider update, or the app started again by hand).
+    let mut auto_open_waiting = false;
+    match auto_open(
+        config.reads.pending,
+        false,
+        crate::platform::foreground_fills_its_monitor,
+    ) {
+        AutoOpen::Now => {
+            found_tools = crate::consent::found_tools();
+            picker = open_picker_window(
+                &event_loop,
+                &renderer,
+                crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools),
+                picker_anchor(&window, window_visible),
+            );
+        }
+        AutoOpen::Later => {
+            info!("a fullscreen app is in front: the owed window waits for it");
+            auto_open_waiting = true;
+        }
+        AutoOpen::No => {}
     }
 
     info!("AI Limits Widget ready");
@@ -1287,6 +993,55 @@ pub fn run() -> Result<()> {
                 }
             };
         }
+        // Hand the provider cache to its writer when the file is behind
+        // (cache.rs `CacheLedger`).
+        macro_rules! persist_cache {
+            () => {
+                if let Some(bytes) = cache_ledger.due(&provider_cache, std::time::Instant::now()) {
+                    if let Some(w) = cache_writer_at_exit.as_ref() {
+                        w.send(FileJob::from(bytes));
+                    }
+                }
+            };
+        }
+        macro_rules! persist_alerts {
+            () => {
+                if let Some(w) = alert_writer_at_exit.as_ref() {
+                    w.send(FileJob::from(alert_book.to_json()));
+                }
+            };
+        }
+        // Bring the provider instances in line with the config
+        // (provider_set.rs), `force` rebuilt whatever its config. A rebuilt
+        // provider is fetched at once. One whose source or account changed
+        // starts over: Loading until it answers, and nothing of the old one
+        // stays - not its cached numbers, its last error, its trend or the
+        // alerts it gave.
+        macro_rules! sync_providers {
+            ($force:expr) => {{
+                let force: Option<&str> = $force;
+                let mut cache_changed = false;
+                for Rebuilt { id, reload } in providers.sync(&config, force) {
+                    if reload {
+                        if let Some(slot) = display.iter_mut().find(|d| d.id == id) {
+                            *slot = loading_data(id.clone());
+                        }
+                        cache_changed |= provider_cache.remove(&id).is_some();
+                        last_errors.remove(&id);
+                        last_pct.remove(&id);
+                        trends.remove(&id);
+                        forecasts.remove(&id);
+                        if alert_book.forget(&id) {
+                            persist_alerts!();
+                        }
+                    }
+                    providers.fetch(&id, &cmd_tx, runtime.handle());
+                }
+                if cache_changed {
+                    persist_cache!();
+                }
+            }};
+        }
         // A provider set up with the app's own sign-in (a pasted key or
         // usage token): allowed that alone, not the tool's files, then
         // every surface follows at once.
@@ -1295,7 +1050,8 @@ pub fn run() -> Result<()> {
                 let pid: &str = $pid;
                 config.allow_app_sign_in(pid);
                 crate::choices::show_provider_rows(&mut config, pid);
-                refresh_providers(&config, &providers, &mut thresholds, &mut display, pid);
+                // The key or token is new: so may be the account.
+                sync_providers!(Some(pid));
                 refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                 // A first provider on a fresh install:
                 // the widget leaves "Choose what to show"
@@ -1319,7 +1075,6 @@ pub fn run() -> Result<()> {
                 tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
                 menu.sync(&config, win_state.pinned);
                 save_config(config.clone());
-                fetch_one(&providers, &cmd_tx, &runtime, pid);
                 window.request_redraw();
                 refresh_picker!();
             }};
@@ -1327,6 +1082,9 @@ pub fn run() -> Result<()> {
         macro_rules! open_picker {
             ($ask:expr) => {{
                 let ask: Option<String> = $ask;
+                // Opened now, by whatever path: an owed window that waited
+                // has had its turn.
+                auto_open_waiting = false;
                 if picker.is_none() {
                     picker_mode = picker_mode_for(&config);
                     found_tools = crate::consent::found_tools();
@@ -1343,6 +1101,23 @@ pub fn run() -> Result<()> {
                     p.ask_sign_in(&id);
                 }
             }};
+        }
+        // An owed window that waited for a fullscreen app opens once the app
+        // is no longer in front. `$fullscreen` is evaluated only while one
+        // waits.
+        macro_rules! try_auto_open {
+            ($fullscreen:expr) => {
+                if auto_open_waiting {
+                    match auto_open(config.reads.pending, picker.is_some(), || $fullscreen) {
+                        AutoOpen::Now => {
+                            info!("the fullscreen app is gone: the owed window opens");
+                            open_picker!(None);
+                        }
+                        AutoOpen::No => auto_open_waiting = false,
+                        AutoOpen::Later => {}
+                    }
+                }
+            };
         }
         macro_rules! apply_picker_actions {
             ($actions:expr) => {{
@@ -1370,14 +1145,16 @@ pub fn run() -> Result<()> {
                         menu_asked = None;
                     }
                     if let Some(pid) = &done.provider {
-                        refresh_providers(&config, &providers, &mut thresholds, &mut display, pid);
-                        fetch_one(&providers, &cmd_tx, &runtime, pid);
+                        sync_providers!(Some(pid.as_str()));
                     }
                     if done.models {
                         refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                     }
                     changed |= done.changed;
                 }
+                // Whatever else the actions changed for the providers: several
+                // tools allowed at once, the Grok Bot row chosen or not.
+                sync_providers!(None);
                 // The menu's question is answered in the first actions after
                 // it (Cancel sends none): whatever comes next is not it.
                 menu_asked = None;
@@ -1720,20 +1497,50 @@ pub fn run() -> Result<()> {
 
             Event::UserEvent(ue) => match ue {
                 UserEvent::Command(cmd) => match cmd {
-                    AppCommand::UpdateProvider(data) => {
-                        // Threshold crossing drives BOTH the toast and the
-                        // `on_threshold` hook, sharing one cooldown. The hook
-                        // fires even if toasts are disabled (it's its own opt-in).
-                        if let Some(pct) = data.primary_percentage() {
-                            let threshold = thresholds.get(&data.id).copied().unwrap_or(80) as f32;
-                            let cooldown = std::time::Duration::from_secs(
-                                config.notifications.cooldown_minutes.max(1) as u64 * 60,
+                    AppCommand::UpdateProvider { data, serial } => {
+                        // Made by an instance that has since been replaced:
+                        // it was in flight while the user signed out, signed
+                        // in as someone else, changed the key or took the
+                        // consent back. Its numbers are not shown, cached or
+                        // alerted on.
+                        if !providers.is_current(&data.id, serial) {
+                            debug!(
+                                "provider {:?}: an update from before a rebuild dropped",
+                                data.id
                             );
-                            let cooled = last_toast
-                                .get(&data.id)
-                                .is_none_or(|t| t.elapsed() >= cooldown);
-                            if pct >= threshold && cooled {
-                                last_toast.insert(data.id.clone(), std::time::Instant::now());
+                            return;
+                        }
+                        let active = config
+                            .providers
+                            .iter()
+                            .find(|p| ProviderId::from_config_id(&p.id) == Some(data.id.clone()))
+                            .is_some_and(|p| config.provider_active(p));
+                        // Threshold crossing drives BOTH the toast and the
+                        // `on_threshold` hook: once per limit window, not
+                        // again every cooldown while usage stays up, and not
+                        // again after a restart (notifications/alerts.rs).
+                        // The hook fires even if toasts are disabled (it's
+                        // its own opt-in).
+                        if let Some(pct) = data.primary_percentage() {
+                            let threshold = providers.threshold(&data.id) as f32;
+                            let cooldown = chrono::Duration::minutes(
+                                config.notifications.cooldown_minutes.max(1) as i64,
+                            );
+                            // A provider switched off meanwhile alerts nothing.
+                            let seen = active.then(|| {
+                                alert_book.observe(
+                                    &data.id,
+                                    pct,
+                                    threshold,
+                                    data.headline_reset(),
+                                    Utc::now(),
+                                    cooldown,
+                                )
+                            });
+                            if seen.is_some_and(|s| s.changed) {
+                                persist_alerts!();
+                            }
+                            if seen.is_some_and(|s| s.fire) {
                                 if config.notifications.enabled {
                                     let body = match data.headline_reset() {
                                         Some(t) => {
@@ -1830,9 +1637,7 @@ pub fn run() -> Result<()> {
                             data.status,
                             ProviderStatus::NetworkError(_) | ProviderStatus::AuthError(_)
                         );
-                        if prune_provider_cache_map(&mut provider_cache) {
-                            save_cached_providers(provider_cache.clone());
-                        }
+                        prune_provider_cache_map(&mut provider_cache);
 
                         let is_success = matches!(data.status, ProviderStatus::Ok);
                         let cached_before_update = provider_cache.get(&data.id).cloned();
@@ -1847,9 +1652,9 @@ pub fn run() -> Result<()> {
                         if let Some(cached_data) = cacheable_provider_data(&display_data) {
                             provider_cache.insert(cached_data.id.clone(), cached_data);
                         }
-                        if is_success {
-                            save_cached_providers(provider_cache.clone());
-                        }
+                        // Written only when the file is behind: new numbers,
+                        // expired ones pruned, or fetch times grown old.
+                        persist_cache!();
                         let had_real_data = display.iter().any(|d| {
                             d.id == data.id
                                 && matches!(d.status, ProviderStatus::Ok)
@@ -1905,6 +1710,9 @@ pub fn run() -> Result<()> {
                         tray.update(&visible_data(&config, &display), &theme, false);
                         panel.update(&visible_data(&config, &display), false);
                         refresh_picker!();
+                        // A minute-by-minute chance for an owed window that
+                        // waited, should no foreground change have said so.
+                        try_auto_open!(crate::platform::foreground_fills_its_monitor());
                     }
                     AppCommand::CursorSignIn(outcome) => match outcome {
                         SignInOutcome::SignedIn(_) => {
@@ -1918,16 +1726,9 @@ pub fn run() -> Result<()> {
                             config.allow_app_sign_in(pid);
                             crate::choices::show_provider_rows(&mut config, pid);
                             // The new session may be another account: no
-                            // old numbers stand in for it.
-                            provider_cache.remove(&ProviderId::Cursor);
-                            save_cached_providers(provider_cache.clone());
-                            refresh_providers(
-                                &config,
-                                &providers,
-                                &mut thresholds,
-                                &mut display,
-                                pid,
-                            );
+                            // old numbers stand in for it, and nothing still
+                            // in flight for the old one lands after it.
+                            sync_providers!(Some(pid));
                             refresh_models(
                                 &model_job,
                                 &config,
@@ -1959,7 +1760,6 @@ pub fn run() -> Result<()> {
                             panel.update(&visible_data(&config, &display), true);
                             menu.set_cursor_signed_in(true);
                             save_config(config.clone());
-                            fetch_one(&providers, &cmd_tx, &runtime, pid);
                             feedback("AI Limits", "Signed in to Cursor");
                         }
                         SignInOutcome::TimedOut => {
@@ -1973,7 +1773,7 @@ pub fn run() -> Result<()> {
                     AppCommand::Models(generation, read) => {
                         // A read that began before the request changed (or
                         // was withdrawn) is stale: only the newest shows.
-                        let current = model_job.request().0;
+                        let current = model_job.generation();
                         if generation == current && read != models {
                             models = read;
                             let new_shape = widget_shape(&config, &display, &models, &renderer);
@@ -2054,6 +1854,17 @@ pub fn run() -> Result<()> {
                         recheck_at = Some(now + wait);
                     }
                     panel.raise();
+                    // Another window is in front now: an owed window that
+                    // waited for a fullscreen app may be due.
+                    try_auto_open!(crate::platform::foreground_fills_its_monitor());
+                }
+
+                UserEvent::ShowWidget => {
+                    show_widget(&window, &mut window_visible);
+                    // Started again by hand: the user is at the desktop, not
+                    // in a fullscreen app, so an owed window that waited
+                    // opens now.
+                    try_auto_open!(false);
                 }
 
                 #[cfg(target_os = "windows")]
@@ -2184,13 +1995,9 @@ pub fn run() -> Result<()> {
                         if now_enabled == Some(true) {
                             crate::choices::show_provider_rows(&mut config, &pid);
                         }
-                        if now_enabled == Some(false) {
-                            if let Some(provider_id) = ProviderId::from_config_id(&pid) {
-                                provider_cache.remove(&provider_id);
-                                save_cached_providers(provider_cache.clone());
-                            }
-                        }
-                        refresh_providers(&config, &providers, &mut thresholds, &mut display, &pid);
+                        // Switched off: its cached numbers go with it; either
+                        // way it starts over and is fetched.
+                        sync_providers!(Some(pid.as_str()));
                         refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
                         // A disabled provider disappears immediately → resize.
                         shape = widget_shape(&config, &display, &models, &renderer);
@@ -2212,7 +2019,6 @@ pub fn run() -> Result<()> {
                         tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
                         panel.update(&visible_data(&config, &display), true);
                         save_config(config.clone());
-                        fetch_one(&providers, &cmd_tx, &runtime, &pid);
                     }
                     Some(MenuAction::SetAuthMethod(pid, method)) => {
                         if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
@@ -2227,15 +2033,19 @@ pub fn run() -> Result<()> {
                                 AuthMethod::Subscription => pc.credential_label.clear(),
                             }
                         }
-                        refresh_providers(&config, &providers, &mut thresholds, &mut display, &pid);
+                        sync_providers!(Some(pid.as_str()));
                         menu.sync(&config, win_state.pinned);
                         save_config(config.clone());
-                        fetch_one(&providers, &cmd_tx, &runtime, &pid);
                         window.request_redraw();
                     }
-                    Some(MenuAction::PasteKey(pid)) => match read_clipboard_key() {
-                        Ok(key) => {
-                            let label = key_label_for(&pid).unwrap_or_default();
+                    // A key the menu has no label for is never stored under
+                    // an empty one.
+                    Some(MenuAction::PasteKey(pid)) => match key_label_for(&pid)
+                        .zip(SecretKind::key_for(&pid))
+                        .ok_or_else(|| anyhow::anyhow!("{pid} takes no key"))
+                        .and_then(|(label, kind)| Ok((label, read_clipboard_secret(kind)?)))
+                    {
+                        Ok((label, key)) => {
                             let stored = keyring::Entry::new("ailimits", label)
                                 .and_then(|e| e.set_password(&key));
                             match stored {
@@ -2281,16 +2091,9 @@ pub fn run() -> Result<()> {
                                     pc.credential_label.clear();
                                     pc.auth_method = AuthMethod::Subscription;
                                 }
-                                refresh_providers(
-                                    &config,
-                                    &providers,
-                                    &mut thresholds,
-                                    &mut display,
-                                    &pid,
-                                );
+                                sync_providers!(Some(pid.as_str()));
                                 menu.sync(&config, win_state.pinned);
                                 save_config(config.clone());
-                                fetch_one(&providers, &cmd_tx, &runtime, &pid);
                                 window.request_redraw();
                                 feedback("AI Limits", &format!("Key for {pid} removed"));
                             }
@@ -2300,9 +2103,12 @@ pub fn run() -> Result<()> {
                             }
                         }
                     }
-                    Some(MenuAction::PasteUsageToken(pid)) => match read_clipboard_key() {
-                        Ok(token) => {
-                            let label = usage_token_label_for(&pid).unwrap_or_default();
+                    Some(MenuAction::PasteUsageToken(pid)) => match usage_token_label_for(&pid)
+                        .zip(SecretKind::usage_token_for(&pid))
+                        .ok_or_else(|| anyhow::anyhow!("{pid} takes no usage token"))
+                        .and_then(|(label, kind)| Ok((label, read_clipboard_secret(kind)?)))
+                    {
+                        Ok((label, token)) => {
                             match keyring::Entry::new("ailimits", label)
                                 .and_then(|e| e.set_password(&token))
                             {
@@ -2332,7 +2138,11 @@ pub fn run() -> Result<()> {
                             .and_then(|e| e.delete_credential())
                         {
                             Ok(()) | Err(keyring::Error::NoEntry) => {
-                                fetch_one(&providers, &cmd_tx, &runtime, &pid);
+                                // The token's account may not be the tool's:
+                                // its numbers go, and a fetch still in flight
+                                // with it is dropped.
+                                sync_providers!(Some(pid.as_str()));
+                                window.request_redraw();
                                 feedback("AI Limits", &format!("Usage token for {pid} removed"));
                             }
                             Err(e) => {
@@ -2368,18 +2178,11 @@ pub fn run() -> Result<()> {
                         match cursor_session::delete() {
                             Ok(()) => {
                                 let pid = "cursor";
-                                // Nothing of the session stays on screen: the
-                                // row reloads from the editor's plain token,
-                                // or hides.
-                                provider_cache.remove(&ProviderId::Cursor);
-                                save_cached_providers(provider_cache.clone());
-                                refresh_providers(
-                                    &config,
-                                    &providers,
-                                    &mut thresholds,
-                                    &mut display,
-                                    pid,
-                                );
+                                // Nothing of the session stays on screen, and
+                                // nothing still in flight for it lands later:
+                                // the row reloads from whatever else it may
+                                // use, or hides.
+                                sync_providers!(Some(pid));
                                 let new_shape = widget_shape(&config, &display, &models, &renderer);
                                 if new_shape != shape {
                                     shape = new_shape;
@@ -2406,7 +2209,6 @@ pub fn run() -> Result<()> {
                                 );
                                 panel.update(&visible_data(&config, &display), true);
                                 menu.set_cursor_signed_in(false);
-                                fetch_one(&providers, &cmd_tx, &runtime, pid);
                                 window.request_redraw();
                                 feedback("AI Limits", "Signed out of Cursor");
                             }
@@ -2592,6 +2394,15 @@ pub fn run() -> Result<()> {
                 if let Some(saver) = saver_at_exit.take() {
                     saver.shutdown(config.clone(), &rt_handle);
                 }
+                // The cache file catches up on the last fetch times; the
+                // alert book has nothing left in flight but is waited for.
+                if let Some(writer) = cache_writer_at_exit.take() {
+                    let last = cache_ledger.at_exit(&provider_cache).map(FileJob::from);
+                    writer.shutdown(last, &rt_handle);
+                }
+                if let Some(writer) = alert_writer_at_exit.take() {
+                    writer.shutdown(None, &rt_handle);
+                }
             }
 
             _ => {}
@@ -2603,121 +2414,35 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// The model readers are asked for nothing unless a label part is on AND
-    /// a model read is allowed; then only for the providers that run.
     #[test]
-    fn model_request_needs_a_part_and_a_read() {
-        use crate::config::schema::{ModelPart, ModelSource};
-        let mut config = Config::default();
-        config.allow_sign_in("claude");
-        config.allow_sign_in("codex");
-        assert!(model_request(&config).is_none());
-        config.ui.model.tooltip = vec![ModelPart::Model];
-        // A part alone reads nothing.
-        assert!(model_request(&config).is_none());
-        // Last used without its own read reads nothing either.
-        config.ui.model.source = ModelSource::LastUsed;
-        assert!(model_request(&config).is_none());
-        config.reads.last_session = true;
-        let req = model_request(&config).unwrap();
-        assert_eq!(req.ids, [ProviderId::Claude, ProviderId::Codex]);
-        // Settings allowed, parts off: nothing.
-        config.ui.model.tooltip.clear();
-        config.reads.tool_settings = true;
-        assert!(model_request(&config).is_none());
-        config.ui.model.widget = vec![ModelPart::Effort];
-        // A provider switched off is not read.
-        config
-            .providers
-            .iter_mut()
-            .find(|p| p.id == "codex")
-            .unwrap()
-            .enabled = false;
-        assert_eq!(model_request(&config).unwrap().ids, [ProviderId::Claude]);
-    }
-    use crate::providers::MetricUnit;
-
-    fn pct(label: &str, used: u64, window: MetricWindow) -> Metric {
-        Metric {
-            label: label.to_string(),
-            used,
-            limit: Some(100),
-            unit: MetricUnit::Percent,
-            reset_at: None,
-            window,
-            unified_pool: false,
-            extra_only: false,
-        }
-    }
-
-    fn data(metrics: Vec<Metric>) -> ProviderData {
-        ProviderData {
-            id: ProviderId::Claude,
-            status: ProviderStatus::Ok,
-            metrics,
-            updated_at: Utc::now(),
-            received_at: Some(std::time::Instant::now()),
-        }
-    }
-
-    #[test]
-    fn a_session_metric_never_covers_a_long_windows_slot() {
-        // The old label guess called neither of these "weekly" and then matched
-        // them on their shared unit, so a cached Opus row was thrown away.
-        let session = pct("Session", 20, MetricWindow::Session);
-        let opus = pct("Opus", 100, MetricWindow::Long);
-        assert!(!metrics_match_slot(&session, &opus));
-    }
-
-    #[test]
-    fn two_different_long_pools_are_different_slots() {
-        // Claude reports Weekly, Opus and Sonnet at the same time; one long
-        // window no longer stands for all of them.
-        let weekly = pct("Weekly", 50, MetricWindow::Long);
-        let opus = pct("Opus", 100, MetricWindow::Long);
-        assert!(!metrics_match_slot(&weekly, &opus));
-    }
-
-    #[test]
-    fn the_same_label_is_always_the_same_slot() {
-        let a = pct("Weekly", 50, MetricWindow::Long);
-        let b = pct("Weekly", 90, MetricWindow::Long);
-        assert!(metrics_match_slot(&a, &b));
-        let c = pct("Session", 10, MetricWindow::Session);
-        let d = pct("session", 80, MetricWindow::Session);
-        assert!(metrics_match_slot(&c, &d));
-    }
-
-    #[test]
-    fn session_metrics_with_different_labels_still_share_a_slot_by_unit() {
-        // Antigravity renames its rows as Google rotates models, so two session
-        // metrics of the same unit must keep collapsing onto one slot.
-        let a = pct("2.5 Pro", 30, MetricWindow::Session);
-        let b = pct("3.6 Flash", 40, MetricWindow::Session);
-        assert!(metrics_match_slot(&a, &b));
-    }
-
-    #[test]
-    fn merging_restores_long_pools_the_api_omitted_this_cycle() {
-        // Claude answers "seven_day_opus": null on some cycles; the cached rows
-        // must come back instead of being swallowed by the Session metric.
-        let live = data(vec![
-            pct("Session", 20, MetricWindow::Session),
-            pct("Weekly", 60, MetricWindow::Long),
-        ]);
-        let cached = data(vec![
-            pct("Session", 15, MetricWindow::Session),
-            pct("Weekly", 55, MetricWindow::Long),
-            pct("Opus", 100, MetricWindow::Long),
-            pct("Sonnet", 40, MetricWindow::Long),
-        ]);
-        let merged = merge_cached_metrics(live, Some(&cached));
-        let labels: Vec<&str> = merged.metrics.iter().map(|m| m.label.as_str()).collect();
-        assert!(labels.contains(&"Opus"), "Opus was dropped: {labels:?}");
-        assert!(labels.contains(&"Sonnet"), "Sonnet was dropped: {labels:?}");
-        // The live values must win for the slots the API did return.
-        let weekly = merged.metrics.iter().find(|m| m.label == "Weekly").unwrap();
-        assert_eq!(weekly.used, 60);
-        assert_eq!(merged.metrics.len(), 4, "no duplicate slots: {labels:?}");
+    fn an_owed_window_waits_for_a_fullscreen_app() {
+        let asked = std::cell::Cell::new(false);
+        let fullscreen = |answer: bool| {
+            let asked = &asked;
+            move || {
+                asked.set(true);
+                answer
+            }
+        };
+        assert_eq!(
+            auto_open(PendingNotice::Welcome, false, fullscreen(false)),
+            AutoOpen::Now
+        );
+        assert_eq!(
+            auto_open(PendingNotice::UpdateNotice, false, fullscreen(true)),
+            AutoOpen::Later
+        );
+        // Already open, or nothing owed: nothing to do, and the screen is
+        // not even looked at.
+        asked.set(false);
+        assert_eq!(
+            auto_open(PendingNotice::Welcome, true, fullscreen(true)),
+            AutoOpen::No
+        );
+        assert_eq!(
+            auto_open(PendingNotice::None, false, fullscreen(true)),
+            AutoOpen::No
+        );
+        assert!(!asked.get());
     }
 }

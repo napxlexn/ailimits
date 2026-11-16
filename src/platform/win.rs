@@ -1056,17 +1056,7 @@ fn monitor_cover(target: crate::config::schema::PanelDisplay) -> Option<isize> {
         let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
         // The shell's own monitor-sized surfaces: the desktop, the taskbar,
         // the XAML island that hosts thumbnails and Task View.
-        if matches!(
-            cls.as_str(),
-            "Progman"
-                | "WorkerW"
-                | "Shell_TrayWnd"
-                | "Shell_SecondaryTrayWnd"
-                | "XamlExplorerHostIslandWindow"
-                | "ForegroundStaging"
-                | "MultitaskingViewFrame"
-                | "Windows.UI.Core.CoreWindow"
-        ) {
+        if crate::platform::taskbar_geom::is_shell_surface(&cls) {
             return BOOL(1);
         }
         s.found = Some(hwnd.0 as isize);
@@ -1117,6 +1107,83 @@ fn cover_is_in_front(cover: isize) -> bool {
     }
 }
 
+/// Whether the window in front fills its whole monitor - a game, a video
+/// or a browser in fullscreen, a slide show - so a window that opens by
+/// itself would land on top of it and take the keyboard from it. Asked only
+/// when the app is about to open something unasked (the welcome, the update
+/// notice), never polled. Ours and the shell's own surfaces (the desktop is
+/// monitor-sized too) do not count.
+pub fn foreground_fills_its_monitor() -> bool {
+    use crate::platform::taskbar_geom::{covers_monitor, is_shell_surface};
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClassNameW, GetForegroundWindow, GetWindowRect, GA_ROOT,
+    };
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+        let root = GetAncestor(fg, GA_ROOT);
+        if window_pid(root) == GetCurrentProcessId() {
+            return false;
+        }
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(root, &mut cls);
+        if is_shell_surface(&String::from_utf16_lossy(&cls[..n.max(0) as usize])) {
+            return false;
+        }
+        let mut r = RECT::default();
+        if GetWindowRect(root, &mut r).is_err() {
+            return false;
+        }
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(MonitorFromWindow(root, MONITOR_DEFAULTTONEAREST), &mut mi).as_bool() {
+            return false;
+        }
+        let m = mi.rcMonitor;
+        covers_monitor(
+            (r.left, r.top, r.right, r.bottom),
+            (m.left, m.top, m.right, m.bottom),
+        )
+    }
+}
+
+/// The message a second copy of the app posts to the running one: "the
+/// user started me; show yourself". Private to our own window class, so
+/// any value in the WM_APP range will do.
+const WM_SHOW_RUNNING: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 0x51;
+
+/// Tell the copy that is already running that the user started the app
+/// again, so it shows the widget instead of the second start doing nothing
+/// at all. The message goes to the running copy's tooltip window, the one
+/// top-level window whose procedure is ours (see `tip_wndproc`). A copy
+/// that is still starting has no such window yet: it is given a moment.
+/// Returns whether the message was delivered.
+pub fn wake_running_instance() -> bool {
+    use windows::core::w;
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, PostMessageW};
+    for _ in 0..10 {
+        unsafe {
+            if let Ok(hwnd) = FindWindowW(w!("AiLimitsTooltip"), None) {
+                if PostMessageW(Some(hwnd), WM_SHOW_RUNNING, WPARAM(0), LPARAM(0)).is_ok() {
+                    return true;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    false
+}
+
 /// Window procedure for the tooltip window. It defaults on everything but one
 /// message, and it is here for that one: WM_DISPLAYCHANGE is BROADCAST to
 /// every top-level window, and this is the only top-level window in the
@@ -1125,18 +1192,33 @@ fn cover_is_in_front(cover: isize) -> bool {
 /// out of broadcasts). A monitor unplugged or re-arranged moves the ground
 /// under both surfaces at once: the overlay can be left at coordinates that
 /// are on no screen, and the bar the panel follows can be destroyed.
+///
+/// It is also where a second start of the app knocks (`WM_SHOW_RUNNING`,
+/// see `wake_running_instance`): being top-level, the window can be found
+/// by its class from the other process.
 unsafe extern "system" fn tip_wndproc(
     hwnd: windows::Win32::Foundation::HWND,
     msg: u32,
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    if msg == windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE {
+    let event = if msg == windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE {
         tracing::debug!("the displays changed; re-placing the overlay and the panel");
+        Some(crate::app::UserEvent::DisplaysChanged)
+    } else if msg == WM_SHOW_RUNNING {
+        tracing::debug!("the app was started again; showing the widget");
+        Some(crate::app::UserEvent::ShowWidget)
+    } else {
+        None
+    };
+    if let Some(event) = event {
         if let Some(proxy) = PROXY.get() {
             if let Ok(proxy) = proxy.lock() {
-                let _ = proxy.send_event(crate::app::UserEvent::DisplaysChanged);
+                let _ = proxy.send_event(event);
             }
+        }
+        if msg == WM_SHOW_RUNNING {
+            return windows::Win32::Foundation::LRESULT(0);
         }
     }
     windows::Win32::UI::WindowsAndMessaging::DefWindowProcW(hwnd, msg, wparam, lparam)
