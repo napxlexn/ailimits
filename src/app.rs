@@ -3,18 +3,36 @@
 // Threads:
 //   Thread 1: the tao event loop — window events, rendering, AppCommand.
 //   Thread 2+: the tokio runtime — the scheduler and provider fetches.
+//
+// `run` builds everything once and hands each event to `App::handle`. The
+// state lives in `App`; what happens to it is split by where it comes from:
+//   events.rs        window, panel, timer and user events; provider updates
+//   menu.rs          the context menu's actions
+//   flow.rs          what several of them share: syncing the providers and
+//                    the surfaces, the picker, persisting state
+//   provider_set.rs  the provider instances the scheduler polls
+//   cache.rs         the provider cache and the one writer per state file
+//   model_job.rs     the model label reads
+//   clipboard.rs     keys and tokens pasted from the menu
+//   widget.rs        the overlay window: glass, showing, layout
+//   indicator.rs     the taskbar panel's fallback to the tray icon (Windows)
 
 mod cache;
 mod clipboard;
+mod events;
+mod flow;
+#[cfg(target_os = "windows")]
+mod indicator;
+mod menu;
 mod model_job;
 mod provider_set;
+mod widget;
 
 use crate::{
     config::{
-        schema::{AuthMethod, Config, PendingNotice, Surface},
+        schema::{Config, PendingNotice, Surface},
         storage,
     },
-    hooks,
     models::Models,
     monitor::{
         scheduler::{CycleHook, Scheduler, SharedInterval},
@@ -23,14 +41,14 @@ use crate::{
     notifications::{alerts::AlertBook, toast::ToastNotifier},
     providers::{
         cursor::session::{self as cursor_session, SignInOutcome},
-        key_label_for, usage_token_label_for, ProviderData, ProviderId, ProviderStatus,
+        ProviderData, ProviderId, ProviderStatus,
     },
     rows::{self, RowView},
     ui::{
-        context_menu::{ContextMenu, MenuAction},
+        context_menu::ContextMenu,
         layout,
-        picker::{PickerAction, PickerInput, PickerMode, PickerWindow, ReadKind, ScreenRect},
-        renderer::{format_duration, Renderer},
+        picker::{PickerInput, PickerMode, PickerWindow, ScreenRect},
+        renderer::Renderer,
         taskbar_panel::TaskbarPanel,
         theme::ComputedTheme,
         tray::Tray,
@@ -39,27 +57,24 @@ use crate::{
     updater,
 };
 use anyhow::{Context as AnyhowContext, Result};
-use cache::{
-    cacheable_provider_data, load_provider_cache, merge_cached_metrics, prune_provider_cache_map,
-    CacheLedger, FileJob, FileWriter,
-};
+use cache::{load_provider_cache, CacheLedger, FileWriter};
 use chrono::Utc;
-use clipboard::{read_clipboard_secret, SecretKind};
-use model_job::{refresh_models, spawn_model_read, ModelJob};
-use provider_set::{ProviderSet, Rebuilt};
+use model_job::{spawn_model_read, ModelJob, SharedModelJob};
+use provider_set::ProviderSet;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::Arc;
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{ElementState, Event, MouseButton, WindowEvent},
-    event_loop::{ControlFlow, EventLoopBuilder},
+    event_loop::EventLoopBuilder,
     window::WindowBuilder,
 };
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
+#[cfg(target_os = "windows")]
+use widget::apply_windows_glass;
 
 /// Commands for the event loop.
 #[derive(Debug)]
@@ -117,150 +132,6 @@ pub enum TrayKind {
     /// Left-click → toggle the overlay window's visibility.
     LeftClick,
 }
-
-/// Re-evaluate the Panel indicator's tray fallback: a tray icon stands in
-/// while the overlay cannot be seen — under the Start/Search scrim, under the
-/// cursor-peek "rude topmost" taskbar, under a fullscreen app, or with no room
-/// on the bar at all.
-/// No-op outside the Panel modes (every panel method guards on the mode).
-///
-/// `target` is the display the panel is attached to: the scrim and fullscreen
-/// signals are asked about that display in particular, so neither blanks a
-/// panel that is plainly visible on another.
-#[cfg(target_os = "windows")]
-#[allow(clippy::too_many_arguments)]
-fn eval_indicator_fallback(
-    panel: &mut TaskbarPanel,
-    tray: &mut Tray,
-    menu: &muda::Menu,
-    providers: &[ProviderData],
-    theme: &ComputedTheme,
-    fallback_was_active: &mut bool,
-    fullscreen_was_active: &mut bool,
-    covered_since: &mut Option<std::time::Instant>,
-    target: crate::config::schema::PanelDisplay,
-) -> FallbackVerdict {
-    let scrim = crate::platform::foreground_scrim_active(target, panel.screen_rect());
-    let fullscreen = crate::platform::fullscreen_foreground_active(target);
-    // While hidden for fullscreen the rect is None, so is_covered reads false —
-    // ordering matters: check coverage before this pass may hide the panel.
-    let covered = panel.is_covered();
-    // `covered` can latch the fallback on forever. Closing the Start menu is the
-    // repro: the scrim clears, but the panel has meanwhile lost the z-fight to
-    // the taskbar, so `is_covered` still reads true, the fallback stays on, and
-    // nothing ever lifts the panel again — it keeps its rectangle (so it is not
-    // "hidden") while the bar owns its pixels. Verified live: after Start closed
-    // the log read `scrim false, covered true` on every evaluation and the panel
-    // never came back.
-    //
-    // So when nothing explains the obstruction, try lifting the panel once and
-    // ask again. This cannot weaken the guarantees that matter: a scrim or a
-    // fullscreen app on this display is judged separately above, and during the
-    // cursor-edge "rude topmost" peek the compositor keeps the bar on top
-    // regardless, so the panel stays covered and the fallback still engages.
-    let covered = if covered && !scrim && !fullscreen {
-        panel.raise();
-        panel.is_covered()
-    } else {
-        covered
-    };
-    // A panel that could not place itself at all (no taskbar resolved, or a
-    // vertical bar we refuse to draw on) reads as "not covered" — an absent
-    // rectangle cannot be obstructed. Without this the user is left with no
-    // indicator whatsoever and no hint why.
-    let unavailable = panel.is_unavailable();
-    let wanted =
-        crate::platform::taskbar_geom::should_fall_back(scrim, covered, fullscreen, unavailable);
-    // Out of sight, but for how long? A verdict that has not stood for
-    // HANDOVER_WAIT is not acted on, and the loop is told to ask again when
-    // it has - nothing else would wake it.
-    let mut look_again_in = None;
-    let fallback = if wanted {
-        let since = covered_since.get_or_insert_with(std::time::Instant::now);
-        match HANDOVER_WAIT.checked_sub(since.elapsed()) {
-            Some(rest) if !*fallback_was_active => {
-                look_again_in = Some(rest + std::time::Duration::from_millis(10));
-                false
-            }
-            _ => true,
-        }
-    } else {
-        *covered_since = None;
-        false
-    };
-    // Which of the four inputs decided it. Without this a stuck fallback is
-    // indistinguishable from a correct one: the panel is simply absent and the
-    // tray icon is simply present, with nothing saying why.
-    if fallback != *fallback_was_active {
-        tracing::debug!(
-            "indicator fallback {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
-            if fallback { "ON" } else { "off" },
-            scrim,
-            covered,
-            fullscreen,
-            unavailable
-        );
-    } else {
-        tracing::trace!(
-            "indicator fallback unchanged: {} (scrim {}, covered {}, fullscreen {}, unavailable {})",
-            fallback,
-            scrim,
-            covered,
-            fullscreen,
-            unavailable
-        );
-    }
-    // The handover, in that order and never overlapping: the panel goes down
-    // first and the icon follows, the icon goes first and the panel follows.
-    // Both at once is what a user reads as a swap.
-    //
-    // Only for the reasons that do not depend on the panel being there.
-    // `covered` is not one: hiding it would make `is_covered` read false on
-    // the next pass, take the fallback off and show it again. `unavailable`
-    // is not one either: the panel is already hidden, and standing it down
-    // would stop `reposition` ever learning that room came back.
-    //
-    // No icon at all for a fullscreen app: the bar is buried then and the
-    // icon with it, so it achieves nothing but widening the tray by its own
-    // 32 px - and the panel then returns at the wider tray's place and steps
-    // sideways as the icon goes.
-    let stand_down = fullscreen || (scrim && fallback);
-    if stand_down {
-        // Idempotent - also re-hides the panel if anything re-presented it
-        // since the last evaluation.
-        panel.stand_down();
-    }
-    tray.set_scrim_fallback(fallback && !fullscreen, menu, providers, theme);
-    let left_fullscreen = *fullscreen_was_active && !fullscreen;
-    if !stand_down && (left_fullscreen || (*fallback_was_active && !fallback)) {
-        panel.stand_up(providers);
-    }
-    *fullscreen_was_active = fullscreen;
-    *fallback_was_active = fallback;
-    FallbackVerdict {
-        left_fullscreen,
-        look_again_in,
-    }
-}
-
-/// What an evaluation leaves for the loop to act on.
-#[cfg(target_os = "windows")]
-struct FallbackVerdict {
-    /// A fullscreen app just let go: the panel has to fight its way back
-    /// over a bar the shell still holds in a raised band.
-    left_fullscreen: bool,
-    /// Ask again after this - a verdict is waiting out `HANDOVER_WAIT` and
-    /// no event is owed.
-    look_again_in: Option<std::time::Duration>,
-}
-
-/// How long the panel has to be out of sight before the tray icon stands in
-/// for it. Pressing Win and pressing it again puts the shell's bar over the
-/// panel for about a second: without this the user watches the panel go and
-/// an icon arrive for a blink, which reads as the indicator jumping between
-/// two places. The icon is for being without a panel, not for a flicker.
-#[cfg(target_os = "windows")]
-const HANDOVER_WAIT: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Loading placeholder before the first fetch.
 fn loading_data(id: ProviderId) -> ProviderData {
@@ -418,218 +289,92 @@ fn load_alert_book() -> AlertBook {
         .unwrap_or_default()
 }
 
-#[cfg(target_os = "windows")]
-fn apply_windows_glass(window: &tao::window::Window) {
-    use std::ffi::c_void;
-    use tao::platform::windows::WindowExtWindows;
-    use windows::Win32::Foundation::HWND as WinHwnd;
-    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
-    use windows_sys::Win32::Foundation::{BOOL, HWND};
-    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+type Window = tao::window::Window;
 
-    #[repr(C)]
-    struct AccentPolicy {
-        accent_state: u32,
-        accent_flags: u32,
-        gradient_color: u32,
-        animation_id: u32,
-    }
+/// Everything the event loop works on. `run` builds it once; the loop hands
+/// it every event (`App::handle`, events.rs).
+struct App {
+    runtime: tokio::runtime::Runtime,
+    cmd_tx: mpsc::Sender<AppCommand>,
+    config: Config,
+    /// Saves the config in the background through a single serialised
+    /// writer (storage::spawn_saver): a burst coalesces to the latest config
+    /// on a one-slot channel, so the newest setting always wins and a slow
+    /// disk cannot grow the queue.
+    config_saves: storage::ConfigSaverHandle,
+    /// Kept for the shutdown handshake, so the final write cannot race an
+    /// in-flight background one.
+    saver_at_exit: Option<storage::ConfigSaver>,
 
-    #[repr(C)]
-    struct WindowCompositionAttribData {
-        attrib: u32,
-        data: *mut c_void,
-        size: usize,
-    }
+    // ── Providers and what they reported ──
+    providers: ProviderSet,
+    /// One entry per provider, in config order: what the surfaces show.
+    display: Vec<ProviderData>,
+    provider_cache: HashMap<ProviderId, ProviderData>,
+    /// When the cache file is behind (cache.rs).
+    cache_ledger: CacheLedger,
+    cache_writer: Option<FileWriter>,
+    /// The threshold alerts given, kept across restarts.
+    alert_book: AlertBook,
+    alert_writer: Option<FileWriter>,
+    /// Previous primary % per provider, for reset-edge detection.
+    last_pct: HashMap<ProviderId, f32>,
+    /// Whether the on_startup hook has fired (once after the first success).
+    startup_fired: bool,
+    /// Burn-rate trend buffers + the latest forecast per provider, stored as
+    /// the ABSOLUTE projected hit moment: the renderer derives "time left"
+    /// from it live, so the label ticks down between updates and expires on
+    /// its own instead of freezing at the duration computed on the last
+    /// fetch.
+    trends: HashMap<ProviderId, Trend>,
+    forecasts: HashMap<ProviderId, chrono::DateTime<Utc>>,
+    empty_forecasts: HashMap<ProviderId, chrono::DateTime<Utc>>,
+    /// Last fetch error per provider, kept after retention replaces the slot
+    /// with old data: hovering a greyed/estimated row shows this as the
+    /// "why" (the slot itself only knows the retained values, not the cause).
+    last_errors: HashMap<ProviderId, String>,
+    models: Models,
+    model_job: SharedModelJob,
+    /// Shared with the scheduler, changed live from the menu.
+    update_interval: SharedInterval,
+    /// Shared with the updater, changed live from the menu.
+    auto_update_enabled: Arc<AtomicBool>,
 
-    type SetWindowCompositionAttribute =
-        unsafe extern "system" fn(HWND, *mut WindowCompositionAttribData) -> BOOL;
+    // ── The widget ──
+    /// Shared with the picker window, which draws with the same font.
+    renderer: Rc<Renderer>,
+    shape: layout::Shape,
+    win_layout: layout::WindowLayout,
+    theme: ComputedTheme,
+    window: Rc<Window>,
+    /// Kept alive for the surface.
+    _sb_context: softbuffer::Context<Rc<Window>>,
+    surface: softbuffer::Surface<Rc<Window>, Rc<Window>>,
+    pixmap: tiny_skia::Pixmap,
+    win_state: WindowState,
+    window_visible: bool,
+    cursor_inside_window: bool,
 
-    const WCA_ACCENT_POLICY: u32 = 0x13;
-    const ACCENT_DISABLED: u32 = 0;
-    // BLURBEHIND (3), NOT ACRYLICBLURBEHIND (4): acrylic has a known bug —
-    // DWM drops the blur on drag/monitor change leaving a solid matte tint.
-    const ACCENT_ENABLE_BLURBEHIND: u32 = 3;
-
-    // Glass tint — the single dark theme.
-    let (tint_r, tint_g, tint_b, tint_a): (u32, u32, u32, u32) = (18, 18, 18, 28);
-
-    // Resolved ONCE. This function runs on every focus change, every scale
-    // change and every drag that ends on another monitor; calling LoadLibraryA
-    // each time bumps user32's reference count with no matching FreeLibrary and
-    // re-resolves an export that cannot move. `None` caches the failure too, so
-    // a machine without the export does not retry on every focus.
-    static COMPOSITION_PROC: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
-
-    unsafe {
-        let hwnd = window.hwnd() as HWND;
-        let proc = *COMPOSITION_PROC.get_or_init(|| {
-            let user32 = LoadLibraryA(c"user32.dll".as_ptr().cast());
-            if user32.is_null() {
-                warn!("acrylic accent unavailable: failed to load user32.dll");
-                return None;
-            }
-            match GetProcAddress(user32, c"SetWindowCompositionAttribute".as_ptr().cast()) {
-                Some(p) => Some(p as usize),
-                None => {
-                    warn!("acrylic accent unavailable: SetWindowCompositionAttribute missing");
-                    None
-                }
-            }
-        });
-        if let Some(proc) = proc {
-            let set_window_composition_attribute: SetWindowCompositionAttribute =
-                std::mem::transmute(proc);
-            let apply_state = |state: u32, color: u32| {
-                let mut accent = AccentPolicy {
-                    accent_state: state,
-                    accent_flags: 0,
-                    // AABBGGRR format.
-                    gradient_color: color,
-                    animation_id: 0,
-                };
-                let mut data = WindowCompositionAttribData {
-                    attrib: WCA_ACCENT_POLICY,
-                    data: &mut accent as *mut _ as _,
-                    size: std::mem::size_of_val(&accent),
-                };
-                set_window_composition_attribute(hwnd, &mut data as *mut _);
-            };
-            // The off→on cycle forces DWM to restart the blur if it got stuck.
-            apply_state(ACCENT_DISABLED, 0);
-            apply_state(
-                ACCENT_ENABLE_BLURBEHIND,
-                tint_r | (tint_g << 8) | (tint_b << 16) | (tint_a << 24),
-            );
-        }
-
-        // Native Win11 rounded corners: DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2.
-        let pref: u32 = 2;
-        let _ = DwmSetWindowAttribute(
-            WinHwnd(window.hwnd() as _),
-            DWMWINDOWATTRIBUTE(33),
-            &pref as *const u32 as _,
-            std::mem::size_of::<u32>() as u32,
-        );
-
-        // Win11 strokes a 1px border around a rounded top-level window
-        // (DWMWA_BORDER_COLOR=34) whose default dark-mode color is a faint light
-        // grey — a visible hairline. DWMWA_COLOR_NONE (0xFFFFFFFE) removes it
-        // entirely; with the undecorated shadow off (client == window, see the
-        // builder) there is no 1px frame left to expose, so the edge is just the
-        // widget's own translucent fill — seamless on any backdrop, no hairline.
-        let border_none: u32 = 0xFFFF_FFFE;
-        let _ = DwmSetWindowAttribute(
-            WinHwnd(window.hwnd() as _),
-            DWMWINDOWATTRIBUTE(34),
-            &border_none as *const u32 as _,
-            std::mem::size_of::<u32>() as u32,
-        );
-    }
-}
-
-/// Left-click on the tray icon or mini panel: if the overlay is already visible
-/// and the front-most window at its own centre, hide it; otherwise (hidden, or
-/// covered by another window) show it and raise it to the front. So a single
-/// click always brings the widget forward, and a second one tucks it away.
-fn toggle_or_raise_widget(
-    window: &tao::window::Window,
-    win_state: &WindowState,
-    window_visible: &mut bool,
-) {
+    // ── Menu, tray icon, taskbar panel ──
+    menu: ContextMenu,
+    /// The Cursor sign-in waiting for the browser, if one is.
+    cursor_sign_in: Option<tokio::task::JoinHandle<()>>,
+    tray: Tray,
+    panel: TaskbarPanel,
     #[cfg(target_os = "windows")]
-    use tao::platform::windows::WindowExtWindows;
-    #[cfg(not(target_os = "windows"))]
-    let _ = win_state; // coverage test is Windows-only
-    #[cfg(target_os = "windows")]
-    let already_front = {
-        let hwnd = window.hwnd();
-        let cx = (win_state.pos.0 + win_state.size.0 / 2.0) as i32;
-        let cy = (win_state.pos.1 + win_state.size.1 / 2.0) as i32;
-        *window_visible && crate::platform::point_owner(cx, cy) == hwnd
-    };
-    #[cfg(not(target_os = "windows"))]
-    let already_front = *window_visible;
+    indicator: indicator::Indicator,
 
-    if already_front {
-        *window_visible = false;
-        window.set_visible(false);
-    } else {
-        show_widget(window, window_visible);
-    }
-}
-
-/// Show the overlay and raise it to the front of its band, without taking
-/// the focus.
-fn show_widget(window: &tao::window::Window, window_visible: &mut bool) {
-    #[cfg(target_os = "windows")]
-    use tao::platform::windows::WindowExtWindows;
-    *window_visible = true;
-    window.set_visible(true);
-    #[cfg(target_os = "windows")]
-    {
-        apply_windows_glass(window);
-        crate::platform::bring_to_front(window.hwnd());
-    }
-    window.request_redraw();
-}
-
-/// Apply a live UI change: recompute the layout/theme, resize the window
-/// and the buffers.
-#[allow(clippy::too_many_arguments)]
-fn apply_ui_change(
-    config: &Config,
-    win_layout: &mut layout::WindowLayout,
-    theme: &mut ComputedTheme,
-    pixmap: &mut tiny_skia::Pixmap,
-    surface: &mut softbuffer::Surface<Rc<tao::window::Window>, Rc<tao::window::Window>>,
-    window: &Rc<tao::window::Window>,
-    win_state: &mut WindowState,
-    menu: &ContextMenu,
-    shape: &layout::Shape,
-) {
-    *win_layout = layout::compute(
-        &config.ui.layout,
-        &config.ui.detail,
-        &config.ui.width_scale,
-        &config.ui.column_flow,
-        shape,
-    );
-    *theme = ComputedTheme::compute(&config.ui);
-
-    let (w, h) = (win_layout.width as u32, win_layout.height as u32);
-    window.set_inner_size(PhysicalSize::new(w, h));
-    if let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) {
-        if let Err(e) = surface.resize(nw, nh) {
-            warn!("surface resize failed: {e}");
-        }
-    }
-    if let Some(pm) = tiny_skia::Pixmap::new(w, h) {
-        *pixmap = pm;
-    }
-    win_state.size = (win_layout.width as f64, win_layout.height as f64);
-
-    // Resizing keeps the top-left corner, so a widget parked against the right
-    // or bottom edge would grow straight off the screen. Pull it back into the
-    // work area of the monitor it sits on.
-    if let Ok(wp) = window.outer_position() {
-        let pos = (wp.x as f64, wp.y as f64);
-        let centre = (
-            (pos.0 + win_state.size.0 / 2.0) as i32,
-            (pos.1 + win_state.size.1 / 2.0) as i32,
-        );
-        if let Some((l, t, r, b)) = crate::platform::work_area_at(centre.0, centre.1) {
-            let work = (l as f64, t as f64, r as f64, b as f64);
-            let (nx, ny) = crate::ui::window::clamp_to_work_area(pos, win_state.size, work);
-            if (nx, ny) != pos {
-                window.set_outer_position(PhysicalPosition::new(nx as i32, ny as i32));
-                win_state.pos = (nx, ny);
-            }
-        }
-    }
-
-    menu.sync(config, win_state.pinned);
-    window.request_redraw();
+    // ── The picker: open only while in use ──
+    found_tools: Vec<&'static str>,
+    picker_mode: PickerMode,
+    /// A provider the Providers menu asked about: once allowed, its own row
+    /// comes back wherever rows were chosen.
+    menu_asked: Option<String>,
+    picker: Option<PickerWindow>,
+    /// An owed window held back while a fullscreen app is in front; it opens
+    /// when that app is no longer in front (a foreground change, the next
+    /// provider update, or the app started again by hand).
+    auto_open_waiting: bool,
 }
 
 /// Entry point — run the application.
@@ -680,9 +425,9 @@ pub fn run() -> Result<()> {
     // provider's fetch returns NotConfigured instantly, with no network call.
     // The list is shared with the scheduler and rebuilt live from the menu,
     // only where the config changed (provider_set.rs).
-    let mut providers = ProviderSet::new(&config);
-    let mut provider_cache = runtime.block_on(load_provider_cache());
-    let mut display: Vec<ProviderData> = providers
+    let providers = ProviderSet::new(&config);
+    let provider_cache = runtime.block_on(load_provider_cache());
+    let display: Vec<ProviderData> = providers
         .ids()
         .into_iter()
         .map(|id| {
@@ -697,18 +442,16 @@ pub fn run() -> Result<()> {
     }
     // The cache file is written by one writer, only when it is behind
     // (cache.rs `CacheLedger`); a cycle's answers settle into one write.
-    let mut cache_ledger = CacheLedger::new(&provider_cache);
+    let cache_ledger = CacheLedger::new(&provider_cache);
     let cache_writer = FileWriter::spawn(
         runtime.handle(),
         cache::provider_cache_path(),
         std::time::Duration::from_secs(2),
     );
-    let mut cache_writer_at_exit = Some(cache_writer);
     // The threshold alerts given, kept across restarts.
-    let mut alert_book = load_alert_book();
+    let alert_book = load_alert_book();
     let alert_writer =
         FileWriter::spawn(runtime.handle(), alerts_path(), std::time::Duration::ZERO);
-    let mut alert_writer_at_exit = Some(alert_writer);
 
     // 4. The background scheduler; the interval is shared — changed live
     // from the menu.
@@ -739,16 +482,16 @@ pub fn run() -> Result<()> {
     // first. No model is read yet: the readers arrive with their consent.
     // Shared with the picker window, which draws with the same font.
     let renderer = Rc::new(Renderer::new()?);
-    let mut models = Models::new();
-    let mut shape = widget_shape(&config, &display, &models, &renderer);
-    let mut win_layout = layout::compute(
+    let models = Models::new();
+    let shape = widget_shape(&config, &display, &models, &renderer);
+    let win_layout = layout::compute(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
         &config.ui.column_flow,
         &shape,
     );
-    let mut theme = ComputedTheme::compute(&config.ui);
+    let theme = ComputedTheme::compute(&config.ui);
 
     // 6. The window: borderless, transparent, out of the taskbar.
     let mut builder = WindowBuilder::new()
@@ -809,30 +552,12 @@ pub fn run() -> Result<()> {
         )
         .map_err(|e| anyhow::anyhow!("surface resize: {e}"))?;
 
-    let mut pixmap = tiny_skia::Pixmap::new(buf_w, buf_h).context("pixmap alloc failed")?;
-
-    // Previous primary % per provider, for reset-edge detection.
-    let mut last_pct: HashMap<ProviderId, f32> = HashMap::new();
-    // Whether the on_startup hook has fired (once after the first success).
-    let mut startup_fired = false;
-    // Burn-rate trend buffers + the latest forecast per provider, stored as
-    // the ABSOLUTE projected hit moment: the renderer derives "time left" from
-    // it live, so the label ticks down between updates and expires on its own
-    // instead of freezing at the duration computed on the last fetch.
-    let mut trends: HashMap<ProviderId, Trend> = HashMap::new();
-    let mut forecasts: HashMap<ProviderId, chrono::DateTime<Utc>> = HashMap::new();
-    let empty_forecasts: HashMap<ProviderId, chrono::DateTime<Utc>> = HashMap::new();
-    // Last fetch error per provider, kept after retention replaces the slot
-    // with old data: hovering a greyed/estimated row shows this as the
-    // "why" (the slot itself only knows the retained values, not the cause).
-    let mut last_errors: HashMap<ProviderId, String> = HashMap::new();
+    let pixmap = tiny_skia::Pixmap::new(buf_w, buf_h).context("pixmap alloc failed")?;
 
     // 9. The context menu: events → proxy.
     let menu = ContextMenu::new(&config, config.window.pinned)?;
     // One Credential Manager read: is there a Cursor session to sign out of.
     menu.set_cursor_signed_in(cursor_session::is_stored());
-    // The Cursor sign-in waiting for the browser, if one is.
-    let mut cursor_sign_in: Option<tokio::task::JoinHandle<()>> = None;
     {
         let proxy = proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -881,93 +606,80 @@ pub fn run() -> Result<()> {
     #[cfg(target_os = "windows")]
     crate::platform::register_fullscreen_watch();
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
-    let mut window_visible = true;
-    // `fallback_was_active` tracks the previous state so the panel is
-    // re-presented exactly when the fallback clears. The shell can cover the
-    // overlay with no move/foreground event, so a reorder cue arms a coalesced
-    // re-check; at idle no reorders fire, so CPU stays 0%.
     #[cfg(target_os = "windows")]
-    let mut fallback_was_active = false;
-    // Whether the last evaluation saw a fullscreen app: the panel is hidden
-    // while true; the falling edge re-presents it (alt-tab back to desktop).
-    #[cfg(target_os = "windows")]
-    let mut fullscreen_was_active = false;
-    #[cfg(target_os = "windows")]
-    let mut recheck_at: Option<std::time::Instant> = None;
-    // How long, and how often, the panel keeps trying to get back over the
-    // bar after a fullscreen app lets go. 500ms is generous for a band the
-    // shell drops within about 200; 24ms is a frame and a half, which is as
-    // often as the compositor can show a difference anyway.
-    #[cfg(target_os = "windows")]
-    const BOUNCE_FOR: std::time::Duration = std::time::Duration::from_millis(500);
-    #[cfg(target_os = "windows")]
-    const BOUNCE_EVERY: std::time::Duration = std::time::Duration::from_millis(24);
-    #[cfg(target_os = "windows")]
-    let mut bounce_until: Option<std::time::Instant> = None;
-    // Since when the panel has been out of sight; the tray icon waits it out.
-    #[cfg(target_os = "windows")]
-    let mut covered_since: Option<std::time::Instant> = None;
-    // The hover tooltip appears only after the cursor lingers for the system
-    // mouse-hover time (the same delay tray-icon tooltips use), tracked by this
-    // deadline; it is cancelled the moment the cursor leaves.
-    #[cfg(target_os = "windows")]
-    let mut tooltip_at: Option<std::time::Instant> = None;
-    #[cfg(target_os = "windows")]
-    let hover_delay = std::time::Duration::from_millis(crate::platform::mouse_hover_time_ms());
+    let indicator = indicator::Indicator::new();
 
     // 10. The window state.
-    let mut win_state = WindowState {
+    let win_state = WindowState {
         pos: (config.window.pos_x as f64, config.window.pos_y as f64),
         size: (win_layout.width as f64, win_layout.height as f64),
         pinned: config.window.pinned,
         ..Default::default()
     };
-    let mut cursor_inside_window = false;
 
-    let rt_handle = runtime.handle().clone();
+    let saver = storage::spawn_saver(runtime.handle(), storage::config_path());
+    let config_saves = saver.handle();
+    let picker_mode = picker_mode_for(&config);
 
-    // Save the config in the background through a single serialised writer
-    // (storage::spawn_saver): a burst coalesces to the latest config on a
-    // one-slot channel, so the newest setting always wins and a slow disk
-    // cannot grow the queue. The saver itself is kept for the shutdown
-    // handshake so the final write cannot race an in-flight background one.
-    let saver = storage::spawn_saver(&rt_handle, storage::config_path());
-    let save_config = {
-        let handle = saver.handle();
-        move |cfg: Config| handle.save(cfg)
+    let mut app = App {
+        runtime,
+        cmd_tx,
+        config,
+        config_saves,
+        saver_at_exit: Some(saver),
+        providers,
+        display,
+        provider_cache,
+        cache_ledger,
+        cache_writer: Some(cache_writer),
+        alert_book,
+        alert_writer: Some(alert_writer),
+        last_pct: HashMap::new(),
+        startup_fired: false,
+        trends: HashMap::new(),
+        forecasts: HashMap::new(),
+        empty_forecasts: HashMap::new(),
+        last_errors: HashMap::new(),
+        models,
+        model_job,
+        update_interval,
+        auto_update_enabled,
+        renderer,
+        shape,
+        win_layout,
+        theme,
+        window,
+        _sb_context: sb_context,
+        surface,
+        pixmap,
+        win_state,
+        window_visible: true,
+        cursor_inside_window: false,
+        menu,
+        cursor_sign_in: None,
+        tray,
+        panel,
+        #[cfg(target_os = "windows")]
+        indicator,
+        found_tools: Vec::new(),
+        picker_mode,
+        menu_asked: None,
+        picker: None,
+        auto_open_waiting: false,
     };
-    let mut saver_at_exit = Some(saver);
 
-    // The picker: open only while in use. On a fresh install it opens by
-    // itself as the welcome, after the update that added [reads] as the
-    // one-time notice.
-    let mut found_tools: Vec<&'static str> = Vec::new();
-    let mut picker_mode = picker_mode_for(&config);
-    // A provider the Providers menu asked about: once allowed, its own row
-    // comes back wherever rows were chosen.
-    let mut menu_asked: Option<String> = None;
-    let mut picker: Option<PickerWindow> = None;
-    // An owed window held back while a fullscreen app is in front; it opens
-    // when that app is no longer in front (a foreground change, the next
-    // provider update, or the app started again by hand).
-    let mut auto_open_waiting = false;
+    // On a fresh install the picker opens by itself as the welcome, after
+    // the update that added [reads] as the one-time notice - unless a
+    // fullscreen app is in front, which it waits for.
     match auto_open(
-        config.reads.pending,
+        app.config.reads.pending,
         false,
         crate::platform::foreground_fills_its_monitor,
     ) {
-        AutoOpen::Now => {
-            found_tools = crate::consent::found_tools();
-            picker = open_picker_window(
-                &event_loop,
-                &renderer,
-                crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools),
-                picker_anchor(&window, window_visible),
-            );
-        }
+        AutoOpen::Now => app.open_picker(&event_loop, None),
         AutoOpen::Later => {
             info!("a fullscreen app is in front: the owed window waits for it");
-            auto_open_waiting = true;
+            app.auto_open_waiting = true;
         }
         AutoOpen::No => {}
     }
@@ -975,1439 +687,7 @@ pub fn run() -> Result<()> {
     info!("AI Limits Widget ready");
 
     // 11. The event loop — never returns.
-    event_loop.run(move |event, target, control_flow| {
-        // The picker, wired: its input, opening it, and applying what it
-        // asks for to the config and every surface at once.
-        macro_rules! picker_input {
-            () => {
-                crate::choices::picker_input(&config, &display, &models, picker_mode, &found_tools)
-            };
-        }
-        macro_rules! refresh_picker {
-            () => {
-                if picker.is_some() {
-                    let input = picker_input!();
-                    if let Some(p) = picker.as_mut() {
-                        p.set_input(input);
-                    }
-                }
-            };
-        }
-        // Hand the provider cache to its writer when the file is behind
-        // (cache.rs `CacheLedger`).
-        macro_rules! persist_cache {
-            () => {
-                if let Some(bytes) = cache_ledger.due(&provider_cache, std::time::Instant::now()) {
-                    if let Some(w) = cache_writer_at_exit.as_ref() {
-                        w.send(FileJob::from(bytes));
-                    }
-                }
-            };
-        }
-        macro_rules! persist_alerts {
-            () => {
-                if let Some(w) = alert_writer_at_exit.as_ref() {
-                    w.send(FileJob::from(alert_book.to_json()));
-                }
-            };
-        }
-        // Bring the provider instances in line with the config
-        // (provider_set.rs), `force` rebuilt whatever its config. A rebuilt
-        // provider is fetched at once. One whose source or account changed
-        // starts over: Loading until it answers, and nothing of the old one
-        // stays - not its cached numbers, its last error, its trend or the
-        // alerts it gave.
-        macro_rules! sync_providers {
-            ($force:expr) => {{
-                let force: Option<&str> = $force;
-                let mut cache_changed = false;
-                for Rebuilt { id, reload } in providers.sync(&config, force) {
-                    if reload {
-                        if let Some(slot) = display.iter_mut().find(|d| d.id == id) {
-                            *slot = loading_data(id.clone());
-                        }
-                        cache_changed |= provider_cache.remove(&id).is_some();
-                        last_errors.remove(&id);
-                        last_pct.remove(&id);
-                        trends.remove(&id);
-                        forecasts.remove(&id);
-                        if alert_book.forget(&id) {
-                            persist_alerts!();
-                        }
-                    }
-                    providers.fetch(&id, &cmd_tx, runtime.handle());
-                }
-                if cache_changed {
-                    persist_cache!();
-                }
-            }};
-        }
-        // A provider set up with the app's own sign-in (a pasted key or
-        // usage token): allowed that alone, not the tool's files, then
-        // every surface follows at once.
-        macro_rules! set_up_with_app_sign_in {
-            ($pid:expr) => {{
-                let pid: &str = $pid;
-                config.allow_app_sign_in(pid);
-                crate::choices::show_provider_rows(&mut config, pid);
-                // The key or token is new: so may be the account.
-                sync_providers!(Some(pid));
-                refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
-                // A first provider on a fresh install:
-                // the widget leaves "Choose what to show"
-                // now, not at the first data.
-                shape = widget_shape(&config, &display, &models, &renderer);
-                apply_ui_change(
-                    &config,
-                    &mut win_layout,
-                    &mut theme,
-                    &mut pixmap,
-                    &mut surface,
-                    &window,
-                    &mut win_state,
-                    &menu,
-                    &shape,
-                );
-                tray.set_first_install(
-                    rows::nothing_chosen(&config),
-                    &visible_data(&config, &display),
-                );
-                tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
-                menu.sync(&config, win_state.pinned);
-                save_config(config.clone());
-                window.request_redraw();
-                refresh_picker!();
-            }};
-        }
-        macro_rules! open_picker {
-            ($ask:expr) => {{
-                let ask: Option<String> = $ask;
-                // Opened now, by whatever path: an owed window that waited
-                // has had its turn.
-                auto_open_waiting = false;
-                if picker.is_none() {
-                    picker_mode = picker_mode_for(&config);
-                    found_tools = crate::consent::found_tools();
-                    picker = open_picker_window(
-                        target,
-                        &renderer,
-                        picker_input!(),
-                        picker_anchor(&window, window_visible),
-                    );
-                } else if let Some(p) = picker.as_ref() {
-                    p.focus();
-                }
-                if let (Some(p), Some(id)) = (picker.as_mut(), ask) {
-                    p.ask_sign_in(&id);
-                }
-            }};
-        }
-        // An owed window that waited for a fullscreen app opens once the app
-        // is no longer in front. `$fullscreen` is evaluated only while one
-        // waits.
-        macro_rules! try_auto_open {
-            ($fullscreen:expr) => {
-                if auto_open_waiting {
-                    match auto_open(config.reads.pending, picker.is_some(), || $fullscreen) {
-                        AutoOpen::Now => {
-                            info!("the fullscreen app is gone: the owed window opens");
-                            open_picker!(None);
-                        }
-                        AutoOpen::No => auto_open_waiting = false,
-                        AutoOpen::Later => {}
-                    }
-                }
-            };
-        }
-        macro_rules! apply_picker_actions {
-            ($actions:expr) => {{
-                let actions: Vec<PickerAction> = $actions;
-                // The menu's question sends its Allow alone; a row's Allow
-                // comes with the row it was asked for.
-                let lone = actions.len() == 1;
-                let mut changed = false;
-                for action in actions {
-                    let done = crate::choices::apply(&mut config, &action);
-                    match &action {
-                        PickerAction::NoticeDone => picker_mode = PickerMode::Normal,
-                        PickerAction::Allow(ReadKind::SignIn(p))
-                            if lone && menu_asked.as_deref() == Some(p.as_str()) =>
-                        {
-                            crate::choices::show_provider_rows(&mut config, p);
-                            menu_asked = None;
-                        }
-                        _ => {}
-                    }
-                    if done.close {
-                        if let Some(p) = picker.take() {
-                            p.close();
-                        }
-                        menu_asked = None;
-                    }
-                    if let Some(pid) = &done.provider {
-                        sync_providers!(Some(pid.as_str()));
-                    }
-                    if done.models {
-                        refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
-                    }
-                    changed |= done.changed;
-                }
-                // Whatever else the actions changed for the providers: several
-                // tools allowed at once, the Grok Bot row chosen or not.
-                sync_providers!(None);
-                // The menu's question is answered in the first actions after
-                // it (Cancel sends none): whatever comes next is not it.
-                menu_asked = None;
-                if changed {
-                    save_config(config.clone());
-                    shape = widget_shape(&config, &display, &models, &renderer);
-                    apply_ui_change(
-                        &config,
-                        &mut win_layout,
-                        &mut theme,
-                        &mut pixmap,
-                        &mut surface,
-                        &window,
-                        &mut win_state,
-                        &menu,
-                        &shape,
-                    );
-                    tray.set_first_install(
-                        rows::nothing_chosen(&config),
-                        &visible_data(&config, &display),
-                    );
-                    tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
-                    panel.update(&visible_data(&config, &display), true);
-                    menu.sync(&config, win_state.pinned);
-                    window.request_redraw();
-                }
-                refresh_picker!();
-            }};
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            let next = [recheck_at, tooltip_at].into_iter().flatten().min();
-            *control_flow = match next {
-                Some(t) => ControlFlow::WaitUntil(t),
-                None => ControlFlow::Wait,
-            };
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            *control_flow = ControlFlow::Wait;
-        }
-
-        match event {
-            // Scheduled deadlines came due: re-check overlay coverage (toggle the
-            // tray fallback), and/or show the hover tooltip after its delay.
-            // Idle returns to 0% afterwards (no pending timer).
-            #[cfg(target_os = "windows")]
-            Event::NewEvents(_) => {
-                let now = std::time::Instant::now();
-                if let Some(t) = recheck_at {
-                    if now >= t {
-                        recheck_at = None;
-                        // Re-place before re-judging. The bar slides over
-                        // ~200ms and its move events arrive mid-slide, so
-                        // acting on the first pins the panel to an animation
-                        // frame (measured: bar top 1410, 1413, settling at
-                        // 1392) - hanging below the bar, half off the screen.
-                        // Nothing else re-runs placement: the evaluation below
-                        // only redraws into the rectangle it is given.
-                        panel.on_taskbar_moved(&visible_data(&config, &display));
-                        let verdict = eval_indicator_fallback(
-                            &mut panel,
-                            &mut tray,
-                            &menu.menu,
-                            &visible_data(&config, &display),
-                            &theme,
-                            &mut fallback_was_active,
-                            &mut fullscreen_was_active,
-                            &mut covered_since,
-                            config.general.panel_display,
-                        );
-                        if verdict.left_fullscreen {
-                            bounce_until = Some(now + BOUNCE_FOR);
-                        }
-                        if let Some(rest) = verdict.look_again_in {
-                            recheck_at = Some(recheck_at.map_or(now + rest, |t| t.min(now + rest)));
-                        }
-                        // The verdict may now be resting on its trailing hold
-                        // alone - the game has let go and only the timer still
-                        // says otherwise. Look again exactly when it lapses;
-                        // without this the panel waits for whatever event
-                        // happens by next, which after an alt-tab can be a
-                        // while, and the screen sits there with no indicator.
-                        if let Some(rest) = crate::platform::fullscreen_hold_remaining() {
-                            recheck_at = Some(now + rest + std::time::Duration::from_millis(5));
-                        }
-                    }
-                }
-                // Straight after a fullscreen app lets go the shell keeps its
-                // bar in a band an ordinary topmost window cannot beat, and
-                // the panel - placed, painted, correct - is simply BEHIND the
-                // bar. Measured: the panel's own pixel showed the taskbar for
-                // 174 ms after the alt-tab, and what finally uncovered it was
-                // a raise on the next scheduled look. So it is lifted again
-                // every BOUNCE_EVERY until it shows, and given up on after
-                // BOUNCE_FOR - a few dozen cheap calls, once per game, and
-                // nothing at all in ordinary use.
-                if let Some(deadline) = bounce_until {
-                    if now >= deadline || !panel.is_covered() {
-                        bounce_until = None;
-                    } else {
-                        panel.raise();
-                        let next = now + BOUNCE_EVERY;
-                        recheck_at = Some(recheck_at.map_or(next, |t| t.min(next)));
-                    }
-                }
-                if let Some(t) = tooltip_at {
-                    if now >= t {
-                        tooltip_at = None;
-                        panel.show_tooltip(
-                            &surface_rows(&config, &display, Surface::Tooltip, &models),
-                            rows::nothing_chosen(&config),
-                        );
-                    }
-                }
-            }
-            // The embedded panel's own events: a left-click toggles the
-            // overlay (like the tray icon), a right-click opens the menu.
-            // The picker's own window: before every other window arm, which
-            // would take its events (and its close) for the widget's.
-            Event::WindowEvent {
-                window_id, event, ..
-            } if picker.as_ref().is_some_and(|p| p.id() == window_id) => {
-                let actions = picker
-                    .as_mut()
-                    .map(|p| p.handle_window_event(&event))
-                    .unwrap_or_default();
-                if !actions.is_empty() {
-                    apply_picker_actions!(actions);
-                }
-            }
-
-            Event::RedrawRequested(id) if picker.as_ref().is_some_and(|p| p.id() == id) => {
-                if let Some(p) = picker.as_mut() {
-                    p.redraw();
-                }
-            }
-
-            Event::WindowEvent {
-                window_id, event, ..
-            } if window_id == panel.window_id() => {
-                match event {
-                    WindowEvent::MouseInput {
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                        ..
-                    } => {
-                        toggle_or_raise_widget(&window, &win_state, &mut window_visible);
-                    }
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        button: MouseButton::Right,
-                        ..
-                    } => {
-                        #[cfg(target_os = "windows")]
-                        {
-                            use muda::ContextMenu as _;
-                            unsafe {
-                                menu.menu.show_context_menu_for_hwnd(panel.hwnd(), None);
-                            }
-                        }
-                    }
-                    // Our own hover tooltip: arm the system hover delay on
-                    // enter/hover (show only if the cursor lingers, like a
-                    // tray-icon tooltip), hide and cancel on leave.
-                    WindowEvent::CursorEntered { .. } | WindowEvent::CursorMoved { .. } => {
-                        #[cfg(target_os = "windows")]
-                        if !panel.tooltip_shown() && tooltip_at.is_none() {
-                            tooltip_at = Some(std::time::Instant::now() + hover_delay);
-                        }
-                    }
-                    WindowEvent::CursorLeft { .. } => {
-                        panel.hide_tooltip();
-                        #[cfg(target_os = "windows")]
-                        {
-                            tooltip_at = None;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-
-                WindowEvent::Focused(_) => {
-                    #[cfg(target_os = "windows")]
-                    apply_windows_glass(&window);
-                    window.request_redraw();
-                }
-
-                // The system switched light/dark theme — repaint the taskbar
-                // panel and the tray icon so their monochrome ink keeps
-                // contrasting with the bar (the tray follows the taskbar theme,
-                // not the widget's).
-                WindowEvent::ThemeChanged(_) => {
-                    panel.update(&visible_data(&config, &display), true);
-                    tray.update(&visible_data(&config, &display), &theme, true);
-                }
-
-                // A DPI change when crossing monitors: pin the physical size
-                // and re-apply the accent — otherwise the second monitor
-                // shows a white background.
-                WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                    *new_inner_size =
-                        PhysicalSize::new(win_layout.width as u32, win_layout.height as u32);
-                    #[cfg(target_os = "windows")]
-                    apply_windows_glass(&window);
-                    window.request_redraw();
-                }
-
-                WindowEvent::CursorMoved { position, .. } => {
-                    cursor_inside_window = true;
-                    win_state.cursor_in_window = (position.x, position.y);
-                    if let Ok(wp) = window.outer_position() {
-                        // Screen cursor = window position + in-window position.
-                        let screen = (wp.x as f64 + position.x, wp.y as f64 + position.y);
-                        if win_state.drag.active {
-                            // Hold Shift while dragging → soft-magnet the widget
-                            // to the nearest work-area edge of the monitor it is
-                            // currently over.
-                            let magnet = if crate::platform::shift_held() {
-                                let cx = (win_state.pos.0 + win_state.size.0 / 2.0) as i32;
-                                let cy = (win_state.pos.1 + win_state.size.1 / 2.0) as i32;
-                                crate::platform::work_area_at(cx, cy).map(|(l, t, r, b)| {
-                                    (
-                                        (l as f64, t as f64, r as f64, b as f64),
-                                        crate::ui::window::MAGNET_RANGE,
-                                    )
-                                })
-                            } else {
-                                None
-                            };
-                            if let Some((nx, ny)) = win_state.update_drag(screen, magnet) {
-                                window.set_outer_position(PhysicalPosition::new(nx, ny));
-                            }
-                        } else if win_state.drag_pending {
-                            // The drag starts from the REAL current cursor
-                            // position, not the one cached at click time —
-                            // otherwise the window jumped to the click point
-                            // after the context menu.
-                            win_state.drag_pending = false;
-                            win_state.pos = (wp.x as f64, wp.y as f64);
-                            win_state.begin_drag(screen);
-                        }
-                    }
-                    window.request_redraw();
-                }
-
-                WindowEvent::CursorLeft { .. } => {
-                    cursor_inside_window = false;
-                    window.request_redraw();
-                }
-
-                WindowEvent::MouseInput { state, button, .. } => match (state, button) {
-                    (ElementState::Pressed, MouseButton::Left) => {
-                        // Drag from anywhere, but it starts only on the first
-                        // cursor move; a locked widget will not move.
-                        if !config.window.locked {
-                            win_state.drag_pending = true;
-                        }
-                    }
-                    (ElementState::Released, MouseButton::Left) => {
-                        // "Choose what to show / Click here": a click that
-                        // did not drag opens the picker.
-                        let dragged = win_state.end_drag();
-                        if !dragged && rows::nothing_chosen(&config) {
-                            open_picker!(None);
-                        }
-                        if dragged {
-                            // Persist the position to the config.
-                            config.window.pos_x = win_state.pos.0.round() as i32;
-                            config.window.pos_y = win_state.pos.1.round() as i32;
-                            save_config(config.clone());
-                            // The accent gets lost when dragging to another
-                            // monitor — re-apply it.
-                            #[cfg(target_os = "windows")]
-                            apply_windows_glass(&window);
-                            window.request_redraw();
-                        }
-                    }
-                    (ElementState::Pressed, MouseButton::Right) => {
-                        // The native context menu at the cursor.
-                        #[cfg(target_os = "windows")]
-                        {
-                            use muda::ContextMenu as _;
-                            use tao::platform::windows::WindowExtWindows;
-                            unsafe {
-                                menu.menu
-                                    .show_context_menu_for_hwnd(window.hwnd() as _, None);
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-
-                _ => {}
-            },
-
-            Event::RedrawRequested(id) if id == panel.window_id() => {
-                panel.redraw(&visible_data(&config, &display));
-            }
-
-            Event::RedrawRequested(_) => {
-                // Render only the visible providers, as the widget's rows.
-                let visible = surface_rows(&config, &display, Surface::Widget, &models);
-                renderer.draw(
-                    &mut pixmap,
-                    &win_layout,
-                    &theme,
-                    &visible,
-                    config.window.opacity,
-                    &config.ui.detail,
-                    cursor_inside_window.then_some((
-                        win_state.cursor_in_window.0 as f32,
-                        win_state.cursor_in_window.1 as f32,
-                    )),
-                    if config.ui.show_forecast {
-                        &forecasts
-                    } else {
-                        &empty_forecasts
-                    },
-                    &last_errors,
-                );
-                // Copy the pixmap into softbuffer: RGBA → 0xAARRGGBB.
-                if let Ok(mut buffer) = surface.buffer_mut() {
-                    for (dst, src) in buffer.iter_mut().zip(pixmap.pixels().iter()) {
-                        let c = src.demultiply();
-                        *dst = ((c.alpha() as u32) << 24)
-                            | ((c.red() as u32) << 16)
-                            | ((c.green() as u32) << 8)
-                            | (c.blue() as u32);
-                    }
-                    if let Err(e) = buffer.present() {
-                        warn!("present failed: {e}");
-                    }
-                }
-            }
-
-            Event::UserEvent(ue) => match ue {
-                UserEvent::Command(cmd) => match cmd {
-                    AppCommand::UpdateProvider { data, serial } => {
-                        // Made by an instance that has since been replaced:
-                        // it was in flight while the user signed out, signed
-                        // in as someone else, changed the key or took the
-                        // consent back. Its numbers are not shown, cached or
-                        // alerted on.
-                        if !providers.is_current(&data.id, serial) {
-                            debug!(
-                                "provider {:?}: an update from before a rebuild dropped",
-                                data.id
-                            );
-                            return;
-                        }
-                        let active = config
-                            .providers
-                            .iter()
-                            .find(|p| ProviderId::from_config_id(&p.id) == Some(data.id.clone()))
-                            .is_some_and(|p| config.provider_active(p));
-                        // Threshold crossing drives BOTH the toast and the
-                        // `on_threshold` hook: once per limit window, not
-                        // again every cooldown while usage stays up, and not
-                        // again after a restart (notifications/alerts.rs).
-                        // The hook fires even if toasts are disabled (it's
-                        // its own opt-in).
-                        if let Some(pct) = data.primary_percentage() {
-                            let threshold = providers.threshold(&data.id) as f32;
-                            let cooldown = chrono::Duration::minutes(
-                                config.notifications.cooldown_minutes.max(1) as i64,
-                            );
-                            // A provider switched off meanwhile alerts nothing.
-                            let seen = active.then(|| {
-                                alert_book.observe(
-                                    &data.id,
-                                    pct,
-                                    threshold,
-                                    data.headline_reset(),
-                                    Utc::now(),
-                                    cooldown,
-                                )
-                            });
-                            if seen.is_some_and(|s| s.changed) {
-                                persist_alerts!();
-                            }
-                            if seen.is_some_and(|s| s.fire) {
-                                if config.notifications.enabled {
-                                    let body = match data.headline_reset() {
-                                        Some(t) => {
-                                            let secs = t
-                                                .signed_duration_since(Utc::now())
-                                                .num_seconds()
-                                                .max(0);
-                                            format!(
-                                                "{}% used, resets in {}",
-                                                pct.round() as u32,
-                                                format_duration(secs)
-                                            )
-                                        }
-                                        None => format!("{}% used", pct.round() as u32),
-                                    };
-                                    let title = format!("{} limit", data.id.display_name());
-                                    if let Err(e) = ToastNotifier::show(&title, &body) {
-                                        warn!("toast failed: {e}");
-                                    }
-                                }
-                                hooks::run(
-                                    &runtime,
-                                    &config.hooks.on_threshold,
-                                    hooks::HookEvent::Threshold,
-                                    data.id.clone(),
-                                    Some(pct),
-                                    data.headline_reset(),
-                                );
-                            }
-
-                            // Reset edge: a provider that was near its limit
-                            // (>= threshold) dropping sharply means a window
-                            // rolled over. Self-debouncing: after firing, the
-                            // tracked % is low, so it won't refire until usage
-                            // climbs back above the threshold and drops again.
-                            if let Some(&prev) = last_pct.get(&data.id) {
-                                if prev >= threshold && pct + 30.0 < prev {
-                                    hooks::run(
-                                        &runtime,
-                                        &config.hooks.on_reset,
-                                        hooks::HookEvent::Reset,
-                                        data.id.clone(),
-                                        Some(pct),
-                                        data.headline_reset(),
-                                    );
-                                }
-                            }
-                            last_pct.insert(data.id.clone(), pct);
-
-                            // Burn-rate trend: record the sample and recompute
-                            // this provider's forecast (suppressed if the window
-                            // resets before the projected hit).
-                            let trend = trends.entry(data.id.clone()).or_default();
-                            trend.push(Utc::now(), pct);
-                            match trend.forecast(data.headline_reset()) {
-                                Some(f) if f.hit_at > Utc::now() => {
-                                    forecasts.insert(data.id.clone(), f.hit_at);
-                                }
-                                _ => {
-                                    forecasts.remove(&data.id);
-                                }
-                            }
-                        }
-
-                        // Startup edge: once, after the first successful fetch.
-                        if !startup_fired && matches!(data.status, ProviderStatus::Ok) {
-                            startup_fired = true;
-                            hooks::run(
-                                &runtime,
-                                &config.hooks.on_startup,
-                                hooks::HookEvent::Startup,
-                                data.id.clone(),
-                                data.primary_percentage(),
-                                data.headline_reset(),
-                            );
-                        }
-
-                        // Remember the failure text (or clear it) for the
-                        // hover explanation on greyed/estimated rows.
-                        match &data.status {
-                            ProviderStatus::NetworkError(msg) | ProviderStatus::AuthError(msg) => {
-                                last_errors.insert(data.id.clone(), msg.clone());
-                            }
-                            ProviderStatus::Ok => {
-                                last_errors.remove(&data.id);
-                            }
-                            _ => {}
-                        }
-
-                        // A transient error must NOT wipe the last real data —
-                        // it stays on screen; the renderer greys it out with
-                        // its age. Applies to every provider.
-                        let is_error = matches!(
-                            data.status,
-                            ProviderStatus::NetworkError(_) | ProviderStatus::AuthError(_)
-                        );
-                        prune_provider_cache_map(&mut provider_cache);
-
-                        let is_success = matches!(data.status, ProviderStatus::Ok);
-                        let cached_before_update = provider_cache.get(&data.id).cloned();
-                        let display_data = if is_success {
-                            merge_cached_metrics(data.clone(), cached_before_update.as_ref())
-                        } else {
-                            data.clone()
-                        };
-                        if is_success {
-                            provider_cache.remove(&data.id);
-                        }
-                        if let Some(cached_data) = cacheable_provider_data(&display_data) {
-                            provider_cache.insert(cached_data.id.clone(), cached_data);
-                        }
-                        // Written only when the file is behind: new numbers,
-                        // expired ones pruned, or fetch times grown old.
-                        persist_cache!();
-                        let had_real_data = display.iter().any(|d| {
-                            d.id == data.id
-                                && matches!(d.status, ProviderStatus::Ok)
-                                && !d.metrics.is_empty()
-                        }) || provider_cache.contains_key(&data.id);
-                        if is_error && had_real_data {
-                            if let Some(cached) = provider_cache.get(&data.id).cloned() {
-                                if let Some(slot) = display.iter_mut().find(|d| d.id == data.id) {
-                                    if !matches!(slot.status, ProviderStatus::Ok)
-                                        || slot.metrics.is_empty()
-                                    {
-                                        *slot = cached;
-                                    } else {
-                                        *slot = merge_cached_metrics(slot.clone(), Some(&cached));
-                                    }
-                                }
-                            }
-                            warn!(
-                                "provider {:?}: {:?} — keeping last data on screen",
-                                data.id, data.status
-                            );
-                        } else if let Some(slot) = display.iter_mut().find(|d| d.id == data.id) {
-                            *slot = display_data;
-                        }
-                        // A provider appeared/disappeared (e.g. became
-                        // NotConfigured) → resize.
-                        let new_shape = widget_shape(&config, &display, &models, &renderer);
-                        if new_shape != shape {
-                            shape = new_shape;
-                            apply_ui_change(
-                                &config,
-                                &mut win_layout,
-                                &mut theme,
-                                &mut pixmap,
-                                &mut surface,
-                                &window,
-                                &mut win_state,
-                                &menu,
-                                &shape,
-                            );
-                            tray.set_first_install(
-                                rows::nothing_chosen(&config),
-                                &visible_data(&config, &display),
-                            );
-                            tray.sync_providers(
-                                &menu.menu,
-                                &visible_data(&config, &display),
-                                &theme,
-                            );
-                            panel.update(&visible_data(&config, &display), true);
-                        }
-                        window.request_redraw();
-                        tray.update(&visible_data(&config, &display), &theme, false);
-                        panel.update(&visible_data(&config, &display), false);
-                        refresh_picker!();
-                        // A minute-by-minute chance for an owed window that
-                        // waited, should no foreground change have said so.
-                        try_auto_open!(crate::platform::foreground_fills_its_monitor());
-                    }
-                    AppCommand::CursorSignIn(outcome) => match outcome {
-                        SignInOutcome::SignedIn(_) => {
-                            let pid = "cursor";
-                            // Signing in says the user wants the row, and
-                            // the session is the app's own: nothing else of
-                            // Cursor's is read for it.
-                            if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
-                                pc.enabled = true;
-                            }
-                            config.allow_app_sign_in(pid);
-                            crate::choices::show_provider_rows(&mut config, pid);
-                            // The new session may be another account: no
-                            // old numbers stand in for it, and nothing still
-                            // in flight for the old one lands after it.
-                            sync_providers!(Some(pid));
-                            refresh_models(
-                                &model_job,
-                                &config,
-                                &mut models,
-                                &cmd_tx,
-                                runtime.handle(),
-                            );
-                            shape = widget_shape(&config, &display, &models, &renderer);
-                            apply_ui_change(
-                                &config,
-                                &mut win_layout,
-                                &mut theme,
-                                &mut pixmap,
-                                &mut surface,
-                                &window,
-                                &mut win_state,
-                                &menu,
-                                &shape,
-                            );
-                            tray.set_first_install(
-                                rows::nothing_chosen(&config),
-                                &visible_data(&config, &display),
-                            );
-                            tray.sync_providers(
-                                &menu.menu,
-                                &visible_data(&config, &display),
-                                &theme,
-                            );
-                            panel.update(&visible_data(&config, &display), true);
-                            menu.set_cursor_signed_in(true);
-                            save_config(config.clone());
-                            feedback("AI Limits", "Signed in to Cursor");
-                        }
-                        SignInOutcome::TimedOut => {
-                            feedback("AI Limits", "Cursor sign-in timed out");
-                        }
-                        SignInOutcome::Failed(e) => {
-                            warn!("cursor sign-in failed: {e}");
-                            feedback("AI Limits", "Cursor sign-in failed");
-                        }
-                    },
-                    AppCommand::Models(generation, read) => {
-                        // A read that began before the request changed (or
-                        // was withdrawn) is stale: only the newest shows.
-                        let current = model_job.generation();
-                        if generation == current && read != models {
-                            models = read;
-                            let new_shape = widget_shape(&config, &display, &models, &renderer);
-                            if new_shape != shape {
-                                shape = new_shape;
-                                apply_ui_change(
-                                    &config,
-                                    &mut win_layout,
-                                    &mut theme,
-                                    &mut pixmap,
-                                    &mut surface,
-                                    &window,
-                                    &mut win_state,
-                                    &menu,
-                                    &shape,
-                                );
-                            }
-                            window.request_redraw();
-                            refresh_picker!();
-                        }
-                    }
-                    AppCommand::Quit => *control_flow = ControlFlow::Exit,
-                },
-
-                UserEvent::TaskbarMoved => {
-                    // While fullscreen-suppressed this is a no-op (the panel
-                    // gates every presentation path itself).
-                    panel.on_taskbar_moved(&visible_data(&config, &display));
-                    // The bar settled into a new position; re-check coverage a
-                    // beat later (the "rude topmost" front lands after the slide).
-                    #[cfg(target_os = "windows")]
-                    {
-                        recheck_at =
-                            Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
-                    }
-                }
-
-                UserEvent::PanelRaise => {
-                    // The foreground changed (tray overflow flyout, Start menu, a
-                    // fullscreen game, an app). Evaluate the fallback FIRST: if a
-                    // fullscreen app just took over, this hides the panel, and the
-                    // raise below becomes a no-op (rect=None) — never re-asserting
-                    // the overlay above a game. Arm a delayed re-check too — the
-                    // auto-hide bar can peek back (or the shell can flip its
-                    // fullscreen state) a moment later with no further event.
-                    #[cfg(target_os = "windows")]
-                    {
-                        let verdict = eval_indicator_fallback(
-                            &mut panel,
-                            &mut tray,
-                            &menu.menu,
-                            &visible_data(&config, &display),
-                            &theme,
-                            &mut fallback_was_active,
-                            &mut fullscreen_was_active,
-                            &mut covered_since,
-                            config.general.panel_display,
-                        );
-                        let now = std::time::Instant::now();
-                        if verdict.left_fullscreen {
-                            bounce_until = Some(now + BOUNCE_FOR);
-                        }
-                        if let Some(rest) = verdict.look_again_in {
-                            recheck_at = Some(recheck_at.map_or(now + rest, |t| t.min(now + rest)));
-                        }
-                        // 150ms for the bar's own settling, or sooner when the
-                        // fullscreen verdict is only resting on its hold: the
-                        // alt-tab out of a game is exactly this case, and the
-                        // panel should be back the moment the hold lapses.
-                        let now = std::time::Instant::now();
-                        let wait = if bounce_until.is_some() {
-                            BOUNCE_EVERY
-                        } else {
-                            crate::platform::fullscreen_hold_remaining()
-                                .map(|rest| rest + std::time::Duration::from_millis(5))
-                                .unwrap_or(std::time::Duration::from_millis(150))
-                        };
-                        recheck_at = Some(now + wait);
-                    }
-                    panel.raise();
-                    // Another window is in front now: an owed window that
-                    // waited for a fullscreen app may be due.
-                    try_auto_open!(crate::platform::foreground_fills_its_monitor());
-                }
-
-                UserEvent::ShowWidget => {
-                    show_widget(&window, &mut window_visible);
-                    // Started again by hand: the user is at the desktop, not
-                    // in a fullscreen app, so an owed window that waited
-                    // opens now.
-                    try_auto_open!(false);
-                }
-
-                #[cfg(target_os = "windows")]
-                UserEvent::PanelMenu => {
-                    // `raise` steps under a menu that reaches over the panel
-                    // instead of fronting it, so this one call serves both the
-                    // menu opening and its closing.
-                    panel.raise();
-                }
-
-                // Both are fixed here rather than at the next start: the
-                // overlay, which is borderless and skips the taskbar, so a
-                // position on no screen makes it invisible AND un-draggable;
-                // and the panel, whose bar may have been on the monitor that
-                // went (`resolve_taskbar` then falls back to the primary bar,
-                // but only when something asks it to).
-                #[cfg(target_os = "windows")]
-                UserEvent::DisplaysChanged => {
-                    if let Ok(wp) = window.outer_position() {
-                        let (nx, ny) = crate::platform::ensure_on_screen(wp.x, wp.y);
-                        if (nx, ny) != (wp.x, wp.y) {
-                            window.set_outer_position(PhysicalPosition::new(nx, ny));
-                            win_state.pos = (nx as f64, ny as f64);
-                            config.window.pos_x = nx;
-                            config.window.pos_y = ny;
-                            save_config(config.clone());
-                            info!("the overlay was on no monitor; moved to {nx},{ny}");
-                            apply_windows_glass(&window);
-                            window.request_redraw();
-                        }
-                    }
-                    // Re-point the watch: the bar it compares against may be a
-                    // destroyed window now, and a dead handle fires nothing.
-                    crate::platform::watch_taskbar(config.general.panel_display);
-                    panel.on_taskbar_moved(&visible_data(&config, &display));
-                    recheck_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
-                }
-
-                // Arm the coalesced re-check; a burst of reorders collapses
-                // to one.
-                #[cfg(target_os = "windows")]
-                UserEvent::PanelRecheck => {
-                    recheck_at =
-                        Some(std::time::Instant::now() + std::time::Duration::from_millis(150));
-                }
-
-                UserEvent::Tray(TrayKind::LeftClick) => {
-                    // Bring the overlay to the front (or hide it if it is already
-                    // there); the tray icon stays either way.
-                    toggle_or_raise_widget(&window, &win_state, &mut window_visible);
-                }
-
-                UserEvent::Menu(id) => match menu.action_for(&id) {
-                    Some(MenuAction::OpenPicker) => open_picker!(None),
-                    Some(MenuAction::Quit) => *control_flow = ControlFlow::Exit,
-                    Some(MenuAction::OpenProjectPage) => {
-                        crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);
-                    }
-                    Some(MenuAction::TogglePin) => {
-                        win_state.pinned = !win_state.pinned;
-                        window.set_always_on_top(win_state.pinned);
-                        menu.sync(&config, win_state.pinned);
-                        config.window.pinned = win_state.pinned;
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetIndicator(kind)) => {
-                        config.general.indicator = kind;
-                        // Tray and panel each ignore the other's modes.
-                        tray.set_mode(kind, &menu.menu, &visible_data(&config, &display), &theme);
-                        panel.set_mode(kind, &visible_data(&config, &display));
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetPanelDisplay(target)) => {
-                        config.general.panel_display = target;
-                        panel.set_display(target);
-                        #[cfg(target_os = "windows")]
-                        crate::platform::watch_taskbar(target);
-                        // A full restart, not a reposition: `on_taskbar_moved`
-                        // returns early while the panel is suppressed, so a
-                        // panel parked by a fullscreen app could not be brought
-                        // back by switching displays at all.
-                        panel.restart(&visible_data(&config, &display));
-                        // The new display may be owned by a fullscreen app; the
-                        // reposition above cannot see that, so arm the same
-                        // deferred re-check TaskbarMoved uses to catch it a beat
-                        // later instead of painting straight over the game.
-                        #[cfg(target_os = "windows")]
-                        {
-                            recheck_at = Some(
-                                std::time::Instant::now() + std::time::Duration::from_millis(150),
-                            );
-                        }
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::ToggleForecast) => {
-                        config.ui.show_forecast = !config.ui.show_forecast;
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                        window.request_redraw();
-                    }
-                    // Never allowed to read its sign-in: ask first, in the
-                    // picker, naming the file and the host. The tick stays
-                    // off until the answer.
-                    Some(MenuAction::ToggleProvider(pid))
-                        if !config.sign_in_allowed(&pid) && !config.app_sign_in_allowed(&pid) =>
-                    {
-                        menu.sync(&config, win_state.pinned);
-                        menu_asked = Some(pid.clone());
-                        open_picker!(Some(pid));
-                    }
-                    Some(MenuAction::ToggleProvider(pid)) => {
-                        // The tick shows whether the provider runs (switched
-                        // on and allowed; allowed it is, see the arm above),
-                        // so a click flips exactly that.
-                        let mut now_enabled = None;
-                        let was_active = config
-                            .providers
-                            .iter()
-                            .find(|p| p.id == pid)
-                            .map(|p| config.provider_active(p));
-                        if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
-                            pc.enabled = was_active != Some(true);
-                            now_enabled = Some(pc.enabled);
-                        }
-                        if now_enabled == Some(true) {
-                            crate::choices::show_provider_rows(&mut config, &pid);
-                        }
-                        // Switched off: its cached numbers go with it; either
-                        // way it starts over and is fetched.
-                        sync_providers!(Some(pid.as_str()));
-                        refresh_models(&model_job, &config, &mut models, &cmd_tx, runtime.handle());
-                        // A disabled provider disappears immediately → resize.
-                        shape = widget_shape(&config, &display, &models, &renderer);
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        tray.set_first_install(
-                            rows::nothing_chosen(&config),
-                            &visible_data(&config, &display),
-                        );
-                        tray.sync_providers(&menu.menu, &visible_data(&config, &display), &theme);
-                        panel.update(&visible_data(&config, &display), true);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetAuthMethod(pid, method)) => {
-                        if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid) {
-                            pc.auth_method = method.clone();
-                            match method {
-                                // api_key needs a key label.
-                                AuthMethod::ApiKey => {
-                                    pc.credential_label =
-                                        key_label_for(&pid).unwrap_or_default().to_string();
-                                }
-                                // The subscription reads local files, no key needed.
-                                AuthMethod::Subscription => pc.credential_label.clear(),
-                            }
-                        }
-                        sync_providers!(Some(pid.as_str()));
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                        window.request_redraw();
-                    }
-                    // A key the menu has no label for is never stored under
-                    // an empty one.
-                    Some(MenuAction::PasteKey(pid)) => match key_label_for(&pid)
-                        .zip(SecretKind::key_for(&pid))
-                        .ok_or_else(|| anyhow::anyhow!("{pid} takes no key"))
-                        .and_then(|(label, kind)| Ok((label, read_clipboard_secret(kind)?)))
-                    {
-                        Ok((label, key)) => {
-                            let stored = keyring::Entry::new("ailimits", label)
-                                .and_then(|e| e.set_password(&key));
-                            match stored {
-                                Ok(()) => {
-                                    if let Some(pc) =
-                                        config.providers.iter_mut().find(|p| p.id == pid)
-                                    {
-                                        pc.enabled = true;
-                                        pc.credential_label = label.to_string();
-                                        // Claude: a key implies the api_key method.
-                                        // Copilot: the PAT is just a token source
-                                        // for the subscription.
-                                        if pid == "claude" {
-                                            pc.auth_method = AuthMethod::ApiKey;
-                                        }
-                                    }
-                                    // Pasting a key is the user setting the
-                                    // provider up with the app's own key:
-                                    // that allows the key, not the tool's
-                                    // files.
-                                    set_up_with_app_sign_in!(&pid);
-                                    feedback("AI Limits", &format!("Key for {pid} stored"));
-                                }
-                                Err(e) => {
-                                    warn!("keyring store failed: {e}");
-                                    feedback("AI Limits", "Failed to store the key");
-                                }
-                            }
-                        }
-                        Err(e) => feedback("AI Limits", &format!("{e}")),
-                    },
-                    Some(MenuAction::RemoveKey(pid)) => {
-                        let label = key_label_for(&pid).unwrap_or_default();
-                        match keyring::Entry::new("ailimits", label)
-                            .and_then(|e| e.delete_credential())
-                        {
-                            Ok(()) | Err(keyring::Error::NoEntry) => {
-                                if let Some(pc) = config.providers.iter_mut().find(|p| p.id == pid)
-                                {
-                                    // Without a key everything runs on the
-                                    // subscription method (Claude Code files /
-                                    // the gh CLI token).
-                                    pc.credential_label.clear();
-                                    pc.auth_method = AuthMethod::Subscription;
-                                }
-                                sync_providers!(Some(pid.as_str()));
-                                menu.sync(&config, win_state.pinned);
-                                save_config(config.clone());
-                                window.request_redraw();
-                                feedback("AI Limits", &format!("Key for {pid} removed"));
-                            }
-                            Err(e) => {
-                                warn!("keyring delete failed: {e}");
-                                feedback("AI Limits", "Failed to remove the key");
-                            }
-                        }
-                    }
-                    Some(MenuAction::PasteUsageToken(pid)) => match usage_token_label_for(&pid)
-                        .zip(SecretKind::usage_token_for(&pid))
-                        .ok_or_else(|| anyhow::anyhow!("{pid} takes no usage token"))
-                        .and_then(|(label, kind)| Ok((label, read_clipboard_secret(kind)?)))
-                    {
-                        Ok((label, token)) => {
-                            match keyring::Entry::new("ailimits", label)
-                                .and_then(|e| e.set_password(&token))
-                            {
-                                Ok(()) => {
-                                    // The usage token is the app's own source,
-                                    // tried before the tool's files: storing it
-                                    // sets the provider up the way a key does.
-                                    if let Some(pc) =
-                                        config.providers.iter_mut().find(|p| p.id == pid)
-                                    {
-                                        pc.enabled = true;
-                                    }
-                                    set_up_with_app_sign_in!(&pid);
-                                    feedback("AI Limits", &format!("Usage token for {pid} stored"));
-                                }
-                                Err(e) => {
-                                    warn!("keyring store failed: {e}");
-                                    feedback("AI Limits", "Failed to store the usage token");
-                                }
-                            }
-                        }
-                        Err(e) => feedback("AI Limits", &format!("{e}")),
-                    },
-                    Some(MenuAction::RemoveUsageToken(pid)) => {
-                        let label = usage_token_label_for(&pid).unwrap_or_default();
-                        match keyring::Entry::new("ailimits", label)
-                            .and_then(|e| e.delete_credential())
-                        {
-                            Ok(()) | Err(keyring::Error::NoEntry) => {
-                                // The token's account may not be the tool's:
-                                // its numbers go, and a fetch still in flight
-                                // with it is dropped.
-                                sync_providers!(Some(pid.as_str()));
-                                window.request_redraw();
-                                feedback("AI Limits", &format!("Usage token for {pid} removed"));
-                            }
-                            Err(e) => {
-                                warn!("keyring delete failed: {e}");
-                                feedback("AI Limits", "Failed to remove the usage token");
-                            }
-                        }
-                    }
-                    Some(MenuAction::SignInCursor) => match cursor_session::LoginRequest::new() {
-                        Ok(request) => {
-                            // A second click starts over: the first link may
-                            // have been closed unseen.
-                            if let Some(task) = cursor_sign_in.take() {
-                                task.abort();
-                            }
-                            // Opened from this thread, like the project page.
-                            crate::platform::open_url(&request.url());
-                            let tx = cmd_tx.clone();
-                            cursor_sign_in = Some(runtime.spawn(async move {
-                                let outcome = cursor_session::complete_sign_in(request).await;
-                                let _ = tx.send(AppCommand::CursorSignIn(outcome)).await;
-                            }));
-                        }
-                        Err(e) => {
-                            warn!("cursor sign-in: {e}");
-                            feedback("AI Limits", "Cursor sign-in failed");
-                        }
-                    },
-                    Some(MenuAction::SignOutCursor) => {
-                        if let Some(task) = cursor_sign_in.take() {
-                            task.abort();
-                        }
-                        match cursor_session::delete() {
-                            Ok(()) => {
-                                let pid = "cursor";
-                                // Nothing of the session stays on screen, and
-                                // nothing still in flight for it lands later:
-                                // the row reloads from whatever else it may
-                                // use, or hides.
-                                sync_providers!(Some(pid));
-                                let new_shape = widget_shape(&config, &display, &models, &renderer);
-                                if new_shape != shape {
-                                    shape = new_shape;
-                                    apply_ui_change(
-                                        &config,
-                                        &mut win_layout,
-                                        &mut theme,
-                                        &mut pixmap,
-                                        &mut surface,
-                                        &window,
-                                        &mut win_state,
-                                        &menu,
-                                        &shape,
-                                    );
-                                }
-                                tray.set_first_install(
-                                    rows::nothing_chosen(&config),
-                                    &visible_data(&config, &display),
-                                );
-                                tray.sync_providers(
-                                    &menu.menu,
-                                    &visible_data(&config, &display),
-                                    &theme,
-                                );
-                                panel.update(&visible_data(&config, &display), true);
-                                menu.set_cursor_signed_in(false);
-                                window.request_redraw();
-                                feedback("AI Limits", "Signed out of Cursor");
-                            }
-                            Err(e) => {
-                                warn!("cursor sign-out failed: {e}");
-                                feedback("AI Limits", "Failed to sign out of Cursor");
-                            }
-                        }
-                    }
-                    Some(MenuAction::SetDetail(d)) => {
-                        config.ui.detail = d;
-                        shape = widget_shape(&config, &display, &models, &renderer);
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetLayout(l)) => {
-                        config.ui.layout = l;
-                        shape = widget_shape(&config, &display, &models, &renderer);
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetWidthScale(w)) => {
-                        config.ui.width_scale = w;
-                        shape = widget_shape(&config, &display, &models, &renderer);
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetColumnFlow(f)) => {
-                        config.ui.column_flow = f;
-                        shape = widget_shape(&config, &display, &models, &renderer);
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetPalette(p)) => {
-                        // Picking a palette disables monochrome.
-                        config.ui.palette = p;
-                        config.ui.monochrome = false;
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        tray.update(&visible_data(&config, &display), &theme, true);
-                        panel.update(&visible_data(&config, &display), true);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::ToggleMonochrome) => {
-                        config.ui.monochrome = !config.ui.monochrome;
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        tray.update(&visible_data(&config, &display), &theme, true);
-                        panel.update(&visible_data(&config, &display), true);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetOpacity(pct)) => {
-                        config.window.opacity = (pct as f32 / 100.0).clamp(0.10, 0.85);
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                        window.request_redraw();
-                    }
-                    Some(MenuAction::SetBrightness(v)) => {
-                        config.ui.brightness = v;
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        tray.update(&visible_data(&config, &display), &theme, true);
-                        panel.update(&visible_data(&config, &display), true);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetSaturation(v)) => {
-                        config.ui.saturation = v;
-                        apply_ui_change(
-                            &config,
-                            &mut win_layout,
-                            &mut theme,
-                            &mut pixmap,
-                            &mut surface,
-                            &window,
-                            &mut win_state,
-                            &menu,
-                            &shape,
-                        );
-                        tray.update(&visible_data(&config, &display), &theme, true);
-                        panel.update(&visible_data(&config, &display), true);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::SetUpdateInterval(secs)) => {
-                        config.general.update_interval_secs = secs;
-                        // The scheduler picks the new value up on its next cycle.
-                        update_interval.store(secs, Ordering::Relaxed);
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::ToggleAutoUpdate) => {
-                        config.general.auto_update = !config.general.auto_update;
-                        // The updater task reads this before each check.
-                        auto_update_enabled.store(config.general.auto_update, Ordering::Relaxed);
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                    }
-                    Some(MenuAction::ToggleLock) => {
-                        config.window.locked = !config.window.locked;
-                        // Cancel any in-flight drag.
-                        win_state.drag_pending = false;
-                        win_state.end_drag();
-                        menu.sync(&config, win_state.pinned);
-                        save_config(config.clone());
-                    }
-                    None => {}
-                },
-            },
-
-            // tao calls process::exit() right after this event, and that does
-            // not wait for the background writer. Hand the writer the final
-            // config and wait for it to finish, so a setting changed moments
-            // before quitting survives — and no in-flight background write can
-            // land after it. This one arm covers every exit path (window
-            // close, tray Quit, menu Quit).
-            Event::LoopDestroyed => {
-                if let Some(saver) = saver_at_exit.take() {
-                    saver.shutdown(config.clone(), &rt_handle);
-                }
-                // The cache file catches up on the last fetch times; the
-                // alert book has nothing left in flight but is waited for.
-                if let Some(writer) = cache_writer_at_exit.take() {
-                    let last = cache_ledger.at_exit(&provider_cache).map(FileJob::from);
-                    writer.shutdown(last, &rt_handle);
-                }
-                if let Some(writer) = alert_writer_at_exit.take() {
-                    writer.shutdown(None, &rt_handle);
-                }
-            }
-
-            _ => {}
-        }
-    });
+    event_loop.run(move |event, target, control_flow| app.handle(event, target, control_flow));
 }
 
 #[cfg(test)]
