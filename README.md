@@ -55,7 +55,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 </td>
 <td width="50%" align="center" valign="top">
   <img src="docs/images/widget-providers.gif" height="230" alt="The widget growing from a single provider row to four and back">
-  <br><sub>The card is sized to the providers you enabled, one to five.</sub>
+  <br><sub>The card is sized to the rows you show: one per provider you enabled, plus any extra rows you choose.</sub>
 </td>
 </tr>
 <tr>
@@ -75,20 +75,25 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 - **Reads, never writes.** It reads the tokens the official CLI tools already
   store on your machine. It never refreshes or rotates them, so it cannot log
   you out of those tools. Cursor is the one exception: the app signs in to it
-  with a session of its own and leaves the editor's session alone. Keys you
-  add yourself, and that session, are stored in Windows Credential Manager.
-  The app connects only to the providers' own endpoints and sends no
+  with a session of its own and never reads or touches the editor's sign-in.
+  Keys you add yourself, and that session, are stored in Windows Credential
+  Manager. The app connects only to the providers' own endpoints (and, for
+  an installer copy, GitHub for updates), makes one usage request per
+  provider per cycle, follows the proxy set in Windows, and sends no
   telemetry.
 - **Asks before it reads.** Nothing that belongs to another tool is read
   until you allow it, and each question names the file and where its token
   is sent. See [What is read, and when](docs/en/CONFIG.md#what-is-read-and-when).
-- **Little setup.** On first launch you tick the tools to show. After that
-  your normal CLI use keeps their tokens valid, so there is nothing else to
-  configure. Only Cursor asks you to sign in once, from the menu.
+- **Little setup.** On first launch the tools found on this PC are already
+  ticked, and one question names every sign-in file it would read: *Allow*
+  is enough. After that your normal CLI use keeps their tokens valid, so
+  there is nothing else to configure. Only Cursor asks you to sign in once,
+  from the menu.
 - **Low load, measured on the running app.** 0.012% of one CPU core, no GPU
-  use (it renders on the CPU), about 45 MB of memory, no raised timer resolution,
-  a 3 MB exe. Reproduce it with `bench/perf_audit.ps1`; the full numbers are
-  in [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
+  use (it renders on the CPU), about 45 MB of memory, no raised timer
+  resolution (measured for 0.7.0), a 4 MB exe. Reproduce it with
+  `bench/perf_audit.ps1`; the full numbers are in
+  [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
 - **Stale data is marked as stale.** A value that stops updating greys out and
   shows its age. A limit window that has provably reset shows `≈0%`. The app
   does not fill gaps with guesses. Polling pauses while you are away, and that
@@ -97,6 +102,19 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   no bundled DLLs. The installer needs no admin rights.
 
 ## Install
+
+> **Updating from 0.7.0 (or 0.6.x), and your user profile or TEMP folder
+> path has letters outside English (Cyrillic, for example), `&` or `%` in
+> it?** The old version's updater fails on such a path: once 0.7.1 is out it
+> may close AI Limits about half a minute after every start. Install 0.7.1
+> by hand: download `AiLimits-Setup-0.7.1.exe` from
+> [Releases](https://github.com/napxlexn/ailimits/releases) and run it, or,
+> once winget carries 0.7.1, run `winget upgrade napxlexn.AILimits`. If the
+> widget closes before you get to it, right-click it right after a start and
+> untick **Automatic updates** first (or set `auto_update = false` in
+> `%APPDATA%\AiLimits\config.toml`). From 0.7.1 on the updater starts the
+> installer directly, such paths work, and you can tick Automatic updates
+> again.
 
 From the terminal:
 
@@ -130,9 +148,12 @@ Optional during setup: autostart with Windows, a desktop shortcut.
 A portable zip (no installer) is attached to each release as well. A portable
 copy does not self-update: its package manager, or you, updates it.
 
-> The installer is **not code-signed**, so Windows SmartScreen may show
-> "Windows protected your PC". Click **More info → Run anyway**. You can
-> verify the download against the SHA-256 published on each release.
+> The installer is **not code-signed** (Authenticode), so Windows
+> SmartScreen may show "Windows protected your PC". Click **More info → Run
+> anyway**. You can verify the download against the SHA-256 published on
+> each release. From 0.7.1 each release also carries an Ed25519 signature
+> (`.sig`) for the installer and the zip; the app's own updater installs
+> nothing without a valid one.
 
 The installer contains no keys or tokens. On first launch the widget reads
 none of the auth sources listed below until you allow it.
@@ -140,12 +161,16 @@ none of the auth sources listed below until you allow it.
 ## Quick start
 
 1. **Run it.** On first launch a welcome window opens (the same one as
-   *Rows and models...* in the menu). The tools found on this PC (Claude
-   Code, Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions,
-   the Grok CLI, Cursor) are marked and ticked, behind one question that
-   names each sign-in file it would read. *Allow* starts them; *Cancel*
-   reads nothing and lets you tick what you want, each tool asking once.
-   Cursor can also use a sign-in of the app's own: right-click,
+   *Rows and models...* in the menu). Its question lists the tools found on
+   this PC (Claude Code, Codex CLI, the Copilot CLI or GitHub CLI,
+   Antigravity or the older Gemini CLI, the Grok CLI, Cursor), each with a
+   tick, and names every file it would read and where each token goes.
+   Tools found by a folder of their own start ticked; GitHub CLI alone (for
+   Copilot) or `.gemini` alone (for Antigravity) is listed unticked.
+   *Allow* starts the ticked ones; *Cancel* reads nothing and lets you tick
+   what you want, each tool asking once. The window takes no keyboard focus
+   (Enter allows nothing by accident) and waits while a fullscreen app is in
+   front. Cursor needs a sign-in of the app's own: right-click,
    **Providers**, **Cursor**, *Sign in to Cursor...* once. Updating from
    0.7.0 needs nothing: the providers you had keep working, and one window
    lists what is read.
@@ -176,19 +201,21 @@ your machine, strictly read-only and only once you allow each one:
 | Provider | Automatic source (default) | To enable it |
 |---|---|---|
 | Claude | `%USERPROFILE%\.claude\.credentials.json` (Claude Code OAuth token) | run [Claude Code](https://claude.com/claude-code) at least once |
-| Codex | `%USERPROFILE%\.codex\auth.json` (Codex CLI token) | run `codex login` once |
-| Copilot | `gh auth token` (GitHub CLI) | `gh auth login` once |
+| Codex | `%USERPROFILE%\.codex\auth.json` (Codex CLI token; in `CODEX_HOME` when it is set) | run `codex login` once |
+| Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | run Antigravity CLI once, or use a still-supported Gemini CLI flow |
-| Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; `GROK_HOME` is honoured) | run `grok` and sign in once (a SuperGrok subscription) |
-| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); without it, the editor's token in `%APPDATA%\Cursor\User\globalStorage\state.vscdb`, only if stored unencrypted | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`); ~60-day session |
+| Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
+| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`): Cursor's own sign-in page opens in the browser; ~60-day session |
 
 These are OAuth access tokens, short-lived except Cursor's. The CLI that
 owns each one refreshes it whenever you use it. The widget never refreshes
 another app's token, because an OAuth refresh rotates it and would log the
 CLI out. The Cursor session (about 60 days) belongs to the widget: you sign
-in to Cursor in the browser, and the widget keeps and refreshes that
-session itself. The Cursor editor now encrypts its own token, and the
-widget never decrypts it.
+in to Cursor in the browser, on Cursor's own page, and the widget keeps and
+refreshes that session itself. Cursor has no sign-in for other apps, so the
+widget signs in as the Cursor editor's client; it never reads the editor's
+sign-in. `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only when they
+are absolute paths.
 
 ### How long it stays accurate without any action
 
@@ -238,8 +265,12 @@ depend on CLI activity. What each option actually gives you:
    **Providers**, the provider, and the matching `Paste … from clipboard`
    item. Copilot takes a PAT; Claude takes an API key (which switches the
    method) or a usage token, which is tried before the auto-detected one;
-   Codex takes a usage token. A toast confirms, and the secret goes straight
-   into Credential Manager.
+   Codex takes a usage token. Only that kind of secret is taken (`sk-ant-...`;
+   `ghp_...` or `github_pat_...`; a ChatGPT token `eyJ...`): anything else on
+   the clipboard is refused without being sent, and never shown or logged. A
+   usage token is checked with one request first: a refused one is not
+   stored. A toast confirms, and the secret goes straight into Credential
+   Manager.
 2. **From the terminal.** `ailimits-auth.exe` sits next to the widget in
    `%LOCALAPPDATA%\AiLimits`:
    ```
@@ -252,8 +283,13 @@ depend on CLI activity. What each option actually gives you:
    ailimits-auth login cursor                 # sign in to Cursor in the browser
    ailimits-auth logout cursor                # forget that session
    ```
-   `set-usage-token` sends one request to the provider's usage endpoint first
-   and stores the token only if it is accepted.
+   `set-usage-token` checks the token with one request to the provider's
+   usage endpoint: a refused one (401/403) is not stored; a rate limit (429)
+   counts as accepted; with no answer that says either way it asks again
+   after 2 and 4 seconds, then stores it with a note. `status` changes
+   nothing and reads another tool's sign-in only where the widget may. The
+   widget writes its settings when it quits: quit it before `set`, `remove`,
+   `set-usage-token` or `login`, then start it again.
 
 **To go back to automatic:** remove the key with `Remove key` in the menu or
 with the CLI. The provider returns to its subscription sources.
@@ -266,7 +302,8 @@ Arrangement (in a row / in a column, vertical bars only), `Lock position` and
 `Always on top` (two independent toggles), Palette (monochrome + 8 colors), Background opacity, Brightness,
 Saturation, Forecast (burn-rate "~time to limit", off by default), Update
 interval (1 / 5 / 15 / 30 min), `Automatic updates` (silent background
-self-update, on by default), Indicator, `Rows and models...` (rows, model
+self-update of an installer copy, on by default; Store, Scoop and portable
+copies have no such item), Indicator, `Rows and models...` (rows, model
 labels, model names), per-provider settings, Quit.
 
 ### Taskbar indicator
@@ -311,12 +348,26 @@ Set `AILIMITS_LOG=ailimits=debug` or `RUST_LOG=ailimits=debug` to write a
 diagnostic log to `%APPDATA%\AiLimits\ailimits.log` (stderr is invisible in a
 GUI app). The file rotates at 5 MB: the previous one is kept as `ailimits.log.1`.
 
+A crash leaves one line in `%APPDATA%\AiLimits\crash.log` (time, version,
+thread, source location; never the crash message's text); a start that
+failed says so in a message and in that file. Starting AI Limits again while
+it runs shows and raises the widget.
+
+A threshold toast comes once per limit window, when usage reaches the
+provider's threshold; again only after the window resets, or after usage
+fell well below and climbed back (`[notifications]` in the config).
+
+Requests follow the proxy set in Windows (Settings, Network, Proxy, "Use a
+proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` win, a proxy script (PAC) is
+not followed. A network that inspects TLS with its own root certificate is
+not trusted: the rows read "untrusted certificate, retrying".
+
 ## Build from source
 
 ```
 # Rust 1.90+, Windows 11
-cargo build --profile release-min     # ~3 MB exe in target/release-min/
-cargo test
+cargo build --profile release-min --locked   # ~4 MB exe in target/release-min/
+cargo test --locked
 ```
 
 Developer docs: [docs/en/](docs/en/) (English),

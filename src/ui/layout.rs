@@ -38,6 +38,9 @@ pub enum BodyLayout {
     /// A fresh install with nothing chosen yet: what to do, in two lines
     /// ("Choose what to show" over "Click here...").
     Choose { area: Rect },
+    /// Rows are chosen and providers run, but no row chosen has anything to
+    /// show: the same two-line box, saying so (`Shape::unshown`).
+    Unshown { area: Rect },
 }
 
 /// How much of a row fits at the current width. A property of the window,
@@ -75,6 +78,11 @@ pub struct Shape {
     pub model_lines: Vec<bool>,
     /// A fresh install with nothing chosen (`rows::nothing_chosen`).
     pub choose: bool,
+    /// No row to show while providers run: every row chosen is an extra
+    /// row the providers do not report, or belongs to a provider that is
+    /// not connected. The widget says so and a click opens the picker,
+    /// instead of pointing at the providers (`with_unshown`).
+    pub unshown: bool,
 }
 
 impl Shape {
@@ -83,7 +91,16 @@ impl Shape {
         Self {
             model_lines: vec![false; n],
             choose: false,
+            unshown: false,
         }
+    }
+
+    /// Mark a widget with no rows while `providers_shown` (some provider
+    /// runs and is connected) as `unshown`. A widget with rows, or one
+    /// waiting for a first choice, is left as it is.
+    pub fn with_unshown(mut self, providers_shown: bool) -> Self {
+        self.unshown = providers_shown && self.model_lines.is_empty() && !self.choose;
+        self
     }
 
     /// The shape of `rows` under `ui`. `measure` is `Renderer::text_width`.
@@ -121,6 +138,7 @@ impl Shape {
         Self {
             model_lines,
             choose: choose && rows.is_empty(),
+            unshown: false,
         }
     }
 }
@@ -233,7 +251,11 @@ pub fn compute(
     // A fresh install: two lines saying what to do, in a box of the Medium
     // rows' width whatever the chosen layout, so the second line fits.
     if shape.choose {
-        return choose();
+        return two_line_box(|area| BodyLayout::Choose { area });
+    }
+    // Rows chosen, none to show: the same box, saying so.
+    if shape.unshown {
+        return two_line_box(|area| BodyLayout::Unshown { area });
     }
     // No visible providers (all unconfigured / disabled): the renderer draws a
     // single guidance line. Force a vertical compact box wide enough for that
@@ -262,8 +284,9 @@ fn rows_width(detail: &DetailLevel, width_scale: &WidthScale) -> f32 {
     }) * width_scale.fraction()
 }
 
-/// The first-install box: one Medium row's width and height.
-fn choose() -> WindowLayout {
+/// The two-line box of the first install and of a widget whose rows have
+/// nothing to show: one Medium row's width and height.
+fn two_line_box(body: impl FnOnce(Rect) -> BodyLayout) -> WindowLayout {
     let width = rows_width(&DetailLevel::Medium, &WidthScale::Full);
     let pad_h = Dimensions::PADDING_H;
     let area = Rect {
@@ -275,7 +298,7 @@ fn choose() -> WindowLayout {
     WindowLayout {
         width,
         height: area.y + area.h + 4.0,
-        body: BodyLayout::Choose { area },
+        body: body(area),
         row_tier: RowTier::Full,
         model_lines: Vec::new(),
     }
@@ -857,6 +880,52 @@ mod tests {
         };
         assert_eq!(rows.len(), 1);
         assert!(empty.model_lines.is_empty());
+    }
+
+    /// Rows chosen, none to show, providers running: the two-line box that
+    /// says so. With rows, while nothing is chosen, or with no provider
+    /// shown, the widget stays as it was.
+    #[test]
+    fn rows_chosen_without_data_get_a_box_of_their_own() {
+        let ui = UIConfig::default();
+        let unshown = Shape::of(&ui, &[], false, mono).with_unshown(true);
+        assert!(unshown.unshown && !unshown.choose);
+        let win = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &unshown,
+        );
+        let BodyLayout::Unshown { area } = win.body else {
+            panic!("the unshown box");
+        };
+        // The same box as the first install's.
+        let first = compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &Shape::of(&ui, &[], true, mono),
+        );
+        let BodyLayout::Choose { area: choose } = first.body else {
+            panic!("the choose box");
+        };
+        assert_eq!(
+            (area.w, area.h, win.width),
+            (choose.w, choose.h, first.width)
+        );
+        assert!(
+            !Shape::of(&ui, &[session(false)], false, mono)
+                .with_unshown(true)
+                .unshown
+        );
+        assert!(!Shape::of(&ui, &[], true, mono).with_unshown(true).unshown);
+        assert!(!Shape::of(&ui, &[], false, mono).with_unshown(false).unshown);
+        assert_eq!(
+            Shape::of(&ui, &[], false, mono).with_unshown(false),
+            Shape::plain(0)
+        );
     }
 
     #[test]

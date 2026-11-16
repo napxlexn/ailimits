@@ -6,7 +6,8 @@
 // Keep in step with src/providers (the files and hosts are the ones the code
 // uses; the tests below hold them together) and with docs/en/PROVIDERS.md.
 
-use std::path::{Path, PathBuf};
+use crate::config::paths::{ToolPaths, ToolSign};
+use std::path::Path;
 
 /// What one provider reads, in the words the picker shows.
 #[derive(Debug, Clone, Copy)]
@@ -138,9 +139,11 @@ pub fn read_info(id: &str) -> Option<&'static ReadInfo> {
 
 /// Providers whose tool is installed on this PC, judged only by whether a
 /// folder exists: nothing inside is opened. Used to mark them in the welcome.
+/// The folders are the ones config/paths.rs resolves (`ToolPaths::tool_signs`):
+/// absolute paths only, so without a home folder nothing is found.
 pub fn found_tools() -> Vec<&'static str> {
-    match Places::from_env() {
-        Some(places) => detect(&places, |p| p.is_dir())
+    match ToolPaths::from_env() {
+        Some(paths) => detect(&paths, |p| p.is_dir())
             .into_iter()
             .map(|(id, _)| id)
             .collect(),
@@ -153,10 +156,11 @@ pub fn found_tools() -> Vec<&'static str> {
 /// of Copilot, `.gemini` nothing of Antigravity. Only such tools start
 /// ticked in the welcome.
 pub fn found_surely(id: &str) -> bool {
-    Places::from_env().is_some_and(|places| {
-        tool_dirs(&places, id)
+    ToolPaths::from_env().is_some_and(|paths| {
+        paths
+            .tool_signs(id)
             .iter()
-            .any(|(dir, sure)| *sure && dir.is_dir())
+            .any(|sign| !sign.weak && sign.path.is_dir())
     })
 }
 
@@ -185,81 +189,18 @@ pub fn weak_note(id: &str) -> &'static str {
     }
 }
 
-/// The folders the welcome looks for, resolved the way the tools resolve
-/// them. Absolute paths only: without a home folder nothing is looked for.
-#[derive(Debug, Clone)]
-struct Places {
-    user: PathBuf,
-    roaming: PathBuf,
-    codex: PathBuf,
-    copilot: PathBuf,
-    grok: PathBuf,
-}
-
-impl Places {
-    fn from_env() -> Option<Self> {
-        let user = dirs::home_dir().filter(|p| p.is_absolute())?;
-        let roaming = dirs::config_dir()
-            .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| user.join("AppData").join("Roaming"));
-        let tool = |var: &str, dir: &str| env_dir(var).unwrap_or_else(|| user.join(dir));
-        Some(Places {
-            codex: tool("CODEX_HOME", ".codex"),
-            copilot: tool("COPILOT_HOME", ".copilot"),
-            grok: tool("GROK_HOME", ".grok"),
-            roaming,
-            user,
-        })
-    }
-}
-
-/// A folder named by an environment variable, when set to an absolute path.
-fn env_dir(var: &str) -> Option<PathBuf> {
-    absolute_dir(std::env::var_os(var))
-}
-
-/// A folder from a variable's value: never a relative one, which would be
-/// taken from the process's working folder.
-fn absolute_dir(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
-    value
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-}
-
-/// The folders whose existence says a tool is installed, each with whether
-/// it is the tool's own (sure) or only a related tool's (weak).
-fn tool_dirs(places: &Places, id: &str) -> Vec<(PathBuf, bool)> {
-    let p = places;
-    match id {
-        "claude" => vec![(p.user.join(".claude"), true)],
-        "codex" => vec![(p.codex.clone(), true)],
-        "copilot" => vec![
-            (p.copilot.clone(), true),
-            (p.roaming.join("GitHub CLI"), false),
-        ],
-        "antigravity" => vec![
-            (p.roaming.join("Antigravity"), true),
-            (p.user.join(".gemini").join("antigravity-cli"), true),
-            (p.user.join(".gemini"), false),
-        ],
-        "grok" => vec![(p.grok.clone(), true)],
-        "cursor" => vec![(p.roaming.join("Cursor"), true)],
-        _ => Vec::new(),
-    }
-}
-
 /// The tools found, in READ_INFO's order, with whether each was found
 /// surely. `exists` says whether a folder exists.
-fn detect(places: &Places, exists: impl Fn(&Path) -> bool) -> Vec<(&'static str, bool)> {
+fn detect(paths: &ToolPaths, exists: impl Fn(&Path) -> bool) -> Vec<(&'static str, bool)> {
     READ_INFO
         .iter()
         .filter_map(|r| {
-            let dirs = tool_dirs(places, r.id);
-            let mut found = dirs.iter().filter(|(d, _)| exists(d));
-            let first = found.next()?;
-            let sure = first.1 || found.any(|(_, s)| *s);
-            Some((r.id, sure))
+            let signs: Vec<ToolSign> = paths.tool_signs(r.id);
+            let found: Vec<&ToolSign> = signs.iter().filter(|s| exists(&s.path)).collect();
+            if found.is_empty() {
+                return None;
+            }
+            Some((r.id, found.iter().any(|s| !s.weak)))
         })
         .collect()
 }
@@ -268,6 +209,7 @@ fn detect(places: &Places, exists: impl Fn(&Path) -> bool) -> Vec<(&'static str,
 mod tests {
     use super::*;
     use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
 
     #[test]
     fn every_default_provider_has_read_info() {
@@ -280,6 +222,63 @@ mod tests {
     /// Every source file under src/providers, read at test time so that a
     /// new file is covered without being listed here, with the provider it
     /// belongs to: `claude.rs` and `cursor/session.rs` alike.
+    /// A source with its `#[cfg(test)] mod name { ... }` blocks cut out:
+    /// the URLs a test feeds a local server are not hosts the app calls.
+    /// `#[cfg(test)] mod name;` declarations stay (their file is walked
+    /// on its own and has no app URL).
+    fn without_test_modules(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src;
+        while let Some(at) = rest.find("#[cfg(test)]") {
+            let after = &rest[at + "#[cfg(test)]".len()..];
+            let head = after.trim_start();
+            let is_block = (head.starts_with("mod ")
+                || head.starts_with("pub mod ")
+                || head.starts_with("pub(crate) mod "))
+                && head
+                    .find(['{', ';'])
+                    .is_some_and(|i| head.as_bytes()[i] == b'{');
+            if !is_block {
+                out.push_str(&rest[..at + "#[cfg(test)]".len()]);
+                rest = after;
+                continue;
+            }
+            out.push_str(&rest[..at]);
+            let open = rest.len() - head.len() + head.find('{').unwrap();
+            let mut depth = 0usize;
+            let mut end = rest.len();
+            for (i, c) in rest[open..].char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = open + i + 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest = &rest[end..];
+        }
+        out.push_str(rest);
+        // Comments describe hosts; only code calls them.
+        out.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_modules_are_cut_out_of_the_scanned_sources() {
+        let src = "const A: &str = \"https://a.example\";\n#[cfg(test)]\nmod helper;\n#[cfg(test)]\nmod tests {\n    fn f() { let _ = \"https://b.example\"; if true { } }\n}\nconst C: &str = \"https://c.example\";\n";
+        let cut = without_test_modules(src);
+        assert!(cut.contains("a.example") && cut.contains("c.example"));
+        assert!(cut.contains("mod helper;"));
+        assert!(!cut.contains("b.example"));
+    }
+
     fn provider_sources() -> Vec<(String, PathBuf, String)> {
         fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
             for e in std::fs::read_dir(dir).expect("src/providers") {
@@ -307,7 +306,7 @@ mod tests {
                     .unwrap()
                     .to_string_lossy()
                     .into_owned();
-                let src = std::fs::read_to_string(&path).unwrap();
+                let src = without_test_modules(&std::fs::read_to_string(&path).unwrap());
                 (id, path, src)
             })
             .collect()
@@ -324,16 +323,16 @@ mod tests {
         for (id, path, src) in provider_sources() {
             files += 1;
             let hosts = url_hosts(&src);
-            if id == "mod" {
+            // Shared helpers (mod.rs, proxy.rs, test_server.rs) belong to
+            // no provider, so they may call no host at all.
+            let Some(info) = read_info(&id) else {
                 assert!(
                     hosts.is_empty(),
                     "{} calls {hosts:?} for no provider",
                     path.display()
                 );
                 continue;
-            }
-            let info = read_info(&id)
-                .unwrap_or_else(|| panic!("{} belongs to no provider", path.display()));
+            };
             for host in hosts {
                 assert!(
                     info.hosts.contains(&host.as_str()) || info.pages.contains(&host.as_str()),
@@ -436,14 +435,13 @@ mod tests {
             .collect()
     }
 
-    fn places(root: &Path) -> Places {
-        Places {
-            user: root.to_path_buf(),
-            roaming: root.join("AppData").join("Roaming"),
-            codex: root.join("codex-home"),
-            copilot: root.join(".copilot"),
-            grok: root.join(".grok"),
-        }
+    /// The folders under `root`, with CODEX_HOME set to `root\codex-home`.
+    fn places(root: &Path) -> ToolPaths {
+        let codex = root.join("codex-home").into_os_string();
+        ToolPaths::resolve(Some(root.to_path_buf()), None, move |var| {
+            (var == "CODEX_HOME").then(|| codex.clone())
+        })
+        .unwrap()
     }
 
     /// A tool found only by a related tool's folder is found, but not
@@ -495,18 +493,25 @@ mod tests {
         assert!(found_hint("copilot", true).starts_with("Found by its folder"));
     }
 
-    /// A relative tool home is never used: the tool's default under the
-    /// user's own folder stands instead.
+    /// A relative tool home is never used, nor the default folder in its
+    /// place: that tool is not looked for at all (config/paths.rs).
     #[test]
     fn only_absolute_homes_count() {
-        let v = |s: &str| Some(std::ffi::OsString::from(s));
-        assert!(absolute_dir(v(r"relative\codex")).is_none());
-        assert!(absolute_dir(v("")).is_none());
-        assert!(absolute_dir(None).is_none());
-        assert_eq!(
-            absolute_dir(v(r"C:\abs\codex")),
-            Some(PathBuf::from(r"C:\abs\codex"))
-        );
+        let root = Path::new(r"C:\home");
+        let paths = ToolPaths::resolve(Some(root.to_path_buf()), None, |var| {
+            (var == "CODEX_HOME").then(|| std::ffi::OsString::from(r"relative\codex"))
+        })
+        .unwrap();
+        let everything = |_: &Path| true;
+        let found: Vec<&str> = detect(&paths, everything)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(!found.contains(&"codex"), "{found:?}");
+        assert!(found.contains(&"claude"));
+        // Without an absolute profile folder nothing resolves to look for.
+        let relative_home = Some(PathBuf::from(r"relative\home"));
+        assert!(ToolPaths::resolve(relative_home, None, |_| None).is_none());
     }
 
     /// Cursor reads no file of its own for the sign-in: the text says so,

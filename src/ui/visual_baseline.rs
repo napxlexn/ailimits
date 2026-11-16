@@ -17,8 +17,9 @@
 //   - 3d6093c: hovering a stale row whose error retries by itself
 //     ("offline, retrying") shows just that, where 0.7.0 added the
 //     provider's action ("offline, retrying — check gh auth").
-// The owner approved the first four (2026-11-16); the fifth was found by the
-// comparison below. The fixtures also use what came after 0.7.0 (the Grok and
+// The owner approved all five (2026-11-16; the fifth was found by the
+// comparison below and approved with them: 0.7.0's advice was wrong for
+// an error that is not about the sign-in). The fixtures also use what came after 0.7.0 (the Grok and
 // Cursor providers, `unified_pool`, `extra_only`), so these very files
 // cannot be rendered by 0.7.0. What the pins promise since 3e8aa80: with the
 // default config nothing in these groups changes by a single pixel; a

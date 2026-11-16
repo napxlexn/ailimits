@@ -11,7 +11,7 @@
 // session is read.
 
 use super::{base64url_encode, parse_session_claims};
-use crate::providers::{bump_generation, Net, ProviderId};
+use crate::providers::Net;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration as StdDuration;
@@ -442,12 +442,11 @@ pub fn load() -> Result<Option<OwnSession>, StoreError> {
     load_at(SESSION_LABEL)
 }
 
-/// Keep `session`, replacing any earlier one: a sign-in. A fetch still in
-/// flight with the session from before has its answer dropped.
+/// Keep `session`, replacing any earlier one: a sign-in. The app then
+/// rebuilds the Cursor provider (app/provider_set.rs), so an answer still in
+/// flight for the session from before is dropped.
 pub fn store(session: &OwnSession) -> Result<(), StoreError> {
-    let stored = store_at(SESSION_LABEL, session);
-    bump_generation(&ProviderId::Cursor);
-    stored
+    store_at(SESSION_LABEL, session)
 }
 
 /// Keep `next` in place of the session whose access token was
@@ -458,13 +457,11 @@ pub fn replace(previous_token: &str, next: &OwnSession) -> Result<bool, StoreErr
     replace_at(SESSION_LABEL, previous_token, next)
 }
 
-/// Forget the session: a sign-out. Nothing kept is not an error. A fetch
-/// still in flight with the session has its answer dropped, so nothing of
-/// the account comes back on screen.
+/// Forget the session: a sign-out. Nothing kept is not an error. The app
+/// then rebuilds the Cursor provider, so an answer still in flight with the
+/// session is dropped and nothing of the account comes back on screen.
 pub fn delete() -> Result<(), StoreError> {
-    let deleted = delete_at(SESSION_LABEL);
-    bump_generation(&ProviderId::Cursor);
-    deleted
+    delete_at(SESSION_LABEL)
 }
 
 /// Whether a record is kept, readable or not — there is something to sign

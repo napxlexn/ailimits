@@ -4,8 +4,9 @@
 #
 # Downloads the latest release installer, verifies its SHA-256 against the
 # digest GitHub publishes for the asset, and runs a silent per-user install
-# (no admin rights). The same integrity rule the app's own auto-updater
-# enforces: no digest, or a mismatch, means no install.
+# (no admin rights). No digest, or a mismatch, means no install - the same
+# digest rule the app's own auto-updater enforces (which also checks the
+# release's Ed25519 signature, the .sig asset beside the installer).
 $ErrorActionPreference = 'Stop'
 
 $release = Invoke-RestMethod 'https://api.github.com/repos/napxlexn/ailimits/releases/latest'
@@ -28,4 +29,4 @@ Write-Host 'checksum verified'
 
 Start-Process -FilePath $path -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
 Remove-Item $path -Force
-Write-Host "AI Limits $($release.tag_name) installed. It starts from the Start menu; usage appears once your AI CLIs have run."
+Write-Host "AI Limits $($release.tag_name) installed. Start it from the Start menu; on a first start it asks which of the tools found on this PC to show."

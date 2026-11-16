@@ -3,7 +3,7 @@
 
 use super::AppCommand;
 use crate::{
-    config::schema::{Config, ProviderConfig, Surface},
+    config::schema::{Config, ProviderConfig},
     monitor::scheduler::{ProviderSlot, SharedProviders},
     providers::{
         antigravity::AntigravityProvider, claude::ClaudeProvider, codex::CodexProvider,
@@ -23,8 +23,7 @@ pub(super) const GROK_BOT_ROW: &str = "cursor.bot";
 /// Whether the Grok Bot row is chosen on any surface: only then does the
 /// Cursor provider ask for it.
 pub(super) fn grok_bot_wanted(config: &Config) -> bool {
-    rows::row_chosen(config, Surface::Widget, GROK_BOT_ROW)
-        || rows::row_chosen(config, Surface::Tooltip, GROK_BOT_ROW)
+    rows::row_wanted(config, GROK_BOT_ROW)
 }
 
 /// Everything a provider instance is built from. Equal keys build the same
@@ -71,16 +70,16 @@ fn build_key(config: &Config, id: &ProviderId, pc: &ProviderConfig) -> BuildKey 
     }
 }
 
-fn build_one(id: &ProviderId, pc: ProviderConfig) -> Arc<dyn Provider> {
+/// One provider instance. `grok_bot`: Cursor only, whether Grok Bot is asked
+/// for (the key's `grok_bot`, which rebuilds Cursor when the choice changes).
+fn build_one(id: &ProviderId, pc: ProviderConfig, grok_bot: bool) -> Arc<dyn Provider> {
     match id {
         ProviderId::Claude => Arc::new(ClaudeProvider::new(pc)),
         ProviderId::Codex => Arc::new(CodexProvider::new(pc)),
         ProviderId::Copilot => Arc::new(CopilotProvider::new(pc)),
         ProviderId::Antigravity => Arc::new(AntigravityProvider::new(pc)),
         ProviderId::Grok => Arc::new(GrokProvider::new(pc)),
-        // Grok Bot is asked for only while its row is chosen (the key's
-        // `grok_bot`, which rebuilds Cursor when the choice changes).
-        ProviderId::Cursor => Arc::new(CursorProvider::new(pc)),
+        ProviderId::Cursor => Arc::new(CursorProvider::new(pc).with_grok_bot(grok_bot)),
     }
 }
 
@@ -194,7 +193,7 @@ impl ProviderSet {
                     }
                     slots.push(ProviderSlot {
                         serial: self.next_serial,
-                        provider: build_one(&id, built),
+                        provider: build_one(&id, built, key.grok_bot),
                     });
                 }
             }

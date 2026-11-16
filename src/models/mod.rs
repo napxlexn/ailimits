@@ -329,6 +329,34 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant, SystemTime};
 
+    /// The length of what is read is bounded where it is read
+    /// (files.rs `clean`: at most 128 bytes): an id far past any a tool
+    /// writes gives no label at all, so nothing downstream ever measures or
+    /// wraps more; one at the bound is kept whole.
+    #[test]
+    fn a_huge_model_id_is_not_taken() {
+        let dir = TempDir::new("model-huge-id");
+        let claude = dir.path().join(".claude");
+        std::fs::create_dir_all(&claude).unwrap();
+        let read = |model: &str| {
+            std::fs::write(
+                claude.join("settings.json"),
+                format!(r#"{{"model": "{model}"}}"#),
+            )
+            .unwrap();
+            reader(&dir)
+                .read(
+                    &reads(true, false),
+                    ModelSource::Configured,
+                    &[ProviderId::Claude],
+                )
+                .remove(&ProviderId::Claude)
+        };
+        assert!(read(&"m".repeat(5000)).is_none());
+        let at_bound = "m".repeat(128);
+        assert_eq!(read(&at_bound).map(|i| i.id), Some(at_bound));
+    }
+
     const ALL: [ProviderId; 6] = [
         ProviderId::Claude,
         ProviderId::Codex,

@@ -6,15 +6,14 @@
 // proxy's billing call in its credits format.
 
 use super::{
-    clean_label, generation_of, status_words, tool_home, transport_error, unless_superseded,
-    Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
+    ProviderData, ProviderId, ProviderStatus,
 };
-use crate::config::schema::ProviderConfig;
+use crate::config::{paths::ToolPaths, schema::ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
 /// Undocumented SuperGrok usage endpoint the Grok CLI itself calls — verified
@@ -30,9 +29,10 @@ pub struct GrokProvider {
     /// Never follows a 3xx — keeps the bearer token from leaking to a
     /// redirected host. The billing endpoint returns 200 directly.
     net: Net,
-    /// The Grok CLI's login file, read only when allowed.
+    /// The Grok CLI's login file (`ToolPaths::grok_auth`: auth.json in
+    /// GROK_HOME when set, else in %USERPROFILE%\.grok; None for a relative
+    /// GROK_HOME), read only when allowed.
     login_path: Option<PathBuf>,
-    generation: &'static AtomicU64,
 }
 
 /// What the Grok CLI's login file holds for the widget.
@@ -69,8 +69,7 @@ impl GrokProvider {
         Self {
             config,
             net: Net::new(),
-            login_path: login_path(),
-            generation: generation_of(&ProviderId::Grok),
+            login_path: ToolPaths::from_env().and_then(|p| p.grok_auth()),
         }
     }
 
@@ -82,7 +81,6 @@ impl GrokProvider {
             config,
             net: Net::local(server),
             login_path,
-            generation: Box::leak(Box::new(AtomicU64::new(0))),
         }
     }
 
@@ -179,28 +177,8 @@ impl Provider for GrokProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let started = self.generation.load(Ordering::SeqCst);
-        let data = self.fetch_via_subscription().await?;
-        unless_superseded(data, started, self.generation)
+        self.fetch_via_subscription().await
     }
-}
-
-/// Where the Grok CLI keeps its login: auth.json in the CLI's home —
-/// `GROK_HOME` when it names an absolute folder, otherwise
-/// `%USERPROFILE%\.grok` (the CLI's own rule, its docs,
-/// user-guide/05-configuration.md). A relative `GROK_HOME` is the CLI's
-/// working directory's business, which the app cannot know: it is not
-/// followed, the same as for the model label (models/mod.rs). None without
-/// an absolute home folder.
-pub fn login_path() -> Option<PathBuf> {
-    tool_home("GROK_HOME", ".grok").map(|home| home.join("auth.json"))
-}
-
-/// Where the Grok CLI keeps its login, for the consent text and
-/// `ailimits-auth status`: `login_path`, or an empty path when there is
-/// none (which names no file and reads as missing).
-pub fn auth_path() -> PathBuf {
-    login_path().unwrap_or_default()
 }
 
 /// Read the Grok CLI login. A missing file is `Missing`, not an error.
@@ -529,11 +507,17 @@ mod tests {
         assert!(server.seen().is_empty());
     }
 
+    /// The login is read from the CLI's home as config/paths.rs resolves
+    /// it: an absolute GROK_HOME, else %USERPROFILE%\.grok; never a path
+    /// relative to the working directory.
     #[test]
     fn the_login_lives_in_the_clis_home_and_never_a_relative_one() {
-        let path = login_path().expect("a home folder");
-        assert!(path.is_absolute());
-        assert_eq!(auth_path(), path);
+        let p = GrokProvider::new(config(false));
+        let paths = ToolPaths::from_env().expect("a home folder");
+        assert_eq!(p.login_path, paths.grok_auth());
+        if let Some(path) = &p.login_path {
+            assert!(path.is_absolute());
+        }
     }
 
     #[test]

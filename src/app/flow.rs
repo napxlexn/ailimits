@@ -157,11 +157,15 @@ impl App {
     }
 
     /// Open the picker (or bring it forward), asking about `ask`'s sign-in
-    /// at once when given.
+    /// at once when given. `activate`: the user opened it (the menu, a
+    /// click), so it takes the keyboard focus; the welcome or the update
+    /// notice opening by itself does not, and a focus it never had cannot
+    /// close it (`PickerWindow::open_quietly`).
     pub(super) fn open_picker(
         &mut self,
         target: &EventLoopWindowTarget<UserEvent>,
         ask: Option<String>,
+        activate: bool,
     ) {
         // Opened now, by whatever path: an owed window that waited has had
         // its turn.
@@ -174,8 +178,9 @@ impl App {
                 &self.renderer,
                 self.picker_input(),
                 picker_anchor(&self.window, self.window_visible),
+                activate,
             );
-        } else if let Some(p) = self.picker.as_ref() {
+        } else if let Some(p) = self.picker.as_ref().filter(|_| activate) {
             p.focus();
         }
         if let (Some(p), Some(id)) = (self.picker.as_mut(), ask) {
@@ -196,7 +201,7 @@ impl App {
         match auto_open(self.config.reads.pending, self.picker.is_some(), fullscreen) {
             AutoOpen::Now => {
                 info!("the fullscreen app is gone: the owed window opens");
-                self.open_picker(target, None);
+                self.open_picker(target, None, false);
             }
             AutoOpen::No => self.auto_open_waiting = false,
             AutoOpen::Later => {}

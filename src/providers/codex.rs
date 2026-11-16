@@ -4,21 +4,20 @@
 // Token sources, in order:
 //   1. manual usage token from Credential Manager ("codex_usage_token")
 //   2. the Codex CLI token from auth.json in the CLI's home (READ-ONLY,
-//      never refreshed): CODEX_HOME when it names an absolute folder,
-//      otherwise %USERPROFILE%\.codex
+//      never refreshed): CODEX_HOME when it is set, otherwise
+//      %USERPROFILE%\.codex (config/paths.rs; a CODEX_HOME that is not an
+//      absolute path means no file is read at all)
 // Both are used for a single undocumented endpoint: wham/usage.
 
 use super::{
-    generation_of, keyring_secret, status_words, tool_home, transport_error, unless_superseded,
-    Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
-    Refusals, SecretSource,
+    keyring_secret, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
+    ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
 };
-use crate::config::schema::ProviderConfig;
+use crate::config::{paths::ToolPaths, schema::ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, warn};
 
 /// Undocumented ChatGPT subscription usage endpoint — verified 2026-06-10, HTTP 200.
@@ -34,12 +33,13 @@ pub struct CodexProvider {
     net: Net,
     /// The app's own usage token (Credential Manager), read each cycle.
     usage_token: SecretSource,
-    /// The Codex CLI's sign-in, read only when allowed.
+    /// The Codex CLI's sign-in (`ToolPaths::codex_auth`: auth.json in
+    /// CODEX_HOME when set, else in %USERPROFILE%\.codex; None for a
+    /// relative CODEX_HOME), read only when allowed.
     auth_path: Option<PathBuf>,
     /// A stored usage token the endpoint refused: not sent again for a
     /// while, so it costs no second request each cycle.
     refused: Refusals,
-    generation: &'static AtomicU64,
 }
 
 impl CodexProvider {
@@ -48,9 +48,8 @@ impl CodexProvider {
             config,
             net: Net::new(),
             usage_token: keyring_secret(USAGE_TOKEN_LABEL),
-            auth_path: auth_path(),
+            auth_path: ToolPaths::from_env().and_then(|p| p.codex_auth()),
             refused: Refusals::default(),
-            generation: generation_of(&ProviderId::Codex),
         }
     }
 
@@ -70,7 +69,6 @@ impl CodexProvider {
             usage_token: Box::new(move || token.clone()),
             auth_path,
             refused: Refusals::default(),
-            generation: Box::leak(Box::new(AtomicU64::new(0))),
         }
     }
 
@@ -230,9 +228,7 @@ impl Provider for CodexProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let started = self.generation.load(Ordering::SeqCst);
-        let data = self.fetch_via_subscription().await;
-        unless_superseded(data, started, self.generation)
+        Ok(self.fetch_via_subscription().await)
     }
 }
 
@@ -251,14 +247,6 @@ pub fn status_without_cli_token(
         return ProviderStatus::NetworkError("auth.json unreadable".to_string());
     }
     usage_token_failure.unwrap_or(ProviderStatus::NotConfigured)
-}
-
-/// Where the Codex CLI keeps its sign-in: auth.json in the CLI's home —
-/// `CODEX_HOME` when it names an absolute folder, otherwise
-/// %USERPROFILE%\.codex. The same folder the model label is read from
-/// (models/mod.rs). None without an absolute home folder.
-pub fn auth_path() -> Option<PathBuf> {
-    tool_home("CODEX_HOME", ".codex").map(|home| home.join("auth.json"))
 }
 
 /// Read the Codex CLI access token: auth.json → tokens.access_token.
@@ -452,19 +440,17 @@ mod tests {
         assert!(server.seen().is_empty());
     }
 
-    /// The sign-in is read from the CLI's home, the folder the model label
-    /// comes from too; never relative to the working directory.
+    /// The sign-in is read from the CLI's home as config/paths.rs resolves
+    /// it, the folder the model label comes from too; never relative to
+    /// the working directory.
     #[test]
     fn the_sign_in_lives_in_the_clis_home() {
-        let path = auth_path().expect("a home folder");
-        assert!(path.is_absolute());
-        assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("auth.json"));
-        match std::env::var_os("CODEX_HOME").map(PathBuf::from) {
-            Some(home) if home.is_absolute() => assert_eq!(path, home.join("auth.json")),
-            _ => assert_eq!(
-                path,
-                dirs::home_dir().unwrap().join(".codex").join("auth.json")
-            ),
+        let p = CodexProvider::new(config(false));
+        let paths = ToolPaths::from_env().expect("a home folder");
+        assert_eq!(p.auth_path, paths.codex_auth());
+        if let Some(path) = &p.auth_path {
+            assert!(path.is_absolute());
+            assert_eq!(path.file_name().and_then(|n| n.to_str()), Some("auth.json"));
         }
     }
 }

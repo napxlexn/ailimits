@@ -299,6 +299,10 @@ fn base_note(
     }
 }
 
+/// The note under an extra row whose numbers are asked for only while it is
+/// chosen (`SubRow::on_request`), while it is not.
+pub const ON_REQUEST_NOTE: &str = "Its share of the same limit, asked for once this row is ticked";
+
 /// Everything the picker shows.
 pub fn picker_input(
     config: &Config,
@@ -349,14 +353,22 @@ pub(crate) fn picker_input_with(
                     .iter()
                     .any(|m| m.label.eq_ignore_ascii_case(sub.metric))
             });
+            // A row asked for only while it is chosen (Grok Bot) is not
+            // missing from an answer that never asked for it: it says when
+            // it is asked for instead.
+            let unasked = sub.on_request && !crate::rows::row_wanted(config, sub.id);
             rows_out.push(RowChoice {
                 id: sub.id,
                 provider: pid.config_id(),
                 name: sub.names[0],
-                note: sub.note.into(),
+                note: if unasked {
+                    ON_REQUEST_NOTE.into()
+                } else {
+                    sub.note.into()
+                },
                 hint: sub.hint,
                 has_data: has,
-                provider_ok: ok,
+                provider_ok: ok && !unasked,
             });
         }
     }
@@ -454,14 +466,14 @@ mod tests {
 
     #[test]
     fn a_fresh_install_shows_nothing_ticked() {
-        let config = Config::default();
+        let config = Config::fresh_install();
         assert!(resolved_rows(&config, Surface::Widget).is_empty());
         assert!(resolved_rows(&config, Surface::Tooltip).is_empty());
     }
 
     #[test]
     fn the_first_tick_spells_out_only_what_runs() {
-        let mut config = Config::default();
+        let mut config = Config::fresh_install();
         apply(
             &mut config,
             &PickerAction::Allow(ReadKind::SignIn("claude".into())),
@@ -844,8 +856,44 @@ mod tests {
             "Sign in from the menu: Providers > Cursor"
         );
         assert_eq!(row("codex").note, "No sign-in found on this PC");
+        // Grok Bot is asked for only once its row is ticked: until then it
+        // says so, and is not called missing.
+        let bot = row("cursor.bot");
+        assert_eq!(bot.note, ON_REQUEST_NOTE);
+        assert!(!bot.provider_ok);
         assert_eq!(row("grok").note, "Today's row");
         // Not running: nothing to say yet.
         assert_eq!(row("copilot").note, "No data yet");
+    }
+
+    /// The Grok Bot row, with Cursor answering: not asked for while it is
+    /// not ticked, so never "not reported"; once ticked, an ordinary extra
+    /// row that is missing only when the answer lacks it.
+    #[test]
+    fn an_on_request_row_says_when_it_is_asked_for() {
+        let mut config = Config::default();
+        config.allow_app_sign_in("cursor");
+        let display = [data(ProviderId::Cursor, ProviderStatus::Ok, &["Usage"])];
+        let bot = |config: &Config| {
+            picker_input_with(
+                config,
+                &display,
+                &Models::new(),
+                PickerMode::Normal,
+                &[],
+                |_| true,
+            )
+            .rows
+            .into_iter()
+            .find(|r| r.id == "cursor.bot")
+            .unwrap()
+        };
+        let unticked = bot(&config);
+        assert_eq!(unticked.note, ON_REQUEST_NOTE);
+        assert!(!unticked.provider_ok && !unticked.has_data);
+        config.ui.rows.tooltip = Some(vec!["cursor".into(), "cursor.bot".into()]);
+        let ticked = bot(&config);
+        assert_eq!(ticked.note, "Its share of the same limit");
+        assert!(ticked.provider_ok && !ticked.has_data);
     }
 }

@@ -18,7 +18,9 @@ and the licensing in one place.
   Chocolatey, Scoop, Microsoft Store, portable zip), which providers are on,
   and what happened versus what you expected. A debug log helps most: set
   `AILIMITS_LOG=ailimits=debug`, reproduce, and attach
-  `%APPDATA%\AiLimits\ailimits.log`. The log never contains tokens.
+  `%APPDATA%\AiLimits\ailimits.log`. The log never contains tokens. If the
+  widget vanished on its own, attach `%APPDATA%\AiLimits\crash.log` too: it
+  holds only the version, the thread and the place in the code.
 - **Ideas and new providers.** Open an issue. For a provider, say which plan
   you are on and where the provider itself shows your usage (a web page, a CLI
   command).

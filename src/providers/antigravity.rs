@@ -4,16 +4,15 @@
 // Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
 
 use super::{
-    clean_label, generation_of, status_words, transport_error, unless_superseded, Metric,
-    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
+    ProviderData, ProviderId, ProviderStatus,
 };
-use crate::config::schema::ProviderConfig;
+use crate::config::{paths::ToolPaths, schema::ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -59,7 +58,6 @@ pub struct AntigravityProvider {
     project: Mutex<Option<String>>,
     /// Until when fetchAvailableModels goes before the summary.
     prefer_models_until: Mutex<Option<Instant>>,
-    generation: &'static AtomicU64,
 }
 
 /// Outcome of one quota request (retrieveUserQuotaSummary or
@@ -147,7 +145,6 @@ impl AntigravityProvider {
             login: Arc::new(|| Box::pin(read_antigravity_login())),
             project: Mutex::new(None),
             prefer_models_until: Mutex::new(None),
-            generation: generation_of(&ProviderId::Antigravity),
         }
     }
 
@@ -161,7 +158,6 @@ impl AntigravityProvider {
             login,
             project: Mutex::new(None),
             prefer_models_until: Mutex::new(None),
-            generation: Box::leak(Box::new(AtomicU64::new(0))),
         }
     }
 
@@ -418,9 +414,7 @@ impl Provider for AntigravityProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let started = self.generation.load(Ordering::SeqCst);
-        let data = self.fetch_via_subscription().await?;
-        unless_superseded(data, started, self.generation)
+        self.fetch_via_subscription().await
     }
 }
 
@@ -455,10 +449,7 @@ pub fn combine_logins(
 /// a machine without an absolute home folder: nothing is read relative to
 /// the working directory.
 async fn read_legacy_gemini_login() -> Result<AntigravityLogin> {
-    let Some(path) = dirs::home_dir()
-        .filter(|p| p.is_absolute())
-        .map(|home| home.join(".gemini").join("oauth_creds.json"))
-    else {
+    let Some(path) = ToolPaths::from_env().map(|p| p.gemini_oauth_creds()) else {
         return Ok(AntigravityLogin::Missing);
     };
     if !path.exists() {

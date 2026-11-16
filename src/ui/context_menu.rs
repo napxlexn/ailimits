@@ -523,6 +523,15 @@ impl ContextMenu {
         })
     }
 
+    /// Take "Automatic updates" out of the menu: for a copy that updates
+    /// through its own channel (the Store, Scoop, the portable zip, a build
+    /// from source), where it would do nothing (`updater::channel`).
+    pub fn remove_auto_update(&self) {
+        if let Err(e) = self.menu.remove(&self.auto_update_item) {
+            tracing::warn!("the Automatic updates item stayed in the menu: {e}");
+        }
+    }
+
     /// Whether a Cursor session of the widget's own is kept: sign-out is
     /// offered only then.
     pub fn set_cursor_signed_in(&self, signed_in: bool) {

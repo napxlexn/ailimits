@@ -67,6 +67,11 @@ const MODEL_EXPANDED_SIZE: f32 = 11.0;
 /// The first-install lines (rows.js `widgetPixmap`).
 const CHOOSE_TITLE: &str = "Choose what to show";
 const CHOOSE_LINE: &str = "Click here. Nothing is read until you choose.";
+/// Rows are chosen, but none of them has anything to show now
+/// (`BodyLayout::Unshown`): an extra row the plan does not have, a row of a
+/// provider that is not connected. A click opens the picker.
+const UNSHOWN_TITLE: &str = "Nothing to show yet";
+const UNSHOWN_LINE: &str = "The rows chosen have no data. Click to choose.";
 
 /// Bar and text colors, accounting for staleness and estimation —
 /// both render grey. Stale data greys even while a reset is still ahead: the
@@ -165,7 +170,13 @@ impl Renderer {
 
         // A fresh install: say what to do rather than show an empty box.
         if let BodyLayout::Choose { area } = &layout.body {
-            self.draw_choose(pixmap, area, theme);
+            self.draw_two_lines(pixmap, area, theme, CHOOSE_TITLE, CHOOSE_LINE);
+            return;
+        }
+        // Rows chosen, none of them with data: say so, and that a click
+        // chooses others.
+        if let BodyLayout::Unshown { area } = &layout.body {
+            self.draw_two_lines(pixmap, area, theme, UNSHOWN_TITLE, UNSHOWN_LINE);
             return;
         }
 
@@ -232,16 +243,24 @@ impl Renderer {
                     );
                 }
             }
-            BodyLayout::Choose { .. } => {}
+            BodyLayout::Choose { .. } | BodyLayout::Unshown { .. } => {}
         }
     }
 
-    /// The first-install box: what to do, in two lines (rows.js
-    /// `widgetPixmap`, its first branch).
-    fn draw_choose(&self, pixmap: &mut Pixmap, area: &Rect, theme: &ComputedTheme) {
+    /// The two-line box: a title over a line saying what to do (the first
+    /// install, rows.js `widgetPixmap`, its first branch; and a widget whose
+    /// rows have nothing to show).
+    fn draw_two_lines(
+        &self,
+        pixmap: &mut Pixmap,
+        area: &Rect,
+        theme: &ComputedTheme,
+        title: &str,
+        line: &str,
+    ) {
         self.draw_text(
             pixmap,
-            CHOOSE_TITLE,
+            title,
             area.x,
             area.y + 4.0,
             12.0,
@@ -251,7 +270,7 @@ impl Renderer {
         );
         self.draw_text(
             pixmap,
-            CHOOSE_LINE,
+            line,
             area.x,
             area.y + 23.0,
             META_SIZE,
@@ -2479,6 +2498,37 @@ mod tests {
             ));
         }
 
+        // Rows chosen, none with data (an extra row the plan lacks), while
+        // providers run: what the widget says instead of "set up
+        // providers", whatever the layout.
+        for (lname, layout) in [("rows", Layout::Vertical), ("columns", Layout::Horizontal)] {
+            let ui = UIConfig {
+                layout,
+                ..UIConfig::default()
+            };
+            let shape = crate::ui::layout::Shape::of(&ui, &[], false, measure).with_unshown(true);
+            let win = crate::ui::layout::compute(
+                &ui.layout,
+                &ui.detail,
+                &ui.width_scale,
+                &ui.column_flow,
+                &shape,
+            );
+            let mut pm = Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+            renderer.draw(
+                &mut pm,
+                &win,
+                &ComputedTheme::compute(&ui),
+                &[],
+                0.45,
+                &ui.detail,
+                None,
+                &HashMap::new(),
+                &HashMap::new(),
+            );
+            items.push((format!("unshown-{lname}"), pm));
+        }
+
         vb::check("widget-rows", items);
     }
 
@@ -2671,7 +2721,7 @@ mod tests {
             let rects = match &win.body {
                 BodyLayout::Vertical { rows, .. } => rows.clone(),
                 BodyLayout::Horizontal { cols } => cols.clone(),
-                BodyLayout::Choose { .. } => unreachable!(),
+                BodyLayout::Choose { .. } | BodyLayout::Unshown { .. } => unreachable!(),
             };
             assert_eq!(rects.len(), rows.len());
             for (i, row) in rows.iter().enumerate() {
@@ -2697,6 +2747,30 @@ mod tests {
             }
         }
         places
+    }
+
+    /// The two-line boxes' texts fit the box: the first install's and the
+    /// one for rows chosen without data.
+    #[test]
+    fn the_two_line_boxes_fit_their_text() {
+        let renderer = Renderer::new().expect("a system font");
+        let ui = crate::config::schema::UIConfig::default();
+        let measure = |t: &str, s: f32| renderer.text_width(t, s);
+        let shape = crate::ui::layout::Shape::of(&ui, &[], false, measure).with_unshown(true);
+        let win = crate::ui::layout::compute(
+            &ui.layout,
+            &ui.detail,
+            &ui.width_scale,
+            &ui.column_flow,
+            &shape,
+        );
+        let BodyLayout::Unshown { area } = win.body else {
+            panic!("the unshown box");
+        };
+        for (title, line) in [(CHOOSE_TITLE, CHOOSE_LINE), (UNSHOWN_TITLE, UNSHOWN_LINE)] {
+            assert!(renderer.text_width(title, 12.0) <= area.w, "{title}");
+            assert!(renderer.text_width(line, META_SIZE) <= area.w, "{line}");
+        }
     }
 
     /// `rows::NAME_SLOTS` is what a renamed model is held to. Every place

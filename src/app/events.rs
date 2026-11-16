@@ -324,11 +324,12 @@ impl App {
                     }
                 }
                 (ElementState::Released, MouseButton::Left) => {
-                    // "Choose what to show / Click here": a click that did
-                    // not drag opens the picker.
+                    // "Choose what to show / Click here", or the rows chosen
+                    // have nothing to show: a click that did not drag opens
+                    // the picker, with the focus.
                     let dragged = self.win_state.end_drag();
-                    if !dragged && rows::nothing_chosen(&self.config) {
-                        self.open_picker(target, None);
+                    if !dragged && (rows::nothing_chosen(&self.config) || self.shape.unshown) {
+                        self.open_picker(target, None, true);
                     }
                     if dragged {
                         // Persist the position to the config.
@@ -412,6 +413,11 @@ impl App {
                     self.on_provider_update(data, serial, target)
                 }
                 AppCommand::CursorSignIn(outcome) => self.on_cursor_sign_in(outcome),
+                AppCommand::UsageToken {
+                    pid,
+                    outcome,
+                    ticket,
+                } => self.on_usage_token(pid, outcome, ticket),
                 AppCommand::Models(generation, read) => self.on_models(generation, read),
                 AppCommand::Quit => *control_flow = ControlFlow::Exit,
             },

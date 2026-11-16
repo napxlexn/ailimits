@@ -151,9 +151,10 @@ pub struct Reads {
     pub sign_in: Vec<String>,
     /// Providers set up with the app's own sign-in only (a pasted key or
     /// token, the menu's Cursor sign-in): they use that, and the tool's own
-    /// sign-in is never read for them. Their tool's settings file is still
-    /// read for the model label when `tool_settings` allows it, as for
-    /// every running provider.
+    /// sign-in is never read for them. For the model label their tool's
+    /// files are still read as for every running provider: the settings
+    /// file when `tool_settings` allows it, and the newest session when
+    /// `last_session` does (Claude Code, Codex CLI).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub app_sign_in: Vec<String>,
     /// The tools' own settings files, for the model and effort they are set
@@ -191,7 +192,8 @@ pub enum PendingNotice {
 /// clipboard string can never become an auto-run command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct HooksConfig {
-    /// Run when a provider crosses its alert threshold (shares the toast cooldown).
+    /// Run when a provider crosses its alert threshold: once per limit
+    /// window, like the toast (notifications/alerts.rs).
     #[serde(default)]
     pub on_threshold: String,
     /// Run when a provider's limit window resets (usage drops from near-limit).
@@ -472,7 +474,7 @@ pub struct ProviderConfig {
     /// Whether the provider may read the other tool's own sign-in: its token
     /// file, its Credential Manager entry, `gh auth token`. Set from
     /// `[reads] sign_in` when the provider is built (see
-    /// app.rs `build_providers`); never saved. Without it a provider uses
+    /// app/provider_set.rs); never saved. Without it a provider uses
     /// only what is the app's own, and otherwise reports nothing.
     #[serde(skip)]
     pub tool_files: bool,
@@ -482,7 +484,8 @@ pub struct ProviderConfig {
 pub struct NotificationConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Per-provider toast cooldown, minutes.
+    /// The shortest time between two alerts of one provider, minutes. An
+    /// alert is said once per limit window, not again every cooldown.
     #[serde(default = "default_cooldown")]
     pub cooldown_minutes: u32,
 }

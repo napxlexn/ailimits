@@ -2,26 +2,62 @@
 
 Notable, user-visible changes. Dates are release dates.
 
-## Unreleased
+## 0.7.1 - Unreleased
+
+> **Updating from 0.7.0 (or 0.6.x), and your user profile or TEMP folder
+> path has letters outside English (Cyrillic, for example), `&` or `%` in
+> it?** The old version's updater fails on such a path: once 0.7.1 is out
+> it may close AI Limits about half a minute after every start. Install
+> 0.7.1 by hand: download `AiLimits-Setup-0.7.1.exe` from the Releases page
+> and run it, or, once winget carries 0.7.1, run
+> `winget upgrade napxlexn.AILimits`. If the widget closes
+> before you get to it, right-click it right after a start and untick
+> **Automatic updates** first (or set `auto_update = false` in
+> `%APPDATA%\AiLimits\config.toml`). From 0.7.1 on the updater starts the
+> installer directly, such paths work, and Automatic updates can go back on.
 
 ### Added
 
+- **Grok (xAI SuperGrok).** The weekly SuperGrok limit, the one grok.com's
+  Usage page shows, read with the Grok CLI's own login
+  (`%USERPROFILE%\.grok\auth.json`, or in `GROK_HOME`) and never refreshed:
+  the CLI refreshes it whenever it runs. A product's share of the limit
+  (Grok Build) can be a row of its own.
+- **Cursor.** The subscription's included usage, labelled with the plan,
+  from the dashboard service the editor itself calls. Cursor has a sign-in
+  of the app's own: right-click, **Providers**, **Cursor**, *Sign in to
+  Cursor...* (or `ailimits-auth login cursor`) opens Cursor's own sign-in
+  page in the browser. Cursor has no sign-in for other apps, so the app
+  signs in as the Cursor editor's client; it keeps that session (about 60
+  days) in Windows Credential Manager (`cursor_session`) and renews it in its
+  last week, at most once a day. Nothing of the editor is read for it, and
+  the editor's own sign-in is never touched. *Sign out of Cursor* or
+  `ailimits-auth logout cursor` forgets the session; the uninstaller removes
+  it too. Grok Bot's share is an extra row, asked for only while that row is
+  chosen.
 - **Rows and models, a window of its own.** Right-click, *Rows and
   models...*: every row there is in one list, with a Widget column and a
   Tooltip column, so the widget and the panel's tooltip are chosen
   separately. A tick shows at once, with no restart. The window also
   opens by itself on a first start, and from a click on the widget while
-  nothing is chosen yet. Resting the pointer on a model part, the source
-  of the model, an extra row or a "found on this PC" mark shows what it
-  means. With the rows and labels left as they are, the widget, the panel
-  and the tray look exactly as before.
+  nothing is chosen yet ("Choose what to show"), or while the rows chosen
+  have no data yet ("Nothing to show yet"). Resting the pointer on a model
+  part, the source of the model, an extra row or a "found on this PC" mark,
+  or moving to it with the keyboard, shows what it means. It scrolls with
+  the wheel, PageUp/PageDown and the arrow keys, follows the apps' light or
+  dark mode, high contrast and Windows' text size, and puts the IME
+  candidates beside the caret. With the rows and labels left as they are,
+  the widget, the panel and the tray look as in 0.7.0, except for stale and
+  estimated data (see Changed).
 - **Extra rows where a provider meters a part on its own.** Claude's Opus,
   Sonnet and Fable weeks (on plans that have them; Fable is the "Current
   week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
   pool, Grok Build and Cursor's Grok Bot can each be a row of their own,
-  under their provider. A row the provider is not reporting right now can
-  still be ticked; it appears once the provider reports it. The taskbar
-  panel and the tray icon keep one entry per provider.
+  under their provider. A row the provider is not reporting can still be
+  ticked; it appears once the provider reports it. An extra row's numbers
+  never become its provider's headline, reset or alert, and a reset of its
+  own never greys the provider's row. The taskbar panel and the tray icon
+  keep one entry per provider.
 - **Model labels.** Three separate ticks - Model, Version, Effort - add the
   model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
   chosen separately for the widget and the tooltip. The model comes either
@@ -29,25 +65,47 @@ Notable, user-visible changes. Dates are release dates.
   and Codex CLI, from the end of the newest session ("Last used", read
   back from the end until the model turns up, at most 1 MB); the other
   tools keep showing the configured model. A Claude Code model chosen by
-  its short name (`/model opus`) shows the effort saved for that model.
-  Cursor shows the model chosen for its Agent ("Grok 4.7 · high"), taken
-  from the editor's state database as one value; nothing else of it is
-  read. A tool left on its default
+  its short name (`/model opus`) shows the effort saved for that model;
+  `ANTHROPIC_MODEL` and a Codex CLI `profile` are followed. Cursor shows the
+  model chosen for its Agent ("Grok 4.7 · high"), taken from the editor's
+  state database as one value; nothing else of it is read, and nothing is
+  ever written or created in Cursor's folder. The settings file is read for
+  every tool that runs, also one set up with a pasted key or the menu's
+  Cursor sign-in, and only once you allow it. A tool left on its default
   model, which it does not write down, shows its effort alone. Expanded
   rows and the columns layout give the label a line of its own, Medium puts
   it beside the reset (on a line of its own where that leaves too little
-  room), Compact leaves it to the tooltip. Where room runs out the effort goes first, then the
-  version, then the model; a word is never cut. The files are read on the
-  existing update cycle, with no timer of their own, and only again when
-  one changed.
+  room), Compact leaves it to the tooltip. Where room runs out the effort
+  goes first, then the version, then the model; a word is never cut. The
+  files are read on the existing update cycle, with no timer of their own,
+  and only again when one changed; a file that cannot be read for a moment
+  keeps the label and is read again on the next cycle.
 - **Model names you choose.** The automatic name is made from the id the
   tool stores by one rule, with no table of names, so a new model needs no
   update (`claude-opus-5-5` reads "Opus 5.5"). Any model can be renamed in
   the window, from a list closed until opened: one heading per running
-  tool with every model it offers, the one in use first and marked.
-  Typing stops where the name would no longer fit the narrowest
-  place the widget draws it, so a renamed model shows in full at every
-  size. Clearing the field brings the automatic name back.
+  tool, with the models it is known to offer and the one in use first and
+  marked. A model several tools share has one name and a field under each
+  of them ("shared with ..."); a tool's own router (`auto`) is named per
+  tool. Typing stops where the name would no longer fit the narrowest place
+  the widget draws it, so a renamed model shows in full at every size.
+  Clearing the field brings the automatic name back.
+- **Signed releases.** Each release carries an Ed25519 signature (`.sig`)
+  for the installer and the portable zip. The app's updater installs only an
+  installer whose signature verifies with the release key built into the app
+  (key id `1507bd92b1a4bb7b`), besides the SHA-256 GitHub publishes for it;
+  the signature covers the file name, so an installer cannot pass for
+  another version. Releases are published only after the files are checked.
+- **The proxy set in Windows is followed.** The providers, the Cursor
+  sign-in and the updater use the proxy from Settings, Network, Proxy ("Use
+  a proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` still win. A proxy script
+  (PAC) is not followed, and a network that inspects TLS with its own root
+  certificate is not trusted: its rows say so ("untrusted certificate,
+  retrying").
+- **A crash leaves a trace.** `%APPDATA%\AiLimits\crash.log` gets one line
+  per crash: the time, the version, the thread and the place in the code,
+  never the crash message's text. A start that fails says so in a message
+  that names the file.
 
 ### Changed
 
@@ -55,26 +113,147 @@ Notable, user-visible changes. Dates are release dates.
   Each tool's sign-in, the settings files and the session files are asked
   about once, before their first read, and the question names the files
   and where a token is sent. A fresh install reads nothing: the widget and
-  the tray say "Choose what to show", and the window opens with the tools
-  found on this PC marked - found by whether their folder exists, with
-  nothing inside opened - and ticked behind one question that names each
-  file it would read and where each token goes: *Allow* starts them all,
-  *Cancel* reads nothing and leaves the choice to you. Later, a tool's own
-  question offers *Allow all* while other tools found on this PC are not
-  running yet, and names their files too. A fresh install also switches every provider off,
-  so an older version started on the same settings reads nothing either.
-  The app's own `config.toml`, if it cannot be read, is set aside as
-  `config.toml.corrupt` and counts as a fresh install, since what it allowed
-  is unknown.
+  the tray say "Choose what to show", and the window opens as a welcome
+  whose question has a tick for each tool found on this PC - found by
+  whether its folder exists, with nothing inside opened - and names each
+  file it would read and where each token goes. Tools found by a folder of
+  their own start ticked; one found only by a related folder (GitHub CLI's
+  for Copilot, `.gemini` for Antigravity) is listed unticked. *Allow* starts
+  the ticked ones, *Cancel* reads nothing and leaves the choice to you.
+  Later, a tool's own question offers *Allow all* while other tools found
+  by their own folder are not running yet; it never starts one switched off
+  in the Providers menu. The welcome and the update notice take no keyboard
+  focus, so a stray Enter allows nothing, keep their buttons in view at any
+  size and scaling, and wait while a fullscreen app is in front. A fresh
+  install also switches every provider off, so an older version started on
+  the same settings reads nothing either.
 - **An update keeps what worked.** The providers switched on keep reading
   without a question, nothing has to be ticked again, and one window, shown
   once, lists every file read and every host contacted. A provider the
   earlier version did not have starts switched off and asks when ticked.
 - **Unticking stops reading.** Untick every row of a provider and nothing of
-  it is read any more until it is ticked and allowed again; unticking Model,
-  Version and Effort stops the model reads. A key or usage token you paste,
-  or the menu's Cursor sign-in, allows that alone: such a provider never
-  falls back to the tool's own files.
+  it is read any more until it is ticked and allowed again; its cached
+  numbers are cleared too. Unticking Model, Version and Effort takes back
+  the settings and session reads, and switching back to "As set in the
+  tool" takes back the session read; the next tick asks again. A key or
+  usage token you paste, or the menu's Cursor sign-in, allows that alone:
+  such a provider never falls back to the tool's own sign-in.
+- **What looks different from 0.7.0, on purpose.** With the default rows,
+  everything is drawn as in 0.7.0 except stale and estimated data:
+  stale data greys as soon as it misses its refresh, even while its reset
+  is still ahead (ac17bd2); data counts as stale once the update interval
+  plus a minute has passed, never under 5 minutes, instead of after a fixed
+  5 minutes (9eada81); a window that has provably reset reads ≈0% at once,
+  without waiting to go stale (387fc59); the taskbar panel draws a stale or
+  ≈ row in a dimmer ink (a755fe3); hovering a stale row whose error passes
+  by itself ("offline, retrying") shows just that, where 0.7.0 added advice
+  that did not help ("— check gh auth") (3d6093c). Time away while polling
+  is paused no longer counts towards staleness.
+- **Rows say what is wrong, in their own words.** A request that got no
+  answer reads "offline, retrying", "timed out, retrying" or "untrusted
+  certificate, retrying"; a rate limit "rate-limited, retrying"; a server
+  error "HTTP 503, retrying". A row without a key of yours no longer says
+  "check the key": Codex reads "token expired", Antigravity "token rejected"
+  or "no Code Assist project", Copilot through gh "no Copilot on this
+  account", "gh token rejected" or "no Copilot access", Cursor "sign in to
+  Cursor again". An expired Antigravity token greys the row with "token
+  expired" instead of hiding it, and a stored usage token that stopped
+  working keeps its row, so the cause stays visible.
+- **One usage request per provider per cycle.** Cursor asks for its plan at
+  most hourly and for Grok Bot only while that row is chosen; Antigravity
+  asks for its project once a session and its second quota endpoint only
+  after an unusable answer, never after a rate limit, a server error or no
+  answer; a stored usage token the server refused is not sent again for 30
+  minutes; `gh` runs at most once every 15 minutes, failures included.
+- **A threshold alert comes once per limit window.** The toast and the
+  `on_threshold` hook fire when usage reaches the threshold, and again only
+  after the window resets, or after usage fell 5 points or more below the
+  threshold and climbed back, not every 15 minutes while it stays up.
+  `cooldown_minutes` is now the shortest time between two alerts of one
+  provider. The alerts given are kept in `alerts.json`, so a restart does
+  not repeat them.
+- **Automatic updates wait until you are away.** An update is installed
+  only after 5 minutes without input (or with the session locked). The
+  installer is started directly, with no script in between, and starts the
+  app again itself. A version whose update did not finish is not tried again
+  by itself, and the next start says so once. Store, Scoop, portable and
+  self-built copies have no *Automatic updates* item, as something else
+  updates them.
+- **Pasting a key or usage token checks it first.** From the menu, only a
+  secret of the kind asked for is taken (`sk-ant-...`; `ghp_...`,
+  `github_pat_...`, `gho_...`, `ghu_...` or a classic GitHub token; a
+  ChatGPT token `eyJ...`, now also when it is longer than 500 characters);
+  anything else is refused without being sent, and the message never quotes
+  the clipboard. A usage token is checked with one request: a refused one
+  is not stored, one that could not be checked is stored with a note. In
+  `ailimits-auth set-usage-token` a rate limit (429) now counts as accepted,
+  and a server error is asked again twice before the token is stored with a
+  note.
+- **Starting AI Limits again while it runs shows the widget**, raised, and
+  opens a welcome that was waiting. It used to do nothing.
+- **`provider-cache.json` is written when the numbers change**, otherwise
+  at most every 10 minutes, and at exit, no longer after every fetch.
+- **After a sleep, one quick retry.** A first cycle after the machine wakes
+  (or after the idle pause) that got no answer at all is tried again after
+  20 seconds rather than 2 minutes.
+- **Building from source needs Rust 1.90** or newer.
+
+### Fixed
+
+- **Auto-update no longer closes the widget when the user profile or TEMP
+  path has letters outside English, `&` or `%` in it.** The updater used to
+  hand over to a script in `%TEMP%`, which failed on such paths, so the app
+  quit and nothing was installed. The installer is now started directly; the
+  script and installer that earlier attempts left in `%TEMP%` are removed.
+  See the note at the top for updating from 0.7.0.
+- **Microsoft Store, Scoop and portable copies no longer contact
+  api.github.com.** They used to ask for the latest release every day and
+  only then skip the install; now the update check stops before any request.
+- **The updater runs only the `AiLimits-Setup-<version>.exe` asset**, never
+  another `.exe` a release might carry.
+- **Claude no longer reads "token expired" for a server error or when
+  offline.** A 5xx or Anthropic's 529 reads "HTTP 529, retrying", no answer
+  "offline, retrying"; "token expired" is left for a refused token.
+- **Copilot**: `gh` was run every minute when nobody was signed in, and is
+  now asked at most every 15 minutes; it is asked for github.com only
+  (`gh auth token --hostname github.com`), so a GitHub Enterprise token is
+  never sent to github.com; an account without Copilot no longer shows
+  "check the key" right after install; an answer that is not the known JSON
+  keeps the row with an honest status.
+- **Antigravity**: after a switch to another Google account the next cycle
+  finds the new account's project instead of reading "token rejected" until
+  a restart; offline no longer reads "open Antigravity once".
+- **Codex follows `CODEX_HOME` for its sign-in** too, not only for the model
+  label. `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only as absolute
+  paths; a relative one means that tool's files are not read, never a folder
+  relative to the app.
+- **A `config.toml` held by another program (right after an update, say)
+  no longer resets the app or gets overwritten on exit.** It is read again
+  for about 2 seconds; if it still cannot be read, it is kept as it is and
+  nothing is saved over it until a restart, and one message says so. One
+  that cannot be understood is set aside under a name of its own
+  (`config.toml.<date>-<time>.corrupt`), never replacing an earlier one, and
+  a message names it. A config saved by Notepad as UTF-16 now reads.
+- **Hook commands with a quoted path work** (`"C:\Program Files\x\y.exe"
+  --flag`): they run as `cmd.exe /D /S /C "<command>"`. A failed hook is
+  logged by event name and exit code, never the command.
+- **Switching an account no longer brings its predecessor's numbers back.**
+  A fetch that started before a sign-in or sign-out, a pasted or removed key
+  or usage token, or a consent given or taken back is dropped when it lands.
+- **`ailimits-auth status` changes nothing**: it no longer creates or sets
+  aside `config.toml`, and reads another tool's sign-in only where the
+  widget may. `set`, `remove`, `set-usage-token` and `login` refuse a config
+  they cannot read instead of replacing it.
+- **The TLS libraries are updated** for the October 2026 advisories.
+
+### Going back to 0.7.0
+
+Not supported. 0.7.0 cannot read a cache that has Grok or Cursor in it, so
+it shows no cached readings, and when it saves its settings it drops
+`[ui.rows]`, `[ui.model]`, `[reads]` and the Grok and Cursor entries. Back on
+0.7.1, the providers 0.7.0 had switched on keep reading and the update
+notice shows once more; the rows, labels, names, Grok and Cursor are chosen
+again (the Cursor sign-in stays in Credential Manager).
 
 ## 0.7.0 - 2026-09-23
 

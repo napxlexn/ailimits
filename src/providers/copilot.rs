@@ -5,8 +5,8 @@
 // data VS Code shows). Token: a PAT from Credential Manager, or the gh CLI.
 
 use super::{
-    generation_of, status_words, transport_error, unless_superseded, Metric, MetricUnit,
-    MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus, SecretSource,
+    status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData,
+    ProviderId, ProviderStatus, SecretSource,
 };
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -94,7 +93,6 @@ pub struct CopilotProvider {
     gh: GhRunner,
     /// gh's last answer, for `GH_TTL`.
     gh_state: Mutex<Option<GhState>>,
-    generation: &'static AtomicU64,
 }
 
 impl CopilotProvider {
@@ -113,7 +111,6 @@ impl CopilotProvider {
             }),
             gh: Arc::new(|| Box::pin(gh_cli_token())),
             gh_state: Mutex::new(None),
-            generation: generation_of(&ProviderId::Copilot),
         }
     }
 
@@ -128,7 +125,6 @@ impl CopilotProvider {
             pat: Box::new(move || pat.clone()),
             gh,
             gh_state: Mutex::new(None),
-            generation: Box::leak(Box::new(AtomicU64::new(0))),
         }
     }
 
@@ -255,7 +251,6 @@ impl Provider for CopilotProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let started = self.generation.load(Ordering::SeqCst);
         // Token: PAT from Credential Manager, or gh's token, which is asked
         // of `gh` only when the user allowed it.
         let data = match (self.pat)() {
@@ -263,7 +258,7 @@ impl Provider for CopilotProvider {
             None if self.config.tool_files => self.fetch_with_gh().await,
             None => self.data(ProviderStatus::NotConfigured, vec![]),
         };
-        unless_superseded(data, started, self.generation)
+        Ok(data)
     }
 }
 
@@ -425,7 +420,7 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
 mod tests {
     use super::*;
     use crate::providers::test_server::{Reply, TestServer};
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn config(tool_files: bool) -> ProviderConfig {
         ProviderConfig {

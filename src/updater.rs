@@ -22,8 +22,15 @@
 // whose attempt did not end with that version running is never tried again by
 // itself, so a failing upgrade cannot take the widget down after every start.
 //
+// The installer closes the widget for a few seconds, so a verified update
+// waits until the user has been away for five minutes (no input, or the
+// session locked) before it is downloaded and run (`IDLE_BEFORE_INSTALL`).
+// An update that did not finish is told to the user once, at the next start
+// (`unfinished_update_note`).
+//
 // The whole feature is gated behind the `auto_update` config flag (a menu
 // toggle), passed in as a shared atomic so the loop honours live changes.
+// Its requests follow the proxy set in Windows, as the providers' do.
 
 use anyhow::{anyhow, bail, Context, Result};
 use ring::digest::{digest, SHA256};
@@ -43,6 +50,13 @@ const INITIAL_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// HTTP timeout — generous enough to download the installer (~4 MB).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the user must have been away (no input, or the session locked)
+/// before an update is installed: the widget closes while the installer
+/// runs, and should not vanish under someone's cursor. The same five
+/// minutes after which the scheduler pauses its polling.
+const IDLE_BEFORE_INSTALL_SECS: u64 = 300;
+/// While an update waits for that, how often to look again.
+const IDLE_RECHECK: Duration = Duration::from_secs(60);
 
 /// The release signing keys this build trusts: Ed25519 public keys. A
 /// signature names its key by `key_id`, so a later key can be added here
@@ -197,7 +211,7 @@ pub async fn run(enabled: Arc<AtomicBool>) {
     };
     loop {
         if enabled.load(Ordering::Relaxed) {
-            if let Err(e) = check_and_install(&client, &state, current).await {
+            if let Err(e) = check_and_install(&client, &state, current, &enabled).await {
                 // A failed check is non-fatal: log and try again next cycle.
                 debug!("auto-update check skipped: {e:#}");
             }
@@ -207,7 +221,9 @@ pub async fn run(enabled: Arc<AtomicBool>) {
 }
 
 fn build_client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
+    // The proxy set in Windows, once the app follows it (as the providers'
+    // clients do); an HTTP(S)_PROXY variable still wins.
+    crate::providers::proxy::with_windows_proxy(reqwest::Client::builder())
         .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("ailimits/", env!("CARGO_PKG_VERSION")))
         .build()
@@ -229,7 +245,12 @@ fn state_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-async fn check_and_install(client: &reqwest::Client, state: &Path, current: Version) -> Result<()> {
+async fn check_and_install(
+    client: &reqwest::Client,
+    state: &Path,
+    current: Version,
+    enabled: &AtomicBool,
+) -> Result<()> {
     let Some(update) = fetch_latest(client, current).await? else {
         return Ok(());
     };
@@ -247,12 +268,30 @@ async fn check_and_install(client: &reqwest::Client, state: &Path, current: Vers
         return Ok(());
     }
 
-    let installer = download_and_verify(client, &update).await?;
+    // Only while the user is away: the installer closes the widget for a
+    // few seconds. Downloaded once that moment has come, and run only if the
+    // user is still away when the download is through.
+    let installer = loop {
+        if !wait_until_away(enabled).await {
+            info!(
+                "auto-update was switched off while v{} waited",
+                update.version
+            );
+            return Ok(());
+        }
+        let installer = download_and_verify(client, &update).await?;
+        if away(crate::platform::user_idle_secs()) {
+            break installer;
+        }
+        let _ = std::fs::remove_file(&installer);
+        debug!("the user came back during the download; the update waits again");
+    };
     // Written down BEFORE the handoff: should the upgrade fail, the next
     // start knows, and does not try this version again.
     let attempt = Attempt {
         version: update.version.clone(),
         installer: installer.clone(),
+        told: false,
     };
     if let Err(e) = record_attempt(state, &attempt) {
         let _ = std::fs::remove_file(&installer);
@@ -266,6 +305,35 @@ async fn check_and_install(client: &reqwest::Client, state: &Path, current: Vers
         let _ = std::fs::remove_file(&installer);
     }
     Ok(())
+}
+
+/// Whether the user has been away long enough for an update to install:
+/// `idle_secs` without input (`platform::user_idle_secs`, which a locked
+/// session keeps counting).
+fn away(idle_secs: u64) -> bool {
+    idle_secs >= IDLE_BEFORE_INSTALL_SECS
+}
+
+/// Wait until the user is away (`away`). False when auto-update was
+/// switched off meanwhile: nothing is installed then.
+async fn wait_until_away(enabled: &AtomicBool) -> bool {
+    let mut said = false;
+    loop {
+        if !enabled.load(Ordering::Relaxed) {
+            return false;
+        }
+        if away(crate::platform::user_idle_secs()) {
+            return true;
+        }
+        if !said {
+            info!(
+                "the update waits until the user has been away for {} minutes",
+                IDLE_BEFORE_INSTALL_SECS / 60
+            );
+            said = true;
+        }
+        tokio::time::sleep(IDLE_RECHECK).await;
+    }
 }
 
 /// Query the latest release; Some only when it is strictly newer than the
@@ -484,6 +552,10 @@ fn verify_with_keys(
 struct Attempt {
     version: String,
     installer: PathBuf,
+    /// Whether the user was told that this attempt did not finish
+    /// (`unfinished_update_note`). Absent in records of 0.7.1's first runs.
+    #[serde(default)]
+    told: bool,
 }
 
 /// What the attempt record says at startup.
@@ -539,6 +611,39 @@ fn settle_attempt(state: &Path, current: Version) -> Settled {
     } else {
         Settled::Failed(attempt.version)
     }
+}
+
+/// What to tell the user, once, when the last update did not finish: the
+/// version it was for is still not running. The record notes that it was
+/// told, so the next start stays quiet; it stays otherwise, so that version
+/// is not tried again by itself. None when there is nothing to tell, and for
+/// a copy that does not update itself. Reads one small file of the app's
+/// own, no network.
+pub fn unfinished_update_note() -> Option<String> {
+    if !self_update_supported() {
+        return None;
+    }
+    let version = untold_failure(&state_dir(), current_version())?;
+    Some(format!(
+        "The update to {version} did not finish, so AI Limits is still {}. It is not tried \
+         again by itself: install {version} from github.com/{REPO}/releases.",
+        env!("CARGO_PKG_VERSION")
+    ))
+}
+
+/// The version of an attempt that did not finish and was not told yet,
+/// marking it told. Pure on the folder for testing.
+fn untold_failure(state: &Path, current: Version) -> Option<String> {
+    let mut attempt = read_attempt(state)?;
+    let version = parse_version(&attempt.version)?;
+    if version <= current || attempt.told {
+        return None;
+    }
+    attempt.told = true;
+    if let Err(e) = record_attempt(state, &attempt) {
+        warn!("auto-update: could not note that the failed update was told: {e:#}");
+    }
+    Some(attempt.version)
 }
 
 /// Whether `version` was attempted before and did not install: the record
@@ -1109,6 +1214,7 @@ mod tests {
             let attempt = Attempt {
                 version: "0.7.1".into(),
                 installer: installer.clone(),
+                told: false,
             };
             record_attempt(&state, &attempt).unwrap();
             assert_eq!(read_attempt(&state), Some(attempt), "{awkward}");
@@ -1135,6 +1241,7 @@ mod tests {
                 &Attempt {
                     version: "0.7.2".into(),
                     installer: installer.clone(),
+                    told: false,
                 },
             )
             .unwrap();
@@ -1159,6 +1266,46 @@ mod tests {
         }
     }
 
+    /// An update that did not finish is told once: the record notes it,
+    /// stays (the version is still not tried again), and a record written
+    /// before the note existed reads as not told.
+    #[test]
+    fn a_failed_update_is_told_once() {
+        let state = temp_dir_named("Вася & (100%)", "told");
+        std::fs::write(
+            state.join(ATTEMPT_FILE),
+            r#"{"version":"0.7.2","installer":"C:\\x\\AiLimits-Setup-0.7.2.exe"}"#,
+        )
+        .unwrap();
+        assert_eq!(untold_failure(&state, (0, 7, 1)), Some("0.7.2".into()));
+        assert_eq!(untold_failure(&state, (0, 7, 1)), None, "told once");
+        assert!(
+            attempt_failed(&state, "0.7.2", (0, 7, 1)),
+            "still not retried"
+        );
+        // A finished one has nothing to tell.
+        record_attempt(
+            &state,
+            &Attempt {
+                version: "0.7.2".into(),
+                installer: state.join("x.exe"),
+                told: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(untold_failure(&state, (0, 7, 2)), None);
+        std::fs::remove_dir_all(&state).unwrap();
+    }
+
+    /// An update installs only once the user has been away five minutes.
+    #[test]
+    fn an_update_waits_for_the_user_to_be_away() {
+        assert!(!away(0));
+        assert!(!away(IDLE_BEFORE_INSTALL_SECS - 1));
+        assert!(away(IDLE_BEFORE_INSTALL_SECS));
+        assert!(away(u64::MAX));
+    }
+
     #[test]
     fn no_record_or_a_broken_one_means_nothing_failed() {
         let state = temp_dir_named("plain", "none");
@@ -1181,6 +1328,7 @@ mod tests {
         let attempt = Attempt {
             version: "9.9.9".into(),
             installer: root.join("Їжак").join("AiLimits-Setup-9.9.9.exe"),
+            told: false,
         };
         record_attempt(&state, &attempt).unwrap();
         assert_eq!(read_attempt(&state), Some(attempt));

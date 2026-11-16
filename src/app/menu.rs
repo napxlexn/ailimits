@@ -8,12 +8,13 @@ use super::{
 use crate::{
     config::schema::{AuthMethod, Config},
     providers::{
+        self,
         cursor::session::{self as cursor_session, SignInOutcome},
-        key_label_for, usage_token_label_for,
+        key_label_for, usage_token_label_for, TokenCheck,
     },
     ui::context_menu::MenuAction,
 };
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tao::event_loop::{ControlFlow, EventLoopWindowTarget};
 use tracing::warn;
 
@@ -29,7 +30,7 @@ impl App {
             return;
         };
         match action {
-            MenuAction::OpenPicker => self.open_picker(target, None),
+            MenuAction::OpenPicker => self.open_picker(target, None, true),
             MenuAction::Quit => *control_flow = ControlFlow::Exit,
             MenuAction::OpenProjectPage => {
                 crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);
@@ -191,7 +192,7 @@ impl App {
             // answer.
             self.menu.sync(&self.config, self.win_state.pinned);
             self.menu_asked = Some(pid.clone());
-            self.open_picker(target, Some(pid));
+            self.open_picker(target, Some(pid), true);
             return;
         }
         // Switched off: its cached numbers go with it; either way it starts
@@ -263,6 +264,12 @@ impl App {
         }
     }
 
+    /// A usage token from the clipboard: its shape first, so nothing that
+    /// is not one is ever sent; then one check against the provider's own
+    /// usage endpoint (`providers::check_usage_token`) and, unless refused,
+    /// Credential Manager - both in a task on the runtime, which the token
+    /// never leaves. The event loop hears only the outcome
+    /// (`AppCommand::UsageToken`, `on_usage_token`).
     fn paste_usage_token(&mut self, pid: String) {
         let pasted = usage_token_label_for(&pid)
             .zip(SecretKind::usage_token_for(&pid))
@@ -272,8 +279,45 @@ impl App {
             Ok(pasted) => pasted,
             Err(e) => return feedback("AI Limits", &format!("{e}")),
         };
-        match keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&token)) {
-            Ok(()) => {
+        if let Some(problem) = providers::usage_token_problem(&pid, &token) {
+            return feedback(
+                "AI Limits",
+                &format!("Usage token for {pid} not stored: {problem}"),
+            );
+        }
+        // A second paste while one is checked: the newer one counts.
+        if let Some((_, task)) = self.usage_token_check.take() {
+            task.abort();
+        }
+        let ticket = TOKEN_CHECKS.fetch_add(1, Ordering::Relaxed);
+        let tx = self.cmd_tx.clone();
+        let task = self.runtime.spawn(async move {
+            let check = providers::check_usage_token(&pid, &token).await;
+            let outcome = TokenOutcome::of(check, || {
+                keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&token))
+            });
+            let done = AppCommand::UsageToken {
+                pid,
+                outcome,
+                ticket,
+            };
+            let _ = tx.send(done).await;
+        });
+        self.usage_token_check = Some((ticket, task));
+    }
+
+    /// A pasted usage token was checked (`paste_usage_token`). The answer
+    /// to a paste that a later paste or a removal replaced is not acted on.
+    pub(super) fn on_usage_token(&mut self, pid: String, outcome: TokenOutcome, ticket: u64) {
+        match self.usage_token_check.take() {
+            Some((current, _)) if current == ticket => {}
+            other => {
+                self.usage_token_check = other;
+                return;
+            }
+        }
+        match outcome {
+            TokenOutcome::Stored | TokenOutcome::StoredUnchecked(_) => {
                 // The usage token is the app's own source, tried before the
                 // tool's files: storing it sets the provider up the way a key
                 // does.
@@ -281,16 +325,30 @@ impl App {
                     pc.enabled = true;
                 }
                 self.set_up_with_app_sign_in(&pid);
-                feedback("AI Limits", &format!("Usage token for {pid} stored"));
+                let body = match outcome {
+                    TokenOutcome::StoredUnchecked(why) => format!(
+                        "Usage token for {pid} stored, but not checked: {why}. If the row shows an error, paste it again."
+                    ),
+                    _ => format!("Usage token for {pid} stored"),
+                };
+                feedback("AI Limits", &body);
             }
-            Err(e) => {
-                warn!("keyring store failed: {e}");
+            TokenOutcome::Refused => feedback(
+                "AI Limits",
+                &format!("The usage token for {pid} was refused, so it was not stored"),
+            ),
+            TokenOutcome::StoreFailed => {
                 feedback("AI Limits", "Failed to store the usage token");
             }
         }
     }
 
     fn remove_usage_token(&mut self, pid: String) {
+        // A paste still being checked would store its token after this:
+        // the removal is the later wish.
+        if let Some((_, task)) = self.usage_token_check.take() {
+            task.abort();
+        }
         let label = usage_token_label_for(&pid).unwrap_or_default();
         match keyring::Entry::new("ailimits", label).and_then(|e| e.delete_credential()) {
             Ok(()) | Err(keyring::Error::NoEntry) => {
@@ -391,6 +449,42 @@ impl App {
     }
 }
 
+/// Numbers the usage-token checks, so an answer can be matched to its paste.
+static TOKEN_CHECKS: AtomicU64 = AtomicU64::new(0);
+
+/// What became of a pasted usage token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenOutcome {
+    /// The endpoint took it (usage, or its rate limit); stored.
+    Stored,
+    /// No answer said either way (why, in words for the toast); stored all
+    /// the same, as the owner chose: a provider that is down should not
+    /// keep a working token out.
+    StoredUnchecked(String),
+    /// The endpoint refused it (401/403): not stored.
+    Refused,
+    /// Credential Manager did not take it.
+    StoreFailed,
+}
+
+impl TokenOutcome {
+    /// The outcome of `check`, storing the token with `store` unless it was
+    /// refused.
+    fn of(check: TokenCheck, store: impl FnOnce() -> keyring::Result<()>) -> Self {
+        if check == TokenCheck::Refused {
+            return TokenOutcome::Refused;
+        }
+        if let Err(e) = store() {
+            warn!("keyring store failed: {e}");
+            return TokenOutcome::StoreFailed;
+        }
+        match check {
+            TokenCheck::Unchecked(why) => TokenOutcome::StoredUnchecked(why),
+            _ => TokenOutcome::Stored,
+        }
+    }
+}
+
 /// What a click on a provider's tick in the Providers menu did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Flip {
@@ -464,6 +558,37 @@ mod tests {
             crate::config::schema::Surface::Widget,
             "cursor"
         ));
+    }
+
+    /// A refused token is never stored; any other check stores it, saying
+    /// when it could not be checked; a store that fails says so.
+    #[test]
+    fn a_pasted_token_is_stored_unless_refused() {
+        let stored = std::cell::Cell::new(0);
+        let store = || {
+            stored.set(stored.get() + 1);
+            Ok(())
+        };
+        assert_eq!(
+            TokenOutcome::of(TokenCheck::Refused, store),
+            TokenOutcome::Refused
+        );
+        assert_eq!(stored.get(), 0);
+        assert_eq!(
+            TokenOutcome::of(TokenCheck::Accepted, store),
+            TokenOutcome::Stored
+        );
+        let why = "the usage endpoint answered HTTP 503".to_string();
+        assert_eq!(
+            TokenOutcome::of(TokenCheck::Unchecked(why.clone()), store),
+            TokenOutcome::StoredUnchecked(why)
+        );
+        assert_eq!(stored.get(), 2);
+        let failing = || Err(keyring::Error::NoEntry);
+        assert_eq!(
+            TokenOutcome::of(TokenCheck::Accepted, failing),
+            TokenOutcome::StoreFailed
+        );
     }
 
     #[test]

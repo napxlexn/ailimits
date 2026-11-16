@@ -12,7 +12,7 @@ Ground rules that apply to every provider:
   of inventing numbers.
 - **Secrets live only in the Windows Credential Manager**, service
   `ailimits`. The config stores labels, never values. Tokens are never logged.
-- **Stale-data policy** (implemented in `app.rs` + `renderer.rs`): a transient
+- **Stale-data policy** (implemented in `src/app/` + `renderer.rs`): a transient
   error never wipes the last real data; it is shown greyed with its age. The
   taskbar panel, which has no room for the age, draws such a row (and an
   `≈` estimate) in a dimmer ink.
@@ -29,6 +29,78 @@ Ground rules that apply to every provider:
 - Metrics whose reset is still in the future are persisted to
   `provider-cache.json` and survive widget restarts: after a relaunch the
   row shows the last real value (greyed, with its age), not an error text.
+- **No update from an older account.** Every update carries the serial of
+  the provider instance that made it, and the event loop drops one whose
+  instance was replaced meanwhile. A provider is rebuilt only when its own
+  settings or account may have changed: a sign-in or sign-out of Cursor, a
+  key or usage token pasted or removed, a change of method, the Enabled
+  switch, a consent given or taken back. Its cached numbers, last error,
+  trend and alert marks are then cleared, and the row reads Loading until
+  the first answer. A change in the menu leaves the other providers alone
+  (and their caches: gh's token, Cursor's plan, Antigravity's project).
+
+## Requests per cycle
+
+One usage request per provider per cycle, no more often than the update
+interval (60 s minimum), and none while polling is paused. The few helper
+requests, exactly:
+
+- **Cursor**: the plan (`GetPlanInfo`) at most once an hour per account (ten
+  minutes after a request that brought nothing); Grok Bot
+  (`GetSandUsageStatus`) only while its row `cursor.bot` is chosen on the
+  widget or the tooltip; the session refresh (`api2.cursor.sh/oauth/token`)
+  only in the last 7 days before the session expires, at most once a day,
+  refusals included.
+- **Antigravity**: `loadCodeAssist` once a session (again only after the
+  token is refused). `fetchAvailableModels` only when
+  `retrieveUserQuotaSummary` gave nothing usable (a 200 with an unknown or
+  empty body, or a 4xx other than 401/403/429); it then goes first for an
+  hour, so a cycle stays one request. Never after a 429, a 5xx or no answer.
+- **Claude and Codex**: the tool's own token is tried after a stored usage
+  token only when the server refused that one (401/403); the refused token
+  is then not sent again for 30 minutes (a newly pasted one is tried at
+  once). A 429, a 5xx, an unknown body or no answer ends the cycle with no
+  second request.
+- **Copilot**: `gh auth token --hostname github.com` at most once every 15
+  minutes, its failures included; a gh token the server refused (401, 403,
+  404) is not sent again for 15 minutes.
+
+## Network
+
+- Every request goes over HTTPS to the hosts named per provider below, with
+  a 10 s time-out and no redirects, so a token is never forwarded to another
+  host.
+- **Proxy.** The app uses the proxy set in Windows (Settings > Network >
+  Proxy > "Use a proxy server": `ProxyEnable`, `ProxyServer`,
+  `ProxyOverride` under the user's Internet Settings) for the providers, the
+  Cursor sign-in and the updater. `HTTPS_PROXY`, `HTTP_PROXY` and
+  `ALL_PROXY` take precedence. A proxy script (PAC) and automatic detection
+  are not followed. The setting is read once; a change applies after a
+  restart. `ailimits-auth` follows only the variables.
+- **Certificates.** TLS uses the roots built into the app (rustls), not the
+  Windows certificate store, so a network that inspects TLS with its own
+  root is not trusted: the rows say "untrusted certificate, retrying".
+  Trusting the Windows store would add new DLLs to the exe.
+
+## Error states
+
+Each status is at most 32 characters, so the widget shows it as it is; one
+that ends in ", retrying" passes by itself and the hover adds no action.
+Every error keeps the last real data, greyed with its age.
+
+| Cause | Row says |
+|---|---|
+| no answer: offline, DNS, a body cut off | `offline, retrying` |
+| no answer in 10 s | `timed out, retrying` |
+| the certificate is refused | `untrusted certificate, retrying` |
+| HTTP 429 | `rate-limited, retrying` |
+| HTTP 5xx (Anthropic's 529 among them) | `HTTP <code>, retrying` |
+| any other status | `HTTP <code>` |
+
+The provider's own states are listed in each section. An `AuthError` (only
+a key or token you gave: a Claude API key, a Copilot PAT, a Codex usage
+token without a fallback) shows "check the key"; a row without a key of
+yours never does.
 
 ## Claude
 
@@ -37,12 +109,18 @@ Ground rules that apply to every provider:
 1. **Manual usage token** — Credential Manager label `claude_usage_token`
    (menu: *Paste usage token*; CLI: `ailimits-auth set-usage-token claude`).
 2. **Claude Code OAuth token** — `%USERPROFILE%\.claude\.credentials.json`
-   → `claudeAiOauth.accessToken` (skipped when `expiresAt` is in the past).
+   → `claudeAiOauth.accessToken` (skipped when `expiresAt` is in the past),
+   only when `[reads] sign_in` allows it. Tried after the usage token only
+   when that one was refused (401/403); the refused usage token is then not
+   sent for 30 minutes.
 3. A source exists (either token: a stored usage token counts as much as
-   the credentials file) but gave no data → `NetworkError("token expired")`,
-   or what actually failed: `"rate-limited, retrying"` after an HTTP 429,
-   `"offline, retrying"` when a request got no answer, or
-   `"unrecognized usage schema"` for a 200 the parser does not know.
+   the credentials file) but gave no data → `NetworkError("token expired")`
+   for a refusal (401/403) or no usable token, or what actually failed: the
+   shared words (see Error states: offline, time-out, certificate,
+   `rate-limited, retrying` after a 429, `HTTP 529, retrying` and other
+   5xx), or `"unrecognized usage schema"` for a 200 the parser does not
+   know. The hover adds "run Claude Code" to a status that does not end in
+   ", retrying".
 4. No sources at all → `NotConfigured` (the row is hidden).
 
 (`statusline.jsonl` snapshots were a source until 0.7.0; Claude Code no
@@ -109,8 +187,12 @@ This monitors API rate limits, not the subscription.
 Token sources, in order:
 
 1. **Manual usage token** — label `codex_usage_token` (menu / CLI).
-2. **Codex CLI token** — `%USERPROFILE%\.codex\auth.json`
-   → `tokens.access_token`.
+2. **Codex CLI token** — `auth.json` in the CLI's home: `%CODEX_HOME%\auth.json`
+   when `CODEX_HOME` is set to an absolute path, otherwise
+   `%USERPROFILE%\.codex\auth.json` (a relative `CODEX_HOME`: no file is read
+   at all) → `tokens.access_token`; only when `[reads] sign_in` allows it.
+   Tried after the usage token only when that one was refused (401/403); the
+   refused usage token is then not sent for 30 minutes.
 
 Endpoint (verified 2026-06-10; the Codex CLI itself polls it):
 
@@ -128,19 +210,28 @@ Authorization: Bearer <token>
 
 `primary_window` = the 5-hour session → `Session`; `secondary_window` =
 the week → `Weekly`. `reset_at` is unix epoch seconds. 401/403 on the CLI
-token → `AuthError("token expired — run Codex CLI once")`. Without auth.json
-a stored usage token that failed keeps the row (greyed, last data kept):
-`AuthError("usage token rejected")` on 401/403, otherwise the network error.
-An unreadable auth.json → `NetworkError("auth.json unreadable")`. No source
-at all → `NotConfigured` (the row is hidden).
+token → `NetworkError("token expired")` (the hover adds "run Codex CLI";
+not "check the key": no key was given). A body that is not the known JSON →
+`"unrecognized wham/usage schema"`; other statuses and no answer → the
+shared words (see Error states). Without auth.json (or without leave to read
+it) a stored usage token that was refused keeps the row (greyed, last data
+kept): `AuthError("usage token rejected")`. An unreadable auth.json →
+`NetworkError("auth.json unreadable")`. No source at all → `NotConfigured`
+(the row is hidden).
 
 ## GitHub Copilot (subscription only)
 
 Token sources, in order:
 
-1. **PAT** — label `copilot_pat` (menu: *Paste PAT*; CLI: `set copilot`).
-2. **gh CLI** — `gh auth token`, spawned with `CREATE_NO_WINDOW` and cached
-   in memory for 15 minutes (a 401 invalidates the cache).
+1. **PAT** — label `copilot_pat` (menu: *Paste PAT from clipboard*; CLI: `set copilot`).
+2. **gh CLI** — `gh auth token --hostname github.com` (never another host,
+   so a GitHub Enterprise sign-in or `GH_HOST` is not sent to github.com),
+   spawned with `CREATE_NO_WINDOW` from System32, killed after 15 s; only
+   when `[reads] sign_in` allows it. gh's answer stands for 15 minutes, its
+   failures included: gh not installed or nobody signed in to github.com →
+   the row is hidden (`NotConfigured`) and gh is asked again in 15 minutes;
+   gh timing out → `"gh timed out, retrying"`. A token the server refused is
+   not sent again for those 15 minutes either.
 
 Endpoint (verified 2026-06-10; the same one the Copilot extensions use):
 
@@ -160,9 +251,13 @@ Authorization: token <token>
 → metrics `Premium`, `Chat`, `Completions` (used = entitlement − remaining;
 negative `remaining` = overage; `unlimited` snapshots are skipped).
 `quota_reset_date` → reset at midnight UTC. An unknown schema or a body that
-is not JSON → `NetworkError("unrecognized copilot_internal schema")`;
-401/403/404 → `AuthError("token has no Copilot access")`; any other status →
-`HTTP <code>`; a body cut off mid-transfer → the network error.
+is not JSON → `NetworkError("unrecognized Copilot schema")`. A refusal reads
+by where the token came from. gh's token: 404 → `"no Copilot on this
+account"`, 401 → `"gh token rejected"`, 403 → `"no Copilot access"` (the row
+shows the words; the hover adds "check gh auth"). A pasted PAT: 401/403/404
+→ `AuthError("token has no Copilot access")`, shown as "check the key". Any
+other status, no answer or a body cut off mid-transfer → the shared words
+(see Error states).
 
 ## Token lifetimes and accuracy window
 
@@ -193,13 +288,16 @@ Token sources, in order:
 1. **Antigravity CLI** — Windows Credential Manager target
    `gemini:antigravity` → JSON `token.access_token` (READ-ONLY; skipped when
    `token.expiry` is in the past).
-2. **Legacy Gemini CLI** — `~/.gemini/oauth_creds.json` → `access_token`
-   (READ-ONLY; skipped when `expiry_date` is in the past).
+2. **Legacy Gemini CLI** — `%USERPROFILE%\.gemini\oauth_creds.json` →
+   `access_token` (READ-ONLY; skipped when `expiry_date` is in the past).
 3. A token exists but every one is expired → `NetworkError("token expired")`:
    the last data stays, greyed with its age, until Antigravity refreshes the
-   token. A credential that cannot be read →
-   `NetworkError("credentials unreadable")`. No token anywhere →
-   `NotConfigured` (the row is hidden).
+   token (the hover adds "run Antigravity"). This is deliberate (d6abbde): an
+   expired token greys the row rather than hiding it. A credential that
+   cannot be read → `NetworkError("credentials unreadable")`. No token
+   anywhere → `NotConfigured` (the row is hidden).
+
+Both sources are read only when `[reads] sign_in` allows it.
 
 As of June 18, 2026, Google stopped serving Gemini CLI and Gemini Code Assist
 IDE-extension requests for Gemini Code Assist for individuals, Google AI Pro,
@@ -219,7 +317,11 @@ Quota is a chain of sources (all verified live 2026-08-01):
    call still answers 200 but omits the field. Everything below needs the id,
    and without it the widget reports an honest error instead of quota — every
    endpoint answers an "everything full" default view when the project is
-   missing, which is indistinguishable from an unused account.
+   missing, which is indistinguishable from an unused account. A 200 without
+   the field → `"no Code Assist project"` (the hover adds "run Antigravity":
+   its first run sets the account up); no answer or any other status here
+   (but 401/403) is not a missing project and reads as the shared words (see
+   Error states).
 2. **`retrieveUserQuotaSummary`** — the shared pools Antigravity meters today:
 
    ```
@@ -237,32 +339,39 @@ Quota is a chain of sources (all verified live 2026-08-01):
    the project-less default view and is refused. These pools are Antigravity's
    general limits, so they are recorded as long-window metrics.
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; a spent model omits
-   `remainingFraction` and keeps `resetTime`).
+   `remainingFraction` and keeps `resetTime`), on the same host. Asked only
+   when the summary gave nothing usable: a 200 with an unknown or empty body,
+   or a 4xx other than 401/403/429. Once it saved a cycle it goes first for
+   an hour (the summary then becomes its fallback), so a cycle stays one
+   request. A 429, a 5xx or no answer ends the cycle on the shared words
+   without the other endpoint: they say nothing about the body.
 
-If both `retrieveUserQuotaSummary` and `fetchAvailableModels` fail or return
-nothing usable, the widget reports an honest error instead of quota. There is
-no further fallback to `retrieveUserQuota`: that endpoint answers the Code
-Assist *bucket* view, which does NOT track Antigravity consumption — for an
-account that only uses Antigravity, those buckets read `remainingFraction: 1`
-regardless of actual usage. Both `retrieveUserQuotaSummary` and
-`fetchAvailableModels` live on `daily-cloudcode-pa.googleapis.com`, which is
-flaky (see below), so a single timeout can lose both in one poll cycle — that
-is expected to surface as an error, not as a silently wrong "0% used".
+If both `retrieveUserQuotaSummary` and `fetchAvailableModels` return nothing
+usable, the widget reports `"Antigravity quota unavailable"` instead of
+quota. There is no further fallback to `retrieveUserQuota`: that endpoint
+answers the Code Assist *bucket* view, which does NOT track Antigravity
+consumption — for an account that only uses Antigravity, those buckets read
+`remainingFraction: 1` regardless of actual usage.
 
 used % = `(1 - remainingFraction) * 100`; the epoch placeholder
-(`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 →
-"Antigravity token rejected". Parsers walk the JSON tolerantly so a shape change
-degrades to an honest error. The hosts (`cloudcode-pa` / `daily-` twin) are
+(`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 on any
+of the calls → `"token rejected"` (the hover adds "run Antigravity"), and the
+cached project id is forgotten, so after a switch to another Google account
+the next cycle asks `loadCodeAssist` again. A pool name the app does not know
+is shown as the server sent it, cleaned: no control characters, at most 32
+characters, `Pool` when nothing is left. Parsers walk the JSON tolerantly so
+a shape change degrades to an honest error. The hosts (`cloudcode-pa` / `daily-` twin) are
 flaky — individual requests time out routinely; the widget's normal
 retry/retention covers that.
 
 ## Grok (SuperGrok subscription)
 
 Token source: the **Grok CLI login**, `auth.json` in the CLI's home —
-`%GROK_HOME%\auth.json` when `GROK_HOME` is set, otherwise
-`%USERPROFILE%\.grok\auth.json` (the CLI's own rule). READ-ONLY: the CLI
-refreshes its token whenever it runs; the widget never does, and never starts
-the CLI to make it.
+`%GROK_HOME%\auth.json` when `GROK_HOME` is set to an absolute path,
+otherwise `%USERPROFILE%\.grok\auth.json` (the CLI's own rule; a relative
+`GROK_HOME`: no file is read at all). Read only when `[reads] sign_in`
+allows it. READ-ONLY: the CLI refreshes its token whenever it runs; the
+widget never does, and never starts the CLI to make it.
 
 File shape (verified 2026-11-10): an object keyed `"<issuer>::<client-id>"`,
 each value a session record:
@@ -314,16 +423,18 @@ SuperGrok Limit" that grok.com's Usage page shows. A period type other than
 weekly is labelled `Daily` / `Monthly`, or `Limit` when unknown. Each
 `productUsage` entry follows as its own long-window metric: that product's
 share of the same limit (`GrokBuild` → `Build`; other names, such as Chat,
-pass through). Build has a row of its own (`grok.build`) that can be ticked
-in *Rows and models...*; the other products stay in the data.
+pass through, cleaned: no control characters, at most 32 characters). These
+shares are marked for their extra row only: never the Grok row's headline,
+its reset or its alerts. Build has a row of its own (`grok.build`) that can
+be ticked in *Rows and models...*; the other products stay in the data.
 
 The body is protobuf JSON, which leaves zero values out: before any use the
 same call answered with no `creditUsagePercent` and no `productUsage` at all.
 So a 200 with a well-formed `currentPeriod` and no percent is 0% — and only
 then; a body with neither is an unknown schema. An unknown schema, a body
 that is not JSON, or any non-200 is an honest `NetworkError`:
-`unrecognized billing schema`, `token rejected` (401/403) or `HTTP <code>`;
-a body cut off mid-transfer is the network error.
+`unrecognized billing schema`, `token rejected` (401/403; the hover adds
+"run Grok CLI") or the shared words (see Error states).
 
 Not to be confused with:
 
@@ -336,43 +447,32 @@ Not to be confused with:
 
 ## Cursor (subscription only)
 
-Token sources, in order:
+Token source: **only the widget's own session** — Credential Manager label
+`cursor_session` (menu: *Providers → Cursor → Sign in to Cursor...*; CLI:
+`ailimits-auth login cursor`). The widget signs in to Cursor by itself, on
+Cursor's own sign-in page, and owns this session, so it is the one Cursor
+token the widget ever refreshes. Nothing of the Cursor editor is read for
+it: not its state database, not its token, and the editor's own sign-in is
+never touched. Without a session → `NotConfigured`: the row is hidden until
+the user signs in.
 
-1. **The widget's own session** — Credential Manager label `cursor_session`
-   (menu: *Providers → Cursor → Sign in to Cursor...*; CLI:
-   `ailimits-auth login cursor`). The widget signs in to Cursor by itself
-   and owns this session, so it is the one Cursor token the widget ever
-   refreshes.
-2. **The editor's token, only while it is plain** — the Cursor editor's VS
-   Code state database `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
-   (SQLite, table `ItemTable(key, value)`, key `cursorAuth/accessToken`;
-   READ-ONLY, never refreshed, never sent past its `exp`), tried only when
-   there is no own session. Current Cursor versions encrypt this value at
-   rest: `cursor-safe-storage:v1:` + base64 of `v10` and AES-256-GCM, the
-   key in `%APPDATA%\Cursor\Local State` (`os_crypt.encrypted_key`, under
-   DPAPI). The widget never decrypts it — decrypting another app's stored
-   credentials is what credential stealers do, and antivirus engines flag
-   it. A value with the `cursor-safe-storage:` prefix counts as no token.
-3. Neither → `NotConfigured`: the row is hidden until the user signs in.
-
-The editor's database belongs to the editor, which may hold it open and
-write to it (it runs in WAL mode). It is read through the SQLite that ships
-with Windows (`System32\winsqlite3.dll`, loaded on first use), opened
-`SQLITE_OPEN_READONLY` with a 200 ms busy timeout. As with any SQLite
-reader, only the shared-memory index (`state.vscdb-shm`) is touched; the
-database and its `-wal` file are never written. A held lock is a transient
-error that the next cycle retries.
+The editor's state database (`%APPDATA%\Cursor\User\globalStorage\state.vscdb`)
+is read only for the model label, under `[reads] tool_settings` (see Model
+labels below).
 
 ### Sign-in by link (verified live 2026-11-10)
 
-The editor's own flow, bound by PKCE:
+The editor's own flow, bound by PKCE. There is no sign-in for other apps,
+so the widget signs in as the Cursor editor's OAuth client (the
+`client_id` below); the consent question and the privacy page say so.
 
 1. verifier = unpadded base64url of 32 random bytes; challenge = unpadded
    base64url of the SHA-256 of the verifier's ASCII; uuid = a random v4
    UUID.
 2. The browser opens
    `https://cursor.com/loginDeepControl?challenge=<challenge>&uuid=<uuid>&mode=login`
-   and the user clicks *Sign in*.
+   and the user clicks *Sign in*. The app sends nothing to cursor.com
+   itself.
 3. The widget polls `GET https://api2.cursor.sh/auth/poll?uuid=<uuid>&verifier=<verifier>`:
    404 until the sign-in is approved, then 200
    `{"accessToken": "...", "refreshToken": "...", "authId": "...", "challenge": "...", "uuid": "..."}`.
@@ -386,8 +486,12 @@ attempt, and whether Cursor ended it. In the widget the sign-in waits in a
 background task and ends with a toast: "Signed in to Cursor", "Cursor
 sign-in timed out" or "Cursor sign-in failed". Signing in again replaces
 the session (another account, or one Cursor ended); *Sign out of Cursor* or
-`ailimits-auth logout cursor` forgets it. No restart is needed either way:
-the provider reads the session on every update.
+`ailimits-auth logout cursor` forgets it, and the installer's uninstaller
+runs the latter. From the menu no restart is needed: the provider is
+rebuilt, and an update that was already under way for the previous session
+is dropped. `ailimits-auth login cursor` for a Cursor the widget does not
+run yet writes the config and asks for a restart (quit the widget first: it
+writes its own settings when it quits).
 
 ### Refresh (the own session only)
 
@@ -403,10 +507,12 @@ Content-Type: application/json
 Verified 2026-11-10 right after a sign-in: the new token differed, its `exp`
 did not move, and the old token kept working. So the widget refreshes only
 in the last 7 days before `exp`, at most once a day, and stores the new
-`access_token` as both tokens. `shouldLogout: true` ends the session, and so
-does a refused refresh (401/403, not seen yet). Whether a refresh near `exp`
-extends the session is not verified yet; if it does not, a session lasts
-about 60 days and the row then asks for a new sign-in.
+`access_token` as both tokens. Only `shouldLogout: true` ends the session.
+A refused refresh (401/403, not seen yet) keeps the session: it is noted
+as the day's attempt, and the session is used until the service itself
+refuses it. Whether a refresh near `exp` extends the session is not verified
+yet; if it does not, a session lasts about 60 days and the row then asks
+for a new sign-in.
 
 ### Usage (verified 2026-11-10, HTTP 200)
 
@@ -454,11 +560,13 @@ the row:
   "includedUsageResetsAt": "1794870088407"}}
 ```
 
-→ the label is `planName` (`Premium`); without one, the period
-(`includedUsagePeriod`: `Weekly`, `Monthly`, `Daily`), else the cycle's
-length, else `Included`.
+→ the label is `planName` (`Premium`, cleaned: no control characters, at
+most 32 characters); without one, the period (`includedUsagePeriod`:
+`Weekly`, `Monthly`, `Daily`), else the cycle's length, else `Included`.
 
-**`GetSandUsageStatus`** — Grok Bot, every cycle, an extra metric:
+**`GetSandUsageStatus`** — Grok Bot, an extra metric, asked for only while
+its row (`cursor.bot`) is chosen on the widget or the tooltip; choosing or
+unchoosing that row rebuilds Cursor alone and keeps its data:
 
 ```json
 {"currentPeriodStart": "2026-11-09T23:01:28.407Z",
@@ -471,32 +579,35 @@ length, else `Included`.
 → a second metric `Grok Bot` = `usagePercent`, reset at
 `nextResetTimestampUtc`. A missing percent is 0% only beside a known period
 and `hasAvailableUsage: true`; a body with everything left out (an account
-without Grok Bot) gives no metric. It is a session-window metric, so it
-never takes over the headline; it shows as a row of its own (`cursor.bot`)
-when ticked in *Rows and models...*. On the
-verified account Grok, Cursor and Grok Bot share ONE weekly pool (the same
-reset, the same percentage); how to show that is an open decision, so
-`isUnified` is carried as the metric's `unified_pool` for a later display
-to use. Any failure of this call only leaves the metric out.
+without Grok Bot) gives no metric. It is marked for its extra row only, so
+it never takes over the headline, the reset or the alerts. Until the row is
+ticked, the picker says "Its share of the same limit, asked for once this
+row is ticked". On the verified account Grok, Cursor and Grok Bot share ONE
+weekly pool (the same reset, the same percentage); how to show that is an
+open decision, so `isUnified` is carried as the metric's `unified_pool` for
+a later display to use. Any failure of this call only leaves the metric
+out.
 
 Without a session (verified): HTTP 401
 `{"code": "unauthenticated", ..., "debug": {"error": "ERROR_NOT_LOGGED_IN", ...}}`.
 
 States (every error keeps the last data greyed with its age):
 
-- the own session refused (401/403): one refresh if within 7 days of `exp`,
-  then one more try; otherwise the session is marked ended →
-  `AuthError("sign in to Cursor again")`;
-- the own session past `exp`, or ended by `shouldLogout` → the same, with
-  no usage request sent;
-- the editor's token refused → "token rejected"; past its `exp` → "token
-  expired", with no request sent; a locked database → "state database busy,
-  retrying";
-- no answer → "offline, retrying"; any other status → "HTTP <code>".
+- the own session refused (401/403): within 7 days of `exp`, one refresh
+  (at most one a day) and one more try; while the refusals in a row are
+  fewer than three → `"token rejected, retrying"`; the third ends the
+  session → `"sign in to Cursor again"`. Any other answer breaks the run;
+- the own session past `exp`, or ended by `shouldLogout`, or a stored
+  record this version cannot read → `"sign in to Cursor again"`, with no
+  usage request sent;
+- Credential Manager not answering → `"Credential Manager unavailable"`;
+- `"unrecognized usage schema"` as above; no answer and other statuses →
+  the shared words (see Error states).
 
-Where a sign-in is the fix, the hover adds "sign in to Cursor".
-Requests per cycle: two (usage and Grok Bot), plus the plan at most hourly
-and a refresh at most daily in a session's last week.
+The hover adds "sign in to Cursor" to a status that neither ends in
+", retrying" nor says it already; the row never says "check the key", as no
+key was given. For the requests per cycle, see
+Requests per cycle at the top.
 
 ## Model labels
 
@@ -513,12 +624,22 @@ Each read is asked for first and is off by default:
 - `[reads] last_session`: the end of the newest session file, used only with
   `[ui.model] source = "last_used"`. Off: no session file is opened.
 
+They are read for every provider that runs (`Config::provider_active`),
+however it signs in: also for one set up only with the app's own sign-in (a
+pasted key or usage token, the menu's Cursor sign-in), whose tool's sign-in
+is never read. The settings question says so. Unticking the last of Model,
+Version and Effort on both surfaces sets both reads back to false;
+switching back to "As set in the tool" sets `last_session` back to false.
+At most one read runs at a time; one asked for while another runs is done
+by the same worker right after it, and a read that was taken back reads
+nothing.
+
 ### Settings files (`tool_settings`)
 
 | Tool | File | Keys |
 |---|---|---|
-| Claude Code | `%USERPROFILE%\.claude\settings.json` | `model`; effort `modelSettings.<model>.effortLevel`, else that of the newest model of an alias's family, else the top-level `effortLevel` |
-| Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort` |
+| Claude Code | `%USERPROFILE%\.claude\settings.json` | `ANTHROPIC_MODEL` (the file's `env` table, else the environment the app sees), else `model`; effort `modelSettings.<model>.effortLevel`, else that of the newest model of an alias's family, else the top-level `effortLevel` |
+| Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort`; with a top-level `profile = "x"`, those of `[profiles.x]` first |
 | Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
 | Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (a display label: `Claude Sonnet 4.6 (Thinking)`; no separate effort) |
@@ -538,9 +659,16 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   agree (the owner's PC 2026-11-13: two models, both `xhigh`); when they
   differ, which one the default model takes is written nowhere, so none is
   shown. A context option is dropped from the id (`opus[1m]` reads as
-  `opus`), so one rename covers both.
-- Codex CLI: `model` and `model_reasoning_effort` at the top level; a model
-  set only in a `[profiles.*]` table is not read.
+  `opus`), so one rename covers both. `ANTHROPIC_MODEL` comes before
+  `model`: from settings.json's own `env` table first, then the environment
+  the app sees. This follows Claude Code's documented order (`/model`, then
+  `--model`, then `ANTHROPIC_MODEL`, then the settings file); it was not
+  verified live.
+- Codex CLI: `model` and `model_reasoning_effort` at the top level. A
+  top-level `profile = "x"` is followed: the keys of `[profiles.x]` override
+  the top-level ones, a key the profile does not set keeps its top-level
+  value, and a profile that is named but missing adds nothing. A model set
+  only in a `[profiles.*]` table no profile chooses is not read.
 - Grok CLI: `[models] default_reasoning_effort` present; `[models] default`
   is from the CLI's own docs (`user-guide/05-configuration.md`) and was not
   set there (the CLI's built-in default: the label is the effort alone).
@@ -555,15 +683,27 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   "selectedModels": [{"modelId": "grok-4.7", "parameters": [{"id":
   "reasoning_effort", "value": "high"}, {"id": "context", "value":
   "256k"}, ...]}]}`. `"default"` is the model Cursor calls Auto (shown as
-  "Auto"). The database is opened read-only through Windows' own SQLite,
-  as for the sign-in, and SQLite's `json_extract` hands over that one
-  object: the rest of the entry (about 0.5 MB of the editor's settings)
-  and every other entry, the sign-in among them, never leave the database.
-  A Windows SQLite without JSON functions gives the entry whole (read only
-  up to 8 MB) and the object is taken out in the app. Read again only when
-  the database or its `-wal` file changed; one lookup took 1.3 ms. The
-  Cursor CLI keeps its own model in `%USERPROFILE%\.cursor\cli-config.json`
-  (with the account's e-mail beside it); it is not read.
+  "Auto"). SQLite's `json_extract` hands over that one object: the rest of
+  the entry (about 0.5 MB of the editor's settings) and every other entry,
+  the editor's sign-in among them, never leave the database. A Windows
+  SQLite without JSON functions hands over the entry whole only when it is
+  at most 8 MB; the size is checked inside SQLite, so a larger entry never
+  leaves the database, and the object is then taken out in the app. Read
+  again only when the database or its `-wal` file changed; one lookup took
+  1.3 ms. The Cursor CLI keeps its own model in
+  `%USERPROFILE%\.cursor\cli-config.json` (with the account's e-mail beside
+  it); it is not read.
+
+  **Nothing is ever written to or created in `%APPDATA%\Cursor`.** The
+  database belongs to the editor, which may hold it open and write to it
+  (it runs in WAL mode). It is read through the SQLite that ships with
+  Windows (`System32\winsqlite3.dll`, loaded on first use) with a 200 ms
+  busy timeout, in one of three ways: while Cursor is closed (no
+  `state.vscdb-wal` beside it) as `file:...?immutable=1`, read-only, with no
+  lock and no `-wal` or `-shm` created; while Cursor runs, read-only, reading
+  Cursor's own `-wal` and `-shm` as they are and creating nothing; a
+  rollback-journal database read-only the plain way. A held lock is a
+  transient error that the next cycle retries.
 
 A file with an effort but no model gives the effort alone ("xhigh"), and no
 name to rename.
@@ -605,16 +745,34 @@ or in the session before it (a session just started has no answer yet),
 else falls back to the configured model when `tool_settings` allows, else
 shows nothing.
 
+What a label cannot know:
+
+- a session's `/model`, the `--model`, `--profile` and `-m` flags, a
+  project's `.claude/settings*.json`, and variables set only in a shell
+  profile are not visible to the app;
+- an alias's effort is that of the newest saved model of its family, so
+  after a new model ships, until `/effort` is set for it, the label can show
+  the older model's effort;
+- in Last used, tools without sessions (and sessions without a model yet)
+  show the configured model, unmarked;
+- with no Claude Code settings.json at all, `ANTHROPIC_MODEL` alone gives no
+  label.
+
 ### Bounds and failures
 
 - Settings files over 256 KB are not read; a session file is read 64 KB at
-  a time and at most 1 MB from its end (memory: at most 1 MB plus a step);
-  a line that crosses a step is joined whole, a line cut by the 1 MB mark
-  is dropped.
+  a time and at most 1 MB from its end (memory: about 2 MB at most, while a
+  line as long as the whole read is joined); a line that crosses a step is
+  joined whole, a line cut by the 1 MB mark is dropped.
 - A UTF-8 BOM and CRLF line ends are accepted. A missing file, broken JSON
   or TOML, a wrong type, a value longer than 128 bytes or with control
   characters: no label for that tool. Never an error state, never a panic.
-- A file is read again only when its modification time or length changed.
+- A file that cannot be read right now (held by a scanner or a backup, an
+  I/O error, a session file cut short while it was read, Cursor's database
+  busy) keeps the label shown and is read again on the next cycle. Only a
+  file that was read decides the label.
+- A file that was read is read again only when its modification time or
+  length changed.
 - Read once per update cycle (60 s minimum) from the scheduler: no
   watchers, threads or timers. Finding the newest session is one folder
   listing per folder looked into, never a walk of every session. Measured
@@ -646,9 +804,15 @@ answers carried in one live call per model (`claude-fable-5-2`,
 `~/.grok/models_cache.json` (4); Antigravity CLI, the labels it writes to
 its settings.json (5); Copilot CLI, the 26 `copilot help config` lists;
 Cursor, Auto only (the editor's list is not in a file read here, and
-`cursor-agent models` needs the CLI signed in). Only the tools that run are
-listed; a model two tools share has one name, so one field, under the
-first.
+`cursor-agent models` needs the CLI signed in). The list is fixed in the
+build, so it is brought up to date with every release. Only the tools that
+run are listed. A model several tools share has one name, but a field under
+each tool, marked "shared with ..." and "in use" where it is used; typing in
+one shows in the others. A tool's own router (`auto`, `default`) has a name
+per tool, kept under `"provider:id"` (`"copilot:auto"`, `"cursor:auto"`);
+a name an older build kept under the bare `"auto"` serves both until one is
+renamed, which splits it. The widget looks names up the same way, so the
+picker and the widget agree.
 
 ## Removed providers and methods
 
@@ -666,3 +830,9 @@ first.
   `individualUsage.plan.totalPercentUsed`, `membershipType`,
   `isUnlimited`). Superseded the same day by the dashboard service with the
   widget's own session, once the editor began encrypting its token.
+- **Cursor's editor token** — reading the editor's own token from its state
+  database, while it was still stored unencrypted, as a fallback without
+  the widget's own session. Removed before 0.7.1 shipped: the widget never
+  reads another app's sign-in from its files, and a key some credential
+  stealers look for has no place in the exe. Only the menu's sign-in is
+  used.

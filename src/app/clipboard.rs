@@ -8,9 +8,10 @@
 
 use anyhow::Result;
 
-/// The longest secret accepted. A ChatGPT access token (a JWT) runs past a
-/// thousand characters; the old 500 turned every one of them away.
-pub(super) const SECRET_MAX_LEN: usize = 8 * 1024;
+/// The longest secret accepted: the providers' own bound on a usage token. A
+/// ChatGPT access token (a JWT) runs past a thousand characters; the old 500
+/// turned every one of them away.
+pub(super) const SECRET_MAX_LEN: usize = crate::providers::MAX_USAGE_TOKEN_LEN;
 const SECRET_MIN_LEN: usize = 10;
 
 /// What the menu asked to paste.

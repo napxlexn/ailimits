@@ -85,6 +85,16 @@ pub enum AppCommand {
     UpdateProvider { data: ProviderData, serial: u64 },
     /// A Cursor sign-in from the menu has ended.
     CursorSignIn(SignInOutcome),
+    /// A usage token pasted from the menu was checked, and stored or not
+    /// (menu.rs `paste_usage_token`). The token itself stays in the task
+    /// that checked it: only the provider and the outcome come back.
+    UsageToken {
+        pid: String,
+        outcome: menu::TokenOutcome,
+        /// Which paste it answers: one replaced by a later paste or a
+        /// removal is not acted on.
+        ticket: u64,
+    },
     /// The model labels were read (models/): each provider's model id and
     /// effort, nothing else of the files; with the generation of the
     /// request they answer.
@@ -151,10 +161,11 @@ fn feedback(title: &str, body: &str) {
     }
 }
 
-/// Providers visible in the widget: enabled, allowed and connected. Disabled
-/// (enabled=false), not allowed to read their sign-in, and not-connected
-/// (NotConfigured) ones are not rendered.
-fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
+/// The providers the surfaces show, as they reported: enabled, allowed and
+/// connected. Disabled (enabled=false), not allowed to read their sign-in,
+/// and not-connected (NotConfigured) ones are left out. Not aged yet: the
+/// rows age each row on its own (`rows::visible_rows`).
+fn active_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
     display
         .iter()
         .filter(|d| {
@@ -165,24 +176,36 @@ fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> 
                 .is_some_and(|p| config.provider_active(p));
             enabled && !matches!(d.status, ProviderStatus::NotConfigured)
         })
-        // A window whose reset has provably passed is shown as ≈0%.
-        .map(|d| d.aged_for_display())
+        .cloned()
+        .collect()
+}
+
+/// `active_data` aged for display, for the surfaces that show one entry per
+/// provider (the tray icon, the taskbar panel): a window whose reset has
+/// provably passed is shown as ≈0%.
+fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
+    active_data(config, display)
+        .iter()
+        .map(ProviderData::aged_for_display)
         .collect()
 }
 
 /// The rows a surface shows (rows.rs), built from the providers the widget
-/// shows. With the default config: one row per visible provider, untouched.
+/// shows as they reported, so that each row ages by its own windows (an
+/// extra row by its one metric). With the default config: one row per
+/// visible provider, aged for display.
 fn surface_rows(
     config: &Config,
     display: &[ProviderData],
     surface: Surface,
     models: &Models,
 ) -> Vec<RowView> {
-    rows::visible_rows(config, &visible_data(config, display), surface, models)
+    rows::visible_rows(config, &active_data(config, display), surface, models)
 }
 
 /// What the widget's size depends on (layout.rs `Shape`): its rows, the
-/// lines their models take, and whether nothing is chosen yet.
+/// lines their models take, whether nothing is chosen yet, and whether the
+/// rows chosen have nothing to show while providers run.
 fn widget_shape(
     config: &Config,
     display: &[ProviderData],
@@ -195,6 +218,7 @@ fn widget_shape(
         rows::nothing_chosen(config),
         |text, size| renderer.text_width(text, size),
     )
+    .with_unshown(!active_data(config, display).is_empty())
 }
 
 /// What the picker opens as: the welcome or the update notice while one is
@@ -234,13 +258,22 @@ fn picker_anchor(window: &tao::window::Window, widget_visible: bool) -> ScreenRe
 }
 
 /// Open the picker window; a failure is logged and leaves the app as it was.
+/// `activate`: take the keyboard focus, for a window the user opened (the
+/// menu, a click). One that opens by itself (the welcome, the update notice)
+/// leaves the focus where it is (`PickerWindow::open_quietly`).
 fn open_picker_window<T: 'static>(
     target: &tao::event_loop::EventLoopWindowTarget<T>,
     renderer: &Rc<Renderer>,
     input: PickerInput,
     anchor: ScreenRect,
+    activate: bool,
 ) -> Option<PickerWindow> {
-    match PickerWindow::open(target, renderer.clone(), input, anchor) {
+    let opened = if activate {
+        PickerWindow::open(target, renderer.clone(), input, anchor)
+    } else {
+        PickerWindow::open_quietly(target, renderer.clone(), input, anchor)
+    };
+    match opened {
         Ok(p) => Some(p),
         Err(e) => {
             warn!("the picker did not open: {e}");
@@ -359,6 +392,9 @@ struct App {
     menu: ContextMenu,
     /// The Cursor sign-in waiting for the browser, if one is.
     cursor_sign_in: Option<tokio::task::JoinHandle<()>>,
+    /// A pasted usage token being checked, if one is: a second paste
+    /// replaces it.
+    usage_token_check: Option<(u64, tokio::task::JoinHandle<()>)>,
     tray: Tray,
     panel: TaskbarPanel,
     #[cfg(target_os = "windows")]
@@ -387,12 +423,28 @@ pub fn run() -> Result<()> {
         .enable_all()
         .build()
         .context("failed to create tokio runtime")?;
-    let mut config = runtime.block_on(storage::load_or_default())?;
+    // The proxy set in Windows, for every HTTP client built from here on:
+    // the providers, the Cursor sign-in, the updater.
+    crate::providers::follow_windows_proxy();
+    // A settings file that could not be read or understood is kept as it
+    // is (storage.rs); the app then runs on a config in memory and says so
+    // once, below.
+    let loaded = runtime.block_on(storage::load());
+    let mut config = loaded.config;
     info!("Config loaded: {} providers", config.providers.len());
 
     // Toasts carry the app's own name and icon; the identity is registered
     // per user, before the first threshold alert can fire.
     crate::platform::register_toast_identity();
+    // (storage.rs has logged the cause; the message says whether changes
+    // are saved this session.)
+    if let Some(problem) = &loaded.problem {
+        feedback("AI Limits", &problem.message());
+    }
+    // An update that did not finish is said once (updater.rs).
+    if let Some(note) = updater::unfinished_update_note() {
+        feedback("AI Limits", &note);
+    }
 
     // Rescue a saved position that now lands on no monitor (a display was
     // unplugged/resized since last run): a borderless, taskbar-skipped overlay
@@ -558,6 +610,11 @@ pub fn run() -> Result<()> {
     let menu = ContextMenu::new(&config, config.window.pinned)?;
     // One Credential Manager read: is there a Cursor session to sign out of.
     menu.set_cursor_signed_in(cursor_session::is_stored());
+    // A Store, Scoop, portable or self-built copy is updated through its own
+    // channel: the Auto-update item would do nothing there, so it goes.
+    if !updater::self_update_supported() {
+        menu.remove_auto_update();
+    }
     {
         let proxy = proxy.clone();
         muda::MenuEvent::set_event_handler(Some(move |e: muda::MenuEvent| {
@@ -657,6 +714,7 @@ pub fn run() -> Result<()> {
         cursor_inside_window: false,
         menu,
         cursor_sign_in: None,
+        usage_token_check: None,
         tray,
         panel,
         #[cfg(target_os = "windows")]
@@ -670,13 +728,14 @@ pub fn run() -> Result<()> {
 
     // On a fresh install the picker opens by itself as the welcome, after
     // the update that added [reads] as the one-time notice - unless a
-    // fullscreen app is in front, which it waits for.
+    // fullscreen app is in front, which it waits for. Opened by itself, it
+    // leaves the keyboard focus where it is.
     match auto_open(
         app.config.reads.pending,
         false,
         crate::platform::foreground_fills_its_monitor,
     ) {
-        AutoOpen::Now => app.open_picker(&event_loop, None),
+        AutoOpen::Now => app.open_picker(&event_loop, None, false),
         AutoOpen::Later => {
             info!("a fullscreen app is in front: the owed window waits for it");
             app.auto_open_waiting = true;
@@ -693,6 +752,93 @@ pub fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::{Metric, MetricUnit, MetricWindow};
+
+    fn metric(label: &str, used: u64, reset_in_min: Option<i64>, extra_only: bool) -> Metric {
+        Metric {
+            label: label.to_string(),
+            used,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: reset_in_min.map(|m| Utc::now() + chrono::Duration::minutes(m)),
+            window: MetricWindow::Long,
+            unified_pool: false,
+            extra_only,
+        }
+    }
+
+    fn claude(metrics: Vec<Metric>) -> ProviderData {
+        ProviderData {
+            id: ProviderId::Claude,
+            status: ProviderStatus::Ok,
+            metrics,
+            updated_at: Utc::now(),
+            received_at: Some(std::time::Instant::now()),
+        }
+    }
+
+    fn running_claude() -> Config {
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        config
+    }
+
+    /// The widget's and the tooltip's rows are built from the data as the
+    /// providers sent it, each row aged by its own windows: Fable's passed
+    /// reset leaves the Claude row live, and an Opus week Claude reports as
+    /// unused (0, no reset) stays live while the session's reset passed.
+    /// The tray and the panel still get the provider aged as one entry.
+    #[test]
+    fn the_rows_age_each_row_by_its_own_windows() {
+        let mut config = running_claude();
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.opus".into()]);
+        let display = [claude(vec![
+            metric("Session", 40, Some(-5), false),
+            metric("Opus", 0, None, false),
+            metric("Fable", 90, Some(-5), true),
+        ])];
+        let rows = surface_rows(&config, &display, Surface::Widget, &Models::new());
+        let ids: Vec<&str> = rows.iter().map(|r| r.id).collect();
+        assert_eq!(ids, ["claude", "claude.opus"]);
+        // The session rolled over: the Claude row is an estimate by it.
+        assert!(matches!(rows[0].data.status, ProviderStatus::Estimated));
+        // Opus did not: it stays as reported, not "≈0%" by the session.
+        assert!(matches!(rows[1].data.status, ProviderStatus::Ok));
+
+        // Only Fable's week rolled over: the Claude row stays live.
+        let display = [claude(vec![
+            metric("Session", 40, Some(120), false),
+            metric("Opus", 10, Some(600), false),
+            metric("Fable", 90, Some(-5), true),
+        ])];
+        for surface in [Surface::Widget, Surface::Tooltip] {
+            let rows = surface_rows(&running_claude(), &display, surface, &Models::new());
+            assert!(matches!(rows[0].data.status, ProviderStatus::Ok));
+            assert_eq!(rows[0].data.primary_percentage(), Some(40.0));
+        }
+        // The one-entry surfaces: aged as a whole, by its own windows.
+        let shown = visible_data(&running_claude(), &display);
+        assert!(matches!(shown[0].status, ProviderStatus::Ok));
+    }
+
+    /// Rows chosen that have nothing to show while a provider runs: the
+    /// widget says so (and a click opens the picker) instead of pointing at
+    /// the providers; with no provider running it still does that.
+    #[test]
+    fn rows_chosen_without_data_are_said_so() {
+        let renderer = Renderer::new().expect("a system font");
+        let mut config = running_claude();
+        config.ui.rows.widget = Some(vec!["claude.fable".into()]);
+        let display = [claude(vec![metric("Session", 40, Some(120), false)])];
+        let shape = widget_shape(&config, &display, &Models::new(), &renderer);
+        assert!(shape.unshown && !shape.choose);
+        // Nothing running: not this box.
+        let none: [ProviderData; 0] = [];
+        assert!(!widget_shape(&config, &none, &Models::new(), &renderer).unshown);
+        // A row to show: not this box either.
+        config.ui.rows.widget = Some(vec!["claude".into()]);
+        assert!(!widget_shape(&config, &display, &Models::new(), &renderer).unshown);
+    }
 
     #[test]
     fn an_owed_window_waits_for_a_fullscreen_app() {

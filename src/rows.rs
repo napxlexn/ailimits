@@ -27,6 +27,10 @@ pub struct SubRow {
     pub note: &'static str,
     /// What the row counts, shown when the pointer rests on it.
     pub hint: &'static str,
+    /// Its numbers come from a request of their own, made only while the
+    /// row is chosen on a surface (`row_wanted`): until then the provider
+    /// has not been asked, so the row is not missing from its answer.
+    pub on_request: bool,
 }
 
 /// Every extra row, in display order within its provider.
@@ -38,6 +42,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         names: &["Claude · Opus", "Cl · Opus", "Opus"],
         note: "Weekly, a limit of its own",
         hint: "Claude's separate weekly limit for Opus models, on plans that have one. It fills apart from the weekly limit.",
+        on_request: false,
     },
     SubRow {
         id: "claude.sonnet",
@@ -46,6 +51,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         names: &["Claude · Sonnet", "Cl · Sonnet", "Sonnet"],
         note: "Weekly, a limit of its own",
         hint: "Claude's separate weekly limit for Sonnet models, on plans that have one. It fills apart from the weekly limit.",
+        on_request: false,
     },
     SubRow {
         id: "claude.fable",
@@ -54,6 +60,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         names: &["Claude · Fable", "Cl · Fable", "Fable"],
         note: "Weekly, a limit of its own",
         hint: "Fable's own weekly allowance, a share of the weekly limit: Current week (Fable) in Claude Code's /usage.",
+        on_request: false,
     },
     SubRow {
         id: "antigravity.cg",
@@ -68,6 +75,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         ],
         note: "A weekly pool of its own",
         hint: "Antigravity's weekly pool for its Claude and GPT models, counted apart from the Gemini models.",
+        on_request: false,
     },
     SubRow {
         id: "grok.build",
@@ -76,6 +84,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         names: &["Grok · Build", "Build"],
         note: "Its share of the weekly limit",
         hint: "How much of the shared weekly limit Grok Build has used.",
+        on_request: false,
     },
     SubRow {
         id: "cursor.bot",
@@ -84,6 +93,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         names: &["Cursor · Grok Bot", "Grok Bot", "Bot"],
         note: "Its share of the same limit",
         hint: "How much of the limit Cursor and Grok share Grok Bot has used.",
+        on_request: true,
     },
 ];
 
@@ -152,8 +162,12 @@ pub fn model_label(
 ) -> Option<ModelLabel> {
     let on = |p: ModelPart| parts.contains(&p);
     // An empty id: the tool stores an effort but no model; no model to name.
-    let n = (!info.id.is_empty())
-        .then(|| models::name_parts(&info.id, provider, names.get(&info.id).map(String::as_str)));
+    // The user's name is looked up as the picker keeps it: under the id, or
+    // under "provider:id" for a tool's own router ("copilot:auto").
+    let n = (!info.id.is_empty()).then(|| {
+        let rename = crate::choices::model_name(names, provider, &info.id);
+        models::name_parts(&info.id, provider, rename)
+    });
     let model = n
         .as_ref()
         .filter(|_| on(ModelPart::Model))
@@ -200,6 +214,11 @@ impl RowView {
     pub fn is_extra(&self) -> bool {
         self.id.contains('.')
     }
+}
+
+/// Whether a row is chosen on the widget or the tooltip.
+pub fn row_wanted(config: &Config, id: &str) -> bool {
+    row_chosen(config, Surface::Widget, id) || row_chosen(config, Surface::Tooltip, id)
 }
 
 /// Whether a row id is chosen for a surface. With nothing chosen yet, a
@@ -731,6 +750,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(label.full().as_deref(), Some("My Opus"));
+    }
+
+    /// A tool's own router is named per tool, as the picker keeps it
+    /// ("copilot:auto"); a name an earlier version kept under the bare id
+    /// still shows for both until one is renamed.
+    #[test]
+    fn a_router_renamed_in_the_picker_shows_under_its_tool() {
+        let label = |names: &BTreeMap<String, String>, p: ProviderId| {
+            model_label(&info("auto", None), &p, &[ModelPart::Model], names).and_then(|l| l.full())
+        };
+        let mut names = BTreeMap::new();
+        names.insert("copilot:auto".to_string(), "Cop".to_string());
+        assert_eq!(label(&names, ProviderId::Copilot).as_deref(), Some("Cop"));
+        assert_ne!(label(&names, ProviderId::Cursor).as_deref(), Some("Cop"));
+        let mut old = BTreeMap::new();
+        old.insert("auto".to_string(), "Router".to_string());
+        assert_eq!(label(&old, ProviderId::Copilot).as_deref(), Some("Router"));
+        assert_eq!(label(&old, ProviderId::Cursor).as_deref(), Some("Router"));
     }
 
     #[test]

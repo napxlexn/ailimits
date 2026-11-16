@@ -17,18 +17,22 @@
          Requirement, and pinning to the release tag is the form they ask for.
          pack.ps1 fills {{VERSION}} here too, so every release pins itself. -->
     <iconUrl>https://cdn.jsdelivr.net/gh/napxlexn/ailimits@v{{VERSION}}/assets/icon.png</iconUrl>
-    <tags>ai claude codex copilot antigravity usage-limits widget overlay tray</tags>
+    <tags>ai claude codex copilot antigravity grok cursor usage-limits widget overlay tray</tags>
     <summary>Desktop overlay showing AI provider usage limits</summary>
     <description>
 A tiny native Windows 11 floating overlay that shows your AI provider usage
-limits on the desktop: Claude, OpenAI Codex, GitHub Copilot, Google
-Antigravity. It reads the tokens the official CLI tools already store on the
-machine (read-only, never refreshes them), needs no login or configuration,
-and renders on the CPU with a measured idle load of 0.012% of one core.
+limits on the desktop, in the tray or on the taskbar: Claude, OpenAI Codex,
+GitHub Copilot, Google Antigravity, xAI Grok, Cursor. It reads the tokens
+the official CLI tools already store on the machine, read-only and only
+after you allow each one (the first start asks, naming every file and
+host), and never refreshes them. Cursor uses a sign-in of the app's own,
+made once from the menu. It sends no telemetry and renders on the CPU, with
+a measured idle load of 0.012% of one core (0.7.0).
 
 The app updates itself silently from GitHub Releases by default (toggle in
-the context menu), so the installed version may run ahead of the package
-version between pushes.
+the context menu): it checks each installer's SHA-256 and Ed25519 release
+signature and installs only while you are away, so the installed version
+may run ahead of the package version between pushes.
     </description>
   </metadata>
   <files>

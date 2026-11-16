@@ -2,16 +2,17 @@
 // See docs/en/PROVIDERS.md, section "Claude".
 
 use super::{
-    generation_of, keyring_secret, status_words, transport_error, unless_superseded, Metric,
-    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus, Refusals,
-    SecretSource,
+    keyring_secret, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
+    ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
 };
-use crate::config::schema::{AuthMethod, ProviderConfig};
+use crate::config::{
+    paths::ToolPaths,
+    schema::{AuthMethod, ProviderConfig},
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, warn};
 
 const CLAUDE_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
@@ -40,13 +41,12 @@ pub struct ClaudeProvider {
     /// The app's own usage token (Credential Manager), read each cycle; it
     /// does not touch Claude Code's credentials.
     usage_token: SecretSource,
-    /// Claude Code's folder, where `.credentials.json` is read when allowed.
-    home: Option<PathBuf>,
+    /// Claude Code's sign-in, `.credentials.json` (config/paths.rs), read
+    /// when allowed. None without an absolute home folder.
+    credentials: Option<PathBuf>,
     /// A stored usage token the endpoint refused: not sent again for a
     /// while, so it costs no second request each cycle.
     refused: Refusals,
-    /// The account counter fetches are checked against (`GENERATIONS`).
-    generation: &'static AtomicU64,
 }
 
 impl ClaudeProvider {
@@ -55,14 +55,13 @@ impl ClaudeProvider {
             config,
             net: Net::new(),
             usage_token: keyring_secret(USAGE_TOKEN_LABEL),
-            home: claude_dir(),
+            credentials: ToolPaths::from_env().map(|p| p.claude_credentials()),
             refused: Refusals::default(),
-            generation: generation_of(&ProviderId::Claude),
         }
     }
 
     /// A provider that sends to a local test server and finds its sources
-    /// where the test put them.
+    /// where the test put them: `home` stands for Claude Code's folder.
     #[cfg(test)]
     fn for_test(
         config: ProviderConfig,
@@ -75,9 +74,8 @@ impl ClaudeProvider {
             config,
             net: Net::local(server),
             usage_token: Box::new(move || token.clone()),
-            home,
+            credentials: home.map(|h| h.join(".credentials.json")),
             refused: Refusals::default(),
-            generation: Box::leak(Box::new(AtomicU64::new(0))),
         }
     }
 
@@ -184,7 +182,7 @@ impl ClaudeProvider {
     /// (A statusline.jsonl snapshot used to sit between 1 and 2. Claude Code
     /// stopped writing that file in 2026; the reader went with 0.7.0.)
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        let credentials_path = self.home.as_ref().map(|h| h.join(".credentials.json"));
+        let credentials_path = self.credentials.clone();
         let usage_token = (self.usage_token)();
         // The token sources this machine has; stats-cache holds no limits and
         // does not count.
@@ -391,14 +389,6 @@ impl ChainOutcome {
     }
 }
 
-/// Claude Code directory: %USERPROFILE%\.claude. None without an absolute
-/// home folder: nothing is read relative to the working directory.
-fn claude_dir() -> Option<PathBuf> {
-    dirs::home_dir()
-        .filter(|p| p.is_absolute())
-        .map(|home| home.join(".claude"))
-}
-
 /// Read a valid OAuth token from .credentials.json; Ok(None) if missing or expired.
 ///
 /// Structure verified against the real file:
@@ -575,7 +565,6 @@ impl Provider for ClaudeProvider {
             });
         }
 
-        let started = self.generation.load(Ordering::SeqCst);
         let data = match self.config.auth_method {
             AuthMethod::ApiKey => match self.get_api_key() {
                 Some(key) => self.fetch_via_api_key(&key).await?,
@@ -591,7 +580,7 @@ impl Provider for ClaudeProvider {
             },
             AuthMethod::Subscription => self.fetch_via_subscription().await?,
         };
-        unless_superseded(data, started, self.generation)
+        Ok(data)
     }
 }
 
@@ -721,19 +710,6 @@ mod tests {
         assert!(matches!(data.status, ProviderStatus::NotConfigured));
         assert!(server.seen().is_empty());
     }
-
-    /// A fetch whose account changed while it ran is dropped, not shown.
-    #[tokio::test]
-    async fn an_answer_for_the_account_before_a_change_is_dropped() {
-        let server = TestServer::start();
-        server.route("/api/oauth/usage", vec![Reply::ok(USAGE_BODY)]);
-        let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
-        assert!(p.fetch().await.is_ok());
-        let started = p.generation.load(Ordering::SeqCst);
-        let data = p.fetch_via_subscription().await.unwrap();
-        p.generation.fetch_add(1, Ordering::SeqCst);
-        assert!(unless_superseded(data, started, p.generation).is_err());
-    }
 }
 
 #[cfg(test)]
@@ -745,7 +721,7 @@ mod live_schema {
     #[tokio::test]
     #[ignore = "one live request with this PC's Claude Code sign-in"]
     async fn live_usage_schema() {
-        let path = claude_dir().unwrap().join(".credentials.json");
+        let path = ToolPaths::from_env().unwrap().claude_credentials();
         let Some(token) = read_oauth_token(&path).await.unwrap() else {
             println!("no valid token");
             return;

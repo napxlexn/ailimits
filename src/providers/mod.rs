@@ -16,7 +16,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -77,65 +76,6 @@ impl ProviderId {
             "cursor" => Some(ProviderId::Cursor),
             _ => None,
         }
-    }
-
-    /// The provider's slot in per-provider tables.
-    fn index(&self) -> usize {
-        match self {
-            ProviderId::Claude => 0,
-            ProviderId::Codex => 1,
-            ProviderId::Copilot => 2,
-            ProviderId::Antigravity => 3,
-            ProviderId::Grok => 4,
-            ProviderId::Cursor => 5,
-        }
-    }
-}
-
-// ─── Account generations ─────────────────────────────────────────
-
-/// One counter per provider, raised whenever the account a provider reads
-/// may have changed: a sign-in or sign-out, a key or usage token stored or
-/// removed, a reading allowed or revoked. A fetch notes the counter when it
-/// starts; if it moved by the time the answer is in, the answer belongs to
-/// the account from before and is dropped instead of shown or cached.
-static GENERATIONS: [AtomicU64; 6] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-
-/// The account counter of a provider (see `GENERATIONS`).
-pub(crate) fn generation_of(id: &ProviderId) -> &'static AtomicU64 {
-    &GENERATIONS[id.index()]
-}
-
-/// Say that the account behind `id` may have changed: every fetch of it
-/// still in flight has its answer dropped. The app calls this whenever it
-/// changes what a provider may read or sign in with.
-pub fn bump_generation(id: &ProviderId) {
-    generation_of(id).fetch_add(1, Ordering::SeqCst);
-}
-
-/// The answer of a fetch that started at generation `started` of `counter`:
-/// kept, or an error when the account changed meanwhile. The scheduler and
-/// the app only log an error, so the stale answer never reaches the screen,
-/// the cache or an alert.
-pub(crate) fn unless_superseded(
-    data: ProviderData,
-    started: u64,
-    counter: &AtomicU64,
-) -> Result<ProviderData> {
-    if counter.load(Ordering::SeqCst) == started {
-        Ok(data)
-    } else {
-        Err(anyhow::anyhow!(
-            "{:?}: the account changed while this fetch ran; its answer is dropped",
-            data.id
-        ))
     }
 }
 
@@ -246,23 +186,6 @@ pub(crate) fn clean_label(name: &str) -> Option<String> {
     let cut: String = kept.trim().chars().take(32).collect();
     let cut = cut.trim_end();
     (!cut.is_empty()).then(|| cut.to_string())
-}
-
-/// A tool folder named by an environment variable when it holds an
-/// absolute path, otherwise `default` under the user's home. None without
-/// an absolute home: no path is ever taken relative to the working
-/// directory. The rule models/mod.rs follows for the same folders, so a
-/// provider's sign-in and its model label come from one place.
-pub(crate) fn tool_home(var: &str, default: &str) -> Option<PathBuf> {
-    std::env::var_os(var)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| {
-            dirs::home_dir()
-                .filter(|p| p.is_absolute())
-                .map(|home| home.join(default))
-        })
 }
 
 /// How long a stored token the server refused is not sent again.
@@ -873,33 +796,6 @@ mod tests {
         assert!(!refusals.paused_at("b", t0), "a token pasted anew is tried");
     }
 
-    #[test]
-    fn an_answer_from_before_an_account_change_is_dropped() {
-        let data = ProviderData {
-            id: ProviderId::Grok,
-            status: ProviderStatus::Ok,
-            metrics: vec![],
-            updated_at: Utc::now(),
-            received_at: None,
-        };
-        let counter = AtomicU64::new(7);
-        assert!(unless_superseded(data.clone(), 7, &counter).is_ok());
-        counter.fetch_add(1, Ordering::SeqCst);
-        assert!(unless_superseded(data, 7, &counter).is_err());
-
-        // Each provider has its own counter.
-        let (grok, claude) = (
-            generation_of(&ProviderId::Grok).load(Ordering::SeqCst),
-            generation_of(&ProviderId::Claude).load(Ordering::SeqCst),
-        );
-        bump_generation(&ProviderId::Grok);
-        assert!(generation_of(&ProviderId::Grok).load(Ordering::SeqCst) > grok);
-        assert_eq!(
-            generation_of(&ProviderId::Claude).load(Ordering::SeqCst),
-            claude
-        );
-    }
-
     #[derive(Debug)]
     struct Chain(&'static str, Option<Box<Chain>>);
 
@@ -1013,20 +909,6 @@ mod tests {
             let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
             assert_eq!(auths, ["Bearer sk-ant-x", "Bearer a.b.c"]);
         }
-    }
-
-    #[test]
-    fn tool_homes_are_absolute_or_the_default() {
-        let home = dirs::home_dir().expect("a home folder");
-        let unset = "AILIMITS_TEST_TOOL_HOME_UNSET";
-        assert_eq!(tool_home(unset, ".tool"), Some(home.join(".tool")));
-        let relative = "AILIMITS_TEST_TOOL_HOME_RELATIVE";
-        std::env::set_var(relative, r"some\relative\dir");
-        assert_eq!(tool_home(relative, ".tool"), Some(home.join(".tool")));
-        let absolute = "AILIMITS_TEST_TOOL_HOME_ABSOLUTE";
-        let dir = std::env::temp_dir().join("ailimits-tool-home");
-        std::env::set_var(absolute, &dir);
-        assert_eq!(tool_home(absolute, ".tool"), Some(dir));
     }
 }
 

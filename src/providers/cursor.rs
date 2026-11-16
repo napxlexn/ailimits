@@ -10,15 +10,14 @@
 // status only while its row ("cursor.bot") is chosen.
 
 use super::{
-    clean_label, generation_of, status_words, transport_error, unless_superseded, Metric,
-    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
+    ProviderData, ProviderId, ProviderStatus,
 };
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use session::{OwnSession, RefreshAnswer, StoreError};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
@@ -85,7 +84,6 @@ pub struct CursorProvider {
     plan: Mutex<Option<PlanCache>>,
     /// Refusals of the own session in a row: (a hash of its token, count).
     refusals: Mutex<Option<(u64, u32)>>,
-    generation: &'static AtomicU64,
 }
 
 /// One cached plan answer.
@@ -102,20 +100,10 @@ impl CursorProvider {
     /// The provider without Grok Bot: one usage request per cycle (and the
     /// plan at most hourly, the session's refresh near its expiry).
     pub fn new(config: ProviderConfig) -> Self {
-        Self::with_parts(
-            config,
-            Net::new(),
-            Arc::new(CredentialManager),
-            generation_of(&ProviderId::Cursor),
-        )
+        Self::with_parts(config, Net::new(), Arc::new(CredentialManager))
     }
 
-    fn with_parts(
-        config: ProviderConfig,
-        net: Net,
-        store: Arc<dyn SessionStore>,
-        generation: &'static AtomicU64,
-    ) -> Self {
+    fn with_parts(config: ProviderConfig, net: Net, store: Arc<dyn SessionStore>) -> Self {
         Self {
             config,
             net,
@@ -123,7 +111,6 @@ impl CursorProvider {
             grok_bot: false,
             plan: Mutex::new(None),
             refusals: Mutex::new(None),
-            generation,
         }
     }
 
@@ -398,9 +385,7 @@ impl Provider for CursorProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let started = self.generation.load(Ordering::SeqCst);
-        let data = self.fetch_via_subscription().await;
-        unless_superseded(data, started, self.generation)
+        Ok(self.fetch_via_subscription().await)
     }
 }
 
@@ -783,30 +768,6 @@ fn percent(pct: f64) -> u64 {
     pct.round().clamp(0.0, 100.0) as u64
 }
 
-// ─── `ailimits-auth status` ──────────────────────────────────────
-
-/// What `ailimits-auth status` used to report of the editor's own token.
-/// The app no longer reads it (nor anything else of the editor for a
-/// sign-in), so `editor_token_state` only ever answers `Unreadable` with
-/// why. Kept for one step so the CLI builds: its status line goes, and
-/// these two with it.
-#[doc(hidden)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum EditorTokenState {
-    NotInstalled,
-    Absent,
-    Encrypted,
-    Plain(Option<DateTime<Utc>>),
-    Expired(DateTime<Utc>),
-    Unreadable(String),
-}
-
-/// See `EditorTokenState`: nothing is opened or read.
-#[doc(hidden)]
-pub fn editor_token_state() -> EditorTokenState {
-    EditorTokenState::Unreadable("not read: AI Limits uses only its own Cursor sign-in".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -864,12 +825,7 @@ mod tests {
     ) -> (CursorProvider, Arc<Memory>) {
         let store = Arc::new(Memory::default());
         *store.kept.lock().unwrap() = session;
-        let p = CursorProvider::with_parts(
-            config(),
-            Net::local(&server.base),
-            store.clone(),
-            Box::leak(Box::new(AtomicU64::new(0))),
-        );
+        let p = CursorProvider::with_parts(config(), Net::local(&server.base), store.clone());
         (p, store)
     }
 
@@ -1051,10 +1007,6 @@ mod tests {
         assert!(!src.contains(&key));
         assert!(!src.contains(&prefix));
         assert!(!src.contains(&database));
-        assert!(matches!(
-            editor_token_state(),
-            EditorTokenState::Unreadable(_)
-        ));
     }
 
     #[test]

@@ -24,6 +24,7 @@ use ailimits::config::{
 };
 use ailimits::providers::cursor::session;
 use ailimits::providers::grok::{self, GrokLogin};
+use ailimits::providers::{self, TokenCheck};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
@@ -41,15 +42,12 @@ const USAGE_TOKEN_PROVIDERS: &[(&str, &str)] = &[
     ("codex", "codex_usage_token"),
 ];
 
-const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const CLAUDE_USAGE_BETA_HEADER: &str = "oauth-2025-04-20";
-const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
-
 /// How long `gh` may take to say whether it is signed in to github.com.
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Waits before asking the usage endpoint again after a server error.
-const VALIDATE_RETRIES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
+/// Waits before asking the usage endpoint again when its answer said
+/// nothing about the token (a server error, no answer).
+const CHECK_RETRIES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
 
 /// The line every command that changed the config ends with.
 const RESTART_HINT: &str = "→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.";
@@ -222,8 +220,10 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
 
     // Claude Code's local stats file: a sign Claude Code has run here, not a
     // limit source (it holds no limits). Never opened.
-    let stats = paths.claude_dir().join("stats-cache.json");
-    println!("stats-cache.json: {}", presence(&stats));
+    println!(
+        "stats-cache.json: {}",
+        presence(&paths.claude_stats_cache())
+    );
 
     // Codex CLI auth.json (in CODEX_HOME when it is set). Never opened here.
     match paths.codex_auth() {
@@ -418,7 +418,11 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     if token.is_empty() {
         bail!("empty token — nothing stored");
     }
-    let checked = validate_usage_token(provider, token)?;
+    // The shape first, so a password pasted by mistake is never sent.
+    if let Some(problem) = providers::usage_token_problem(provider, token) {
+        bail!("{problem} — nothing stored");
+    }
+    let unchecked = check_usage_token(provider, token)?;
 
     keyring::Entry::new(KEYRING_SERVICE, label)
         .context("keyring unavailable")?
@@ -434,76 +438,36 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     save_config(&config)?;
 
     println!("{provider} usage token stored (label: {label})");
-    if checked == TokenCheck::Throttled {
-        println!("  The usage endpoint is limiting requests right now (HTTP 429), so the token could not be checked. If the row shows an error later, run this command again.");
+    if let Some(why) = unchecked {
+        println!("  It could not be checked ({why}), so it was stored as it is. If the row shows an error later, run this command again.");
     }
     println!("{RESTART_HINT}");
     Ok(())
 }
 
-/// What the usage endpoint's answer says about a token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenCheck {
-    /// 200: the token works.
-    Accepted,
-    /// 429: the endpoint limits requests (Claude's bucket is shared with
-    /// Claude Code). The token is stored, with a word that it is unchecked.
-    Throttled,
-    /// 5xx: the service is not answering; asked again a little later.
-    ServerError,
-    /// Anything else (401, 403...): the token is refused, nothing stored.
-    Rejected,
-}
-
-fn judge(status: u16) -> TokenCheck {
-    match status {
-        200 => TokenCheck::Accepted,
-        429 => TokenCheck::Throttled,
-        500..=599 => TokenCheck::ServerError,
-        _ => TokenCheck::Rejected,
-    }
-}
-
-/// One read-only request to the provider's usage endpoint to verify the
-/// token, asked again after a server error (at most three requests in all).
-/// Ok: accepted, or unchecked because of a 429. Err: refused, or no answer.
-fn validate_usage_token(provider: &str, token: &str) -> Result<TokenCheck> {
-    let url = match provider {
-        "claude" => CLAUDE_USAGE_URL,
-        _ => CODEX_USAGE_URL,
-    };
+/// Check a usage token with the widget's own check
+/// (`providers::check_usage_token`: one read-only request to the host the
+/// provider sends it to anyway). An answer that says neither yes nor no (a
+/// server error, no answer) is asked again after 2 s and 4 s: at most three
+/// requests in all.
+///
+/// Ok(None): taken — usage (200), or the rate limit (429), which the
+/// endpoint answers only for a token it knows. Ok(Some(why)): not checked,
+/// and why; the token is stored all the same, as the widget's menu does.
+/// Err: refused (401/403), nothing to store.
+fn check_usage_token(provider: &str, token: &str) -> Result<Option<String>> {
     let runtime = tokio::runtime::Runtime::new()?;
-    let client = &reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        // Never follow a 3xx with the bearer token attached.
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let ask = || async move {
-        let mut req = client.get(url).bearer_auth(token);
-        if provider == "claude" {
-            req = req.header("anthropic-beta", CLAUDE_USAGE_BETA_HEADER);
-        } else {
-            req = req.header("User-Agent", "ailimits-widget");
-        }
-        req.send()
-            .await
-            .map(|r| r.status().as_u16())
-            .context("could not reach the usage endpoint — nothing stored")
-    };
-    let mut waits = VALIDATE_RETRIES.iter();
+    let mut waits = CHECK_RETRIES.iter();
     loop {
-        let status = runtime.block_on(ask())?;
-        match judge(status) {
-            TokenCheck::ServerError => match waits.next() {
-                Some(wait) => std::thread::sleep(*wait),
-                None => bail!(
-                    "the usage endpoint is not answering (HTTP {status}) — nothing stored, try again later"
-                ),
-            },
-            TokenCheck::Rejected => {
-                bail!("the usage endpoint rejected the token: HTTP {status} — nothing stored")
+        match runtime.block_on(providers::check_usage_token(provider, token)) {
+            TokenCheck::Accepted => return Ok(None),
+            TokenCheck::Refused => {
+                bail!("the usage endpoint refused the token (HTTP 401/403) — nothing stored")
             }
-            ok => return Ok(ok),
+            TokenCheck::Unchecked(why) => match waits.next() {
+                Some(wait) => std::thread::sleep(*wait),
+                None => return Ok(Some(why)),
+            },
         }
     }
 }
@@ -527,21 +491,28 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
 fn remove(provider: Option<&str>) -> Result<()> {
     let provider = provider.context("specify a provider: ailimits-auth remove <claude|copilot>")?;
     let label = label_for(provider)?;
-    let mut config = config_to_change()?;
 
+    // The secret goes first and whatever the config says: the uninstaller
+    // runs this, and a config.toml that cannot be read or changed must not
+    // leave a key behind in Credential Manager.
     match keyring::Entry::new(KEYRING_SERVICE, label).and_then(|e| e.delete_credential()) {
         Ok(()) => println!("Key '{label}' removed from Credential Manager"),
         Err(keyring::Error::NoEntry) => println!("— no key '{label}' stored"),
         Err(e) => bail!("failed to remove the key: {e}"),
     }
 
-    if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
-        // Without a key everything runs on the subscription method.
-        p.credential_label = String::new();
-        p.auth_method = AuthMethod::Subscription;
-        println!("'{provider}' switched back to the subscription method");
+    match config_to_change() {
+        Ok(mut config) => {
+            if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
+                // Without a key everything runs on the subscription method.
+                p.credential_label = String::new();
+                p.auth_method = AuthMethod::Subscription;
+                println!("'{provider}' switched back to the subscription method");
+            }
+            save_config(&config)?;
+        }
+        Err(e) => println!("config.toml left as it is ({e}); the key is removed all the same"),
     }
-    save_config(&config)?;
 
     println!("{RESTART_HINT}");
     Ok(())
@@ -680,16 +651,17 @@ fn save_config(config: &Config) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A usage token is judged by the widget's own rules: its shape before
+    /// anything is sent, then the providers' one check, which takes a 429
+    /// as accepted. This tool sends to no host of its own.
     #[test]
-    fn a_429_stores_the_token_unchecked_and_5xx_asks_again() {
-        assert_eq!(judge(200), TokenCheck::Accepted);
-        assert_eq!(judge(429), TokenCheck::Throttled);
-        for code in [500, 502, 503, 529, 599] {
-            assert_eq!(judge(code), TokenCheck::ServerError, "{code}");
-        }
-        for code in [400, 401, 403, 404, 302, 0] {
-            assert_eq!(judge(code), TokenCheck::Rejected, "{code}");
-        }
+    fn a_usage_token_is_checked_as_the_widget_checks_it() {
+        assert!(providers::usage_token_problem("claude", "hunter2hunter2").is_some());
+        assert!(providers::usage_token_problem("codex", "sk-ant-oat01-abc").is_some());
+        assert!(providers::usage_token_problem("claude", "sk-ant-oat01-abc").is_none());
+        let src = include_str!("ailimits-auth.rs");
+        assert!(!src.contains(&["https", "://"].concat()));
+        assert!(src.contains("providers::check_usage_token(provider, token)"));
     }
 
     /// The commands that change the config refuse one they cannot use, and

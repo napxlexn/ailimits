@@ -120,6 +120,12 @@ impl ToolPaths {
         self.claude_dir().join("projects")
     }
 
+    /// Claude Code's local statistics, `.claude\stats-cache.json`: only a
+    /// sign that Claude Code ran here (it holds no limits). Never opened.
+    pub fn claude_stats_cache(&self) -> PathBuf {
+        self.claude_dir().join("stats-cache.json")
+    }
+
     // ─── Codex CLI ────────────────────────────────────────────────
 
     /// `CODEX_HOME`, else %USERPROFILE%\.codex.
