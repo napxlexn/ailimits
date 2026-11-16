@@ -11,11 +11,12 @@ mod name;
 mod session;
 mod settings;
 
+use crate::config::paths::ToolPaths;
 use crate::config::schema::{ModelSource, Reads};
 use crate::providers::ProviderId;
-use files::Stamp;
+use files::{Stamp, Unread};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A tool's model as it stores it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,16 +55,34 @@ pub fn name_parts(id: &str, provider: &ProviderId, rename: Option<&str>) -> Name
 /// watchers, no threads: called from the scheduler's cycle.
 #[derive(Debug, Default)]
 pub struct ModelReader {
-    /// Fixed folders for tests; None: from the environment on every read.
-    homes: Option<Homes>,
+    /// Fixed folders and environment for tests; None: from the environment
+    /// on every read.
+    fixed: Option<Env>,
     /// The settings file last read per provider.
     settings: HashMap<ProviderId, Seen>,
     /// The session file last read per provider.
     sessions: HashMap<ProviderId, Seen>,
 }
 
-/// Takes the model out of a settings file's bytes.
-type SettingsParser = fn(&[u8]) -> Option<ModelInfo>;
+/// Where the tools keep their files, and the environment variable that
+/// sets a tool's model over its settings file.
+#[derive(Debug, Clone)]
+struct Env {
+    homes: ToolPaths,
+    /// `ANTHROPIC_MODEL` as this process sees it: Claude Code takes it over
+    /// the `model` of its settings file.
+    anthropic_model: Option<String>,
+}
+
+impl Env {
+    fn from_process() -> Option<Self> {
+        Some(Env {
+            homes: tool_paths()?,
+            anthropic_model: std::env::var("ANTHROPIC_MODEL").ok(),
+        })
+    }
+}
+
 /// Takes the model out of a session file's tail.
 type TailParser = fn(&str) -> Option<ModelInfo>;
 
@@ -98,7 +117,7 @@ impl ModelReader {
         if !reads.tool_settings && !use_sessions {
             return out;
         }
-        let Some(homes) = self.homes.clone().or_else(Homes::from_env) else {
+        let Some(env) = self.fixed.clone().or_else(Env::from_process) else {
             return out;
         };
         for id in ids {
@@ -106,13 +125,13 @@ impl ModelReader {
                 continue;
             }
             let last = if use_sessions {
-                self.last_used(&homes, id)
+                self.last_used(&env.homes, id)
             } else {
                 None
             };
             let info = last.or_else(|| {
                 if reads.tool_settings {
-                    self.configured(&homes, id)
+                    self.configured(&env, id)
                 } else {
                     None
                 }
@@ -124,12 +143,18 @@ impl ModelReader {
         out
     }
 
-    /// The model set in the tool's settings file.
-    fn configured(&mut self, homes: &Homes, id: &ProviderId) -> Option<ModelInfo> {
+    /// The model set in the tool's settings file. A file that could not be
+    /// read this time (a lock, an I/O error) changes nothing: the label
+    /// shown stays, and as its stamp is not taken, the next cycle reads the
+    /// file again. Only a file that was read decides what is shown.
+    fn configured(&mut self, env: &Env, id: &ProviderId) -> Option<ModelInfo> {
         if *id == ProviderId::Cursor {
-            return self.cursor_configured(homes);
+            return self.cursor_configured(&env.homes);
         }
-        let (path, parse) = settings_file(homes, id)?;
+        let Some(path) = settings_file(&env.homes, id) else {
+            self.settings.remove(id);
+            return None;
+        };
         let Some(stamp) = files::stamp(&path) else {
             self.settings.remove(id);
             return None;
@@ -142,7 +167,10 @@ impl ModelReader {
         let info = if stamp.len > files::SETTINGS_CAP {
             None
         } else {
-            files::read_capped(&path, files::SETTINGS_CAP).and_then(|bytes| parse(&bytes))
+            match files::read_capped(&path, files::SETTINGS_CAP) {
+                Ok(bytes) => bytes.and_then(|bytes| parse_settings(id, &bytes, env)),
+                Err(Unread) => return kept(&self.settings, id, &path),
+            }
         };
         let seen = Seen { path, stamp, info };
         let info = seen.info.clone();
@@ -151,14 +179,16 @@ impl ModelReader {
     }
 
     /// The model of the newest session, from the end of its file.
-    fn last_used(&mut self, homes: &Homes, id: &ProviderId) -> Option<ModelInfo> {
+    fn last_used(&mut self, homes: &ToolPaths, id: &ProviderId) -> Option<ModelInfo> {
         let (newest, parse): (Option<PathBuf>, TailParser) = match id {
             ProviderId::Claude => (
-                session::newest_claude_session(&homes.claude().join("projects")),
+                session::newest_claude_session(&homes.claude_projects()),
                 session::claude_last,
             ),
             ProviderId::Codex => (
-                session::newest_codex_session(&homes.codex.join("sessions")),
+                homes
+                    .codex_sessions()
+                    .and_then(|dir| session::newest_codex_session(&dir)),
                 session::codex_last,
             ),
             _ => return None,
@@ -179,9 +209,14 @@ impl ModelReader {
         // Read back from the end until a model record turns up, at most
         // 1 MB. None there keeps the model last found: a session just
         // started has no answer yet, so the previous session's model is
-        // still the one last used.
+        // still the one last used. A read that failed (a lock, the file cut
+        // short while read) keeps it too, without taking the new stamp, so
+        // the next cycle reads the file again.
         let before = self.sessions.get(id).and_then(|seen| seen.info.clone());
-        let info = files::scan_back(&path, files::TAIL_STEP, files::TAIL_CAP, parse).or(before);
+        let info = match files::scan_back(&path, files::TAIL_STEP, files::TAIL_CAP, parse) {
+            Ok(found) => found.or(before),
+            Err(Unread) => return before,
+        };
         self.sessions.insert(
             id.clone(),
             Seen {
@@ -196,11 +231,12 @@ impl ModelReader {
     /// Cursor's Agent model: one entry of the editor's state database, of
     /// which only the Agent's model settings are taken (files.rs
     /// `cursor_agent_model`). Read again only when the database or its
-    /// write-ahead log changed; while Cursor holds a lock, the model found
-    /// before stays and the next cycle asks again.
-    fn cursor_configured(&mut self, homes: &Homes) -> Option<ModelInfo> {
+    /// write-ahead log changed; while it cannot be read (Cursor holds a
+    /// lock, an I/O error), the model found before stays and the next cycle
+    /// asks again. Only an answer from the database is kept.
+    fn cursor_configured(&mut self, homes: &ToolPaths) -> Option<ModelInfo> {
         let id = ProviderId::Cursor;
-        let path = homes.cursor_db();
+        let path = homes.cursor_state_db();
         let Some(stamp) = files::db_stamp(&path) else {
             self.settings.remove(&id);
             return None;
@@ -212,7 +248,7 @@ impl ModelReader {
         }
         let info = match files::cursor_agent_model(&path) {
             Ok(agent) => agent.and_then(|json| settings::cursor(json.as_bytes())),
-            Err(files::Busy) => return self.settings.get(&id).and_then(|s| s.info.clone()),
+            Err(Unread) => return kept(&self.settings, &id, &path),
         };
         self.settings.insert(
             id,
@@ -226,103 +262,56 @@ impl ModelReader {
     }
 }
 
-/// Where the tools keep their files.
-#[derive(Debug, Clone)]
-struct Homes {
-    /// %USERPROFILE%
-    user: PathBuf,
-    /// `CODEX_HOME`, else %USERPROFILE%\.codex
-    codex: PathBuf,
-    /// `GROK_HOME`, else %USERPROFILE%\.grok
-    grok: PathBuf,
-    /// `COPILOT_HOME`, else %USERPROFILE%\.copilot
-    copilot: PathBuf,
-    /// %APPDATA%, where the Cursor editor keeps its state.
-    roaming: PathBuf,
+/// What a file that could not be read this time leaves on screen: the
+/// model last read from that same file, if any.
+fn kept(seen: &HashMap<ProviderId, Seen>, id: &ProviderId, path: &Path) -> Option<ModelInfo> {
+    seen.get(id)
+        .filter(|s| s.path == path)
+        .and_then(|s| s.info.clone())
 }
 
-impl Homes {
-    /// From the environment; None without a home folder, so that no path is
-    /// ever taken relative to the working directory.
-    fn from_env() -> Option<Self> {
-        let user = test_home()
-            .or_else(dirs::home_dir)
-            .filter(|p| p.is_absolute())?;
-        let tool = |var: &str, dir: &str| env_dir(var).unwrap_or_else(|| user.join(dir));
-        // A test home stands in for %APPDATA% as well, under its usual place.
-        let roaming = if test_home().is_some() {
-            user.join("AppData").join("Roaming")
-        } else {
-            dirs::config_dir()
-                .filter(|p| p.is_absolute())
-                .unwrap_or_else(|| user.join("AppData").join("Roaming"))
-        };
-        Some(Homes {
-            codex: tool("CODEX_HOME", ".codex"),
-            grok: tool("GROK_HOME", ".grok"),
-            copilot: tool("COPILOT_HOME", ".copilot"),
-            roaming,
-            user,
-        })
-    }
-
-    /// Fixed folders under one root, for tests.
-    #[cfg(test)]
-    fn under(root: &std::path::Path) -> Self {
-        Homes {
-            user: root.to_path_buf(),
-            codex: root.join(".codex"),
-            grok: root.join(".grok"),
-            copilot: root.join(".copilot"),
-            roaming: root.join("AppData").join("Roaming"),
-        }
-    }
-
-    /// The Cursor editor's state database.
-    fn cursor_db(&self) -> PathBuf {
-        self.roaming
-            .join("Cursor")
-            .join("User")
-            .join("globalStorage")
-            .join("state.vscdb")
-    }
-
-    fn claude(&self) -> PathBuf {
-        self.user.join(".claude")
-    }
-
-    fn antigravity_cli(&self) -> PathBuf {
-        self.user.join(".gemini").join("antigravity-cli")
+/// A tool's settings file; None for Cursor, whose model is in the editor's
+/// state database (`cursor_configured`), and for a tool whose home is
+/// unknown (its variable set to a relative path). The files are the ones
+/// `consent::READ_INFO` names, resolved by `config::paths`.
+fn settings_file(homes: &ToolPaths, id: &ProviderId) -> Option<PathBuf> {
+    match id {
+        ProviderId::Claude => Some(homes.claude_settings()),
+        ProviderId::Codex => homes.codex_config(),
+        ProviderId::Grok => homes.grok_config(),
+        ProviderId::Copilot => homes.copilot_settings(),
+        ProviderId::Antigravity => Some(homes.antigravity_cli_settings()),
+        ProviderId::Cursor => None,
     }
 }
 
-/// A tool's settings file and the parser for it; None for Cursor, whose
-/// model is in the editor's state database (`cursor_configured`). The files
-/// are the ones `consent::READ_INFO` names.
-fn settings_file(homes: &Homes, id: &ProviderId) -> Option<(PathBuf, SettingsParser)> {
-    let file: (PathBuf, SettingsParser) = match id {
-        ProviderId::Claude => (homes.claude().join("settings.json"), settings::claude),
-        ProviderId::Codex => (homes.codex.join("config.toml"), settings::codex),
-        ProviderId::Grok => (homes.grok.join("config.toml"), settings::grok),
-        ProviderId::Copilot => (homes.copilot.join("settings.json"), settings::copilot),
-        ProviderId::Antigravity => (
-            homes.antigravity_cli().join("settings.json"),
-            settings::antigravity,
-        ),
-        ProviderId::Cursor => return None,
-    };
-    Some(file)
+/// The model in a settings file's bytes, by the tool's own rules.
+fn parse_settings(id: &ProviderId, bytes: &[u8], env: &Env) -> Option<ModelInfo> {
+    match id {
+        ProviderId::Claude => settings::claude(bytes, env.anthropic_model.as_deref()),
+        ProviderId::Codex => settings::codex(bytes),
+        ProviderId::Grok => settings::grok(bytes),
+        ProviderId::Copilot => settings::copilot(bytes),
+        ProviderId::Antigravity => settings::antigravity(bytes),
+        ProviderId::Cursor => None,
+    }
 }
 
-/// Debug builds only: `AILIMITS_MODEL_HOME` stands in for %USERPROFILE% when
-/// the model labels are read, so a live test can show prepared settings and
-/// sessions without touching the tools' own files. Sign-in reads are not
-/// affected. Release builds never look at it.
-fn test_home() -> Option<PathBuf> {
-    if cfg!(debug_assertions) {
+/// Where the tools keep their files, for the model labels.
+///
+/// Debug builds only: `AILIMITS_MODEL_HOME` stands in for %USERPROFILE%
+/// (and %APPDATA% under its usual place), so a live test can show prepared
+/// settings and sessions without touching the tools' own files. Sign-in
+/// reads are not affected. Release builds never look at it.
+fn tool_paths() -> Option<ToolPaths> {
+    let test_home = if cfg!(debug_assertions) {
         env_dir("AILIMITS_MODEL_HOME")
     } else {
         None
+    };
+    match test_home {
+        Some(home) => ToolPaths::resolve(Some(home), None, |var| std::env::var_os(var)),
+        None => ToolPaths::from_env(),
     }
 }
 
@@ -358,8 +347,15 @@ mod tests {
     }
 
     fn reader(dir: &TempDir) -> ModelReader {
+        reader_at(dir.path(), None)
+    }
+
+    fn reader_at(home: &Path, anthropic_model: Option<&str>) -> ModelReader {
         ModelReader {
-            homes: Some(Homes::under(dir.path())),
+            fixed: Some(Env {
+                homes: ToolPaths::at_home(home),
+                anthropic_model: anthropic_model.map(String::from),
+            }),
             ..ModelReader::default()
         }
     }
@@ -657,24 +653,186 @@ mod tests {
         assert_eq!(m[&ProviderId::Grok], info("grok-4.5", None));
     }
 
+    /// Holds a file open without sharing, as a scanner or a backup does.
+    #[cfg(target_os = "windows")]
+    fn lock(path: &Path) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::File::options()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    /// A settings file that cannot be read for a moment keeps its label,
+    /// and is read again on the next cycle even though it does not change
+    /// after that: one failed read never caches "no model" for the day.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_settings_file_that_cannot_be_read_keeps_its_label_and_is_read_again() {
+        let dir = TempDir::new("unread");
+        let path = dir.write(".codex/config.toml", "model = \"gpt-6.1\"\n");
+        touch(&path, 100);
+        let ids = [ProviderId::Codex];
+        let configured = |r: &mut ModelReader| {
+            r.read(&reads(true, false), ModelSource::Configured, &ids)
+                .get(&ProviderId::Codex)
+                .map(|m| m.id.clone())
+        };
+        // Locked from the very first read: nothing yet, nothing cached.
+        let mut r = reader(&dir);
+        let held = lock(&path);
+        assert_eq!(configured(&mut r), None);
+        assert!(r.settings.is_empty());
+        drop(held);
+        assert_eq!(configured(&mut r).as_deref(), Some("gpt-6.1"));
+        // Changed, then locked while the cycle reads it: the label stays.
+        std::fs::write(&path, "model = \"gpt-7.1\"\n").unwrap();
+        touch(&path, 50);
+        let held = lock(&path);
+        assert_eq!(configured(&mut r).as_deref(), Some("gpt-6.1"));
+        assert_eq!(configured(&mut r).as_deref(), Some("gpt-6.1"));
+        drop(held);
+        // Released, the file untouched since: read again all the same.
+        assert_eq!(configured(&mut r).as_deref(), Some("gpt-7.1"));
+    }
+
+    /// The same for the newest session: a session file that cannot be read
+    /// keeps the model last used, and is read once it can be.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_session_that_cannot_be_read_keeps_the_model_last_used() {
+        let dir = TempDir::new("unread-session");
+        let path = dir.write(
+            ".claude/projects/p/s.jsonl",
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-opus-5-5\"}}\n",
+        );
+        touch(&path, 100);
+        let ids = [ProviderId::Claude];
+        let last = |r: &mut ModelReader| {
+            r.read(&reads(false, true), ModelSource::LastUsed, &ids)
+                .get(&ProviderId::Claude)
+                .map(|m| m.id.clone())
+        };
+        let mut r = reader(&dir);
+        assert_eq!(last(&mut r).as_deref(), Some("claude-opus-5-5"));
+        std::fs::write(
+            &path,
+            "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-5-5\"}}\n",
+        )
+        .unwrap();
+        touch(&path, 50);
+        let held = lock(&path);
+        assert_eq!(last(&mut r).as_deref(), Some("claude-opus-5-5"));
+        drop(held);
+        assert_eq!(last(&mut r).as_deref(), Some("claude-sonnet-5-5"));
+    }
+
+    /// The tool-home variables move the settings and sessions read, and a
+    /// relative one reads nothing of that tool: not the working directory,
+    /// not the default folder (it may be another account's).
+    #[test]
+    fn the_tool_home_variables_are_followed_and_only_when_absolute() {
+        let dir = TempDir::new("homes");
+        every_tool(&dir);
+        let moved = dir.path().join("elsewhere");
+        dir.write(
+            "elsewhere/codex/config.toml",
+            "model = \"gpt-6-luna\"\nmodel_reasoning_effort = \"low\"\n",
+        );
+        dir.write(
+            "elsewhere/grok/config.toml",
+            "[models]\ndefault = \"grok-4.7\"\n",
+        );
+        dir.write("elsewhere/copilot/settings.json", r#"{"model": "gpt-5.5"}"#);
+        let with = |vars: Vec<(&'static str, std::ffi::OsString)>| {
+            let homes = ToolPaths::resolve(Some(dir.path().to_path_buf()), None, move |var| {
+                vars.iter().find(|(k, _)| *k == var).map(|(_, v)| v.clone())
+            })
+            .unwrap();
+            ModelReader {
+                fixed: Some(Env {
+                    homes,
+                    anthropic_model: None,
+                }),
+                ..ModelReader::default()
+            }
+        };
+        let mut r = with(vec![
+            ("CODEX_HOME", moved.join("codex").into_os_string()),
+            ("GROK_HOME", moved.join("grok").into_os_string()),
+            ("COPILOT_HOME", moved.join("copilot").into_os_string()),
+        ]);
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ALL);
+        assert_eq!(m[&ProviderId::Codex], info("gpt-6-luna", Some("low")));
+        assert_eq!(m[&ProviderId::Grok], info("grok-4.7", None));
+        assert_eq!(m[&ProviderId::Copilot], info("gpt-5.5", None));
+        // The others are where they were.
+        assert_eq!(m[&ProviderId::Claude].id, "claude-opus-5-5");
+        // Codex's sessions moved too: none there, so the configured model.
+        let m = r.read(
+            &reads(true, true),
+            ModelSource::LastUsed,
+            &[ProviderId::Codex],
+        );
+        assert_eq!(m[&ProviderId::Codex], info("gpt-6-luna", Some("low")));
+        // Relative: nothing of those tools at all.
+        let mut r = with(vec![
+            ("CODEX_HOME", "codex".into()),
+            ("GROK_HOME", r".\grok".into()),
+            ("COPILOT_HOME", r"\copilot".into()),
+        ]);
+        let m = r.read(&reads(true, true), ModelSource::LastUsed, &ALL);
+        for id in [ProviderId::Codex, ProviderId::Grok, ProviderId::Copilot] {
+            assert!(!m.contains_key(&id), "{id:?}");
+        }
+        assert_eq!(m[&ProviderId::Claude].id, "claude-sonnet-5");
+    }
+
+    /// `ANTHROPIC_MODEL` is the model Claude Code runs with over its
+    /// settings file's `model`: the label follows it, and takes that
+    /// model's effort.
+    #[test]
+    fn anthropic_model_in_the_environment_is_the_configured_claude_model() {
+        let dir = TempDir::new("anthropic-model");
+        dir.write(
+            ".claude/settings.json",
+            r#"{"model": "claude-opus-5-5", "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}, "claude-sonnet-5-5": {"effortLevel": "low"}}}"#,
+        );
+        let ids = [ProviderId::Claude];
+        let mut r = reader_at(dir.path(), Some("claude-sonnet-5-5"));
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert_eq!(
+            m[&ProviderId::Claude],
+            info("claude-sonnet-5-5", Some("low"))
+        );
+        // Set but empty: the file's model.
+        let mut r = reader_at(dir.path(), Some("  "));
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert_eq!(
+            m[&ProviderId::Claude],
+            info("claude-opus-5-5", Some("xhigh"))
+        );
+    }
+
     /// What the user is told is read (consent.rs) is what the readers read:
     /// the same settings file per tool, sessions for Claude Code and Codex
     /// only, nothing for the tools without a reader.
     #[test]
     fn the_consent_text_names_the_files_read() {
         let root = std::path::Path::new(r"C:\Users\someone");
-        let homes = Homes::under(root);
+        let homes = ToolPaths::at_home(root);
         for id in &ALL {
             let told = crate::consent::read_info(id.config_id()).unwrap();
             let named = match settings_file(&homes, id) {
-                Some((path, _)) => {
+                Some(path) => {
                     let rel = path.strip_prefix(root).unwrap().display().to_string();
                     format!(r"%USERPROFILE%\{rel}: ")
                 }
                 None => {
                     assert_eq!(*id, ProviderId::Cursor);
                     let roaming = root.join("AppData").join("Roaming");
-                    let db = homes.cursor_db();
+                    let db = homes.cursor_state_db();
                     let rel = db.strip_prefix(&roaming).unwrap().display().to_string();
                     format!(r"%APPDATA%\{rel}: ")
                 }
@@ -694,7 +852,7 @@ mod tests {
     fn cursor_reads_the_agent_model_from_the_editor_database() {
         use crate::platform::sqlite::test_support::TestDb;
         let dir = TempDir::new("cursor");
-        let db_path = Homes::under(dir.path()).cursor_db();
+        let db_path = ToolPaths::at_home(dir.path()).cursor_state_db();
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
         let db = TestDb::create(&db_path);
         db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);");
@@ -744,6 +902,42 @@ mod tests {
             .is_empty());
     }
 
+    /// Cursor's database that cannot be opened for a moment keeps the
+    /// Agent's label (the error is not cached as "no model"), and is read
+    /// again once it can be.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cursor_keeps_its_label_while_the_database_cannot_be_read() {
+        use crate::platform::sqlite::test_support::TestDb;
+        let dir = TempDir::new("cursor-unread");
+        let db_path = ToolPaths::at_home(dir.path()).cursor_state_db();
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let key = "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
+        let write = |model: &str| {
+            let db = TestDb::create(&db_path);
+            db.exec("CREATE TABLE IF NOT EXISTS ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);");
+            db.exec(&format!(
+                "INSERT INTO ItemTable VALUES ('{key}', '{{\"aiSettings\": {{\"modelConfig\": {{\"composer\": {{\"modelName\": \"{model}\"}}}}}}}}');"
+            ));
+        };
+        write("grok-4.7");
+        touch(&db_path, 100);
+        let ids = [ProviderId::Cursor];
+        let mut r = reader(&dir);
+        let label = |r: &mut ModelReader| {
+            r.read(&reads(true, false), ModelSource::Configured, &ids)
+                .get(&ProviderId::Cursor)
+                .map(|m| m.id.clone())
+        };
+        assert_eq!(label(&mut r).as_deref(), Some("grok-4.7"));
+        write("gpt-5.5-and-more");
+        touch(&db_path, 50);
+        let held = lock(&db_path);
+        assert_eq!(label(&mut r).as_deref(), Some("grok-4.7"));
+        drop(held);
+        assert_eq!(label(&mut r).as_deref(), Some("gpt-5.5-and-more"));
+    }
+
     /// The labels for prepared homes: every folder under `AILIMITS_PROBE_HOMES`
     /// is read as a %USERPROFILE% (settings and sessions copied there from
     /// live calls), and the model, effort and full label of each tool are
@@ -769,10 +963,7 @@ mod tests {
         for home in homes {
             let name = home.file_name().unwrap().to_string_lossy().to_string();
             for source in [ModelSource::Configured, ModelSource::LastUsed] {
-                let mut r = ModelReader {
-                    homes: Some(Homes::under(&home)),
-                    ..ModelReader::default()
-                };
+                let mut r = reader_at(&home, None);
                 let models = r.read(&reads(true, true), source, &ALL);
                 for id in &ALL {
                     let Some(m) = models.get(id) else { continue };
@@ -827,10 +1018,10 @@ mod tests {
                 .min()
                 .unwrap()
         }
-        let homes = Homes::from_env().unwrap();
+        let homes = ToolPaths::from_env().unwrap();
         for (name, root) in [
-            ("claude projects", homes.claude().join("projects")),
-            ("codex sessions", homes.codex.join("sessions")),
+            ("claude projects", homes.claude_projects()),
+            ("codex sessions", homes.codex_sessions().unwrap_or_default()),
         ] {
             let (mut files, mut dirs) = (0, 0);
             let t = Instant::now();
@@ -839,8 +1030,8 @@ mod tests {
             let warm = best_of(10, || walk(&root, &mut 0, &mut 0));
             println!("{name}: full walk {files} session files in {dirs} folders, first {first:?}, warm {warm:?}");
         }
-        let projects = homes.claude().join("projects");
-        let sessions = homes.codex.join("sessions");
+        let projects = homes.claude_projects();
+        let sessions = homes.codex_sessions().unwrap_or_default();
         let t = Instant::now();
         session::newest_claude_session(&projects);
         let first = t.elapsed();
@@ -863,7 +1054,7 @@ mod tests {
         if let Some(newest) = session::newest_claude_session(&projects) {
             let len = std::fs::metadata(&newest).map(|m| m.len()).unwrap_or(0);
             let real = best_of(5, || {
-                files::scan_back(
+                let _ = files::scan_back(
                     &newest,
                     files::TAIL_STEP,
                     files::TAIL_CAP,
@@ -871,7 +1062,7 @@ mod tests {
                 );
             });
             let worst = best_of(5, || {
-                files::scan_back(&newest, files::TAIL_STEP, files::TAIL_CAP, |t| {
+                let _ = files::scan_back(&newest, files::TAIL_STEP, files::TAIL_CAP, |t| {
                     session::claude_last(t);
                     None::<()>
                 });
@@ -879,7 +1070,7 @@ mod tests {
             println!("claude newest session, {len} bytes: the read {real:?}, worst case {worst:?}");
         }
         // Cursor's Agent model: one lookup in the editor's database.
-        let db = homes.cursor_db();
+        let db = homes.cursor_state_db();
         if db.is_file() {
             let lookup = best_of(10, || {
                 let _ = files::cursor_agent_model(&db);

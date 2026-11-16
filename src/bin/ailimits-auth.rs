@@ -11,15 +11,23 @@
 //
 // Secrets are stored ONLY in Windows Credential Manager (service "ailimits");
 // config.toml holds nothing but a label.
+//
+// `status` changes nothing: it never creates, renames or writes config.toml,
+// and it reads another tool's sign-in only where the widget itself may
+// (`[reads] sign_in` in config.toml). Elsewhere it says whether the file is
+// there, without opening it. No token is ever printed or kept.
 
 use ailimits::config::{
+    paths::ToolPaths,
     schema::{AuthMethod, Config},
-    storage,
+    storage::{self, Peek},
 };
 use ailimits::providers::cursor::session;
 use ailimits::providers::grok::{self, GrokLogin};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// Credential Manager service name.
 const KEYRING_SERVICE: &str = "ailimits";
@@ -36,6 +44,15 @@ const USAGE_TOKEN_PROVIDERS: &[(&str, &str)] = &[
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_USAGE_BETA_HEADER: &str = "oauth-2025-04-20";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+
+/// How long `gh` may take to say whether it is signed in to github.com.
+const GH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Waits before asking the usage endpoint again after a server error.
+const VALIDATE_RETRIES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
+
+/// The line every command that changed the config ends with.
+const RESTART_HINT: &str = "→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -59,7 +76,7 @@ fn print_usage() {
     println!("ailimits-auth — provider authorization for the AI Limits widget");
     println!();
     println!("Usage:");
-    println!("  ailimits-auth status                    show auth status");
+    println!("  ailimits-auth status                    show auth status (changes nothing)");
     println!(
         "  ailimits-auth set <provider>            store a key (claude: API key, copilot: PAT)"
     );
@@ -95,15 +112,98 @@ fn usage_label_for(provider: &str) -> Result<&'static str> {
         .with_context(|| format!("usage token is supported for claude and codex, got '{provider}'"))
 }
 
-/// Show the state of every auth source.
-fn status() -> Result<()> {
-    println!("── Auth sources ─────────────────────────────────");
+/// Whether an entry of the app's own (service "ailimits") is stored.
+fn own_entry_stored(label: &str) -> bool {
+    keyring::Entry::new(KEYRING_SERVICE, label)
+        .and_then(|e| e.get_password())
+        .is_ok()
+}
 
+/// "found" / "missing" for a file whose content is not looked at.
+fn presence(path: &Path) -> &'static str {
+    if path.is_file() {
+        "found"
+    } else {
+        "missing"
+    }
+}
+
+/// The note for a sign-in the widget is not allowed to read.
+const NOT_ALLOWED: &str = "not read: the widget is not allowed to read it; allow it there first";
+
+/// Show the state of every auth source. Changes nothing (see the top).
+fn status() -> Result<()> {
+    let config_path = storage::config_path();
+    let peeked = storage::peek(&config_path);
+    let config = match &peeked {
+        Peek::Found(config) => Some(config),
+        _ => None,
+    };
+    let allowed = |id: &str| config.is_some_and(|c| c.sign_in_allowed(id));
+    let paths = ToolPaths::from_env();
+
+    println!("── Auth sources ─────────────────────────────────");
+    match &paths {
+        Some(paths) => tool_sources(paths, &allowed),
+        None => println!("No absolute profile folder: no tool's files are looked for."),
+    }
+
+    // Manual usage tokens: the app's own entries.
+    for (id, label) in USAGE_TOKEN_PROVIDERS {
+        let mark = if own_entry_stored(label) {
+            "stored"
+        } else {
+            "—"
+        };
+        println!("{id} usage token ({label}): {mark}");
+    }
+
+    // Cursor: only the widget's own session is used; the editor's sign-in is
+    // never read. Its state and expiry, never the token.
+    println!(
+        "Cursor session ({}): {}",
+        session::SESSION_LABEL,
+        own_cursor_session()
+    );
+
+    // Stored keys.
+    println!();
+    println!("── Keys (Credential Manager) ─────────────────────");
+    for (id, label) in PROVIDERS {
+        let mark = if own_entry_stored(label) {
+            "stored"
+        } else {
+            "—"
+        };
+        println!("{id:<8} ({label}): {mark}");
+    }
+
+    // The config as it stands: never created, renamed or written here.
+    println!();
+    println!("── Config ({}) ──", config_path.display());
+    match peeked {
+        Peek::Missing => println!("none yet — the widget creates it on its first start"),
+        Peek::Unreadable(e) => println!("could not be read ({e})"),
+        Peek::Unparsable(e) => {
+            println!("could not be understood ({e}); the widget sets it aside on its next start")
+        }
+        Peek::Found(config) => print_config(&config),
+    }
+
+    Ok(())
+}
+
+/// The other tools' sign-ins: read only where `allowed`, otherwise only
+/// whether the file is there.
+fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
     // Claude Code subscription: OAuth token.
-    let claude_dir = dirs::home_dir().unwrap_or_default().join(".claude");
-    let creds_path = claude_dir.join(".credentials.json");
-    if creds_path.exists() {
-        match read_oauth_expiry(&creds_path) {
+    let creds = paths.claude_credentials();
+    if !creds.is_file() {
+        println!("Claude OAuth: no (.credentials.json missing — run Claude Code once)");
+    } else if !allowed("claude") {
+        println!("Claude OAuth: .credentials.json found ({NOT_ALLOWED})");
+    } else {
+        match read_oauth_expiry(&creds) {
             Some((expires_at, sub_type)) => {
                 let valid = expires_at > Utc::now();
                 let mark = if valid { "OK" } else { "no (expired)" };
@@ -118,163 +218,159 @@ fn status() -> Result<()> {
             }
             None => println!("Claude OAuth: no (.credentials.json has no valid token)"),
         }
-    } else {
-        println!("Claude OAuth: no (.credentials.json missing — run Claude Code once)");
     }
 
     // Claude Code's local stats file: a sign Claude Code has run here, not a
-    // limit source (it holds no limits).
-    let stats = claude_dir.join("stats-cache.json").exists();
-    println!("stats-cache.json: {}", if stats { "OK" } else { "no" });
+    // limit source (it holds no limits). Never opened.
+    let stats = paths.claude_dir().join("stats-cache.json");
+    println!("stats-cache.json: {}", presence(&stats));
 
-    // Manual usage tokens.
-    for (id, label) in USAGE_TOKEN_PROVIDERS {
-        let present = keyring::Entry::new(KEYRING_SERVICE, label)
-            .and_then(|e| e.get_password())
-            .is_ok();
-        println!(
-            "{id} usage token ({label}): {}",
-            if present { "stored" } else { "—" }
-        );
+    // Codex CLI auth.json (in CODEX_HOME when it is set). Never opened here.
+    match paths.codex_auth() {
+        Some(auth) if auth.is_file() => println!("Codex auth.json ({}): found", auth.display()),
+        Some(auth) => println!(
+            "Codex auth.json ({}): missing (run codex login)",
+            auth.display()
+        ),
+        None => println!("Codex auth.json: unknown (CODEX_HOME is not an absolute path)"),
     }
 
-    // Codex CLI auth.json.
-    let codex_auth = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".codex")
-        .join("auth.json");
-    println!(
-        "Codex auth.json: {}",
-        if codex_auth.exists() {
-            "OK"
-        } else {
-            "no (run codex login)"
+    // gh CLI for Copilot: asked for github.com only, its answer never kept.
+    let gh = if allowed("copilot") {
+        match gh_signed_in() {
+            GhState::SignedIn => "OK".to_string(),
+            GhState::SignedOut => "no (gh auth login, or store a PAT)".to_string(),
+            GhState::NotInstalled => {
+                "no (gh not installed — install it, or store a PAT)".to_string()
+            }
+            GhState::TimedOut => format!("no answer within {} s", GH_TIMEOUT.as_secs()),
         }
-    );
-
-    // gh CLI for Copilot. std resolves "gh" without ever looking in the working
-    // directory (Rust 1.58+), so a planted gh.exe cannot be picked up; the
-    // system directory is set as the working directory only so gh itself does
-    // not run relative to wherever this tool was launched from.
-    let mut gh_cmd = std::process::Command::new("gh");
-    gh_cmd.args(["auth", "token"]);
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        gh_cmd.current_dir(std::path::Path::new(&root).join("System32"));
-    }
-    let gh_ok = gh_cmd.output().map(|o| o.status.success()).unwrap_or(false);
-    println!(
-        "gh CLI token (Copilot): {}",
-        if gh_ok {
-            "OK"
-        } else {
-            "no (gh auth login, or store a PAT)"
-        }
-    );
+    } else {
+        "not asked: the widget is not allowed to ask gh; allow it there first".to_string()
+    };
+    println!("gh CLI sign-in for github.com (Copilot): {gh}");
 
     // Antigravity (Google): the Credential Manager session first, then the
     // legacy Gemini CLI file — the same order the provider tries.
-    println!(
-        "Antigravity keyring (gemini:antigravity): {}",
-        if ailimits::providers::antigravity::keyring_token_present() {
-            "OK"
-        } else {
-            "no (run Antigravity once)"
-        }
-    );
-    let gemini_creds = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".gemini")
-        .join("oauth_creds.json");
+    let keyring = if !allowed("antigravity") {
+        NOT_ALLOWED
+    } else if ailimits::providers::antigravity::keyring_token_present() {
+        "OK"
+    } else {
+        "no (run Antigravity once)"
+    };
+    println!("Antigravity keyring (gemini:antigravity): {keyring}");
     println!(
         "legacy Gemini CLI oauth_creds.json: {}",
-        if gemini_creds.exists() { "OK" } else { "no" }
+        presence(&paths.gemini_oauth_creds())
     );
 
-    // Grok CLI login: the same file and the same session rules as the
-    // provider. Only the expiry is shown, never the token.
-    let grok_auth = grok::auth_path();
-    match std::fs::read_to_string(&grok_auth) {
-        Ok(content) => match grok::parse_grok_auth(&content, Utc::now()) {
-            Ok(GrokLogin::Token { expires_at, .. }) => {
-                println!("Grok auth.json: OK");
-                if let Some(t) = expires_at {
-                    println!("  token valid until {} UTC", t.format("%Y-%m-%d %H:%M"));
-                }
-            }
-            Ok(GrokLogin::Expired) => {
-                println!("Grok auth.json: no (expired)");
-                println!("  → run grok, it refreshes the token automatically");
-            }
-            Ok(GrokLogin::Missing) => println!("Grok auth.json: no (no session — run grok login)"),
-            Err(_) => println!("Grok auth.json: no (unreadable)"),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    // Grok CLI login (in GROK_HOME when it is set): the same session rules
+    // as the provider. Only the expiry is shown, never the token.
+    match paths.grok_auth() {
+        None => println!("Grok auth.json: unknown (GROK_HOME is not an absolute path)"),
+        Some(auth) if !auth.is_file() => {
             println!("Grok auth.json: no (missing — run grok login)")
         }
-        Err(_) => println!("Grok auth.json: no (unreadable)"),
+        Some(_) if !allowed("grok") => println!("Grok auth.json: found ({NOT_ALLOWED})"),
+        Some(auth) => match std::fs::read_to_string(&auth) {
+            Ok(content) => match grok::parse_grok_auth(&content, Utc::now()) {
+                Ok(GrokLogin::Token { expires_at, .. }) => {
+                    println!("Grok auth.json: OK");
+                    if let Some(t) = expires_at {
+                        println!("  token valid until {} UTC", t.format("%Y-%m-%d %H:%M"));
+                    }
+                }
+                Ok(GrokLogin::Expired) => {
+                    println!("Grok auth.json: no (expired)");
+                    println!("  → run grok, it refreshes the token automatically");
+                }
+                Ok(GrokLogin::Missing) => {
+                    println!("Grok auth.json: no (no session — run grok login)")
+                }
+                Err(_) => println!("Grok auth.json: no (unreadable)"),
+            },
+            Err(_) => println!("Grok auth.json: no (unreadable)"),
+        },
     }
+}
 
-    // Cursor: the widget's own session first, then the editor's token —
-    // the order the provider tries. Read the same way; no request is sent.
-    println!(
-        "Cursor session ({}): {}",
-        session::SESSION_LABEL,
-        own_cursor_session()
-    );
-    use ailimits::providers::cursor::{editor_token_state, EditorTokenState};
-    let editor = match editor_token_state() {
-        EditorTokenState::NotInstalled => {
-            "absent (state.vscdb missing — Cursor not installed)".to_string()
-        }
-        EditorTokenState::Absent => "absent (nobody signed in to the editor)".to_string(),
-        EditorTokenState::Encrypted => {
-            "encrypted (never read — sign in with ailimits-auth login cursor)".to_string()
-        }
-        EditorTokenState::Plain(Some(exp)) => format!(
-            "plain, valid until {} UTC (used only without the session above)",
-            exp.format("%Y-%m-%d %H:%M")
-        ),
-        EditorTokenState::Plain(None) => "plain (used only without the session above)".to_string(),
-        EditorTokenState::Expired(exp) => {
-            format!("plain, expired {} UTC", exp.format("%Y-%m-%d %H:%M"))
-        }
-        EditorTokenState::Unreadable(e) => format!("unreadable ({e})"),
-    };
-    println!("Cursor editor token (state.vscdb): {editor}");
-
-    // Stored keys.
-    println!();
-    println!("── Keys (Credential Manager) ─────────────────────");
-    for (id, label) in PROVIDERS {
-        let present = keyring::Entry::new(KEYRING_SERVICE, label)
-            .and_then(|e| e.get_password())
-            .is_ok();
-        println!(
-            "{id:<8} ({label}): {}",
-            if present { "stored" } else { "—" }
-        );
-    }
-
-    // Current config.
-    println!();
-    println!("── Config ({}) ──", storage::config_path().display());
-    let config = load_config()?;
+/// The providers and what the widget may read, from the config as it is.
+fn print_config(config: &Config) {
     for p in &config.providers {
         let method = match p.auth_method {
             AuthMethod::Subscription => "subscription",
             AuthMethod::ApiKey => "api_key",
         };
         let state = if p.enabled { "enabled" } else { "disabled" };
-        println!("{:<8} {state}, method: {method}", p.id);
+        let reads = if config.sign_in_allowed(&p.id) {
+            "may read the tool's sign-in"
+        } else if config.app_sign_in_allowed(&p.id) {
+            "uses the app's own sign-in only"
+        } else {
+            "reads nothing"
+        };
+        println!("{:<11} {state}, method: {method}, {reads}", p.id);
     }
+    let yes_no = |b: bool| if b { "allowed" } else { "not allowed" };
+    println!(
+        "settings files for model labels: {}; newest session: {}",
+        yes_no(config.reads.tool_settings),
+        yes_no(config.reads.last_session)
+    );
+}
 
-    Ok(())
+/// What `gh` says about a sign-in to github.com.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GhState {
+    SignedIn,
+    SignedOut,
+    NotInstalled,
+    TimedOut,
+}
+
+/// Ask gh whether it has a token for github.com — never another host, so
+/// a GitHub Enterprise sign-in (or `GH_HOST`) is not mistaken for it. Only
+/// the exit code is used: gh's output goes nowhere, so the token never
+/// enters this process. std resolves "gh" without ever looking in the
+/// working directory (Rust 1.58+), so a planted gh.exe cannot be picked up;
+/// the system directory is set as the working directory only so gh itself
+/// does not run relative to wherever this tool was launched from.
+fn gh_signed_in() -> GhState {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("gh");
+    cmd.args(["auth", "token", "--hostname", "github.com"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.current_dir(Path::new(&root).join("System32"));
+    }
+    let Ok(mut child) = cmd.spawn() else {
+        return GhState::NotInstalled;
+    };
+    let deadline = Instant::now() + GH_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return GhState::SignedIn,
+            Ok(Some(_)) => return GhState::SignedOut,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return GhState::TimedOut;
+            }
+        }
+    }
 }
 
 /// Store a key and update the config.
 fn set(provider: Option<&str>) -> Result<()> {
     let provider = provider.context("specify a provider: ailimits-auth set <claude|copilot>")?;
     let label = label_for(provider)?;
+    // The config first: one that cannot be used is refused before anything
+    // is stored.
+    let mut config = config_to_change()?;
 
     // Hidden input: the key is invisible and stays out of terminal history.
     let key = rpassword::prompt_password(format!("Paste the key for {provider}: "))
@@ -291,7 +387,6 @@ fn set(provider: Option<&str>) -> Result<()> {
 
     // Claude: a key implies the api_key method. Copilot: the PAT is just
     // a token source for the subscription method.
-    let mut config = load_config()?;
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
         p.enabled = true;
         p.credential_label = label.to_string();
@@ -305,7 +400,7 @@ fn set(provider: Option<&str>) -> Result<()> {
     save_config(&config)?;
 
     println!("Key for '{provider}' stored in Credential Manager (label: {label})");
-    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
+    println!("{RESTART_HINT}");
     Ok(())
 }
 
@@ -315,6 +410,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     let provider =
         provider.context("specify a provider: ailimits-auth set-usage-token <claude|codex>")?;
     let label = usage_label_for(provider)?;
+    let mut config = config_to_change()?;
 
     let token = rpassword::prompt_password(format!("Paste the {provider} usage token: "))
         .context("failed to read input")?;
@@ -322,7 +418,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     if token.is_empty() {
         bail!("empty token — nothing stored");
     }
-    validate_usage_token(provider, token)?;
+    let checked = validate_usage_token(provider, token)?;
 
     keyring::Entry::new(KEYRING_SERVICE, label)
         .context("keyring unavailable")?
@@ -331,7 +427,6 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
 
     // The token is the app's own source: storing it sets the provider up
     // with it, as a key does, and allows nothing of the tool's files.
-    let mut config = load_config()?;
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
         p.enabled = true;
     }
@@ -339,35 +434,77 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     save_config(&config)?;
 
     println!("{provider} usage token stored (label: {label})");
-    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
+    if checked == TokenCheck::Throttled {
+        println!("  The usage endpoint is limiting requests right now (HTTP 429), so the token could not be checked. If the row shows an error later, run this command again.");
+    }
+    println!("{RESTART_HINT}");
     Ok(())
 }
 
-/// One read-only request to the provider's usage endpoint to verify the token.
-fn validate_usage_token(provider: &str, token: &str) -> Result<()> {
+/// What the usage endpoint's answer says about a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenCheck {
+    /// 200: the token works.
+    Accepted,
+    /// 429: the endpoint limits requests (Claude's bucket is shared with
+    /// Claude Code). The token is stored, with a word that it is unchecked.
+    Throttled,
+    /// 5xx: the service is not answering; asked again a little later.
+    ServerError,
+    /// Anything else (401, 403...): the token is refused, nothing stored.
+    Rejected,
+}
+
+fn judge(status: u16) -> TokenCheck {
+    match status {
+        200 => TokenCheck::Accepted,
+        429 => TokenCheck::Throttled,
+        500..=599 => TokenCheck::ServerError,
+        _ => TokenCheck::Rejected,
+    }
+}
+
+/// One read-only request to the provider's usage endpoint to verify the
+/// token, asked again after a server error (at most three requests in all).
+/// Ok: accepted, or unchecked because of a 429. Err: refused, or no answer.
+fn validate_usage_token(provider: &str, token: &str) -> Result<TokenCheck> {
     let url = match provider {
         "claude" => CLAUDE_USAGE_URL,
         _ => CODEX_USAGE_URL,
     };
-    let status = tokio::runtime::Runtime::new()?.block_on(async {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            // Never follow a 3xx with the bearer token attached.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let client = &reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        // Never follow a 3xx with the bearer token attached.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let ask = || async move {
         let mut req = client.get(url).bearer_auth(token);
         if provider == "claude" {
             req = req.header("anthropic-beta", CLAUDE_USAGE_BETA_HEADER);
         } else {
             req = req.header("User-Agent", "ailimits-widget");
         }
-        Ok::<_, anyhow::Error>(req.send().await?.status())
-    })?;
-
-    if status.as_u16() == 200 {
-        Ok(())
-    } else {
-        bail!("the usage endpoint rejected the token: HTTP {status}");
+        req.send()
+            .await
+            .map(|r| r.status().as_u16())
+            .context("could not reach the usage endpoint — nothing stored")
+    };
+    let mut waits = VALIDATE_RETRIES.iter();
+    loop {
+        let status = runtime.block_on(ask())?;
+        match judge(status) {
+            TokenCheck::ServerError => match waits.next() {
+                Some(wait) => std::thread::sleep(*wait),
+                None => bail!(
+                    "the usage endpoint is not answering (HTTP {status}) — nothing stored, try again later"
+                ),
+            },
+            TokenCheck::Rejected => {
+                bail!("the usage endpoint rejected the token: HTTP {status} — nothing stored")
+            }
+            ok => return Ok(ok),
+        }
     }
 }
 
@@ -382,7 +519,7 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
         Err(e) => bail!("failed to remove the usage token: {e}"),
     }
 
-    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
+    println!("{RESTART_HINT}");
     Ok(())
 }
 
@@ -390,6 +527,7 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
 fn remove(provider: Option<&str>) -> Result<()> {
     let provider = provider.context("specify a provider: ailimits-auth remove <claude|copilot>")?;
     let label = label_for(provider)?;
+    let mut config = config_to_change()?;
 
     match keyring::Entry::new(KEYRING_SERVICE, label).and_then(|e| e.delete_credential()) {
         Ok(()) => println!("Key '{label}' removed from Credential Manager"),
@@ -397,7 +535,6 @@ fn remove(provider: Option<&str>) -> Result<()> {
         Err(e) => bail!("failed to remove the key: {e}"),
     }
 
-    let mut config = load_config()?;
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
         // Without a key everything runs on the subscription method.
         p.credential_label = String::new();
@@ -406,7 +543,7 @@ fn remove(provider: Option<&str>) -> Result<()> {
     }
     save_config(&config)?;
 
-    println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
+    println!("{RESTART_HINT}");
     Ok(())
 }
 
@@ -448,7 +585,8 @@ fn login(provider: Option<&str>) -> Result<()> {
     }
     // Signing in is the user asking for the Cursor row. A widget that had it
     // switched off or not allowed only learns that from the config.
-    let mut config = load_config()?;
+    let mut config = config_to_change()
+        .context("the session is stored, but the widget's config could not be updated")?;
     let ready = config
         .providers
         .iter()
@@ -461,13 +599,13 @@ fn login(provider: Option<&str>) -> Result<()> {
         }
         config.allow_app_sign_in("cursor");
         save_config(&config)?;
-        println!("→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.");
+        println!("{RESTART_HINT}");
     }
     Ok(())
 }
 
-/// Forget the widget's own Cursor session. The provider falls back to the
-/// editor's token, or hides the row.
+/// Forget the widget's own Cursor session. The Cursor row then hides until
+/// the next sign-in.
 fn logout(provider: Option<&str>) -> Result<()> {
     require_cursor(provider, "logout")?;
     let had = session::is_stored();
@@ -500,7 +638,7 @@ fn own_cursor_session() -> String {
 }
 
 /// Read expiresAt and the subscription type from .credentials.json.
-fn read_oauth_expiry(path: &std::path::Path) -> Option<(DateTime<Utc>, String)> {
+fn read_oauth_expiry(path: &Path) -> Option<(DateTime<Utc>, String)> {
     let content = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
     let oauth = value.get("claudeAiOauth")?;
@@ -513,11 +651,84 @@ fn read_oauth_expiry(path: &std::path::Path) -> Option<(DateTime<Utc>, String)> 
     DateTime::<Utc>::from_timestamp_millis(ms).map(|dt| (dt, sub))
 }
 
-/// Config helpers — storage is async, the CLI is sync.
-fn load_config() -> Result<Config> {
-    tokio::runtime::Runtime::new()?.block_on(storage::load_or_default())
+/// The config a command changes: the file as it stands, or a first start's
+/// config when there is none yet. A file that cannot be read or understood
+/// is refused, never replaced and never renamed: nothing is changed.
+fn config_to_change() -> Result<Config> {
+    config_at(&storage::config_path())
 }
 
+fn config_at(path: &Path) -> Result<Config> {
+    match storage::peek(path) {
+        Peek::Found(config) => Ok(*config),
+        Peek::Missing => Ok(Config::fresh_install()),
+        Peek::Unreadable(e) => bail!(
+            "config.toml could not be read ({e}) — nothing was changed; try again in a moment"
+        ),
+        Peek::Unparsable(e) => bail!(
+            "config.toml could not be understood ({e}) — nothing was changed; fix it, or start the widget once to set it aside"
+        ),
+    }
+}
+
+/// Storage is async, the CLI is sync.
 fn save_config(config: &Config) -> Result<()> {
     tokio::runtime::Runtime::new()?.block_on(storage::save(config))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_429_stores_the_token_unchecked_and_5xx_asks_again() {
+        assert_eq!(judge(200), TokenCheck::Accepted);
+        assert_eq!(judge(429), TokenCheck::Throttled);
+        for code in [500, 502, 503, 529, 599] {
+            assert_eq!(judge(code), TokenCheck::ServerError, "{code}");
+        }
+        for code in [400, 401, 403, 404, 302, 0] {
+            assert_eq!(judge(code), TokenCheck::Rejected, "{code}");
+        }
+    }
+
+    /// The commands that change the config refuse one they cannot use, and
+    /// never create, rename or replace anything to get past it.
+    #[test]
+    fn a_config_that_cannot_be_used_is_refused_and_left_alone() {
+        let dir = std::env::temp_dir().join(format!("ailimits-auth-cfg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        // None yet: a first start's config, and still no file.
+        let fresh = config_at(&path).unwrap();
+        assert_eq!(fresh, Config::fresh_install());
+        assert!(!path.exists());
+        std::fs::write(&path, "[broken").unwrap();
+        let err = config_at(&path).unwrap_err().to_string();
+        assert!(err.contains("nothing was changed"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[broken");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The editor's sign-in is never read: none of its markers is left in
+    /// this tool.
+    #[test]
+    fn the_editors_sign_in_is_never_read() {
+        let src = include_str!("ailimits-auth.rs");
+        let marker = ["cursorAuth", "/accessToken"].concat();
+        assert!(!src.contains(&marker));
+        assert!(!src.contains(&["editor_token", "_state"].concat()));
+        assert!(!src.contains(&["state", ".vscdb"].concat()));
+    }
+
+    /// gh is asked about github.com only, and its output is never captured.
+    #[test]
+    fn gh_is_asked_for_github_com_only() {
+        let src = include_str!("ailimits-auth.rs");
+        let call = ["\"auth\", \"token\", \"--hostname\", \"github.com\""].concat();
+        assert!(src.contains(&call));
+        assert!(!src.contains(&[".output", "()"].concat()));
+    }
 }

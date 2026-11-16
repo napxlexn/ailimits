@@ -7,10 +7,20 @@
 // actually runs — a machine without it degrades to an honest error instead of
 // failing to start. See docs/en/ARCHITECTURE.md, "Key decisions".
 //
-// Every connection is opened SQLITE_OPEN_READONLY: the database belongs to
-// another app (which may have it open and be writing to it), and nothing here
-// may ever change it. WAL databases read fine this way; SQLite keeps reading
-// the owner's -wal/-shm files, it does not checkpoint or truncate them.
+// Every connection is read-only: the database belongs to another app (which
+// may have it open and be writing to it), and nothing here may ever change
+// it or leave a file beside it. How it is opened depends on the database
+// (`open_mode`):
+// - A WAL database whose owner is not running has no -wal file. A plain
+//   read-only open would create -wal and -shm beside it to read it, and a
+//   read-only connection cannot remove them again. So it is opened as
+//   `file:...?immutable=1`: no lock is taken and no file is created, and
+//   nothing can change the database meanwhile, as its owner is not running.
+// - A WAL database whose owner has it open (its -wal exists, and its -shm):
+//   SQLITE_OPEN_READONLY, reading the owner's -wal/-shm as they are, never
+//   checkpointing or truncating them. Nothing new is created.
+// - A database in rollback-journal mode: SQLITE_OPEN_READONLY; a reader
+//   creates no file there, and the shared lock keeps the read consistent.
 
 use std::path::Path;
 
@@ -63,9 +73,82 @@ pub fn lookup_texts(
     }
 }
 
+/// How a lookup opens the database, so that reading it leaves nothing behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+enum OpenMode {
+    /// SQLITE_OPEN_READONLY on the plain path, with the usual read locks.
+    Shared,
+    /// SQLITE_OPEN_READONLY | SQLITE_OPEN_URI on this `?immutable=1` URI.
+    Immutable(String),
+}
+
+/// `Immutable` for a WAL database without its -wal file (its owner is not
+/// running), when the path has a URI form; `Shared` otherwise.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn open_mode(path: &Path) -> OpenMode {
+    if !is_wal_database(path) || sidecar(path, "-wal").exists() {
+        return OpenMode::Shared;
+    }
+    immutable_uri(path).map_or(OpenMode::Shared, OpenMode::Immutable)
+}
+
+/// Whether the file is a SQLite database in WAL mode, from its 100-byte
+/// header: "SQLite format 3\0", then the write and read versions (bytes 18
+/// and 19), both 2 in WAL mode. Anything unreadable is not, and the open
+/// that follows reports it honestly.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_wal_database(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 20];
+    std::fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut header))
+        .is_ok()
+        && header.starts_with(b"SQLite format 3\0")
+        && header[18] == 2
+        && header[19] == 2
+}
+
+/// `<path><suffix>`: the -wal, -shm or -journal file beside a database.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut p = path.as_os_str().to_owned();
+    p.push(suffix);
+    p.into()
+}
+
+/// The `file:` URI that opens `path` read-only with no lock and no file
+/// created: `file:///C:/Users/.../state.vscdb?immutable=1`, every byte but
+/// the plain ones percent-encoded (spaces, `%`, `#`, `?`, non-ASCII as its
+/// UTF-8). Only a path on a drive (`C:\...`) has one; a UNC or `\\?\` path,
+/// or one that is not UTF-8, gets None and is opened the plain way.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn immutable_uri(path: &Path) -> Option<String> {
+    let text = path.to_str()?;
+    let b = text.as_bytes();
+    let on_drive =
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    if !on_drive {
+        return None;
+    }
+    let mut uri = String::from("file:///");
+    for (i, &byte) in b.iter().enumerate() {
+        match byte {
+            b'\\' | b'/' => uri.push('/'),
+            b':' if i == 1 => uri.push(':'),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                uri.push(byte as char)
+            }
+            _ => uri.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    uri.push_str("?immutable=1");
+    Some(uri)
+}
+
 #[cfg(target_os = "windows")]
 mod win {
-    use super::{SqliteError, BUSY_TIMEOUT_MS};
+    use super::{OpenMode, SqliteError, BUSY_TIMEOUT_MS};
     use std::ffi::{c_char, c_int, c_void, CStr, CString};
     use std::path::Path;
     use std::ptr::{null, null_mut};
@@ -80,6 +163,7 @@ mod win {
     const SQLITE_ROW: c_int = 100;
     const SQLITE_DONE: c_int = 101;
     const SQLITE_OPEN_READONLY: c_int = 0x0000_0001;
+    const SQLITE_OPEN_URI: c_int = 0x0000_0040;
     #[cfg(test)]
     const SQLITE_OPEN_READWRITE: c_int = 0x0000_0002;
     #[cfg(test)]
@@ -200,7 +284,13 @@ mod win {
             let path = path
                 .to_str()
                 .ok_or_else(|| SqliteError::Failed("database path is not UTF-8".to_string()))?;
-            let path = CString::new(path)
+            Conn::open_name(api, path, flags)
+        }
+
+        /// Open by a name SQLite takes as it is: a path, or a `file:` URI
+        /// with SQLITE_OPEN_URI.
+        fn open_name(api: &'static Api, name: &str, flags: c_int) -> Result<Conn, SqliteError> {
+            let path = CString::new(name)
                 .map_err(|_| SqliteError::Failed("database path holds a NUL".to_string()))?;
             let mut db = null_mut();
             let rc = unsafe { (api.open_v2)(path.as_ptr(), &mut db, flags, null()) };
@@ -308,7 +398,12 @@ mod win {
         keys: &[&str],
     ) -> Result<Vec<Option<String>>, SqliteError> {
         let api = api()?;
-        let conn = Conn::open(api, path, SQLITE_OPEN_READONLY)?;
+        let conn = match super::open_mode(path) {
+            OpenMode::Shared => Conn::open(api, path, SQLITE_OPEN_READONLY)?,
+            OpenMode::Immutable(uri) => {
+                Conn::open_name(api, &uri, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI)?
+            }
+        };
         let sql = CString::new(sql).map_err(|_| SqliteError::Failed("NUL in SQL".into()))?;
         let mut stmt = null_mut();
         let rc = unsafe { (api.prepare_v2)(conn.db, sql.as_ptr(), -1, &mut stmt, null_mut()) };
@@ -433,6 +528,8 @@ mod tests {
         db.exec(SCHEMA);
         db.exec("INSERT INTO ItemTable VALUES ('a', 'fresh');");
         // The writer stays open, so nothing is checkpointed into the main file.
+        // Its -wal is there: the owner's files are read as they are.
+        assert_eq!(open_mode(&tmp.0), OpenMode::Shared);
         assert_eq!(
             lookup_texts(&tmp.0, QUERY, &["a"]).expect("lookup"),
             vec![Some("fresh".to_string())]
@@ -442,6 +539,125 @@ mod tests {
         assert_eq!(
             lookup_texts(&tmp.0, QUERY, &["a"]).expect("lookup"),
             vec![Some("newer".to_string())]
+        );
+    }
+
+    /// The files beside a database, as they are now.
+    fn sidecars(path: &std::path::Path) -> Vec<&'static str> {
+        ["-wal", "-shm", "-journal"]
+            .into_iter()
+            .filter(|s| sidecar(path, s).exists())
+            .collect()
+    }
+
+    /// A WAL database whose owner is not running (Cursor closed: it removes
+    /// its -wal and -shm on exit) is read without a single file appearing
+    /// beside it — a plain read-only open would leave -wal and -shm behind.
+    fn reads_a_closed_wal_database_without_leaving_files(path: &std::path::Path) {
+        {
+            let db = TestDb::create(path);
+            db.exec("PRAGMA journal_mode=WAL;");
+            db.exec(SCHEMA);
+            db.exec("INSERT INTO ItemTable VALUES ('a', 'kept');");
+        }
+        assert!(is_wal_database(path));
+        assert!(
+            sidecars(path).is_empty(),
+            "the owner left {:?}",
+            sidecars(path)
+        );
+        assert!(matches!(open_mode(path), OpenMode::Immutable(_)));
+        for _ in 0..3 {
+            assert_eq!(
+                lookup_texts(path, QUERY, &["a", "missing"]).expect("lookup"),
+                vec![Some("kept".to_string()), None]
+            );
+            assert!(sidecars(path).is_empty(), "left {:?}", sidecars(path));
+        }
+        // The owner starts again and writes: its -wal is there now, and the
+        // read goes through it (its newest value), still adding nothing.
+        let db = TestDb::create(path);
+        db.exec("PRAGMA wal_autocheckpoint=0;");
+        db.exec("INSERT INTO ItemTable VALUES ('a', 'newer');");
+        let before = sidecars(path);
+        assert!(before.contains(&"-wal"), "{before:?}");
+        assert_eq!(open_mode(path), OpenMode::Shared);
+        assert_eq!(
+            lookup_texts(path, QUERY, &["a"]).expect("lookup"),
+            vec![Some("newer".to_string())]
+        );
+        assert_eq!(sidecars(path), before);
+    }
+
+    #[test]
+    fn a_closed_wal_database_is_read_without_leaving_files() {
+        let tmp = TempDb::new("immutable");
+        reads_a_closed_wal_database_without_leaving_files(&tmp.0);
+    }
+
+    /// The same where the URI needs escaping: a Cyrillic user name, spaces,
+    /// `#`, `%`, `?`-less but `&`, `=`, brackets, as profile folders have.
+    #[test]
+    fn a_closed_wal_database_in_an_odd_folder_is_read_the_same() {
+        let dir = std::env::temp_dir().join(format!(
+            "ailimits sqlite Вася #1 %20 a&b=c (x) [y] {}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = TempDb(dir.join("state.vscdb"));
+        reads_a_closed_wal_database_without_leaving_files(&tmp.0);
+        drop(tmp);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A database in rollback-journal mode is opened the plain way (its
+    /// shared lock keeps the read consistent), and a reader creates nothing.
+    #[test]
+    fn a_rollback_journal_database_is_read_shared_and_leaves_nothing() {
+        let tmp = TempDb::new("journal");
+        {
+            let db = TestDb::create(&tmp.0);
+            db.exec(SCHEMA);
+            db.exec("INSERT INTO ItemTable VALUES ('a', 'x');");
+        }
+        assert!(!is_wal_database(&tmp.0));
+        assert_eq!(open_mode(&tmp.0), OpenMode::Shared);
+        assert_eq!(
+            lookup_texts(&tmp.0, QUERY, &["a"]).expect("lookup"),
+            vec![Some("x".to_string())]
+        );
+        assert!(sidecars(&tmp.0).is_empty(), "{:?}", sidecars(&tmp.0));
+    }
+
+    #[test]
+    fn the_immutable_uri_escapes_everything_but_plain_bytes() {
+        use std::path::Path;
+        assert_eq!(
+            immutable_uri(Path::new(
+                r"C:\Users\Вася\AppData\Roaming\Cursor\User\globalStorage\state.vscdb"
+            ))
+            .as_deref(),
+            Some("file:///C:/Users/%D0%92%D0%B0%D1%81%D1%8F/AppData/Roaming/Cursor/User/globalStorage/state.vscdb?immutable=1")
+        );
+        assert_eq!(
+            immutable_uri(Path::new(r"d:\a b\#1%?&=(x):y.db")).as_deref(),
+            Some("file:///d:/a%20b/%231%25%3F%26%3D%28x%29%3Ay.db?immutable=1")
+        );
+        // No URI form: opened the plain way.
+        for odd in [
+            r"\\server\share\state.vscdb",
+            r"\\?\C:\Users\x\state.vscdb",
+            r"state.vscdb",
+            r"\Users\x\state.vscdb",
+            r"C:state.vscdb",
+        ] {
+            assert_eq!(immutable_uri(Path::new(odd)), None, "{odd}");
+        }
+        // Not a database, or missing: the plain way, which fails honestly.
+        assert_eq!(
+            open_mode(Path::new(r"C:\definitely\missing.db")),
+            OpenMode::Shared
         );
     }
 

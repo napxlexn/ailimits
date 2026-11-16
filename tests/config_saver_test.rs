@@ -117,6 +117,49 @@ fn shutdown_works_from_a_thread_with_no_runtime_context() {
     );
 }
 
+// A config the app could not use at startup, and could not set aside either
+// (another program held it open without letting it be moved), is kept as it
+// is: the background saver must not write over it, not on a change and not
+// at shutdown — that write was how a real config got replaced by defaults.
+#[cfg(target_os = "windows")]
+#[test]
+fn the_saver_never_writes_over_a_config_kept_at_startup() {
+    use ailimits::config::storage::LoadProblem;
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 1;
+    let dir = std::env::temp_dir().join(format!("ailimits-saver-held-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    let text = "[window]\npos_x = 1234\n[broken";
+    std::fs::write(&path, text).unwrap();
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let held = std::fs::File::options()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&path)
+        .unwrap();
+    let loaded = rt.block_on(storage::load_from(&path));
+    drop(held);
+    assert!(
+        matches!(loaded.problem, Some(LoadProblem::Unparsable { .. })),
+        "{:?}",
+        loaded.problem
+    );
+    assert!(storage::saving_held(&path));
+
+    let saver = storage::spawn_saver(rt.handle(), path.clone());
+    saver.handle().save(config_with_opacity(0.300));
+    saver.shutdown(config_with_opacity(0.400), rt.handle());
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    let count = std::fs::read_dir(&dir).unwrap().count();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(after, text, "the kept config was written over");
+    assert_eq!(count, 1, "something was created beside it");
+}
+
 // `ConfigSaverHandle` is `Clone + Send + 'static`, so nothing stops another
 // thread from calling `save` at the exact moment `shutdown` is sending
 // `Final`. If a `Write` could land in the slot after `Final` but before the

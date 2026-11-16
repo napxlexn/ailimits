@@ -1,28 +1,54 @@
 // tests/config_test.rs — configuration tests.
 
-use ailimits::config::schema::{Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay};
+use ailimits::config::schema::{
+    Config, DetailLevel, IndicatorKind, Layout, ModelPart, ModelSource, Palette, PanelDisplay,
+    PendingNotice,
+};
+use ailimits::config::storage::{self, LoadProblem, Peek};
+use std::path::{Path, PathBuf};
+
+const IDS: [&str; 6] = [
+    "claude",
+    "codex",
+    "copilot",
+    "antigravity",
+    "grok",
+    "cursor",
+];
 
 #[test]
-fn default_config_has_expected_providers() {
-    // The default config contains all six providers, enabled, no keys.
+fn default_config_lists_every_provider_without_keys() {
+    // The template every config starts from: all six providers, in the
+    // menu's order, no keys.
     let config = Config::default();
-    assert_eq!(config.providers.len(), 6);
-    for p in &config.providers {
-        assert!(p.enabled, "{} should be enabled by default", p.id);
-        assert!(p.credential_label.is_empty());
-    }
     let ids: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
-    assert_eq!(
-        ids,
-        vec![
-            "claude",
-            "codex",
-            "copilot",
-            "antigravity",
-            "grok",
-            "cursor"
-        ]
-    );
+    assert_eq!(ids, IDS);
+    for p in &config.providers {
+        assert!(p.credential_label.is_empty(), "{}", p.id);
+        assert!(!p.tool_files, "{}", p.id);
+    }
+    assert_eq!(config.reads, Default::default());
+}
+
+/// What a new install really runs on: every provider listed but switched
+/// off, nothing allowed to be read, the welcome owed. A path that saved a
+/// config without settling `[reads]` would show up here.
+#[test]
+fn a_fresh_install_runs_nothing_and_reads_nothing() {
+    let config = Config::fresh_install();
+    let ids: Vec<&str> = config.providers.iter().map(|p| p.id.as_str()).collect();
+    assert_eq!(ids, IDS);
+    for p in &config.providers {
+        assert!(!p.enabled, "{} switched on", p.id);
+        assert!(!config.provider_active(p), "{} active", p.id);
+        assert!(!config.sign_in_allowed(&p.id) && !config.app_sign_in_allowed(&p.id));
+    }
+    assert!(config.reads.sign_in.is_empty() && config.reads.app_sign_in.is_empty());
+    assert!(!config.reads.tool_settings && !config.reads.last_session);
+    assert_eq!(config.reads.pending, PendingNotice::Welcome);
+    // Everything else is the template's.
+    assert_eq!(config.window, Config::default().window);
+    assert_eq!(config.ui, Config::default().ui);
 }
 
 #[test]
@@ -41,9 +67,9 @@ fn every_default_provider_id_resolves() {
 
 #[test]
 fn empty_toml_parses_to_defaults() {
-    // An empty TOML must not break parsing.
+    // An empty TOML must not break parsing, and gives the template whole.
     let config: Config = toml::from_str("").expect("empty config should parse");
-    assert_eq!(config.providers.len(), 6);
+    assert_eq!(config, Config::default());
 }
 
 #[test]
@@ -195,9 +221,185 @@ fn panel_display_parses_primary_and_data_carrying_secondary_and_falls_back_on_no
 
 #[test]
 fn config_roundtrip_serialization() {
-    // Serialize → deserialize losslessly.
-    let config = Config::default();
+    // Serialize → deserialize losslessly: every field, not just a count.
+    let mut config = Config::fresh_install();
+    config.allow_sign_in("codex");
+    config.allow_app_sign_in("cursor");
+    config.reads.tool_settings = true;
+    config.reads.pending = PendingNotice::None;
+    for p in config.providers.iter_mut() {
+        p.enabled = matches!(p.id.as_str(), "codex" | "cursor");
+    }
+    config.providers[2].alert_threshold = 93;
+    config.providers[2].credential_label = "copilot_pat".into();
+    config.general.update_interval_secs = 300;
+    config.general.indicator = IndicatorKind::PanelRows;
+    config.general.panel_display = PanelDisplay::Secondary(1);
+    config.general.panel_offset_x = -12;
+    config.window.pos_x = -1900;
+    config.window.opacity = 0.7;
+    config.window.pinned = true;
+    config.ui.palette = Palette::Forest;
+    config.ui.detail = DetailLevel::Expanded;
+    config.ui.show_forecast = true;
+    config.ui.rows.widget = Some(vec!["codex".into(), "claude.opus".into()]);
+    config.ui.rows.tooltip = Some(Vec::new());
+    config.ui.model.widget = vec![ModelPart::Model, ModelPart::Effort];
+    config.ui.model.source = ModelSource::LastUsed;
+    config
+        .ui
+        .model
+        .names
+        .insert("gpt-6.1-sol".into(), "Sol \"6.1\" é".into());
+    config.notifications.cooldown_minutes = 45;
+    config.hooks.on_reset = r#"C:\Program Files\x\notify.cmd "reset""#.into();
     let serialized = toml::to_string_pretty(&config).expect("should serialize");
     let parsed: Config = toml::from_str(&serialized).expect("should parse back");
-    assert_eq!(parsed.providers.len(), config.providers.len());
+    assert_eq!(parsed, config);
+    // And the template itself.
+    let template = toml::to_string_pretty(&Config::default()).unwrap();
+    assert_eq!(
+        toml::from_str::<Config>(&template).unwrap(),
+        Config::default()
+    );
+}
+
+// ─── On disk ──────────────────────────────────────────────────────
+
+/// A fresh folder under %TEMP%, removed when dropped.
+struct Dir(PathBuf);
+
+impl Dir {
+    fn new(tag: &str) -> Dir {
+        let dir =
+            std::env::temp_dir().join(format!("ailimits-cfgtest-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Dir(dir)
+    }
+
+    fn config(&self) -> PathBuf {
+        self.0.join("config.toml")
+    }
+
+    fn names(&self) -> Vec<String> {
+        names(&self.0)
+    }
+}
+
+impl Drop for Dir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn block<T>(f: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Runtime::new().unwrap().block_on(f)
+}
+
+/// A first start writes the fresh-install config, and the next start reads
+/// back exactly that.
+#[test]
+fn a_first_start_writes_a_config_that_reads_back_the_same() {
+    let dir = Dir::new("first");
+    let first = block(storage::load_from(&dir.config()));
+    assert_eq!(first.problem, None);
+    assert_eq!(first.config, Config::fresh_install());
+    assert_eq!(dir.names(), ["config.toml"]);
+    let second = block(storage::load_from(&dir.config()));
+    assert_eq!(second.problem, None);
+    assert_eq!(second.config, first.config);
+}
+
+/// What the user set survives a save and a load through the disk.
+#[test]
+fn a_saved_config_loads_back_as_it_was() {
+    let dir = Dir::new("saved");
+    let mut config = Config::fresh_install();
+    config.allow_sign_in("claude");
+    config.providers[0].enabled = true;
+    config.reads.pending = PendingNotice::None;
+    config.window.pos_x = 777;
+    block(storage::save_to(&config, &dir.config())).unwrap();
+    let loaded = block(storage::load_from(&dir.config()));
+    assert_eq!(loaded.problem, None);
+    assert_eq!(loaded.config, config);
+}
+
+/// Two configs that cannot be understood, one after the other: each is set
+/// aside under its own name (the second never replaces the first), with
+/// its bytes intact.
+#[test]
+fn two_broken_configs_are_both_kept() {
+    let dir = Dir::new("broken");
+    let mut backups = Vec::new();
+    for text in ["[ui\npalette = 1", "x = = 2"] {
+        std::fs::write(dir.config(), text).unwrap();
+        let loaded = block(storage::load_from(&dir.config()));
+        let Some(LoadProblem::SetAside { backup, .. }) = loaded.problem else {
+            panic!("{:?}", loaded.problem);
+        };
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), text);
+        assert_eq!(loaded.config, Config::fresh_install());
+        backups.push(backup);
+    }
+    assert_ne!(backups[0], backups[1]);
+    assert_eq!(dir.names().len(), 2);
+}
+
+/// `peek` — what `ailimits-auth status` uses — never creates, renames or
+/// writes anything, whatever it finds.
+#[test]
+fn a_peek_at_the_config_changes_nothing() {
+    let dir = Dir::new("peek");
+    assert!(matches!(storage::peek(&dir.config()), Peek::Missing));
+    assert!(dir.names().is_empty(), "{:?}", dir.names());
+    std::fs::write(dir.config(), "[broken").unwrap();
+    assert!(matches!(storage::peek(&dir.config()), Peek::Unparsable(_)));
+    assert_eq!(dir.names(), ["config.toml"]);
+    assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), "[broken");
+    let mut config = Config::fresh_install();
+    config.allow_sign_in("grok");
+    block(storage::save_to(&config, &dir.config())).unwrap();
+    let before = std::fs::read(dir.config()).unwrap();
+    let Peek::Found(found) = storage::peek(&dir.config()) else {
+        panic!("not found");
+    };
+    assert_eq!(*found, config);
+    assert_eq!(std::fs::read(dir.config()).unwrap(), before);
+    assert_eq!(dir.names(), ["config.toml"]);
+}
+
+/// The messages name the file and say whether changes are saved.
+#[test]
+fn the_load_problems_say_what_happened() {
+    let unreadable = LoadProblem::Unreadable {
+        error: "locked".into(),
+    };
+    assert!(unreadable.saving_off());
+    assert!(unreadable.message().contains("config.toml"));
+    assert!(unreadable.message().contains("not saved"));
+    let aside = LoadProblem::SetAside {
+        backup: PathBuf::from(r"C:\x\config.toml.20261116-101010.corrupt"),
+        error: "bad".into(),
+    };
+    assert!(!aside.saving_off());
+    assert!(aside
+        .message()
+        .contains("config.toml.20261116-101010.corrupt"));
+    let unparsable = LoadProblem::Unparsable {
+        error: "bad".into(),
+    };
+    assert!(unparsable.saving_off());
+    assert!(unparsable.message().contains("not saved"));
 }
