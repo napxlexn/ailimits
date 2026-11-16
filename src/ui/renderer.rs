@@ -1655,6 +1655,7 @@ mod tests {
                 reset_at: None,
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             }]),
         );
         let expired = ProviderData {
@@ -2091,6 +2092,12 @@ mod tests {
                     pct_reset("Weekly", 34, Long, 3 * D + 4 * H),
                     pct_reset("Opus", 61, Long, 3 * D + 4 * H),
                     pct_reset("Sonnet", 12, Long, 3 * D + 4 * H),
+                    // Only its extra row shows it: every entry without
+                    // that row is the same as before Fable was reported.
+                    Metric {
+                        extra_only: true,
+                        ..pct_reset("Fable", 37, Long, 4 * D + 15 * H)
+                    },
                 ],
             ),
             of(
@@ -2124,6 +2131,7 @@ mod tests {
                     reset_at: reset_in(20 * D + 3 * H),
                     window: Session,
                     unified_pool: false,
+                    extra_only: false,
                 }],
             ),
             of(
@@ -2295,6 +2303,20 @@ mod tests {
             items.push((
                 format!("extra-{name}"),
                 rows_widget(&renderer, &extra, &ui, false, None),
+            ));
+        }
+
+        // Claude's Fable week, chosen: a row of its own under Claude.
+        let fable = widget_rows(
+            &fixture,
+            Some(&["claude", "claude.fable", "codex", "grok"]),
+            None,
+        );
+        assert_eq!(fable.len(), 4);
+        for (name, ui) in every_layout() {
+            items.push((
+                format!("fable-{name}"),
+                rows_widget(&renderer, &fable, &ui, false, None),
             ));
         }
 
@@ -2574,6 +2596,7 @@ mod tests {
                     reset_at: hours(23),
                     window: Session,
                     unified_pool: false,
+                    extra_only: false,
                 }],
             ),
             ProviderData {
@@ -2779,6 +2802,7 @@ mod tests {
             reset_at: None,
             window,
             unified_pool: false,
+            extra_only: false,
         }
     }
 

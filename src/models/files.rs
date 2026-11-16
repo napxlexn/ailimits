@@ -1,5 +1,5 @@
 // models/files.rs — bounded reads of other tools' files: a size cap for
-// settings, the last bytes of a session file, a stamp (modification time and
+// settings, a session file read back from its end in steps, a stamp (modification time and
 // length) that says whether a file changed since it was last read, and the
 // check every value passes before it leaves a reader.
 
@@ -10,8 +10,14 @@ use std::time::SystemTime;
 
 /// Settings files larger than this are not read.
 pub(super) const SETTINGS_CAP: u64 = 256 * 1024;
-/// How much of the end of a session file is read.
-pub(super) const TAIL_LEN: u64 = 64 * 1024;
+/// A session file is read back from its end this much at a time...
+pub(super) const TAIL_STEP: u64 = 64 * 1024;
+/// ...until a model record turns up, at most this far from the end. Claude
+/// Code writes a 110-160 KB record after a session's first answer, which
+/// puts that answer past one step; measured on the owner's PC 2026-11-13,
+/// the newest model record sat within 1 MB of the end in 97.9% of the
+/// states a session file passed through.
+pub(super) const TAIL_CAP: u64 = 1024 * 1024;
 /// Longer model ids and efforts are not names: dropped.
 const VALUE_CAP: usize = 128;
 
@@ -55,24 +61,60 @@ pub(super) fn read_capped(path: &Path, cap: u64) -> Option<Vec<u8>> {
 /// The last `n` bytes of a file as text, whole lines only: a line cut by the
 /// start of the window is dropped. Invalid UTF-8 becomes U+FFFD, so a broken
 /// line fails to parse on its own without hiding the others.
+#[cfg(test)]
 pub(super) fn read_tail(path: &Path, n: u64) -> Option<String> {
+    scan_back(path, n, n, |tail| Some(tail.to_string()))
+}
+
+/// Reads a file back from its end, `step` bytes at a time and at most `cap`
+/// bytes in all, and gives the first answer `pick` finds: `pick` sees each
+/// step's whole lines as text, the newest step first. A line that crosses
+/// a step boundary is whole in the earlier step; a line cut by the cap is
+/// dropped. Invalid UTF-8 becomes U+FFFD, so a broken line fails to parse
+/// on its own without hiding the others. Memory: at most `cap` plus a step.
+pub(super) fn scan_back<T>(
+    path: &Path,
+    step: u64,
+    cap: u64,
+    pick: impl Fn(&str) -> Option<T>,
+) -> Option<T> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    let start = len.saturating_sub(n);
-    // One byte before the window says whether its first line is whole.
-    let from = start.saturating_sub(1);
-    file.seek(SeekFrom::Start(from)).ok()?;
-    let mut buf = Vec::new();
-    file.take(n + (start - from)).read_to_end(&mut buf).ok()?;
-    let text: &[u8] = if from == 0 && start == 0 {
-        buf.strip_prefix(BOM).unwrap_or(&buf)
-    } else {
-        match buf.iter().position(|&b| b == b'\n') {
-            Some(i) => &buf[i + 1..],
-            None => &[],
+    let floor = len.saturating_sub(cap);
+    let step = step.max(1);
+    let mut end = len;
+    // The start of a line the newer step began in the middle of.
+    let mut carry: Vec<u8> = Vec::new();
+    loop {
+        let start = end.saturating_sub(step).max(floor);
+        // One byte before the step says whether its first line is whole.
+        let from = start.saturating_sub(1);
+        file.seek(SeekFrom::Start(from)).ok()?;
+        let mut buf = Vec::with_capacity((end - from) as usize + carry.len());
+        (&mut file).take(end - from).read_to_end(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+        // Byte 0 is the one before the step (none at the file's start). A
+        // newline there: every line is whole. Otherwise the first line goes
+        // on in the next (earlier) step, or is cut by the cap.
+        let cut = match (start, buf.iter().position(|&b| b == b'\n')) {
+            (0, _) => 0,
+            (_, Some(i)) => i + 1,
+            (_, None) => buf.len(),
+        };
+        let whole = if start == 0 {
+            buf.strip_prefix(BOM).unwrap_or(&buf)
+        } else {
+            &buf[cut..]
+        };
+        if let Some(found) = pick(&String::from_utf8_lossy(whole)) {
+            return Some(found);
         }
-    };
-    Some(String::from_utf8_lossy(text).into_owned())
+        if start <= floor {
+            return None;
+        }
+        carry = buf[1..cut].to_vec();
+        end = start;
+    }
 }
 
 /// A model id or an effort as text a label can show: a string, trimmed, not
@@ -173,6 +215,53 @@ mod tests {
         assert!(read_tail(&dir.path().join("missing"), 64).is_none());
         let empty = dir.write("empty.jsonl", b"");
         assert_eq!(read_tail(&empty, 64).unwrap(), "");
+    }
+
+    /// Every line of a file, newest first, as `scan_back` hands them out:
+    /// each whole exactly once, whatever the step.
+    fn lines_back(path: &Path, step: u64, cap: u64) -> Vec<String> {
+        let seen = std::cell::RefCell::new(Vec::new());
+        let none: Option<()> = scan_back(path, step, cap, |part| {
+            let mut lines: Vec<String> = part.lines().map(String::from).collect();
+            lines.reverse();
+            seen.borrow_mut().extend(lines);
+            None
+        });
+        assert!(none.is_none());
+        seen.into_inner()
+    }
+
+    #[test]
+    fn a_scan_back_sees_every_line_once_whole() {
+        let dir = TempDir::new("scan");
+        let text = "a\nbbbbbbbbbbbbbbbbbbbb\nc\n\nddddd\neeeeeeeeeeee\nf\n";
+        let path = dir.write("s.jsonl", text);
+        let mut want: Vec<&str> = text.lines().collect();
+        want.reverse();
+        for step in 1..=text.len() as u64 + 2 {
+            assert_eq!(lines_back(&path, step, 1 << 20), want, "step {step}");
+        }
+        // The first answer found ends the read.
+        let pick = |part: &str| {
+            part.lines()
+                .rev()
+                .find(|l| l.starts_with('d'))
+                .map(String::from)
+        };
+        assert_eq!(scan_back(&path, 3, 1 << 20, pick).as_deref(), Some("ddddd"));
+        // A line cut by the cap is dropped; every line inside it is whole.
+        let cap = "ddddd\neeeeeeeeeeee\nf\n".len() as u64;
+        for step in 1..=cap {
+            assert_eq!(lines_back(&path, step, cap), ["f", "eeeeeeeeeeee", "ddddd"]);
+        }
+        assert_eq!(lines_back(&path, 4, cap - 1), ["f", "eeeeeeeeeeee"]);
+        // A BOM goes, CRLF stays for the parser, a missing file is None.
+        let bom = dir.write("bom.jsonl", b"\xEF\xBB\xBF{}\r\nx\r\n");
+        assert_eq!(lines_back(&bom, 2, 64), ["x", "{}"]);
+        let missing: Option<()> = scan_back(&dir.path().join("missing"), 4, 64, |_| Some(()));
+        assert!(missing.is_none());
+        let empty = dir.write("empty.jsonl", b"");
+        assert!(lines_back(&empty, 4, 64).is_empty());
     }
 
     #[test]

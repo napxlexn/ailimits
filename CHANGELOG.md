@@ -13,8 +13,9 @@ Notable, user-visible changes. Dates are release dates.
   opens by itself on a first start, and from a click on the widget while
   nothing is chosen yet. With the rows and labels left as they are, the
   widget, the panel and the tray look exactly as before.
-- **Extra rows where a provider meters a part on its own.** Claude's Opus
-  and Sonnet weeks (on plans that have them), Antigravity's Claude and GPT
+- **Extra rows where a provider meters a part on its own.** Claude's Opus,
+  Sonnet and Fable weeks (on plans that have them; Fable is the "Current
+  week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
   pool, Grok Build and Cursor's Grok Bot can each be a row of their own,
   under their provider. A row the provider is not reporting right now can
   still be ticked; it appears once the provider reports it. The taskbar
@@ -23,8 +24,10 @@ Notable, user-visible changes. Dates are release dates.
   model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
   chosen separately for the widget and the tooltip. The model comes either
   from the tool's settings file ("As set in the tool") or, for Claude Code
-  and Codex CLI, from the end of the newest session ("Last used"); the other
-  tools keep showing the configured model. A tool left on its default
+  and Codex CLI, from the end of the newest session ("Last used", read
+  back from the end until the model turns up, at most 1 MB); the other
+  tools keep showing the configured model. A Claude Code model chosen by
+  its short name (`/model opus`) shows the effort saved for that model. A tool left on its default
   model, which it does not write down, shows its effort alone. Expanded
   rows and the columns layout give the label a line of its own, Medium puts
   it beside the reset (on a line of its own where that leaves too little

@@ -103,6 +103,7 @@ impl ClaudeProvider {
                 reset_at: header_datetime(&resp, HEADER_REQUESTS_RESET),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             });
         }
 
@@ -118,6 +119,7 @@ impl ClaudeProvider {
                 reset_at: header_datetime(&resp, HEADER_TOKENS_RESET),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             });
         }
 
@@ -369,7 +371,63 @@ pub fn parse_oauth_usage(body: &str) -> Result<Vec<Metric>> {
     push_window("seven_day_opus", "Opus", MetricWindow::Long);
     push_window("seven_day_sonnet", "Sonnet", MetricWindow::Long);
 
+    // A model's own week ("Current week (Fable)" in Claude Code's /usage),
+    // only beside the main windows: alone it is no reading of the account.
+    if !metrics.is_empty() {
+        for scoped in model_weeks(&value) {
+            if !metrics
+                .iter()
+                .any(|m| m.label.eq_ignore_ascii_case(&scoped.label))
+            {
+                metrics.push(scoped);
+            }
+        }
+    }
+
     Ok(metrics)
+}
+
+/// The weeks of single models in `limits[]`, shown only by an extra row
+/// (`Metric::extra_only`). Schema verified by a manual request on
+/// 2026-11-16:
+/// {"limits": [{"group": "weekly", "kind": "weekly_scoped", "percent": 0,
+///   "resets_at": "RFC3339", "is_active": false, "severity": "normal",
+///   "scope": {"model": {"display_name": "Fable", "id": null},
+///   "surface": null}}, ...]}
+/// The other entries ("session", "weekly_all") repeat five_hour and
+/// seven_day. `percent` is of the model's own allowance.
+fn model_weeks(value: &serde_json::Value) -> Vec<Metric> {
+    let Some(limits) = value.get("limits").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    limits
+        .iter()
+        .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("weekly_scoped"))
+        .filter_map(|l| {
+            let name = l
+                .get("scope")?
+                .get("model")?
+                .get("display_name")?
+                .as_str()?
+                .trim();
+            let ok = !name.is_empty()
+                && name.chars().count() <= 32
+                && !name.chars().any(char::is_control);
+            if !ok {
+                return None;
+            }
+            let pct = l.get("percent")?.as_f64()?.round().clamp(0.0, 100.0) as u64;
+            let reset_at = l
+                .get("resets_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+            Some(Metric {
+                extra_only: true,
+                ..pct_metric(name, pct, reset_at, MetricWindow::Long)
+            })
+        })
+        .collect()
 }
 
 /// Percentage metric.
@@ -387,6 +445,7 @@ fn pct_metric(
         reset_at,
         window,
         unified_pool: false,
+        extra_only: false,
     }
 }
 
@@ -439,5 +498,34 @@ impl Provider for ClaudeProvider {
             },
             AuthMethod::Subscription => self.fetch_via_subscription().await,
         }
+    }
+}
+
+#[cfg(test)]
+mod live_schema {
+    use super::*;
+
+    /// One manual request to the usage endpoint, printing the body (usage
+    /// numbers only; the token never leaves the request header).
+    #[tokio::test]
+    #[ignore = "one live request with this PC's Claude Code sign-in"]
+    async fn live_usage_schema() {
+        let path = claude_dir().join(".credentials.json");
+        let Some(token) = read_oauth_token(&path).await.unwrap() else {
+            println!("no valid token");
+            return;
+        };
+        let body = reqwest::Client::new()
+            .get(OAUTH_USAGE_URL)
+            .bearer_auth(&token)
+            .header("anthropic-beta", OAUTH_BETA_HEADER)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        println!("SCHEMA {}", serde_json::to_string_pretty(&v).unwrap());
     }
 }

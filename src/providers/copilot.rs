@@ -282,6 +282,7 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
                 reset_at,
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             });
         }
     };

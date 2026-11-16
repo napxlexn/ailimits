@@ -4,8 +4,10 @@
 //
 // Shapes verified on the owner's PC 2026-11-11 (key names only):
 // - Claude Code settings.json: top-level `model` when one is chosen (absent
-//   there: the default model is not written), `effortLevel` under
-//   `modelSettings.<model id>` (top-level `effortLevel` in older versions).
+//   there: the default model is not written; `/model opus` writes the
+//   alias), `effortLevel` under `modelSettings.<full model id>` (top-level
+//   `effortLevel` in older versions). Verified live 2026-11-13 with Claude
+//   Code 2.1.323: `/effort` saves under the full id even with an alias set.
 // - Codex CLI config.toml: top-level `model`, `model_reasoning_effort`.
 // - Grok CLI config.toml: `[models] default_reasoning_effort` (`default`,
 //   the model, from the CLI's own docs: user-guide/05-configuration.md).
@@ -21,18 +23,63 @@ use super::files::{clean, clean_toml};
 use super::ModelInfo;
 use serde_json::Value;
 
-/// Claude Code `settings.json`: `model`, and the effort set for that model
-/// (`modelSettings.<model>.effortLevel`, else the top-level `effortLevel`).
+/// Claude Code `settings.json`: `model`, and the effort set for that model.
+///
+/// `/effort` keeps the effort per model under the model's full id
+/// (`modelSettings.claude-opus-5-5.effortLevel`), while `/model opus` writes
+/// the alias ("opus"). So the effort is the one under the model's own key,
+/// else under the newest full id of the alias's family ("opus" ->
+/// `claude-opus-5-5`), else the older top-level `effortLevel`. With no model
+/// written (Claude Code's default model), the effort shows alone when every
+/// model's saved effort agrees; when they differ, which one applies is not
+/// written anywhere, so none is shown.
 pub(super) fn claude(bytes: &[u8]) -> Option<ModelInfo> {
     let root: Value = serde_json::from_slice(bytes).ok()?;
     let id = clean(root.get("model")).and_then(|m| claude_model_id(&m));
-    let per_model = id.as_deref().and_then(|id| {
-        root.get("modelSettings")
-            .and_then(|m| m.get(id))
-            .and_then(|m| m.get("effortLevel"))
+    let per_model = root.get("modelSettings").and_then(Value::as_object);
+    let effort_of = |key: &str| {
+        per_model
+            .and_then(|m| m.get(key))
+            .and_then(|m| clean(m.get("effortLevel")))
+    };
+    let effort = match id.as_deref() {
+        Some(id) => {
+            effort_of(id).or_else(|| family_key(id, per_model?).and_then(|k| effort_of(&k)))
+        }
+        None => None,
+    }
+    .or_else(|| clean(root.get("effortLevel")))
+    .or_else(|| {
+        if id.is_some() {
+            return None;
+        }
+        let mut efforts = per_model?.values().map(|m| clean(m.get("effortLevel")));
+        let first = efforts.next()??;
+        efforts
+            .all(|e| e.as_deref() == Some(first.as_str()))
+            .then_some(first)
     });
-    let effort = clean(per_model).or_else(|| clean(root.get("effortLevel")));
     found(id, effort)
+}
+
+/// The `modelSettings` key of the newest model in an alias's family: "opus"
+/// -> "claude-opus-5-5" over "claude-opus-5". None for a full id (it has a
+/// key of its own or none) and when no key is of the family.
+fn family_key(alias: &str, per_model: &serde_json::Map<String, Value>) -> Option<String> {
+    let alias = alias.to_ascii_lowercase();
+    if alias.contains('-') || alias.is_empty() {
+        return None;
+    }
+    let version = |key: &str| -> Vec<u32> {
+        key.split('-')
+            .filter_map(|p| p.parse::<u32>().ok())
+            .collect()
+    };
+    per_model
+        .keys()
+        .filter(|k| k.to_ascii_lowercase().split('-').any(|part| part == alias))
+        .max_by(|a, b| version(a).cmp(&version(b)))
+        .cloned()
 }
 
 /// The model with its effort, the effort alone (an empty id) when no model
@@ -186,10 +233,22 @@ mod tests {
         let both = br#"{"model": "opus", "effortLevel": "low",
                         "modelSettings": {"opus": {"effortLevel": "high"}}}"#;
         assert_eq!(claude(both), info("opus", Some("high")));
-        // No model chosen and no effort that applies to the default: nothing.
-        let none = br#"{"modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
-        assert_eq!(claude(none), None);
-        // The owner's PC: no model written, a top-level effort: the effort.
+        // No model chosen, every saved effort the same: that effort alone.
+        let one = br#"{"modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(one), info("", Some("xhigh")));
+        // The owner's PC 2026-11-13.
+        let agree = br#"{"modelSettings": {"claude-fable-5": {"effortLevel": "xhigh"},
+                                           "claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(agree), info("", Some("xhigh")));
+        // They differ: which one the default model takes is not written.
+        let differ = br#"{"modelSettings": {"claude-fable-5": {"effortLevel": "high"},
+                                            "claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(differ), None);
+        let odd_one = br#"{"modelSettings": {"claude-fable-5": {"effortLevel": 3},
+                                             "claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(odd_one), None);
+        assert_eq!(claude(br#"{"modelSettings": {}}"#), None);
+        // The owner's PC before: no model written, a top-level effort: the effort.
         assert_eq!(
             claude(br#"{"effortLevel": "xhigh", "theme": "dark"}"#),
             info("", Some("xhigh"))
@@ -197,6 +256,24 @@ mod tests {
         // A wrong effort type is no effort; the model still shows.
         let odd = br#"{"model": "sonnet", "effortLevel": 3, "modelSettings": []}"#;
         assert_eq!(claude(odd), info("sonnet", None));
+        // An alias takes the effort of the newest model of its family.
+        let alias = br#"{"model": "opus",
+            "modelSettings": {"claude-opus-5": {"effortLevel": "low"},
+                              "claude-opus-5-5": {"effortLevel": "max"},
+                              "claude-fable-5": {"effortLevel": "high"}}}"#;
+        assert_eq!(claude(alias), info("opus", Some("max")));
+        let fable = br#"{"model": "fable",
+            "modelSettings": {"claude-fable-5": {"effortLevel": "high"},
+                              "claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(fable), info("fable", Some("high")));
+        // The alias's family has no effort saved: none, not another model's.
+        let sonnet = br#"{"model": "sonnet[1m]",
+            "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(sonnet), info("sonnet", None));
+        // A full id without a key of its own takes no other model's effort.
+        let full = br#"{"model": "claude-opus-5-6",
+            "modelSettings": {"claude-opus-5-5": {"effortLevel": "xhigh"}}}"#;
+        assert_eq!(claude(full), info("claude-opus-5-6", None));
         // The context option is dropped.
         assert_eq!(claude(br#"{"model": "sonnet[1m]"}"#), info("sonnet", None));
         assert_eq!(claude(br#"{"model": "[1m]"}"#), None);

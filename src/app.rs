@@ -2646,6 +2646,7 @@ mod tests {
             reset_at: None,
             window,
             unified_pool: false,
+            extra_only: false,
         }
     }
 

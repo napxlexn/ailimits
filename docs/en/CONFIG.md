@@ -91,8 +91,8 @@ show_forecast = false
 # Rows (menu: Rows and models...). Written only once chosen; without it
 # every provider has one row, as before. A provider's own row is its id, an
 # extra row is provider.part, and only these exist, each where the provider
-# meters it on its own: claude.opus, claude.sonnet (weekly, on plans that
-# have them), antigravity.cg (the Claude and GPT pool), grok.build,
+# meters it on its own: claude.opus, claude.sonnet, claude.fable (weekly,
+# on plans that have them), antigravity.cg (the Claude and GPT pool), grok.build,
 # cursor.bot (Grok Bot). The widget and the tooltip are chosen separately;
 # the taskbar panel and the tray icon keep one entry per provider. Unknown
 # ids are ignored and kept.

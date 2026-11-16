@@ -313,6 +313,7 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
         // one must drive every surface.
         window: MetricWindow::Long,
         unified_pool: false,
+        extra_only: false,
     }];
 
     if let Some(products) = config.get("productUsage").and_then(|v| v.as_array()) {
@@ -340,6 +341,7 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
                 reset_at,
                 window: MetricWindow::Long,
                 unified_pool: false,
+                extra_only: false,
             });
         }
     }

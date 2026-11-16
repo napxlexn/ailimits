@@ -138,6 +138,13 @@ pub struct Metric {
     /// every other metric serialises as before.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unified_pool: bool,
+    /// A part the provider meters on its own beside its main windows, shown
+    /// only by an extra row the user chose (Claude's Fable week). Never the
+    /// provider's headline, its reset or a part of its own row: a provider
+    /// that starts to report one looks exactly as before until that row is
+    /// chosen. Left out of the cache when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub extra_only: bool,
 }
 
 impl Metric {
@@ -325,7 +332,8 @@ pub struct ProviderData {
 }
 
 impl ProviderData {
-    /// The metric that represents this provider right now.
+    /// The metric that represents this provider right now (never one only
+    /// an extra row shows, `Metric::extra_only`).
     ///
     /// A spent long window outranks the session gauge: once the weekly cap is
     /// gone no new session can start, so a session reading "20% used" would
@@ -333,12 +341,13 @@ impl ProviderData {
     /// taskbar panel, tooltips, notifications — must agree, so the rule lives
     /// here rather than inside one renderer.
     pub fn headline_metric(&self) -> Option<&Metric> {
-        let spent = self.metrics.iter().find(|m| {
+        let mut own = self.metrics.iter().filter(|m| !m.extra_only);
+        let spent = own.clone().find(|m| {
             matches!(m.window, MetricWindow::Long)
                 && m.percentage().is_some_and(|p| p >= EXHAUSTED_PCT)
         });
         // Otherwise the long-standing contract: the provider's first metric.
-        spent.or_else(|| self.metrics.first())
+        spent.or_else(|| own.next())
     }
 
     /// Primary percentage for display: the headline metric's percentage.
@@ -354,6 +363,7 @@ impl ProviderData {
         let now = Utc::now();
         self.metrics
             .iter()
+            .filter(|m| !m.extra_only)
             .filter_map(|m| m.reset_at)
             .filter(|t| *t > now)
             .min()
@@ -463,4 +473,50 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
 
     async fn fetch(&self) -> Result<ProviderData>;
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use crate::config::schema::ProviderConfig;
+
+    /// One live request per provider, the way the widget makes it, with the
+    /// tools' sign-ins allowed. Prints the status and the parsed numbers only;
+    /// no token leaves a provider.
+    /// `cargo test --lib live_fetch_every_provider -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore = "live requests with this PC's sign-ins"]
+    async fn live_fetch_every_provider() {
+        let config = |id: &str| ProviderConfig {
+            id: id.to_string(),
+            enabled: true,
+            auth_method: Default::default(),
+            credential_label: String::new(),
+            tool_files: true,
+            alert_threshold: 80,
+        };
+        let providers: Vec<Box<dyn Provider>> = vec![
+            Box::new(claude::ClaudeProvider::new(config("claude"))),
+            Box::new(codex::CodexProvider::new(config("codex"))),
+            Box::new(antigravity::AntigravityProvider::new(config("antigravity"))),
+            Box::new(copilot::CopilotProvider::new(config("copilot"))),
+            Box::new(grok::GrokProvider::new(config("grok"))),
+            Box::new(cursor::CursorProvider::new(config("cursor"))),
+        ];
+        println!("LIVE at {}", chrono::Utc::now().to_rfc3339());
+        for p in providers {
+            match p.fetch().await {
+                Ok(data) => {
+                    println!("LIVE {:?}: {:?}", p.id(), data.status);
+                    for m in &data.metrics {
+                        println!(
+                            "LIVE   {}: {}/{:?} {:?} ({:?}), resets {:?}",
+                            m.label, m.used, m.limit, m.unit, m.window, m.reset_at
+                        );
+                    }
+                }
+                Err(e) => println!("LIVE {:?}: error {e}", p.id()),
+            }
+        }
+    }
 }

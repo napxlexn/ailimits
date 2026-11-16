@@ -153,6 +153,7 @@ fn pct(label: &str, used: u64, window: MetricWindow, reset_in: Option<i64>) -> M
         reset_at: reset_in.and_then(at),
         window,
         unified_pool: false,
+        extra_only: false,
     }
 }
 
@@ -211,6 +212,7 @@ pub(crate) fn typical() -> Vec<ProviderData> {
                 reset_at: at(20 * DAY + 3 * HOUR),
                 window: MetricWindow::Long,
                 unified_pool: false,
+                extra_only: false,
             }],
         ),
     ]

@@ -1929,7 +1929,7 @@ impl Picker {
             ),
             ReadKind::LastSession => (
                 "Read the end of your newest session?".to_string(),
-                "For Last used, AI Limits reads the last 64 KB of the newest session file:".to_string(),
+                "For Last used, AI Limits reads the newest session file back from its end until it finds the model, at most the last 1 MB:".to_string(),
                 files(|i| i.session),
                 "Only the model name is kept. Your conversations are not stored or sent anywhere. Switch back to As set in the tool to stop.".to_string(),
             ),
@@ -3686,7 +3686,7 @@ mod tests {
         let mut p = picker(with_model());
         assert!(click(&mut p, &Target::Source(ModelSource::LastUsed)).is_empty());
         assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::LastSession);
-        assert!(texts(&p).contains("64 KB"));
+        assert!(texts(&p).contains("1 MB"), "{}", texts(&p));
         assert_eq!(
             click(&mut p, &Target::Allow),
             [
@@ -4221,6 +4221,9 @@ mod tests {
         let mut ask = make(input());
         click(&mut ask, &part(ModelPart::Model, Surface::Widget));
         items.push(("ask-settings-light".to_string(), draw(&ask, true, 1.0)));
+        let mut ask = make(with_model());
+        click(&mut ask, &Target::Source(ModelSource::LastUsed));
+        items.push(("ask-session-dark".to_string(), draw(&ask, false, 1.0)));
 
         // The names: one typed (caret, room hint), the others placeholders.
         let mut names = make(with_model());

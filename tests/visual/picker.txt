@@ -1,18 +1,19 @@
 # Visual baseline 'picker': name, size, FNV-1a of the RGBA pixels.
 # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
-ask-settings-light 404x584 902dc563bd30e43c
-ask-sign-in-dark 404x584 f45b7cc9983a6907
-name-full-dark 404x584 ba19c1d8cb8600f9
-name-placeholder-dark 404x584 c82d829564e5a709
-name-typed-dark 404x584 555012a6f77247fe
-name-typed-light 404x584 5aae93d31c4df079
-normal-dark 404x584 d8c44e15549985d2
-normal-dark-150 606x876 91b11093947cf55e
-normal-light 404x584 63f4bdfc35b8ef57
+ask-session-dark 404x584 0aeaac47db804494
+ask-settings-light 404x584 b3f84c51235ef319
+ask-sign-in-dark 404x584 f55c9625ea4a0384
+name-full-dark 404x584 6e51dbc315ab4cea
+name-placeholder-dark 404x584 b083a28efb270946
+name-typed-dark 404x584 752da11fb73637e9
+name-typed-light 404x584 afbdbdfa247783ab
+normal-dark 404x584 0884faf45a4e560f
+normal-dark-150 606x876 bd638c7195e216a0
+normal-light 404x584 88fcb3fe80bb7861
 notice-dark 404x358 3b7f9ba020cf6d17
 notice-light 404x358 bb4302563a2248b2
-scrolled-dark 404x384 85e1af68b21f90a5
-version-disabled-dark 404x584 950b40f880de903a
-version-disabled-light 404x584 1d68b17c63e57b4b
-welcome-dark 404x584 fdfdbf43c160b764
-welcome-light 404x584 ec315e3c044f8a74
+scrolled-dark 404x384 4a1f826338f78fdf
+version-disabled-dark 404x584 4c5268c4fadec314
+version-disabled-light 404x584 e9267dd490c73150
+welcome-dark 404x584 68cb3d3cb0cc9461
+welcome-light 404x584 7a2649a1c3ef8c85

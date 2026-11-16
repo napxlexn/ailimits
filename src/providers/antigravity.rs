@@ -538,6 +538,7 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
                 // session window, so a spent pool must drive every surface.
                 window: MetricWindow::Long,
                 unified_pool: false,
+                extra_only: false,
             });
         }
     }
@@ -603,6 +604,7 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
             reset_at,
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         };
         let key = ((frac.clamp(0.0, 1.0) * 1000.0).round() as u64, reset_str);
         let rank = model_rank(&label);

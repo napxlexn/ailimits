@@ -3,13 +3,13 @@
 //
 // One row per provider by default: exactly the rows there were before rows
 // could be chosen. Extra rows exist only where a provider meters a part on
-// its own (Claude's Opus and Sonnet weeks, Antigravity's second pool, Grok
-// Build, Cursor's Grok Bot). The taskbar panel and the tray icon keep one
+// its own (Claude's Opus, Sonnet and Fable weeks, Antigravity's second pool,
+// Grok Build, Cursor's Grok Bot). The taskbar panel and the tray icon keep one
 // entry per provider and do not use this.
 
 use crate::config::schema::{Config, ModelPart, Surface};
 use crate::models::{self, ModelInfo, Models};
-use crate::providers::{ProviderData, ProviderId};
+use crate::providers::{Metric, ProviderData, ProviderId};
 use std::collections::BTreeMap;
 
 /// An extra row: one metric of a provider, shown as a row of its own.
@@ -41,6 +41,13 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Claude,
         metric: "Sonnet",
         names: &["Claude · Sonnet", "Cl · Sonnet", "Sonnet"],
+        note: "Weekly, a limit of its own",
+    },
+    SubRow {
+        id: "claude.fable",
+        provider: ProviderId::Claude,
+        metric: "Fable",
+        names: &["Claude · Fable", "Cl · Fable", "Fable"],
         note: "Weekly, a limit of its own",
     },
     SubRow {
@@ -209,7 +216,7 @@ pub fn row_chosen(config: &Config, surface: Surface, id: &str) -> bool {
 /// rows wait for it rather than show an empty bar.
 ///
 /// With the default config this is exactly one row per entry of `visible`,
-/// carrying that entry unchanged.
+/// carrying that entry unchanged but for the metrics only an extra row shows.
 pub fn visible_rows(
     config: &Config,
     visible: &[ProviderData],
@@ -232,7 +239,7 @@ pub fn visible_rows(
                 id: provider.config_id(),
                 provider: provider.clone(),
                 names: base_names(&provider),
-                data: data.clone(),
+                data: own_row_data(data),
                 model,
             });
         }
@@ -252,7 +259,11 @@ pub fn visible_rows(
                 provider: provider.clone(),
                 names: sub.names,
                 data: ProviderData {
-                    metrics: vec![metric.clone()],
+                    // On its own row the metric is that row's headline.
+                    metrics: vec![Metric {
+                        extra_only: false,
+                        ..metric.clone()
+                    }],
                     ..data.clone()
                 },
                 model: None,
@@ -260,6 +271,24 @@ pub fn visible_rows(
         }
     }
     rows
+}
+
+/// A provider's data as its own row draws it: without the metrics only an
+/// extra row shows (`Metric::extra_only`), so its own row looks the same
+/// whether the provider reports them or not.
+fn own_row_data(data: &ProviderData) -> ProviderData {
+    if !data.metrics.iter().any(|m| m.extra_only) {
+        return data.clone();
+    }
+    ProviderData {
+        metrics: data
+            .metrics
+            .iter()
+            .filter(|m| !m.extra_only)
+            .cloned()
+            .collect(),
+        ..data.clone()
+    }
 }
 
 /// Whether no provider may run yet: a fresh install before the first tick,
@@ -317,6 +346,7 @@ mod tests {
             reset_at: Some(Utc::now() + chrono::Duration::hours(3)),
             window,
             unified_pool: false,
+            extra_only: false,
         }
     }
 
@@ -398,6 +428,51 @@ mod tests {
         // The tooltip has its own choice, still the default.
         let tip = visible_rows(&config, &sample(), Surface::Tooltip, &Models::new());
         assert_eq!(ids(&tip), ["claude", "codex", "antigravity"]);
+    }
+
+    /// Claude's Fable week, spent and resetting first: the Claude row still
+    /// shows exactly what it showed before the week was reported, and the
+    /// Fable row shows only once chosen.
+    #[test]
+    fn a_metric_only_an_extra_row_shows_leaves_the_own_row_as_it_was() {
+        let before = sample();
+        let mut after = before.clone();
+        let mut fable = metric("Fable", 100, MetricWindow::Long);
+        fable.reset_at = Some(Utc::now() + chrono::Duration::minutes(5));
+        fable.extra_only = true;
+        after[0].metrics.push(fable);
+        let config = Config::default();
+        for surface in [Surface::Widget, Surface::Tooltip] {
+            let old = visible_rows(&config, &before, surface, &Models::new());
+            let new = visible_rows(&config, &after, surface, &Models::new());
+            assert_eq!(ids(&new), ids(&old));
+            let (o, n) = (&old[0].data, &new[0].data);
+            let labels = |d: &ProviderData| {
+                d.metrics
+                    .iter()
+                    .map(|m| m.label.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(labels(n), labels(o));
+            assert_eq!(n.primary_percentage(), o.primary_percentage());
+            assert_eq!(n.headline_reset(), o.headline_reset());
+        }
+        // The provider's data as a whole keeps its headline too (the tray
+        // icon, the taskbar panel and the alerts read it there).
+        assert_eq!(
+            after[0].primary_percentage(),
+            before[0].primary_percentage()
+        );
+        assert_eq!(after[0].next_reset(), before[0].next_reset());
+        // Chosen, the Fable row carries the week alone.
+        let mut config = Config::default();
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.fable".into()]);
+        let rows = visible_rows(&config, &after, Surface::Widget, &Models::new());
+        assert_eq!(ids(&rows), ["claude", "claude.fable"]);
+        assert_eq!(rows[1].data.metrics.len(), 1);
+        assert_eq!(rows[1].data.primary_percentage(), Some(100.0));
+        assert_eq!(rows[1].data.headline_reset(), after[0].metrics[4].reset_at);
+        assert_eq!(rows[1].name(), "Claude · Fable");
     }
 
     #[test]

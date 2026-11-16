@@ -225,6 +225,7 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
                 reset_at,
                 window,
                 unified_pool: false,
+                extra_only: false,
             });
         }
     };

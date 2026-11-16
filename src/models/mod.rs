@@ -172,13 +172,12 @@ impl ModelReader {
                 return seen.info.clone();
             }
         }
-        // A tail without a model record keeps the model last found: one long
-        // answer can fill 64 KB, and a session just started has no answer
-        // yet, so the previous session's model is still the one last used.
+        // Read back from the end until a model record turns up, at most
+        // 1 MB. None there keeps the model last found: a session just
+        // started has no answer yet, so the previous session's model is
+        // still the one last used.
         let before = self.sessions.get(id).and_then(|seen| seen.info.clone());
-        let info = files::read_tail(&path, files::TAIL_LEN)
-            .and_then(|tail| parse(&tail))
-            .or(before);
+        let info = files::scan_back(&path, files::TAIL_STEP, files::TAIL_CAP, parse).or(before);
         self.sessions.insert(
             id.clone(),
             Seen {
@@ -487,10 +486,10 @@ mod tests {
         let ids = [ProviderId::Claude];
         let m = r.read(&reads(false, true), ModelSource::LastUsed, &ids);
         assert_eq!(m[&ProviderId::Claude].id, "claude-opus-5-5");
-        // One long record pushes the answer out of the 64 KB tail.
+        // Records past the 1 MB read push the answer out of reach.
         let long = format!(
             "{{\"type\":\"user\",\"message\":{{\"content\":\"{}\"}}}}\n",
-            "x".repeat(70_000)
+            "x".repeat(1_100_000)
         );
         std::fs::write(&path, format!("{answer}{long}")).unwrap();
         let m = r.read(&reads(false, true), ModelSource::LastUsed, &ids);
@@ -500,6 +499,32 @@ mod tests {
         assert!(fresh
             .read(&reads(false, true), ModelSource::LastUsed, &ids)
             .is_empty());
+    }
+
+    /// Claude Code 2.1.323 writes a 110-160 KB `prompt_snapshot` record
+    /// right after a session's first answer: the answer is found behind it,
+    /// by a reader that never saw the file before.
+    #[test]
+    fn the_answer_is_found_behind_a_long_record() {
+        let dir = TempDir::new("snapshot");
+        let answer = "{\"type\":\"assistant\",\"effort\":\"low\",\"message\":{\"model\":\"claude-haiku-5-5\"}}\n";
+        let snapshot = format!(
+            "{{\"type\":\"attachment\",\"attachment\":{{\"type\":\"prompt_snapshot\",\"text\":\"{}\"}}}}\n",
+            "y".repeat(150_000)
+        );
+        let small = "{\"type\":\"system\",\"subtype\":\"turn_duration\"}\n".repeat(40);
+        dir.write(
+            ".claude/projects/p/s.jsonl",
+            format!("{{\"type\":\"user\"}}\n{answer}{snapshot}{small}"),
+        );
+        let mut r = reader(&dir);
+        let m = r.read(
+            &reads(false, true),
+            ModelSource::LastUsed,
+            &[ProviderId::Claude],
+        );
+        assert_eq!(m[&ProviderId::Claude].id, "claude-haiku-5-5");
+        assert_eq!(m[&ProviderId::Claude].effort.as_deref(), Some("low"));
     }
 
     #[test]
@@ -597,6 +622,53 @@ mod tests {
         }
     }
 
+    /// The labels for prepared homes: every folder under `AILIMITS_PROBE_HOMES`
+    /// is read as a %USERPROFILE% (settings and sessions copied there from
+    /// live calls), and the model, effort and full label of each tool are
+    /// printed, both sources. Prints nothing else from the files.
+    /// `AILIMITS_PROBE_HOMES=<dir> cargo test --lib probe_labels -- --ignored --nocapture`
+    #[test]
+    #[ignore = "reads the folders AILIMITS_PROBE_HOMES names"]
+    fn probe_labels() {
+        let Some(root) = env_dir("AILIMITS_PROBE_HOMES") else {
+            println!("AILIMITS_PROBE_HOMES not set");
+            return;
+        };
+        let mut homes: Vec<PathBuf> = std::fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.path())
+            .collect();
+        homes.sort();
+        use crate::config::schema::ModelPart;
+        let parts = [ModelPart::Model, ModelPart::Version, ModelPart::Effort];
+        let names = std::collections::BTreeMap::new();
+        for home in homes {
+            let name = home.file_name().unwrap().to_string_lossy().to_string();
+            for source in [ModelSource::Configured, ModelSource::LastUsed] {
+                let mut r = ModelReader {
+                    homes: Some(Homes::under(&home)),
+                    ..ModelReader::default()
+                };
+                let models = r.read(&reads(true, true), source, &ALL);
+                for id in &ALL {
+                    let Some(m) = models.get(id) else { continue };
+                    let label = crate::rows::model_label(m, id, &parts, &names);
+                    println!(
+                        "PROBE\t{name}\t{source:?}\t{}\t{}\t{}\t{}",
+                        id.display_name(),
+                        m.id,
+                        m.effort.as_deref().unwrap_or("-"),
+                        label
+                            .map(|l| l.steps().join(" | "))
+                            .unwrap_or_else(|| "-".into())
+                    );
+                }
+            }
+        }
+    }
+
     /// The cost of finding the newest session on this PC. Prints counts,
     /// times and the model/effort found, nothing else from the files.
     /// `cargo test --lib session_walk_cost -- --ignored --nocapture`
@@ -664,6 +736,26 @@ mod tests {
             "codex bounded (newest {} day folders): first {first:?}, warm {warm:?}",
             session::CODEX_DAY_DIRS
         );
+        // The read back from the end: as it runs, and its worst case (every
+        // line parsed, no model found, the whole 1 MB read).
+        if let Some(newest) = session::newest_claude_session(&projects) {
+            let len = std::fs::metadata(&newest).map(|m| m.len()).unwrap_or(0);
+            let real = best_of(5, || {
+                files::scan_back(
+                    &newest,
+                    files::TAIL_STEP,
+                    files::TAIL_CAP,
+                    session::claude_last,
+                );
+            });
+            let worst = best_of(5, || {
+                files::scan_back(&newest, files::TAIL_STEP, files::TAIL_CAP, |t| {
+                    session::claude_last(t);
+                    None::<()>
+                });
+            });
+            println!("claude newest session, {len} bytes: the read {real:?}, worst case {worst:?}");
+        }
 
         let all = reads(true, true);
         let mut reader = ModelReader::new();

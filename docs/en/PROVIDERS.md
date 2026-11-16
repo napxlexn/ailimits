@@ -67,6 +67,29 @@ Response (null windows are skipped):
 
 → metrics `Session`, `Weekly`, `Opus`, `Sonnet` (percent, limit 100).
 
+**A model's own week (verified 2026-11-16, HTTP 200).** The same response
+also carries `limits[]`; Claude Code's `/usage` shows its model entry as
+"Current week (Fable)":
+
+```json
+{"limits": [
+  {"group": "session", "kind": "session", "percent": 0, "resets_at": "RFC3339", "scope": null, ...},
+  {"group": "weekly", "kind": "weekly_all", "percent": 1, "resets_at": "RFC3339", "scope": null, ...},
+  {"group": "weekly", "kind": "weekly_scoped", "percent": 0, "resets_at": "RFC3339",
+   "is_active": false, "severity": "normal",
+   "scope": {"model": {"display_name": "Fable", "id": null}, "surface": null}}],
+ "weekly_scoped_shares": [{"allowance_percent_of_weekly": 50, "limit_index": 2,
+                           "used_percent_of_weekly": 0}]}
+```
+
+The `session` and `weekly_all` entries repeat `five_hour` and `seven_day`.
+Each `weekly_scoped` entry with a model name becomes a metric named after
+the model (`Fable`; `percent` is of that model's own allowance), only
+beside the windows above and never twice under one name. It is marked for
+its extra row only (`claude.fable`, off by default): it is never Claude's
+headline, its reset, its alerts or a part of its own row, so the Claude row
+looks exactly as before until that row is chosen.
+
 **Rate limiting (verified 2026-07-09).** The endpoint's per-token bucket is
 shared with Claude Code's own polling: under an active session roughly one
 widget request in three returns 200, the rest get HTTP 429 with
@@ -494,7 +517,7 @@ Each read is asked for first and is off by default:
 
 | Tool | File | Keys |
 |---|---|---|
-| Claude Code | `%USERPROFILE%\.claude\settings.json` | `model`; effort `modelSettings.<model>.effortLevel`, else the top-level `effortLevel` |
+| Claude Code | `%USERPROFILE%\.claude\settings.json` | `model`; effort `modelSettings.<model>.effortLevel`, else that of the newest model of an alias's family, else the top-level `effortLevel` |
 | Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort` |
 | Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
 | Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
@@ -504,10 +527,18 @@ Each read is asked for first and is off by default:
 Shapes verified 2026-11-11 on the owner's PC, key names only:
 
 - Claude Code: no top-level `model` while the default model is in use (the
-  default is written nowhere, so the label is the effort alone, from the
-  top-level `effortLevel`); the effort is kept per model under
-  `modelSettings`. A context option is dropped from the id
-  (`opus[1m]` reads as `opus`), so one rename covers both.
+  default is written nowhere, so the label is the effort alone); the effort
+  is kept per model under `modelSettings`, keyed by the model's full id.
+  Verified live 2026-11-13 with Claude Code 2.1.323: `/model opus` writes
+  the alias (`"model": "opus"`) while `/effort` saves under
+  `modelSettings.claude-opus-5-5`, so an alias takes the effort of the
+  newest full id of its family (the key's version can lag the model's, so
+  the label then carries no version: "Opus · high"). With no `model`, the
+  older top-level `effortLevel`, else the per-model efforts when they all
+  agree (the owner's PC 2026-11-13: two models, both `xhigh`); when they
+  differ, which one the default model takes is written nowhere, so none is
+  shown. A context option is dropped from the id (`opus[1m]` reads as
+  `opus`), so one rename covers both.
 - Codex CLI: `model` and `model_reasoning_effort` at the top level; a model
   set only in a `[profiles.*]` table is not read.
 - Grok CLI: `[models] default_reasoning_effort` present; `[models] default`
@@ -527,7 +558,12 @@ sign-in file, the Windows Credential Manager.
 ### Last used (`last_session`)
 
 Only for the two tools that keep sessions; the others show their configured
-model. Only the last 64 KB of the newest file is read.
+model. The newest file is read back from its end 64 KB at a time until a
+model record turns up, at most its last 1 MB: Claude Code 2.1.323 writes a
+110-160 KB `prompt_snapshot` record right after a session's first answer,
+which put that answer past a 64 KB tail in every fresh session (measured
+2026-11-13 on the owner's PC: the newest model record sat within 1 MB of the
+end in 97.9% of the states a session file passed through).
 
 - **Claude Code**: the newest `%USERPROFILE%\.claude\projects\<project>\<session>.jsonl`,
   looked for in the 32 project folders a session was most recently started
@@ -544,7 +580,7 @@ model. Only the last 64 KB of the newest file is read.
   `.jsonl.zst` (every session on the owner's PC was): a compressed newest
   session cannot be read without a decoder, so the label falls back to the
   configured model. In the uncompressed sessions the last model record sat
-  2 KB to 850 KB from the end, so a tail often holds none.
+  2 KB to 850 KB from the end: within the 1 MB read.
 
 No model in the tail: the label keeps the model last found, in this file
 or in the session before it (a session just started has no answer yet),
@@ -553,8 +589,10 @@ shows nothing.
 
 ### Bounds and failures
 
-- Settings files over 256 KB are not read; session tails are 64 KB, and a
-  line cut by the start of the tail is dropped.
+- Settings files over 256 KB are not read; a session file is read 64 KB at
+  a time and at most 1 MB from its end (memory: at most 1 MB plus a step);
+  a line that crosses a step is joined whole, a line cut by the 1 MB mark
+  is dropped.
 - A UTF-8 BOM and CRLF line ends are accepted. A missing file, broken JSON
   or TOML, a wrong type, a value longer than 128 bytes or with control
   characters: no label for that tool. Never an error state, never a panic.

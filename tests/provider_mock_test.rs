@@ -15,6 +15,7 @@ fn metric(used: u64, limit: Option<u64>) -> Metric {
         reset_at: None,
         window: MetricWindow::Session,
         unified_pool: false,
+        extra_only: false,
     }
 }
 
@@ -39,6 +40,7 @@ fn token_display_text_uses_short_format() {
         reset_at: None,
         window: MetricWindow::Session,
         unified_pool: false,
+        extra_only: false,
     };
     // 112000 → "112k", 1000000 → "1.0M".
     assert_eq!(m.display_text(), "112k / 1.0M");
@@ -57,6 +59,7 @@ fn the_unified_pool_flag_stays_out_of_the_cache_unless_set() {
 
     let shared = Metric {
         unified_pool: true,
+        extra_only: false,
         ..metric(1, Some(100))
     };
     let back: Metric = serde_json::from_str(&serde_json::to_string(&shared).unwrap()).unwrap();
@@ -79,6 +82,59 @@ fn oauth_usage_response_parses_to_metrics() {
     assert_eq!(metrics[1].label, "Weekly");
     assert_eq!(metrics[1].used, 6);
     assert_eq!(metrics[2].label, "Sonnet");
+}
+
+#[test]
+fn oauth_usage_reads_a_models_own_week_for_its_extra_row_only() {
+    use ailimits::providers::claude::parse_oauth_usage;
+    use ailimits::providers::MetricWindow;
+    // The 2026-11-16 response, trimmed to the keys read (and two of the
+    // many null ones).
+    let body = r#"{"five_hour":{"limit_dollars":null,"resets_at":"2026-11-17T00:20:00.930722+00:00","utilization":0.0},
+        "limits":[
+          {"group":"session","is_active":false,"kind":"session","percent":0,"resets_at":"2026-11-17T00:20:00.930722+00:00","scope":null,"severity":"normal"},
+          {"group":"weekly","is_active":true,"kind":"weekly_all","percent":1,"resets_at":"2026-11-21T12:00:00.930744+00:00","scope":null,"severity":"normal"},
+          {"group":"weekly","is_active":false,"kind":"weekly_scoped","percent":37,"resets_at":"2026-11-21T12:00:00+00:00","scope":{"model":{"display_name":"Fable","id":null},"surface":null},"severity":"normal"}],
+        "seven_day":{"resets_at":"2026-11-21T12:00:00.930744+00:00","utilization":1.0},
+        "seven_day_opus":null,"seven_day_sonnet":null,
+        "weekly_scoped_shares":[{"allowance_percent_of_weekly":50,"limit_index":2,"used_percent_of_weekly":0}]}"#;
+    let metrics = parse_oauth_usage(body).expect("should parse");
+    let labels: Vec<&str> = metrics.iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["Session", "Weekly", "Fable"]);
+    assert!(!metrics[0].extra_only && !metrics[1].extra_only);
+    let fable = &metrics[2];
+    assert!(fable.extra_only);
+    assert_eq!(fable.used, 37);
+    assert_eq!(fable.limit, Some(100));
+    assert_eq!(fable.window, MetricWindow::Long);
+    assert_eq!(
+        fable.reset_at.unwrap().to_rfc3339(),
+        "2026-11-21T12:00:00+00:00"
+    );
+
+    // A model week alone is no reading of the account: nothing.
+    let alone = r#"{"limits":[{"kind":"weekly_scoped","percent":5,"scope":{"model":{"display_name":"Fable"}}}]}"#;
+    assert!(parse_oauth_usage(alone).unwrap().is_empty());
+    // Odd entries are skipped, one with the name of a window already read
+    // too; a week without a reset still counts.
+    let odd = r#"{"five_hour":{"utilization":3.0},"seven_day_opus":{"utilization":9.0},
+        "limits":[
+          {"kind":"weekly_scoped","percent":"5","scope":{"model":{"display_name":"A"}}},
+          {"kind":"weekly_scoped","percent":5,"scope":{"model":{"display_name":"  "}}},
+          {"kind":"weekly_scoped","percent":5,"scope":{"model":null}},
+          {"kind":"weekly_scoped","percent":5,"scope":null},
+          {"kind":"session_scoped","percent":5,"scope":{"model":{"display_name":"B"}}},
+          {"kind":"weekly_scoped","percent":5,"scope":{"model":{"display_name":"opus"}}},
+          {"kind":"weekly_scoped","percent":250,"scope":{"model":{"display_name":"Haiku"}}},
+          5, null, "x"]}"#;
+    let metrics = parse_oauth_usage(odd).unwrap();
+    let labels: Vec<&str> = metrics.iter().map(|m| m.label.as_str()).collect();
+    assert_eq!(labels, ["Session", "Opus", "Haiku"]);
+    assert_eq!(metrics[2].used, 100);
+    assert!(metrics[2].reset_at.is_none());
+    // `limits` of another shape: the windows as before.
+    let other = r#"{"five_hour":{"utilization":3.0},"limits":{"kind":"weekly_scoped"}}"#;
+    assert_eq!(parse_oauth_usage(other).unwrap().len(), 1);
 }
 
 #[test]
@@ -501,6 +557,7 @@ fn hover_reason_explains_stale_rows_only() {
             reset_at: Some(Utc::now() + Duration::hours(2)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now() - Duration::hours(10),
         received_at: None, // wall-age staleness (10 h)
@@ -579,6 +636,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -588,6 +646,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 reset_at: Some(Utc::now() + Duration::days(3)),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
         ],
         updated_at: Utc::now() - Duration::minutes(10),
@@ -624,6 +683,7 @@ fn fresh_data_is_not_extrapolated() {
             reset_at: Some(Utc::now() - Duration::seconds(10)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now() - Duration::seconds(30),
         received_at: Some(std::time::Instant::now()),
@@ -656,6 +716,7 @@ fn window_metric(label: &str, used: u64, window: MetricWindow) -> Metric {
         reset_at: None,
         window,
         unified_pool: false,
+        extra_only: false,
     }
 }
 
@@ -739,6 +800,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 reset_at: Some(now + Duration::hours(1)),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -748,6 +810,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 reset_at: Some(now + Duration::days(5)),
                 window: MetricWindow::Long,
                 unified_pool: false,
+                extra_only: false,
             },
         ],
         updated_at: now,
@@ -781,6 +844,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 reset_at: Some(now + Duration::hours(1)),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -790,6 +854,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 reset_at: Some(now + Duration::days(5)),
                 window: MetricWindow::Long,
                 unified_pool: false,
+                extra_only: false,
             },
         ],
         updated_at: now,
@@ -817,6 +882,7 @@ fn live_data_survives_a_wall_clock_jump() {
             reset_at: Some(Utc::now() + Duration::hours(2)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now() - Duration::hours(1),
         received_at: Some(std::time::Instant::now()),
@@ -985,6 +1051,7 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
             reset_at: Some(Utc::now() - Duration::seconds(30)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now() - Duration::minutes(10),
         received_at: None,
@@ -1017,6 +1084,7 @@ fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
             reset_at: Some(Utc::now() - Duration::minutes(10)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now(),
         received_at: Some(std::time::Instant::now()),
@@ -1046,6 +1114,7 @@ fn next_reset_skips_past_timestamps() {
                 reset_at: Some(Utc::now() - Duration::minutes(5)),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
             Metric {
                 label: "Weekly".to_string(),
@@ -1055,6 +1124,7 @@ fn next_reset_skips_past_timestamps() {
                 reset_at: Some(future),
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             },
         ],
         updated_at: Utc::now(),
@@ -1071,6 +1141,7 @@ fn next_reset_skips_past_timestamps() {
             reset_at: Some(Utc::now() - Duration::minutes(5)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         ..data
     };
@@ -1759,6 +1830,7 @@ fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
             reset_at: Some(Utc::now() + Duration::days(10)),
             window: MetricWindow::Session,
             unified_pool: false,
+            extra_only: false,
         }],
         updated_at: Utc::now() - Duration::hours(3),
         received_at: None,

@@ -644,6 +644,7 @@ mod tests {
             reset_at: Some(chrono::Utc::now() + chrono::Duration::hours(3)),
             window,
             unified_pool: false,
+            extra_only: false,
         }
     }
 

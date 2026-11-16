@@ -1165,6 +1165,7 @@ mod tests {
                 reset_at: None,
                 window: MetricWindow::Session,
                 unified_pool: false,
+                extra_only: false,
             }],
             updated_at: Utc::now(),
             received_at: Some(std::time::Instant::now()),

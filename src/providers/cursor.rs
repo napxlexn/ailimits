@@ -615,6 +615,7 @@ pub fn usage_metric(usage: &PeriodUsage, plan: Option<&PlanInfo>) -> Metric {
         // Copilot's monthly one.
         window: MetricWindow::Session,
         unified_pool: false,
+        extra_only: false,
     }
 }
 
@@ -759,6 +760,7 @@ pub fn sand_metric(sand: &SandUsage) -> Metric {
         reset_at: sand.reset_at,
         window: MetricWindow::Session,
         unified_pool: sand.unified,
+        extra_only: false,
     }
 }
 
