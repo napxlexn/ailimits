@@ -21,7 +21,7 @@ use crate::config::schema::IndicatorKind;
 use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
 use crate::rows::RowView;
-use crate::ui::tray::{color, draw_digits_fit, fill_round_rect, provider_pct};
+use crate::ui::tray::{draw_digits_fit, fill_round_rect, provider_pct};
 use anyhow::{Context as AnyhowContext, Result};
 use std::rc::Rc;
 use tao::window::{Window, WindowId};
@@ -40,33 +40,18 @@ const TRAY_MARGIN: i32 = 10;
 /// Initial (hidden) window size; reposition() sizes it to the real taskbar.
 const INIT_W: u32 = 119;
 const INIT_H: u32 = 40;
-/// Background alpha (out of 255) of the otherwise-transparent overlay: just
-/// enough that every pixel catches the mouse (so the whole window is the
-/// right-click / hover target, not only the painted glyphs), yet visually
-/// imperceptible over the taskbar.
-const HIT_ALPHA: u8 = 1;
+/// The otherwise-transparent overlay's background (`theme::PANEL_HIT`):
+/// every pixel catches the mouse, so the whole window is the right-click and
+/// hover target, not only the painted glyphs.
+fn hit_fill() -> Color {
+    crate::ui::theme::PANEL_HIT.to_skia_color()
+}
 
-/// Ink + track colors for the current system theme. Near-black on a light
-/// taskbar, near-white on a dark one; the track is the ink at a low alpha so
-/// it reads as a faint groove rather than a filled box.
-///
-/// The light ink is 36, not the 20 it used to be. Measured against the shell's
-/// own clock on the same bar: our digits had a median ink luma of 110 where the
-/// clock's was 119, over a background of 228 — we were ~8% darker, and read as
-/// heavier and higher-contrast than everything else in the tray. Solving
-/// `median = ink*cov + bg*(1-cov)` at the measured coverage of 0.567 gives 36.
-///
-/// This is a CONTRAST correction, not a weight one: our glyphs are not
-/// thicker, they are inked harder. fontdue rasterises with crisper edges than
-/// DirectWrite (over the same string the shell lights 163 columns to our 118,
-/// at the same mean), so matching the shell's darkness is the closest we get
-/// without swapping the rasteriser.
+/// Ink + track colors for the current system theme (`theme::panel_ink`,
+/// where the measurements behind them are).
 fn theme_ink(light: bool) -> (Color, Color) {
-    if light {
-        (color(36, 36, 36, 255), color(36, 36, 36, 64))
-    } else {
-        (color(236, 236, 236, 255), color(236, 236, 236, 66))
-    }
+    let (ink, track) = crate::ui::theme::panel_ink(light);
+    (ink.to_skia_color(), track.to_skia_color())
 }
 
 /// The ink of a row that is not live — stale, or an estimate: the live ink
@@ -797,7 +782,7 @@ impl TaskbarPanel {
         // taskbar — so a right-click on the gaps between the digits/bars used
         // to open the taskbar's own menu instead of ours, and hover never
         // reached the panel.
-        pm.fill(color(0, 0, 0, HIT_ALPHA));
+        pm.fill(hit_fill());
 
         paint_rows(pm, self.edge.vertical(), &first_two(providers), fg, track);
 
@@ -840,6 +825,7 @@ impl TaskbarPanel {
 mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderId, ProviderStatus};
+    use crate::ui::tray::color;
     use chrono::Utc;
 
     /// The taskbar panel, pinned: every fixture set on a bottom bar at 100%
@@ -859,7 +845,7 @@ mod tests {
                     ("side-100", 62, 96, true),
                 ] {
                     let mut pm = Pixmap::new(w, h).unwrap();
-                    pm.fill(color(0, 0, 0, HIT_ALPHA));
+                    pm.fill(hit_fill());
                     paint_rows(&mut pm, vertical, &first_two(&providers), fg, track);
                     items.push((format!("{set}-{sname}-{ink}"), pm));
                 }

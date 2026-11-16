@@ -11,7 +11,16 @@ pub struct DragState {
     pub start_cursor: (f64, f64),
     /// Window position at press time.
     pub start_window: (f64, f64),
+    /// The cursor went further than a click's wobble: the window follows
+    /// it, and the release ends a drag, not a click.
+    pub moved: bool,
 }
+
+/// How far the cursor may wander while held, in physical pixels either way,
+/// before a press becomes a drag. A click on a touchpad or with a pen
+/// wobbles a little; it stays a click (the widget's "Choose what to show"
+/// opens the picker on a click).
+pub const DRAG_THRESHOLD: f64 = 4.0;
 
 /// Window state.
 #[derive(Debug, Clone, Default)]
@@ -39,6 +48,7 @@ impl WindowState {
             active: true,
             start_cursor: cursor_screen,
             start_window: self.pos,
+            moved: false,
         };
     }
 
@@ -53,6 +63,16 @@ impl WindowState {
         if !self.drag.active {
             return None;
         }
+        if !self.drag.moved {
+            let (dx, dy) = (
+                cursor_screen.0 - self.drag.start_cursor.0,
+                cursor_screen.1 - self.drag.start_cursor.1,
+            );
+            if dx.abs() <= DRAG_THRESHOLD && dy.abs() <= DRAG_THRESHOLD {
+                return None;
+            }
+            self.drag.moved = true;
+        }
         let mut x = self.drag.start_window.0 + (cursor_screen.0 - self.drag.start_cursor.0);
         let mut y = self.drag.start_window.1 + (cursor_screen.1 - self.drag.start_cursor.1);
         if let Some((work, range)) = magnet {
@@ -64,12 +84,13 @@ impl WindowState {
         Some((x.round() as i32, y.round() as i32))
     }
 
-    /// End the drag; returns true if a drag was active (position must be saved).
+    /// End the drag; returns true if the window was dragged (its position
+    /// must be saved). A press that never left the threshold was a click.
     pub fn end_drag(&mut self) -> bool {
-        let was_active = self.drag.active;
+        let dragged = self.drag.active && self.drag.moved;
         self.drag.active = false;
         self.drag_pending = false;
-        was_active
+        dragged
     }
 }
 
@@ -136,7 +157,31 @@ pub fn clamp_to_work_area(
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_to_work_area, magnet_snap};
+    use super::{clamp_to_work_area, magnet_snap, WindowState, DRAG_THRESHOLD};
+
+    /// A press that wobbles less than the threshold is a click: the window
+    /// stays and the release says nothing was dragged. Past it the window
+    /// follows the cursor all the way, from where the press began.
+    #[test]
+    fn a_wobbling_click_is_not_a_drag() {
+        let mut w = WindowState {
+            pos: (100.0, 100.0),
+            ..WindowState::default()
+        };
+        w.begin_drag((500.0, 500.0));
+        assert_eq!(w.update_drag((503.0, 498.0), None), None);
+        assert_eq!(w.pos, (100.0, 100.0));
+        assert!(!w.end_drag());
+        w.begin_drag((500.0, 500.0));
+        assert_eq!(
+            w.update_drag((500.0, 500.0 + DRAG_THRESHOLD + 1.0), None),
+            Some((100, 105))
+        );
+        // Once moving, every step follows, small ones too.
+        assert_eq!(w.update_drag((501.0, 501.0), None), Some((101, 101)));
+        assert!(w.end_drag());
+        assert!(!w.drag.active);
+    }
 
     const AREA: (f64, f64, f64, f64) = (0.0, 0.0, 1000.0, 800.0);
 

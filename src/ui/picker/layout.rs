@@ -1,0 +1,984 @@
+// ui/picker/layout.rs — the picker laid out for one state: the box and its
+// header, the scrolling list (rows, model parts, the source, the names), the
+// update notice, and an open question (its text, which scrolls, and its
+// buttons, which stay in the box).
+
+use super::*;
+
+impl Picker {
+    // ─── Layout ──────────────────────────────────────────────────
+
+    pub(super) fn layout_key(&self) -> LayoutKey {
+        LayoutKey {
+            input: self.input_gen,
+            scroll: self.scroll.to_bits(),
+            max_h: self.max_box_h.to_bits(),
+            ask: self
+                .ask
+                .as_ref()
+                .map(|a| (a.question.clone(), a.picked.clone(), a.scroll.to_bits())),
+            found_answered: self.found_answered,
+            reviewed: self.reviewed,
+            edit: self
+                .edit
+                .as_ref()
+                .map(|e| (e.key.clone(), e.text.clone(), e.full)),
+            field: self
+                .focus
+                .clone()
+                .filter(|t| matches!(t, Target::Field { .. })),
+            names: (self.names_open, self.open_names.clone()),
+        }
+    }
+
+    /// The whole window laid out for the current state; the last layout
+    /// when nothing it depends on changed.
+    pub(super) fn frame(&self) -> Rc<Frame> {
+        let key = self.layout_key();
+        if let Some((k, f)) = &*self.layout.borrow() {
+            if *k == key {
+                return f.clone();
+            }
+        }
+        let f = Rc::new(self.build_frame());
+        *self.layout.borrow_mut() = Some((key, f.clone()));
+        f
+    }
+
+    /// Lay out the whole window.
+    pub(super) fn build_frame(&self) -> Frame {
+        let view = self.view();
+        let mut flow = Flow::new();
+        match view {
+            View::Rows { welcome } => self.flow_rows(&mut flow, welcome),
+            View::Notice => self.flow_notice(&mut flow),
+        }
+        let content_h = flow.y.ceil();
+        let footer_h = if view == View::Notice { FOOTER_H } else { 0.0 };
+        let ask = self.ask.as_ref().map(|a| self.ask_layout(a));
+
+        let natural = HEADER_H + content_h + footer_h;
+        let mut box_h = natural.min(self.max_box_h);
+        if let Some(q) = &ask {
+            box_h = box_h.max((HEADER_H + q.height() + ASK_INSET * 2.0).min(self.max_box_h));
+        }
+        let box_h = box_h.ceil();
+        let boxr = rect(MARGIN, MARGIN, BOX_W, box_h);
+        let viewport = rect(
+            boxr.x + 1.0,
+            boxr.y + HEADER_H,
+            BOX_W - 2.0,
+            box_h - HEADER_H - footer_h - 1.0,
+        );
+        let max_scroll = (content_h - viewport.h).max(0.0);
+        let scroll = self.scroll.clamp(0.0, max_scroll).round();
+
+        // The box and its header.
+        let mut els: Vec<(Layer, El)> = vec![
+            (
+                Layer::Chrome,
+                El::Shape(Shape::Shadow {
+                    rect: boxr,
+                    radius: 8.0,
+                }),
+            ),
+            (
+                Layer::Chrome,
+                El::Shape(Shape::Fill {
+                    rect: boxr,
+                    radius: 8.0,
+                    ink: Ink::Surface,
+                    alpha: Level::Full,
+                }),
+            ),
+            (
+                Layer::Chrome,
+                El::Shape(text_shape(
+                    boxr.x + PAD_X,
+                    boxr.y + 8.0 + ((30.0 - lh(SIZE_TITLE)) / 2.0).round(),
+                    self.title(),
+                    SIZE_TITLE,
+                    Ink::Text,
+                    true,
+                )),
+            ),
+            (
+                Layer::Chrome,
+                El::Close {
+                    rect: rect(boxr.x + BOX_W - 6.0 - 34.0, boxr.y + 8.0, 34.0, 30.0),
+                    nav: (0, 9),
+                },
+            ),
+        ];
+
+        // The list, moved from content to window coordinates.
+        let (dx, dy) = (boxr.x, viewport.y - scroll);
+        for el in &flow.els {
+            els.push((Layer::Body, el.moved(dx, dy)));
+        }
+        // The column heads: in place, or pinned to the top once the list has
+        // scrolled past them.
+        let sticky = flow.sticky.as_ref().and_then(|(cy, ch, shapes)| {
+            let at = (cy + dy).max(viewport.y);
+            let r = rect(viewport.x, at, viewport.w, *ch);
+            (r.y < bottom(&viewport)).then(|| Sticky {
+                rect: r,
+                shapes: shapes.iter().map(|s| s.moved(dx, at)).collect(),
+                pinned: at > cy + dy,
+            })
+        });
+
+        // The notice's buttons.
+        if view == View::Notice {
+            let y = bottom(&boxr) - 14.0 - BUTTON_H;
+            let (review, review_w) = ("Review…", self.button_w("Review…"));
+            let ok_w = self.button_w("OK");
+            let rx = boxr.x + BOX_W - PAD_X - review_w;
+            let ox = rx - 8.0 - ok_w;
+            els.push((
+                Layer::Overlay,
+                El::Button {
+                    target: Target::NoticeOk,
+                    rect: rect(ox, y, ok_w, BUTTON_H),
+                    label: "OK".into(),
+                    primary: true,
+                    enabled: true,
+                    nav: (u32::MAX - 1, 0),
+                },
+            ));
+            els.push((
+                Layer::Overlay,
+                El::Button {
+                    target: Target::NoticeReview,
+                    rect: rect(rx, y, review_w, BUTTON_H),
+                    label: review.into(),
+                    primary: false,
+                    enabled: true,
+                    nav: (u32::MAX - 1, 1),
+                },
+            ));
+        }
+
+        // The scroll bar: a thin thumb, only when the list scrolls.
+        let bar = Bar::of(&viewport, content_h, scroll, boxr.x + BOX_W - 6.0);
+        if let Some(b) = &bar {
+            els.push((Layer::Overlay, El::Shape(thumb_shape(b))));
+        }
+
+        // The read question, over the list's bottom. Its buttons stay in the
+        // box; its text scrolls above them when the box is too low for it.
+        let mut ask_frame = None;
+        if let (Some(q), Some(a)) = (ask, self.ask.as_ref()) {
+            let qh = q.height().min(box_h - HEADER_H - ASK_INSET);
+            let qr = rect(
+                boxr.x + ASK_INSET,
+                bottom(&boxr) - ASK_INSET - qh,
+                BOX_W - ASK_INSET * 2.0,
+                qh,
+            );
+            for s in [
+                Shape::Shadow {
+                    rect: qr,
+                    radius: 8.0,
+                },
+                Shape::Fill {
+                    rect: qr,
+                    radius: 8.0,
+                    ink: Ink::Surface,
+                    alpha: Level::Full,
+                },
+                Shape::Stroke {
+                    rect: qr,
+                    radius: 8.0,
+                    width: 1.0,
+                    ink: Ink::Border,
+                    alpha: Level::Full,
+                },
+            ] {
+                els.push((Layer::Overlay, El::Shape(s)));
+            }
+            let by = bottom(&qr) - ASK_BOTTOM - BUTTON_H;
+            let tv = rect(qr.x + 1.0, qr.y + 1.0, qr.w - 2.0, by - 4.0 - (qr.y + 1.0));
+            let mut af = AskFrame {
+                rect: qr,
+                viewport: tv,
+                // From the viewport's top, a pixel below the box's.
+                content_h: (q.text_h - 1.0).ceil(),
+                scroll: 0.0,
+                bar: None,
+            };
+            af.scroll = a.scroll.clamp(0.0, af.max_scroll()).round();
+            af.bar = Bar::of(&tv, af.content_h, af.scroll, qr.x + qr.w - 6.0);
+            for el in q.text {
+                els.push((Layer::AskBody, el.moved(qr.x, qr.y - af.scroll)));
+            }
+            if let Some(b) = &af.bar {
+                els.push((Layer::Top, El::Shape(thumb_shape(b))));
+                // More below: a hairline over the buttons marks the cut.
+                if af.scroll < af.max_scroll() {
+                    els.push((
+                        Layer::Top,
+                        El::Shape(Shape::Fill {
+                            rect: rect(qr.x + 10.0, bottom(&tv), qr.w - 20.0, 1.0),
+                            radius: 0.0,
+                            ink: Ink::Separator,
+                            alpha: Level::Full,
+                        }),
+                    ));
+                }
+            }
+            for el in q.buttons {
+                els.push((Layer::Top, el.moved(qr.x, by)));
+            }
+            ask_frame = Some(af);
+        }
+
+        // The outline, last, over whatever reaches the edge.
+        els.push((
+            Layer::Top,
+            El::Shape(Shape::Stroke {
+                rect: boxr,
+                radius: 8.0,
+                width: 1.0,
+                ink: Ink::Border,
+                alpha: Level::Full,
+            }),
+        ));
+
+        Frame {
+            width: BOX_W + MARGIN * 2.0,
+            height: box_h + MARGIN * 2.0,
+            boxr,
+            viewport,
+            content_h,
+            scroll,
+            els,
+            sticky,
+            bar,
+            ask: ask_frame,
+        }
+    }
+
+    pub(super) fn button_w(&self, label: &str) -> f32 {
+        (self.adv(label, SIZE_TEXT) + 24.0)
+            .max(BUTTON_MIN_W)
+            .round()
+    }
+
+    /// The list: rows, model parts, the source, the names.
+    pub(super) fn flow_rows(&self, f: &mut Flow, welcome: bool) {
+        let input = &self.input;
+        if welcome {
+            f.y += 4.0;
+            let mut spans = vec![
+                span("Tick the tools you use.", SIZE_TEXT, Ink::Text, true),
+                span(
+                    " AI Limits reads nothing of a tool before you allow it.",
+                    SIZE_TEXT,
+                    Ink::Text,
+                    false,
+                ),
+            ];
+            if !input.found.is_empty() {
+                spans.push(span(
+                    " Tools found on this PC are marked.",
+                    SIZE_TEXT,
+                    Ink::Text,
+                    false,
+                ));
+            }
+            let lines = self.wrap(&spans, BOX_W - 16.0 - 20.0);
+            let h = lines.len() as f32 * lh(SIZE_TEXT) + 16.0;
+            f.shape(Shape::Fill {
+                rect: rect(8.0, f.y, BOX_W - 16.0, h),
+                radius: 6.0,
+                ink: Ink::Hover,
+                alpha: Level::Full,
+            });
+            f.lines(&lines, 18.0, f.y + 8.0, lh(SIZE_TEXT));
+            f.y += h + 8.0;
+        }
+
+        // The column heads, pinned to the top while the list scrolls.
+        let heads: Vec<Shape> = SURFACES
+            .iter()
+            .zip(["Widget", "Tooltip"])
+            .map(|((_, cx), label)| {
+                let w = self.adv(label, SIZE_NOTE);
+                text_shape(
+                    (cx - w / 2.0).round(),
+                    f.y + ((COLS_H - lh(SIZE_NOTE)) / 2.0).round(),
+                    label,
+                    SIZE_NOTE,
+                    Ink::Muted,
+                    false,
+                )
+            })
+            .collect();
+        // Drawn once, by the frame, in place or pinned.
+        f.sticky = Some((
+            f.y,
+            COLS_H,
+            heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect(),
+        ));
+        f.y += COLS_H;
+
+        // Rows, grouped by provider.
+        let mut groups: Vec<Vec<&RowChoice>> = Vec::new();
+        for row in &input.rows {
+            match groups.last_mut() {
+                Some(g) if canonical(g[0].provider) == canonical(row.provider) => g.push(row),
+                _ => groups.push(vec![row]),
+            }
+        }
+        for (gi, g) in groups.iter().enumerate() {
+            if gi > 0 {
+                f.y += 6.0;
+            }
+            for row in g {
+                self.flow_row(f, row, welcome);
+            }
+            // A provider with one limit for everything has no extra rows.
+            if g.len() == 1 && !g[0].id.contains('.') {
+                f.shape(text_shape(
+                    SUB_X,
+                    f.y,
+                    ONE_LIMIT,
+                    SIZE_NOTE,
+                    Ink::Muted,
+                    false,
+                ));
+                f.y += lh(SIZE_NOTE) + 4.0;
+            }
+        }
+
+        // Model, version, effort.
+        self.flow_sep(f);
+        for (part, label, note) in PARTS {
+            let notes = self.wrap(
+                &[span(note, SIZE_NOTE, Ink::Muted, false)],
+                LABEL_RIGHT - PAD_X,
+            );
+            let block = lh(SIZE_TEXT) + notes.len() as f32 * lh(SIZE_NOTE);
+            let h = (block + 8.0).max(ROW_H);
+            let y = f.y;
+            f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
+            let top = y + ((h - block) / 2.0).round();
+            f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
+            f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
+            f.els.push(El::Hint {
+                rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
+                text: part_hint(part).to_string(),
+            });
+            for (col, (surface, cx)) in SURFACES.iter().enumerate() {
+                f.els.push(El::Tick {
+                    target: Target::Part {
+                        part,
+                        surface: *surface,
+                    },
+                    cell: rect(cx - COL_W / 2.0, y, COL_W, h),
+                    on: self.part_on(*surface, part),
+                    enabled: self.part_enabled(*surface, part),
+                    nav: (f.nav, col as u32),
+                });
+            }
+            f.nav += 1;
+            f.y += h;
+        }
+        let read_note = self.wrap(
+            &[span(READ_NOTE, SIZE_NOTE, Ink::Muted, false)],
+            BOX_W - SUB_X - PAD_X,
+        );
+        f.y += f.lines(&read_note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+
+        // Where the model comes from.
+        let enabled = self.any_part_on();
+        f.y += 6.0;
+        f.shape(Shape::Text {
+            x: PAD_X,
+            y: f.y,
+            text: MODEL_SHOWN.to_string(),
+            size: SIZE_TEXT,
+            ink: Ink::Text,
+            bold: false,
+            italic: false,
+            alpha: if enabled {
+                Level::Full
+            } else {
+                Level::Disabled
+            },
+        });
+        f.y += lh(SIZE_TEXT) + 4.0;
+        let mut x = PAD_X;
+        for (col, (source, label, hint)) in [
+            (ModelSource::Configured, SOURCE_SET, SOURCE_SET_HINT),
+            (ModelSource::LastUsed, SOURCE_LAST, SOURCE_LAST_HINT),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let w = RADIO + 8.0 + self.adv(label, SIZE_TEXT);
+            f.els.push(El::Hint {
+                rect: rect(x, f.y, w.ceil(), RADIO_H),
+                text: hint.to_string(),
+            });
+            f.els.push(El::Radio {
+                target: Target::Source(source),
+                rect: rect(x, f.y, w.ceil(), RADIO_H),
+                label: label.to_string(),
+                on: self.source() == source,
+                enabled,
+                nav: (f.nav, col as u32),
+            });
+            x += w.ceil() + 16.0;
+        }
+        f.nav += 1;
+        f.y += RADIO_H;
+
+        // Model names: closed until opened, then one heading per tool.
+        self.flow_sep(f);
+        f.y += 4.0;
+        let models = self.renamable();
+        let count = if models.is_empty() {
+            String::new()
+        } else {
+            let mut keys: Vec<&str> = models
+                .iter()
+                .map(|&mi| self.input.models[mi].key.as_str())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            count_of(keys.len(), "model")
+        };
+        let h = ROW_H - 6.0;
+        f.els.push(El::Toggle {
+            target: Target::Names,
+            rect: rect(6.0, f.y, BOX_W - 12.0, h),
+            label: NAMES.to_string(),
+            count,
+            open: self.names_open,
+            bold: true,
+            nav: (f.nav, 0),
+        });
+        f.els.push(El::Hint {
+            rect: rect(6.0, f.y, BOX_W - 12.0, h),
+            text: NAMES_HINT.to_string(),
+        });
+        f.nav += 1;
+        f.y += h;
+        if self.names_open {
+            let note = if models.is_empty() {
+                NAMES_OFF
+            } else {
+                NAMES_ON
+            };
+            let note = self.wrap(
+                &[span(note, SIZE_NOTE, Ink::Muted, false)],
+                BOX_W - SUB_X - PAD_X,
+            );
+            f.y += f.lines(&note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+            let mut tools: Vec<&'static str> = Vec::new();
+            for &mi in &models {
+                let p = self.input.models[mi].provider;
+                if !tools.contains(&p) {
+                    tools.push(p);
+                }
+            }
+            for p in tools {
+                let mine: Vec<usize> = models
+                    .iter()
+                    .copied()
+                    .filter(|&mi| self.input.models[mi].provider == p)
+                    .collect();
+                let open = self.open_names.iter().any(|o| o == p);
+                f.els.push(El::Toggle {
+                    target: Target::NamesOf(p.to_string()),
+                    rect: rect(SUB_X - 8.0, f.y, BOX_W - SUB_X + 2.0, h),
+                    label: self.provider_name(p),
+                    count: mine.len().to_string(),
+                    open,
+                    bold: false,
+                    nav: (f.nav, 0),
+                });
+                f.nav += 1;
+                f.y += h;
+                if open {
+                    for mi in mine {
+                        self.flow_name(f, mi);
+                    }
+                }
+            }
+        }
+        f.y += 10.0;
+    }
+
+    /// One row: its name (and note) with a Widget and a Tooltip tick.
+    pub(super) fn flow_row(&self, f: &mut Flow, row: &RowChoice, welcome: bool) {
+        let own = !row.id.contains('.');
+        let x = if own { PAD_X } else { SUB_X };
+        let width = LABEL_RIGHT - x;
+        let name = if own {
+            row.name
+        } else {
+            row.name.split_once(" · ").map_or(row.name, |(_, b)| b)
+        };
+        let mut notes: Vec<String> = Vec::new();
+        if !row.note.is_empty() {
+            notes.push(row.note.to_string());
+        }
+        // Allowed but switched off: the menu, not a missing consent.
+        if own && self.allowed(row.provider) && !self.enabled(row.provider) {
+            notes.push(OFF_IN_MENU.to_string());
+        }
+        // Missing only once the provider answered: not while it loads, so
+        // the rows do not grow and shrink under the cursor after Allow.
+        if !own && !row.has_data && row.provider_ok && self.allowed(row.provider) {
+            notes.push(NOT_REPORTED.to_string());
+        }
+        let mut note_lines = Vec::new();
+        for n in &notes {
+            note_lines.extend(self.wrap(&[span(n.as_str(), SIZE_NOTE, Ink::Muted, false)], width));
+        }
+        let block = lh(SIZE_TEXT) + note_lines.len() as f32 * lh(SIZE_NOTE);
+        let h = (block + 8.0).max(ROW_H);
+        let y = f.y;
+        f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
+        let top = y + ((h - block) / 2.0).round();
+        if !own {
+            f.shape(text_shape(
+                PAD_X + 1.0,
+                top,
+                "+",
+                SIZE_TEXT,
+                Ink::Muted,
+                false,
+            ));
+        }
+        f.shape(text_shape(x, top, name, SIZE_TEXT, Ink::Text, own));
+        if !row.hint.is_empty() {
+            f.els.push(El::Hint {
+                rect: rect(x, y, LABEL_RIGHT - x, h),
+                text: row.hint.to_string(),
+            });
+        }
+        if own && welcome && self.found(row.provider) {
+            let bx = (x + self.adv_styled(name, SIZE_TEXT, true) + 8.0).round();
+            let bw = (self.adv_styled(FOUND, SIZE_BADGE, true) + 14.0).round();
+            f.shape(Shape::Fill {
+                rect: rect(bx, top, bw, lh(SIZE_TEXT)),
+                radius: 8.0,
+                ink: Ink::Hover,
+                alpha: Level::Full,
+            });
+            f.shape(text_shape(
+                bx + 7.0,
+                top + ((lh(SIZE_TEXT) - lh(SIZE_BADGE)) / 2.0).round(),
+                FOUND,
+                SIZE_BADGE,
+                Ink::Accent,
+                true,
+            ));
+            let sure = !self.found_weakly(row.provider);
+            f.els.push(El::Hint {
+                rect: rect(bx, top, bw, lh(SIZE_TEXT)),
+                text: crate::consent::found_hint(canonical(row.provider), sure).to_string(),
+            });
+        }
+        f.lines(&note_lines, x, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
+        for (col, (surface, cx)) in SURFACES.iter().enumerate() {
+            f.els.push(El::Tick {
+                target: Target::Row {
+                    row: row.id.to_string(),
+                    surface: *surface,
+                },
+                cell: rect(cx - COL_W / 2.0, y, COL_W, h),
+                on: self.row_on(*surface, row),
+                enabled: true,
+                nav: (f.nav, col as u32),
+            });
+        }
+        f.nav += 1;
+        f.y += h;
+    }
+
+    pub(super) fn flow_sep(&self, f: &mut Flow) {
+        f.y += 8.0;
+        f.shape(Shape::Fill {
+            rect: rect(10.0, f.y, BOX_W - 20.0, 1.0),
+            radius: 0.0,
+            ink: Ink::Separator,
+            alpha: Level::Full,
+        });
+        f.y += 9.0;
+    }
+
+    /// One model's name field: which id, whether this tool uses it now and
+    /// which other tools share the name, the field, the room left.
+    pub(super) fn flow_name(&self, f: &mut Flow, mi: usize) {
+        let m = &self.input.models[mi];
+        let x = SUB_X + 14.0;
+        let width = BOX_W - PAD_X - x;
+        f.y += 4.0;
+        let mut spans = vec![span(
+            shorten(&m.model_id, ID_CHARS),
+            SIZE_NOTE,
+            Ink::Muted,
+            false,
+        )];
+        if m.current {
+            spans.push(span(format!("  {IN_USE}"), SIZE_NOTE, Ink::Accent, true));
+        }
+        if !m.shared_with.is_empty() {
+            spans.push(span(
+                format!("  shared with {}", m.shared_with.join(", ")),
+                SIZE_NOTE,
+                Ink::Muted,
+                false,
+            ));
+        }
+        let label = self.wrap(&spans, width);
+        f.y += f.lines(&label, x, f.y, lh(SIZE_NOTE)) + 3.0;
+        let target = Target::Field {
+            key: m.key.clone(),
+            provider: m.provider.to_string(),
+        };
+        f.els.push(El::Field {
+            target: target.clone(),
+            rect: rect(x, f.y, width, FIELD_H),
+            model: mi,
+            nav: (f.nav, 0),
+        });
+        f.nav += 1;
+        f.y += FIELD_H + 4.0;
+        // How much room is left: for the field being typed in only.
+        if !self.focused(&target) {
+            f.y += 2.0;
+            return;
+        }
+        let text = self.field_text(m);
+        let full = matches!(&self.edit, Some(e) if e.key == m.key && e.full);
+        let hint = room_text(self.chars_left(text.trim()), text.trim().is_empty());
+        let (ink, bold) = if full {
+            (Ink::Accent, true)
+        } else {
+            (Ink::Muted, false)
+        };
+        let hint = self.wrap(&[span(hint, SIZE_NOTE, ink, bold)], width);
+        f.y += f.lines(&hint, x, f.y, lh(SIZE_NOTE)) + 6.0;
+    }
+
+    /// The update notice: every file read and every host the tokens go to.
+    pub(super) fn flow_notice(&self, f: &mut Flow) {
+        let width = BOX_W - PAD_X * 2.0;
+        f.y += 2.0;
+        self.flow_para(
+            f,
+            &[span(
+                "From now on, AI Limits asks before it reads any file. The tools you already use keep working; nothing changes for them:",
+                SIZE_TEXT,
+                Ink::Text,
+                false,
+            )],
+            width,
+        );
+        for p in self.allowed_in_order() {
+            let Some(info) = crate::consent::read_info(&p) else {
+                continue;
+            };
+            let mut spans = vec![span(format!("{}:", info.tool), SIZE_TEXT, Ink::Text, true)];
+            spans.push(span(
+                format!(" {}", info.sign_in.join("; ")),
+                SIZE_NOTE,
+                Ink::Text,
+                false,
+            ));
+            spans.push(span(
+                format!("; its {} goes only to ", info.secret()),
+                SIZE_TEXT,
+                Ink::Text,
+                false,
+            ));
+            spans.push(span(info.hosts.join(" and "), SIZE_NOTE, Ink::Text, false));
+            if self.input.reads.tool_settings {
+                if let Some(s) = info.settings {
+                    spans.push(span(". The model: ", SIZE_TEXT, Ink::Text, false));
+                    spans.push(span(s, SIZE_NOTE, Ink::Text, false));
+                }
+            }
+            if self.input.reads.last_session {
+                if let Some(s) = info.session {
+                    spans.push(span(". Last used: ", SIZE_TEXT, Ink::Text, false));
+                    spans.push(span(s, SIZE_NOTE, Ink::Text, false));
+                }
+            }
+            self.flow_item(f, &spans, width);
+        }
+        f.y += 4.0;
+        self.flow_para(
+            f,
+            &[span(
+                "A new tool or option asks once before its first read. Untick a tool in Rows and models to stop reading its file.",
+                SIZE_TEXT,
+                Ink::Text,
+                false,
+            )],
+            width,
+        );
+    }
+
+    pub(super) fn flow_para(&self, f: &mut Flow, spans: &[Span], width: f32) {
+        let lines = self.wrap(spans, width);
+        f.y += f.lines(&lines, PAD_X, f.y, lh(SIZE_TEXT)) + 8.0;
+    }
+
+    pub(super) fn flow_item(&self, f: &mut Flow, spans: &[Span], width: f32) {
+        let lines = self.wrap(spans, width - 18.0);
+        f.shape(text_shape(
+            PAD_X + 4.0,
+            f.y,
+            "•",
+            SIZE_TEXT,
+            Ink::Text,
+            false,
+        ));
+        f.y += f.lines(&lines, PAD_X + 18.0, f.y, lh(SIZE_TEXT)) + 4.0;
+    }
+
+    /// The providers that may be read, in the order the picker lists them.
+    pub(super) fn allowed_in_order(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let listed = self
+            .input
+            .rows
+            .iter()
+            .map(|r| r.provider)
+            .chain(self.input.reads.sign_in.iter().map(String::as_str));
+        for p in listed {
+            let p = canonical(p).to_string();
+            if self.allowed(&p) && !out.contains(&p) {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// The question's title, its lead-in, the files, and what follows.
+    pub(super) fn ask_text(&self, question: &Question) -> (String, String, Vec<String>, String) {
+        // The files a settings or session question covers: every tool's
+        // that has one, so a tool allowed later is never read unnamed.
+        let files = |pick: fn(&crate::consent::ReadInfo) -> Option<&'static str>| {
+            crate::consent::READ_INFO
+                .iter()
+                .filter_map(pick)
+                .map(String::from)
+                .collect::<Vec<String>>()
+        };
+        match question {
+            Question::Read(ReadKind::SignIn(p)) => {
+                let info = crate::consent::read_info(p);
+                let tool = info.map_or(p.as_str(), |i| i.tool);
+                let name = self.provider_name(p);
+                let mut list: Vec<String> = info
+                    .map(|i| i.sign_in.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default();
+                // Reads already allowed for every tool apply to this one too.
+                if let Some(i) = info {
+                    list.extend(self.allowed_model_files(i).into_iter().map(String::from));
+                }
+                let hosts = info.map(|i| i.hosts.join(" and ")).unwrap_or_default();
+                let goes = if hosts.is_empty() {
+                    String::new()
+                } else {
+                    format!(" and goes only to {hosts}, to ask for your usage")
+                };
+                if info.is_some_and(|i| !i.tool_sign_in) {
+                    // The app signs in by itself (Cursor): nothing of the
+                    // tool's is read for it, and the session is the app's.
+                    return (
+                        format!("Show {name}?"),
+                        format!(
+                            "To show your {name} limits, AI Limits signs in by itself and reads no file of {tool}'s for it:"
+                        ),
+                        list,
+                        format!(
+                            "The session stays on this PC{goes}. AI Limits renews it before it runs out; the editor's own sign-in is never touched. Untick its rows to stop."
+                        ),
+                    );
+                }
+                (
+                    format!("Read {tool}'s sign-in?"),
+                    format!("To show your {name} limits, AI Limits reads:"),
+                    list,
+                    format!(
+                        "The token stays on this PC{goes}. It is never changed or refreshed. Untick its rows to stop."
+                    ),
+                )
+            }
+            Question::Found => (
+                FOUND_TITLE.to_string(),
+                FOUND_LEAD.to_string(),
+                Vec::new(),
+                FOUND_OUTRO.to_string(),
+            ),
+            Question::Read(ReadKind::ToolSettings) => (
+                "Read the tools' settings files?".to_string(),
+                "To show the model, its version and effort, AI Limits reads these values from each tool's own settings file:".to_string(),
+                files(|i| i.settings),
+                "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one set up from the menu or with a pasted key. Untick Model, Version and Effort to stop.".to_string(),
+            ),
+            Question::Read(ReadKind::LastSession) => (
+                "Read the end of your newest session?".to_string(),
+                "For Last used, AI Limits reads the newest session file back from its end until it finds the model, at most the last 1 MB:".to_string(),
+                files(|i| i.session),
+                "Only the model and its effort are kept, in memory. Your conversations are not stored or sent anywhere. Switch back to As set in the tool to stop.".to_string(),
+            ),
+        }
+    }
+
+    /// The question laid out in its box's own coordinates: its text, which
+    /// may scroll, and its buttons, which stay.
+    pub(super) fn ask_layout(&self, ask: &Ask) -> AskLayout {
+        let (title, lead, files, outro) = self.ask_text(&ask.question);
+        let inner = BOX_W - ASK_INSET * 2.0 - ASK_PAD * 2.0;
+        let mut f = Flow::new();
+        f.nav = 0;
+        f.y = ASK_TOP;
+        let t = self.wrap(&[span(title, SIZE_TITLE, Ink::Text, true)], inner);
+        f.y += f.lines(&t, ASK_PAD, f.y, lh(SIZE_TITLE)) + 6.0;
+        let l = self.wrap(&[span(lead, SIZE_TEXT, Ink::Text, false)], inner);
+        f.y += f.lines(&l, ASK_PAD, f.y, lh(SIZE_TEXT)) + 4.0;
+        for file in files {
+            self.flow_bullet(&mut f, &file, inner);
+        }
+        if ask.question == Question::Found {
+            for id in &ask.tools {
+                self.flow_pick(&mut f, ask, id, inner);
+            }
+        }
+        let others = match &ask.question {
+            Question::Read(ReadKind::SignIn(p)) => self.others_found(p),
+            _ => Vec::new(),
+        };
+        if !others.is_empty() {
+            f.y += 4.0;
+            let l = self.wrap(&[span(ALLOW_ALL_LEAD, SIZE_TEXT, Ink::Text, false)], inner);
+            f.y += f.lines(&l, ASK_PAD, f.y, lh(SIZE_TEXT)) + 4.0;
+            for info in others.iter().filter_map(|p| crate::consent::read_info(p)) {
+                let entry = format!("{}: {}", info.tool, self.found_entry(info));
+                self.flow_bullet(&mut f, &entry, inner);
+            }
+        }
+        f.y += 4.0;
+        let o = self.wrap(&[span(outro, SIZE_TEXT, Ink::Text, false)], inner);
+        f.y += f.lines(&o, ASK_PAD, f.y, lh(SIZE_TEXT));
+        let text_h = f.y;
+
+        let row = f.nav;
+        let mut buttons = Vec::new();
+        let (aw, cw) = (self.button_w("Allow"), self.button_w("Cancel"));
+        let right = BOX_W - ASK_INSET * 2.0 - ASK_PAD;
+        let allow_x = right - cw - 8.0 - aw;
+        if !others.is_empty() {
+            let w = self.button_w(ALLOW_ALL);
+            buttons.push(El::Button {
+                target: Target::AllowAll,
+                rect: rect(allow_x - 8.0 - w, 0.0, w, BUTTON_H),
+                label: ALLOW_ALL.into(),
+                primary: false,
+                enabled: true,
+                nav: (row, 0),
+            });
+        }
+        buttons.push(El::Button {
+            target: Target::Allow,
+            rect: rect(allow_x, 0.0, aw, BUTTON_H),
+            label: "Allow".into(),
+            primary: true,
+            enabled: self.can_allow(ask),
+            nav: (row, 1),
+        });
+        buttons.push(El::Button {
+            target: Target::Cancel,
+            rect: rect(right - cw, 0.0, cw, BUTTON_H),
+            label: "Cancel".into(),
+            primary: false,
+            enabled: true,
+            nav: (row, 2),
+        });
+        AskLayout {
+            text_h,
+            text: f.els,
+            buttons,
+        }
+    }
+
+    /// Whether Allow can answer: the welcome's question needs a tool ticked.
+    pub(super) fn can_allow(&self, ask: &Ask) -> bool {
+        ask.question != Question::Found || !ask.picked.is_empty()
+    }
+
+    /// One item of a question's list, behind a bullet.
+    pub(super) fn flow_bullet(&self, f: &mut Flow, text: &str, inner: f32) {
+        let lines = self.wrap(&[span(text, SIZE_NOTE, Ink::Text, false)], inner - 18.0);
+        f.shape(text_shape(
+            ASK_PAD + 4.0,
+            f.y,
+            "•",
+            SIZE_NOTE,
+            Ink::Text,
+            false,
+        ));
+        f.y += f.lines(&lines, ASK_PAD + 18.0, f.y, lh(SIZE_NOTE)) + 2.0;
+    }
+
+    /// A tool in the welcome's question: its tick, its name, what is read
+    /// and where its token goes, and why it is unticked when only a related
+    /// tool was found. The whole entry toggles the tick.
+    pub(super) fn flow_pick(&self, f: &mut Flow, ask: &Ask, id: &str, inner: f32) {
+        let Some(info) = crate::consent::read_info(id) else {
+            return;
+        };
+        let x = ASK_PAD + PICK_BOX + 8.0;
+        let width = inner - PICK_BOX - 8.0;
+        let top = f.y + 2.0;
+        let name = self.wrap(&[span(info.tool, SIZE_TEXT, Ink::Text, true)], width);
+        let detail = self.wrap(
+            &[span(self.found_entry(info), SIZE_NOTE, Ink::Text, false)],
+            width,
+        );
+        let weak = if self.found_weakly(id) {
+            self.wrap(
+                &[span(
+                    crate::consent::weak_note(info.id),
+                    SIZE_NOTE,
+                    Ink::Muted,
+                    false,
+                )],
+                width,
+            )
+        } else {
+            Vec::new()
+        };
+        let h =
+            name.len() as f32 * lh(SIZE_TEXT) + (detail.len() + weak.len()) as f32 * lh(SIZE_NOTE);
+        // The entry first, so its hover wash lies under its text.
+        f.els.push(El::Pick {
+            target: Target::Pick(id.to_string()),
+            rect: rect(ASK_PAD - 6.0, top - 3.0, inner + 12.0, h + 6.0),
+            check: rect(
+                ASK_PAD,
+                top + ((lh(SIZE_TEXT) - PICK_BOX) / 2.0).round(),
+                PICK_BOX,
+                PICK_BOX,
+            ),
+            on: ask.picked.iter().any(|p| p == id),
+            nav: (f.nav, 0),
+        });
+        f.nav += 1;
+        let mut y = top;
+        y += f.lines(&name, x, y, lh(SIZE_TEXT));
+        y += f.lines(&detail, x, y, lh(SIZE_NOTE));
+        y += f.lines(&weak, x, y, lh(SIZE_NOTE));
+        f.y = y + 6.0;
+    }
+}
