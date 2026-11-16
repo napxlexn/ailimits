@@ -1,13 +1,18 @@
 // providers/claude.rs — Claude provider (API key and subscription modes).
 // See docs/en/PROVIDERS.md, section "Claude".
 
-use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{
+    generation_of, keyring_secret, status_words, transport_error, unless_superseded, Metric,
+    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus, Refusals,
+    SecretSource,
+};
 use crate::config::schema::{AuthMethod, ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use std::path::PathBuf;
-use tracing::warn;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, warn};
 
 const CLAUDE_MODELS_URL: &str = "https://api.anthropic.com/v1/models";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -28,21 +33,52 @@ const HEADER_REQUESTS_RESET: &str = "anthropic-ratelimit-requests-reset";
 
 pub struct ClaudeProvider {
     config: ProviderConfig,
-    http: reqwest::Client,
+    /// The client and where it sends (`Net::new` in the app). It never
+    /// follows a redirect: reqwest strips only Authorization on one, never
+    /// x-api-key.
+    net: Net,
+    /// The app's own usage token (Credential Manager), read each cycle; it
+    /// does not touch Claude Code's credentials.
+    usage_token: SecretSource,
+    /// Claude Code's folder, where `.credentials.json` is read when allowed.
+    home: Option<PathBuf>,
+    /// A stored usage token the endpoint refused: not sent again for a
+    /// while, so it costs no second request each cycle.
+    refused: Refusals,
+    /// The account counter fetches are checked against (`GENERATIONS`).
+    generation: &'static AtomicU64,
 }
 
 impl ClaudeProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            // These usage endpoints never legitimately redirect; refusing 3xx
-            // removes any chance of forwarding a bearer / x-api-key header to a
-            // different host (reqwest only strips Authorization, not x-api-key).
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
+        Self {
+            config,
+            net: Net::new(),
+            usage_token: keyring_secret(USAGE_TOKEN_LABEL),
+            home: claude_dir(),
+            refused: Refusals::default(),
+            generation: generation_of(&ProviderId::Claude),
+        }
+    }
 
-        Self { config, http }
+    /// A provider that sends to a local test server and finds its sources
+    /// where the test put them.
+    #[cfg(test)]
+    fn for_test(
+        config: ProviderConfig,
+        server: &str,
+        usage_token: Option<&str>,
+        home: Option<PathBuf>,
+    ) -> Self {
+        let token = usage_token.map(str::to_string);
+        Self {
+            config,
+            net: Net::local(server),
+            usage_token: Box::new(move || token.clone()),
+            home,
+            refused: Refusals::default(),
+            generation: Box::leak(Box::new(AtomicU64::new(0))),
+        }
     }
 
     /// API key from Windows Credential Manager.
@@ -55,20 +91,12 @@ impl ClaudeProvider {
             .ok()
     }
 
-    /// Manual usage token (usage endpoint only); does not touch Claude Code credentials.
-    fn get_usage_token(&self) -> Option<String> {
-        keyring::Entry::new("ailimits", USAGE_TOKEN_LABEL)
-            .and_then(|e| e.get_password())
-            .ok()
-            .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty())
-    }
-
     /// Method A: API key → rate limit headers.
     async fn fetch_via_api_key(&self, api_key: &str) -> Result<ProviderData> {
         let resp = match self
+            .net
             .http
-            .get(CLAUDE_MODELS_URL)
+            .get(self.net.url(CLAUDE_MODELS_URL))
             .header("x-api-key", api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .send()
@@ -76,12 +104,15 @@ impl ClaudeProvider {
         {
             Ok(r) => r,
             Err(e) => {
-                return Ok(self.data(ProviderStatus::NetworkError(e.to_string()), vec![]));
+                warn!("claude models request failed: {e}");
+                let words = transport_error(&e).to_string();
+                return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
             }
         };
 
         // 401 → invalid key; 429 → limit exhausted but the headers are still present.
-        if resp.status().as_u16() == 401 {
+        let code = resp.status().as_u16();
+        if code == 401 {
             return Ok(self.data(
                 ProviderStatus::AuthError("invalid API key".to_string()),
                 vec![],
@@ -124,10 +155,14 @@ impl ClaudeProvider {
         }
 
         if metrics.is_empty() {
-            return Ok(self.data(
-                ProviderStatus::NetworkError("no ratelimit headers in response".to_string()),
-                vec![],
-            ));
+            // A 200 without the headers is a changed answer; any other status
+            // is named for what it is.
+            let words = if code == 200 {
+                "no ratelimit headers in response".to_string()
+            } else {
+                status_words(code)
+            };
+            return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
         }
 
         Ok(self.data(ProviderStatus::Ok, metrics))
@@ -140,11 +175,17 @@ impl ClaudeProvider {
     /// 2. an honest NetworkError when a source exists but has no fresh data
     /// 3. NotConfigured — "run Claude Code at least once"
     ///
+    /// One usage request per cycle as a rule: only a refused stored usage
+    /// token (401/403) falls through to Claude Code's token, and it is then
+    /// left out for `REFUSED_TOKEN_PAUSE`, so only a fresh refusal costs a
+    /// second request. A rate limit, a server error or no answer ends the
+    /// cycle on its honest status: none of them says the token is bad.
+    ///
     /// (A statusline.jsonl snapshot used to sit between 1 and 2. Claude Code
     /// stopped writing that file in 2026; the reader went with 0.7.0.)
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        let credentials_path = claude_dir().join(".credentials.json");
-        let usage_token = self.get_usage_token();
+        let credentials_path = self.home.as_ref().map(|h| h.join(".credentials.json"));
+        let usage_token = (self.usage_token)();
         // The token sources this machine has; stats-cache holds no limits and
         // does not count.
         // Claude Code's file only when the user allowed reading it; the
@@ -152,26 +193,34 @@ impl ClaudeProvider {
         let tool_files = self.config.tool_files;
         let mut chain = ChainOutcome {
             usage_token: usage_token.is_some(),
-            credentials_file: tool_files && credentials_path.exists(),
+            credentials_file: tool_files && credentials_path.as_ref().is_some_and(|p| p.exists()),
             ..ChainOutcome::default()
         };
 
         // 0. Manual usage token: a minimal read-only usage request.
-        // No data → quietly fall back to the Claude Code sources.
+        // Refused → fall back to Claude Code's token.
         if let Some(token) = usage_token {
-            if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
-                return Ok(data);
+            if self.refused.paused(&token) {
+                debug!("the stored Claude usage token was refused lately; not sent");
+            } else {
+                match self.fetch_via_oauth(&token, &mut chain).await {
+                    Ok(data) => return Ok(data),
+                    Err(Miss::Refused) => {
+                        self.refused.note(&token);
+                        warn!("stored Claude usage token was refused, falling back");
+                    }
+                    Err(Miss::Other) => return Ok(self.data(chain.status(), vec![])),
+                }
             }
-            warn!("stored Claude usage token gave no data, falling back");
         }
 
         // 1. OAuth: the Claude Code token is READ-ONLY — never refresh it,
         // refresh-token rotation would log Claude Code out.
-        if tool_files {
-            match read_oauth_token(&credentials_path).await {
+        if let Some(path) = credentials_path.filter(|_| tool_files) {
+            match read_oauth_token(&path).await {
                 Ok(Some(token)) => {
                     // Rejected, unanswered or unreadable — fall back.
-                    if let Some(data) = self.fetch_via_oauth(&token, &mut chain).await {
+                    if let Ok(data) = self.fetch_via_oauth(&token, &mut chain).await {
                         return Ok(data);
                     }
                 }
@@ -185,12 +234,17 @@ impl ClaudeProvider {
         Ok(self.data(chain.status(), vec![]))
     }
 
-    /// One usage request; None = no data from this token, fall back. Why is
+    /// One usage request. Err = no data from this token, fall back; why is
     /// noted in `chain`, so the caller can word its error honestly.
-    async fn fetch_via_oauth(&self, token: &str, chain: &mut ChainOutcome) -> Option<ProviderData> {
+    async fn fetch_via_oauth(
+        &self,
+        token: &str,
+        chain: &mut ChainOutcome,
+    ) -> std::result::Result<ProviderData, Miss> {
         let resp = match self
+            .net
             .http
-            .get(OAUTH_USAGE_URL)
+            .get(self.net.url(OAUTH_USAGE_URL))
             .bearer_auth(token)
             .header("anthropic-beta", OAUTH_BETA_HEADER)
             .send()
@@ -200,8 +254,8 @@ impl ClaudeProvider {
             // No answer at all, which says nothing about the token.
             Err(e) => {
                 warn!("oauth usage request failed: {e}");
-                chain.offline = true;
-                return None;
+                chain.no_answer = Some(transport_error(&e));
+                return Err(Miss::Other);
             }
         };
 
@@ -211,13 +265,13 @@ impl ClaudeProvider {
                     Ok(body) => body,
                     Err(e) => {
                         warn!("oauth usage body read failed: {e}");
-                        chain.offline = true;
-                        return None;
+                        chain.no_answer = Some(transport_error(&e));
+                        return Err(Miss::Other);
                     }
                 };
                 match parse_oauth_usage(&body) {
                     Ok(metrics) if !metrics.is_empty() => {
-                        Some(self.data(ProviderStatus::Ok, metrics))
+                        Ok(self.data(ProviderStatus::Ok, metrics))
                     }
                     // Schema changed — an honest error beats invented numbers.
                     parsed => {
@@ -226,18 +280,25 @@ impl ClaudeProvider {
                             warn!("oauth usage body is not JSON: {e}");
                         }
                         chain.unrecognized = true;
-                        None
+                        Err(Miss::Other)
                     }
                 }
             }
-            // 401/403 → stale token. The endpoint is undocumented, so any
-            // non-200 falls back quietly.
+            // 401/403 → a stale token.
+            401 | 403 => {
+                warn!("oauth usage endpoint refused the token, falling back");
+                Err(Miss::Refused)
+            }
+            // The endpoint is undocumented, so any other non-200 falls back
+            // quietly, noted for the row: a rate limit, a server error.
             status => {
                 if status == 429 {
                     chain.rate_limited = true;
+                } else {
+                    chain.other_status = Some(status);
                 }
                 warn!("oauth usage endpoint returned HTTP {status}, falling back");
-                None
+                Err(Miss::Other)
             }
         }
     }
@@ -254,6 +315,27 @@ impl ClaudeProvider {
     }
 }
 
+/// One read-only usage request to check a pasted usage token before it is
+/// stored (`providers::check_usage_token`).
+pub(crate) async fn check_usage_token(net: &Net, token: &str) -> super::TokenCheck {
+    super::token_check(
+        net.http
+            .get(net.url(OAUTH_USAGE_URL))
+            .bearer_auth(token)
+            .header("anthropic-beta", OAUTH_BETA_HEADER)
+            .send()
+            .await,
+    )
+}
+
+/// Why a usage request brought no data.
+enum Miss {
+    /// 401/403: the token is not accepted.
+    Refused,
+    /// Anything else, noted in the `ChainOutcome`.
+    Other,
+}
+
 /// What the subscription source chain learned in a cycle that produced no
 /// data — enough to word the row honestly.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -264,8 +346,12 @@ pub struct ChainOutcome {
     pub credentials_file: bool,
     /// A usage request bounced off the endpoint's rate limiter (HTTP 429).
     pub rate_limited: bool,
-    /// A usage request got no answer (offline, DNS, a timeout, a body cut off).
-    pub offline: bool,
+    /// A usage request got no answer (offline, DNS, a timeout, a refused
+    /// certificate, a body cut off): the row's words for it.
+    pub no_answer: Option<&'static str>,
+    /// Any other status that says nothing about the token: a server error
+    /// (5xx, 529 "overloaded"), or one the endpoint never gave before.
+    pub other_status: Option<u16>,
     /// A 200 carried a body the parser does not know.
     pub unrecognized: bool,
 }
@@ -280,9 +366,10 @@ impl ChainOutcome {
     /// On HTTP 429 (the usage endpoint's per-token bucket is shared with
     /// Claude Code's own polling; verified 2026-07-09, `Retry-After: 0`) the
     /// next cycle usually gets through — say so instead of falsely blaming
-    /// the token. The same for a machine that is offline: a request that got
-    /// no answer says nothing about the token, and running Claude Code would
-    /// not help.
+    /// the token. The same for a machine that is offline and for a server
+    /// error: neither says anything about the token, and running Claude Code
+    /// would not help. Only a refusal (401/403) or no usable token at all
+    /// reads "token expired".
     pub fn status(self) -> ProviderStatus {
         if !self.usage_token && !self.credentials_file {
             return ProviderStatus::NotConfigured;
@@ -290,28 +377,33 @@ impl ChainOutcome {
         // Short messages: the row's hover shows them, and one that ends in
         // ", retrying" gets no "run Claude Code" appended.
         let msg = if self.rate_limited {
-            "rate-limited, retrying"
-        } else if self.offline {
-            "offline, retrying"
+            "rate-limited, retrying".to_string()
+        } else if let Some(words) = self.no_answer {
+            words.to_string()
+        } else if let Some(code) = self.other_status {
+            status_words(code)
         } else if self.unrecognized {
-            "unrecognized usage schema"
+            "unrecognized usage schema".to_string()
         } else {
-            "token expired"
+            "token expired".to_string()
         };
-        ProviderStatus::NetworkError(msg.to_string())
+        ProviderStatus::NetworkError(msg)
     }
 }
 
-/// Claude Code directory: %USERPROFILE%\.claude.
-fn claude_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_default().join(".claude")
+/// Claude Code directory: %USERPROFILE%\.claude. None without an absolute
+/// home folder: nothing is read relative to the working directory.
+fn claude_dir() -> Option<PathBuf> {
+    dirs::home_dir()
+        .filter(|p| p.is_absolute())
+        .map(|home| home.join(".claude"))
 }
 
 /// Read a valid OAuth token from .credentials.json; Ok(None) if missing or expired.
 ///
 /// Structure verified against the real file:
 /// {"claudeAiOauth": {"accessToken": "...", "expiresAt": <ms epoch>, ...}}
-async fn read_oauth_token(path: &PathBuf) -> Result<Option<String>> {
+async fn read_oauth_token(path: &Path) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -483,10 +575,11 @@ impl Provider for ClaudeProvider {
             });
         }
 
-        match self.config.auth_method {
+        let started = self.generation.load(Ordering::SeqCst);
+        let data = match self.config.auth_method {
             AuthMethod::ApiKey => match self.get_api_key() {
-                Some(key) => self.fetch_via_api_key(&key).await,
-                None => Ok(ProviderData {
+                Some(key) => self.fetch_via_api_key(&key).await?,
+                None => ProviderData {
                     id: self.id(),
                     status: ProviderStatus::AuthError(
                         "API key not found in Credential Manager".to_string(),
@@ -494,10 +587,152 @@ impl Provider for ClaudeProvider {
                     metrics: vec![],
                     updated_at: Utc::now(),
                     received_at: Some(std::time::Instant::now()),
-                }),
+                },
             },
-            AuthMethod::Subscription => self.fetch_via_subscription().await,
+            AuthMethod::Subscription => self.fetch_via_subscription().await?,
+        };
+        unless_superseded(data, started, self.generation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::test_server::{Reply, TempHome, TestServer};
+    use crate::providers::REFUSED_TOKEN_PAUSE;
+    use std::time::Instant;
+
+    fn config(tool_files: bool) -> ProviderConfig {
+        ProviderConfig {
+            id: "claude".to_string(),
+            enabled: true,
+            auth_method: AuthMethod::Subscription,
+            credential_label: String::new(),
+            tool_files,
+            alert_threshold: 80,
         }
+    }
+
+    const USAGE_BODY: &str = r#"{"five_hour": {"utilization": 25.0, "resets_at": "2099-01-01T00:00:00Z"}, "seven_day": {"utilization": 34.0, "resets_at": "2099-01-05T00:00:00Z"}}"#;
+
+    /// A Claude Code folder holding a made-up, unexpired sign-in.
+    fn claude_code_home() -> TempHome {
+        let home = TempHome::new("claude");
+        home.write(
+            ".credentials.json",
+            r#"{"claudeAiOauth": {"accessToken": "cc-token", "expiresAt": 4102444800000}}"#,
+        );
+        home
+    }
+
+    fn message(data: &ProviderData) -> String {
+        match &data.status {
+            ProviderStatus::NetworkError(m) | ProviderStatus::AuthError(m) => m.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// A refused stored usage token costs one extra request, once: for the
+    /// next half hour each cycle sends only Claude Code's token.
+    #[tokio::test]
+    async fn a_refused_usage_token_is_left_out_for_half_an_hour() {
+        let server = TestServer::start();
+        server.route(
+            "/api/oauth/usage",
+            vec![Reply::status(401), Reply::ok(USAGE_BODY)],
+        );
+        let home = claude_code_home();
+        let p = ClaudeProvider::for_test(
+            config(true),
+            &server.base,
+            Some("stored-token"),
+            Some(home.path()),
+        );
+
+        let first = p.fetch().await.unwrap();
+        assert!(matches!(first.status, ProviderStatus::Ok));
+        let second = p.fetch().await.unwrap();
+        assert!(matches!(second.status, ProviderStatus::Ok));
+
+        let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(
+            auths,
+            ["Bearer stored-token", "Bearer cc-token", "Bearer cc-token"],
+            "the refused token is not sent on the second cycle"
+        );
+        // After the pause it is tried again; another token at once.
+        let later = Instant::now() + REFUSED_TOKEN_PAUSE;
+        assert!(!p.refused.paused_at("stored-token", later));
+        assert!(!p.refused.paused("pasted-anew"));
+    }
+
+    /// Only a refused usage token and no Claude Code sign-in: the row stays
+    /// an honest "token expired" without a request each cycle.
+    #[tokio::test]
+    async fn a_refused_usage_token_alone_keeps_its_row_without_requests() {
+        let server = TestServer::start();
+        server.route("/api/oauth/usage", vec![Reply::status(403)]);
+        let p = ClaudeProvider::for_test(config(false), &server.base, Some("stored-token"), None);
+        for _ in 0..3 {
+            let data = p.fetch().await.unwrap();
+            assert_eq!(message(&data), "token expired");
+        }
+        assert_eq!(server.count("/api/oauth/usage"), 1);
+    }
+
+    /// Server errors and an overloaded API are no expired token, and the
+    /// hover adds no "run Claude Code" to them.
+    #[tokio::test]
+    async fn server_errors_are_not_an_expired_token() {
+        for code in [500, 502, 503, 529] {
+            let server = TestServer::start();
+            server.route("/api/oauth/usage", vec![Reply::status(code)]);
+            let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
+            let data = p.fetch().await.unwrap();
+            assert_eq!(message(&data), format!("HTTP {code}, retrying"));
+        }
+        let server = TestServer::start();
+        server.route("/api/oauth/usage", vec![Reply::status(429)]);
+        let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
+        assert_eq!(message(&p.fetch().await.unwrap()), "rate-limited, retrying");
+    }
+
+    /// A request that got no answer reads offline, never the raw error (it
+    /// quotes the URL) and never an expired token.
+    #[tokio::test]
+    async fn no_answer_reads_offline() {
+        let server = TestServer::start();
+        server.route("/api/oauth/usage", vec![Reply::Hangup]);
+        let home = claude_code_home();
+        let p = ClaudeProvider::for_test(config(true), &server.base, None, Some(home.path()));
+        let data = p.fetch().await.unwrap();
+        assert_eq!(message(&data), "offline, retrying");
+    }
+
+    /// Without the user's leave, Claude Code's file is not read and nothing
+    /// is sent, even with a valid sign-in in it.
+    #[tokio::test]
+    async fn without_tool_files_nothing_is_read_or_sent() {
+        let server = TestServer::start();
+        server.route("/api/oauth/usage", vec![Reply::ok(USAGE_BODY)]);
+        let home = claude_code_home();
+        let p = ClaudeProvider::for_test(config(false), &server.base, None, Some(home.path()));
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::NotConfigured));
+        assert!(server.seen().is_empty());
+    }
+
+    /// A fetch whose account changed while it ran is dropped, not shown.
+    #[tokio::test]
+    async fn an_answer_for_the_account_before_a_change_is_dropped() {
+        let server = TestServer::start();
+        server.route("/api/oauth/usage", vec![Reply::ok(USAGE_BODY)]);
+        let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
+        assert!(p.fetch().await.is_ok());
+        let started = p.generation.load(Ordering::SeqCst);
+        let data = p.fetch_via_subscription().await.unwrap();
+        p.generation.fetch_add(1, Ordering::SeqCst);
+        assert!(unless_superseded(data, started, p.generation).is_err());
     }
 }
 
@@ -510,7 +745,7 @@ mod live_schema {
     #[tokio::test]
     #[ignore = "one live request with this PC's Claude Code sign-in"]
     async fn live_usage_schema() {
-        let path = claude_dir().join(".credentials.json");
+        let path = claude_dir().unwrap().join(".credentials.json");
         let Some(token) = read_oauth_token(&path).await.unwrap() else {
             println!("no valid token");
             return;

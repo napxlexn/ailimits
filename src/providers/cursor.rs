@@ -1,24 +1,25 @@
 // providers/cursor.rs — Cursor provider (the Cursor subscription).
 // See docs/en/PROVIDERS.md, section "Cursor".
 //
-// Token: the widget's own session first — signed in from the menu or with
+// Token: only the widget's own session — signed in from the menu or with
 // `ailimits-auth login cursor`, kept in Credential Manager (session.rs).
-// Without one, the editor's session token from its VS Code state database:
-// READ-ONLY, never refreshed, and only while the editor keeps it as plain
-// text. A value the editor encrypted is left alone, never decrypted.
+// Nothing of the Cursor editor is read for it: not its state database, not
+// its token.
 // Usage: the dashboard service the editor itself calls — the current
 // period's usage on every cycle, the plan at most hourly, and Grok Bot's
-// status as an extra metric.
+// status only while its row ("cursor.bot") is chosen.
 
-use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{
+    clean_label, generation_of, status_words, transport_error, unless_superseded, Metric,
+    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+};
 use crate::config::schema::ProviderConfig;
-use crate::platform::sqlite::{self, SqliteError};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use session::{OwnSession, RefreshAnswer, StoreError};
-use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
@@ -31,7 +32,7 @@ const DASHBOARD_URL: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService
 const CURRENT_PERIOD_USAGE: &str = "GetCurrentPeriodUsage";
 /// The plan's name and the period its usage is counted in.
 const PLAN_INFO: &str = "GetPlanInfo";
-/// Grok Bot's usage — an extra metric.
+/// Grok Bot's usage — for its extra row only.
 const SAND_USAGE_STATUS: &str = "GetSandUsageStatus";
 
 /// How long a plan answer is trusted: plans rarely change.
@@ -39,22 +40,52 @@ const PLAN_TTL: Duration = Duration::from_secs(3600);
 /// When to ask again after a plan request that brought nothing.
 const PLAN_RETRY: Duration = Duration::from_secs(600);
 
-/// The editor's own session token in its state database.
-const ACCESS_TOKEN_KEY: &str = "cursorAuth/accessToken";
-/// VS Code keeps global state in one key/value table.
-const ITEM_QUERY: &str = "SELECT value FROM ItemTable WHERE key = ?1";
-/// How the editor marks a value it encrypted at rest. Such a value is never
-/// decrypted: the widget signs in by itself instead.
-const ENCRYPTED_PREFIX: &str = "cursor-safe-storage:";
+/// How many fetches in a row the service must refuse the own session
+/// before it counts as over. One refusal can be a glitch on the service's
+/// side or a proxy's; a session the user really lost reads "sign in again"
+/// a couple of cycles later.
+const END_AFTER_REFUSALS: u32 = 3;
 
 /// The row's message once the widget's own session is over.
 const SIGN_IN_AGAIN: &str = "sign in to Cursor again";
+/// The row's message while refusals are counted towards ending it.
+const REFUSED_RETRYING: &str = "token rejected, retrying";
+
+/// Where the widget's own session is kept: Credential Manager in the app,
+/// memory in tests.
+pub(crate) trait SessionStore: Send + Sync {
+    fn load(&self) -> std::result::Result<Option<OwnSession>, StoreError>;
+    /// Keep `next` in place of the session whose token was `previous`, but
+    /// only while that one is still kept (see `session::replace`).
+    fn replace(&self, previous: &str, next: &OwnSession) -> std::result::Result<bool, StoreError>;
+}
+
+/// Credential Manager, label `cursor_session`.
+struct CredentialManager;
+
+impl SessionStore for CredentialManager {
+    fn load(&self) -> std::result::Result<Option<OwnSession>, StoreError> {
+        session::load()
+    }
+
+    fn replace(&self, previous: &str, next: &OwnSession) -> std::result::Result<bool, StoreError> {
+        session::replace(previous, next)
+    }
+}
 
 pub struct CursorProvider {
     config: ProviderConfig,
-    http: reqwest::Client,
+    /// Never follows a 3xx — keeps the bearer token from leaking to a
+    /// redirected host. The service answers 200 directly.
+    net: Net,
+    store: Arc<dyn SessionStore>,
+    /// Whether Grok Bot's usage is asked for: only while its row is chosen.
+    grok_bot: bool,
     /// The last plan answer, for the account it was asked for.
     plan: Mutex<Option<PlanCache>>,
+    /// Refusals of the own session in a row: (a hash of its token, count).
+    refusals: Mutex<Option<(u64, u32)>>,
+    generation: &'static AtomicU64,
 }
 
 /// One cached plan answer.
@@ -67,30 +98,41 @@ struct PlanCache {
     next_at: Instant,
 }
 
-/// Which token a request was made with: the answers to a refused one
-/// differ.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Source {
-    /// The widget's own session.
-    Own,
-    /// The editor's token, read-only.
-    Editor,
-}
-
 impl CursorProvider {
+    /// The provider without Grok Bot: one usage request per cycle (and the
+    /// plan at most hourly, the session's refresh near its expiry).
     pub fn new(config: ProviderConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            // Never follow a 3xx — keeps the bearer token from leaking to a
-            // redirected host. The service answers 200 directly.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
+        Self::with_parts(
+            config,
+            Net::new(),
+            Arc::new(CredentialManager),
+            generation_of(&ProviderId::Cursor),
+        )
+    }
+
+    fn with_parts(
+        config: ProviderConfig,
+        net: Net,
+        store: Arc<dyn SessionStore>,
+        generation: &'static AtomicU64,
+    ) -> Self {
         Self {
             config,
-            http,
+            net,
+            store,
+            grok_bot: false,
             plan: Mutex::new(None),
+            refusals: Mutex::new(None),
+            generation,
         }
+    }
+
+    /// Ask for Grok Bot's usage too (`GetSandUsageStatus`, a second request
+    /// each cycle) — for the "cursor.bot" row; pass whether that row is
+    /// chosen on any surface. Off by default.
+    pub fn with_grok_bot(mut self, on: bool) -> Self {
+        self.grok_bot = on;
+        self
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -109,18 +151,18 @@ impl CursorProvider {
     }
 
     /// The own session is over: only a new sign-in mends it. The last data
-    /// stays on screen, greyed, and the row says what to do.
+    /// stays on screen, greyed, and the row says what to do — in its own
+    /// words, not "check the key": no key was given.
     fn sign_in_again(&self) -> ProviderData {
-        self.data(ProviderStatus::AuthError(SIGN_IN_AGAIN.to_string()), vec![])
+        self.error(SIGN_IN_AGAIN)
     }
 
-    /// The own session first; without one, the editor's plain token.
+    /// The own session, the only token there is.
     async fn fetch_via_subscription(&self) -> ProviderData {
         // A synchronous read, like the other providers' keyring reads.
-        match session::load() {
+        match self.store.load() {
             Ok(Some(own)) => self.fetch_with_own_session(own).await,
-            // The editor's database only when the user allowed reading it.
-            Ok(None) if self.config.tool_files => self.fetch_with_editor_token().await,
+            // Not signed in from the menu: the row stays hidden.
             Ok(None) => self.data(ProviderStatus::NotConfigured, vec![]),
             // A record this version cannot read: a new sign-in replaces it.
             Err(StoreError::Corrupt) => {
@@ -151,103 +193,95 @@ impl CursorProvider {
         let mut answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
         if matches!(answer, Ok((code, _)) if is_rejected(code)) {
             // Refused. Near its expiry one refresh may still save the
-            // session; otherwise it is over.
-            if !renewed && own.near_expiry(Utc::now()) {
+            // session — at most one a day, like any refresh, so a run of
+            // refusals costs no refresh each cycle.
+            if !renewed && own.needs_refresh(Utc::now()) {
                 (own, renewed) = self.refresh(own).await;
                 if renewed {
                     answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
                 }
             }
-            if !renewed || matches!(answer, Ok((code, _)) if is_rejected(code)) {
+            if matches!(answer, Ok((code, _)) if is_rejected(code)) {
+                // Over only once the service has refused it several fetches
+                // in a row; until then the last data stays, greyed.
+                if self.count_refusal(&own.access_token) < END_AFTER_REFUSALS {
+                    return self.error(REFUSED_RETRYING);
+                }
                 let ended = OwnSession {
                     ended: true,
                     ..own.clone()
                 };
-                keep(&own.access_token, &ended);
+                self.keep(&own.access_token, &ended);
                 return self.sign_in_again();
             }
         }
-        self.finish(&own.access_token, answer, Source::Own).await
+        if answer.is_ok() {
+            // Any answer but a refusal breaks the run of refusals.
+            *self.refusals.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        }
+        self.finish(&own.access_token, answer).await
+    }
+
+    /// One more refusal of the session holding `token`; the run's length.
+    fn count_refusal(&self, token: &str) -> u32 {
+        let hash = token_hash(token);
+        let mut refusals = self.refusals.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = match *refusals {
+            Some((h, n)) if h == hash => n + 1,
+            _ => 1,
+        };
+        *refusals = Some((hash, count));
+        count
     }
 
     /// One refresh of the widget's own session — never of the editor's
     /// token. The result is kept; `true` when a new token came.
     async fn refresh(&self, own: OwnSession) -> (OwnSession, bool) {
-        let Some(answer) = session::request_refresh(&self.http, &own).await else {
+        let Some(answer) = session::request_refresh(&self.net, &own).await else {
             // No answer at all: nothing learnt, a later cycle tries again.
             return (own, false);
         };
         let next = own.after_refresh(&answer, Utc::now());
-        keep(&own.access_token, &next);
+        self.keep(&own.access_token, &next);
         (next, matches!(answer, RefreshAnswer::Renewed(_)))
     }
 
-    /// Usage with the editor's token, while it is a plain one. Read-only:
-    /// never refreshed, and never sent past its `exp`.
-    async fn fetch_with_editor_token(&self) -> ProviderData {
-        let path = state_db_path();
-        if !path.exists() {
-            // Cursor is not installed (or has never run) for this user.
-            return self.data(ProviderStatus::NotConfigured, vec![]);
+    /// Keep the session after a change, in place of the one this fetch
+    /// started with — unless the user signed out or in again meanwhile. A
+    /// failure is logged and survived: the session in hand still works for
+    /// this cycle.
+    fn keep(&self, previous_token: &str, next: &OwnSession) {
+        match self.store.replace(previous_token, next) {
+            Ok(true) => {}
+            Ok(false) => debug!("cursor: the session changed meanwhile; not overwritten"),
+            Err(e) => warn!("cursor: could not keep the session: {e}"),
         }
-
-        // One indexed lookup, about a millisecond, bounded by the busy timeout.
-        let token = match read_editor_token(&path) {
-            Ok(EditorToken::Plain(token)) => token,
-            // Nobody signed in to the editor, or it keeps the token
-            // encrypted: either way there is no session to read, and the
-            // row stays hidden until the user signs in from the menu.
-            Ok(EditorToken::Absent | EditorToken::Encrypted) => {
-                return self.data(ProviderStatus::NotConfigured, vec![]);
-            }
-            // The editor is writing right now — transient, the next cycle retries.
-            Err(SqliteError::Busy) => return self.error("state database busy, retrying"),
-            Err(e @ SqliteError::Unavailable(_)) => {
-                warn!("cursor state database: {e}");
-                return self.error("winsqlite3.dll unavailable");
-            }
-            Err(e) => {
-                warn!("cursor state database: {e}");
-                return self.error("state database unreadable");
-            }
-        };
-
-        let Some(claims) = parse_session_claims(&token) else {
-            return self.error("unrecognized session token");
-        };
-        if claims.is_expired(Utc::now()) {
-            return self.error("token expired");
-        }
-        let answer = self.call(CURRENT_PERIOD_USAGE, &token).await;
-        self.finish(&token, answer, Source::Editor).await
     }
 
     /// Turn the usage answer into the row: the headline, labelled with the
-    /// plan, then Grok Bot when its status reads.
+    /// plan, then Grok Bot when its row is chosen and its status reads.
     async fn finish(
         &self,
         token: &str,
-        answer: std::result::Result<(u16, String), String>,
-        source: Source,
+        answer: std::result::Result<(u16, String), &'static str>,
     ) -> ProviderData {
         let (code, body) = match answer {
             Ok(answer) => answer,
-            Err(e) => {
-                warn!("cursor usage request failed: {e}");
-                return self.error("offline, retrying");
-            }
+            Err(words) => return self.error(words),
         };
         let usage = match interpret_period_usage(code, &body) {
             Ok(usage) => usage,
             Err(e) => {
-                let (status, _) = usage_error_status(&e, source == Source::Own);
+                let (status, _) = usage_error_status(&e);
                 return self.data(status, vec![]);
             }
         };
         let plan = self.plan(token).await;
         let mut metrics = vec![usage_metric(&usage, plan.as_ref())];
-        if let Some(sand) = self.sand_usage(token).await {
-            metrics.push(sand_metric(&sand));
+        if self.grok_bot {
+            if let Some(sand) = self.sand_usage(token).await {
+                metrics.push(sand_metric(&sand));
+            }
         }
         self.data(ProviderStatus::Ok, metrics)
     }
@@ -281,8 +315,8 @@ impl CursorProvider {
                 debug!("cursor plan info returned HTTP {code}");
                 None
             }
-            Err(e) => {
-                debug!("cursor plan info request failed: {e}");
+            Err(words) => {
+                debug!("cursor plan info request failed: {words}");
                 None
             }
         };
@@ -312,8 +346,8 @@ impl CursorProvider {
                 debug!("cursor grok bot status returned HTTP {code}");
                 None
             }
-            Err(e) => {
-                debug!("cursor grok bot status request failed: {e}");
+            Err(words) => {
+                debug!("cursor grok bot status request failed: {words}");
                 None
             }
         }
@@ -321,21 +355,32 @@ impl CursorProvider {
 
     /// One dashboard call: POST `{}` with the bearer token, as the editor
     /// sends it. The body is read only from a 200; Err is a request that got
-    /// no answer.
-    async fn call(&self, method: &str, token: &str) -> std::result::Result<(u16, String), String> {
+    /// no answer, as the row words it.
+    async fn call(
+        &self,
+        method: &str,
+        token: &str,
+    ) -> std::result::Result<(u16, String), &'static str> {
         let resp = self
+            .net
             .http
-            .post(format!("{DASHBOARD_URL}/{method}"))
+            .post(self.net.url(&format!("{DASHBOARD_URL}/{method}")))
             .bearer_auth(token)
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .header("Connect-Protocol-Version", "1")
             .body("{}")
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                warn!("cursor {method} request failed: {e}");
+                transport_error(&e)
+            })?;
         let code = resp.status().as_u16();
         let body = if code == 200 {
-            resp.text().await.map_err(|e| e.to_string())?
+            resp.text().await.map_err(|e| {
+                warn!("cursor {method} body read failed: {e}");
+                transport_error(&e)
+            })?
         } else {
             String::new()
         };
@@ -353,18 +398,9 @@ impl Provider for CursorProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        Ok(self.fetch_via_subscription().await)
-    }
-}
-
-/// Keep the session after a change, in place of the one this fetch started
-/// with — unless the user signed out or in again meanwhile. A failure is
-/// logged and survived: the session in hand still works for this cycle.
-fn keep(previous_token: &str, next: &OwnSession) {
-    match session::replace(previous_token, next) {
-        Ok(true) => {}
-        Ok(false) => debug!("cursor: the session changed meanwhile; not overwritten"),
-        Err(e) => warn!("cursor: could not keep the session: {e}"),
+        let started = self.generation.load(Ordering::SeqCst);
+        let data = self.fetch_via_subscription().await;
+        unless_superseded(data, started, self.generation)
     }
 }
 
@@ -373,64 +409,15 @@ fn is_rejected(code: u16) -> bool {
     matches!(code, 401 | 403)
 }
 
-// ─── The editor's token (fallback, read-only) ────────────────────
-
-/// The editor's global state database:
-/// %APPDATA%\Cursor\User\globalStorage\state.vscdb.
-pub fn state_db_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_default()
-        .join("Cursor")
-        .join("User")
-        .join("globalStorage")
-        .join("state.vscdb")
+/// A hash of a token, to tell sessions apart without keeping the token.
+fn token_hash(token: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    token.hash(&mut h);
+    h.finish()
 }
 
-/// What the editor's state database holds for the widget.
-#[derive(Clone, PartialEq)]
-pub enum EditorToken {
-    /// No session token: nobody is signed in to the editor.
-    Absent,
-    /// The editor encrypted the token at rest. It is never decrypted.
-    Encrypted,
-    /// A plain token, readable as the JWT it is.
-    Plain(String),
-}
-
-// Written by hand so that no debug print can ever carry the token.
-impl std::fmt::Debug for EditorToken {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            EditorToken::Absent => f.write_str("Absent"),
-            EditorToken::Encrypted => f.write_str("Encrypted"),
-            EditorToken::Plain(_) => f.write_str("Plain(..)"),
-        }
-    }
-}
-
-/// Classify the stored value. An empty one is what signing out leaves in
-/// some versions; a JSON-quoted one is how VS Code stores some keys.
-pub fn classify_editor_value(value: Option<&str>) -> EditorToken {
-    let Some(value) = value
-        .map(|v| v.trim().trim_matches('"').trim())
-        .filter(|v| !v.is_empty())
-    else {
-        return EditorToken::Absent;
-    };
-    if value.starts_with(ENCRYPTED_PREFIX) {
-        EditorToken::Encrypted
-    } else {
-        EditorToken::Plain(value.to_string())
-    }
-}
-
-/// Read the editor's session token, strictly read-only.
-fn read_editor_token(path: &Path) -> std::result::Result<EditorToken, SqliteError> {
-    let values = sqlite::lookup_texts(path, ITEM_QUERY, &[ACCESS_TOKEN_KEY])?;
-    Ok(classify_editor_value(
-        values.into_iter().next().flatten().as_deref(),
-    ))
-}
+// ─── Session tokens ──────────────────────────────────────────────
 
 /// What the widget needs from a session token's claims. Holds no secret.
 #[derive(Debug, Clone, PartialEq)]
@@ -556,19 +543,19 @@ pub fn interpret_period_usage(
     }
 }
 
-/// The row a usage error leaves: a refused own session asks for a new
-/// sign-in; a refused editor token is only rejected (the editor owns it).
-/// Every error keeps the last data greyed.
-pub fn usage_error_status(error: &UsageError, own_session: bool) -> (ProviderStatus, Vec<Metric>) {
+/// The row a usage error leaves. A refused session asks for a new sign-in
+/// (the fetch first lets a few refusals pass, see `END_AFTER_REFUSALS`); a
+/// rate limit or a server error says it retries; every error keeps the
+/// last data greyed.
+pub fn usage_error_status(error: &UsageError) -> (ProviderStatus, Vec<Metric>) {
     let status = match error {
-        UsageError::Rejected if own_session => ProviderStatus::AuthError(SIGN_IN_AGAIN.to_string()),
-        UsageError::Rejected => ProviderStatus::NetworkError("token rejected".to_string()),
+        UsageError::Rejected => ProviderStatus::NetworkError(SIGN_IN_AGAIN.to_string()),
         UsageError::Unrecognized => {
             ProviderStatus::NetworkError("unrecognized usage schema".to_string())
         }
         UsageError::Status(code) => {
             warn!("cursor usage returned HTTP {code}");
-            ProviderStatus::NetworkError(format!("HTTP {code}"))
+            ProviderStatus::NetworkError(status_words(*code))
         }
     };
     (status, vec![])
@@ -686,16 +673,15 @@ impl UsagePeriod {
 ///   "billingCycleEnd": "1796857287995",
 ///   "includedUsagePeriod": "INCLUDED_USAGE_PERIOD_WEEKLY",
 ///   "includedUsageResetsAt": "1794870088407"}, ...}
-/// None without a `planInfo` object.
+/// None without a `planInfo` object. The plan's name names the row, so it
+/// is cleaned: no control characters, 32 characters at most.
 pub fn parse_plan_info(body: &str) -> Option<PlanInfo> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let info = value.get("planInfo").filter(|p| p.is_object())?;
     let name = info
         .get("planName")
         .and_then(|v| v.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+        .and_then(clean_label);
     let period = info
         .get("includedUsagePeriod")
         .and_then(|v| v.as_str())
@@ -748,9 +734,9 @@ pub fn parse_sand_usage(body: &str) -> Option<SandUsage> {
     })
 }
 
-/// Grok Bot as an extra metric: a session window, so it never becomes the
-/// headline, and no surface draws it yet. It carries whether its pool is
-/// the headline's.
+/// Grok Bot as a metric only its extra row ("cursor.bot") shows: never the
+/// headline, the Cursor row's reset or a reason to call that row an
+/// estimate. It carries whether its pool is the headline's.
 pub fn sand_metric(sand: &SandUsage) -> Metric {
     Metric {
         label: "Grok Bot".to_string(),
@@ -760,7 +746,7 @@ pub fn sand_metric(sand: &SandUsage) -> Metric {
         reset_at: sand.reset_at,
         window: MetricWindow::Session,
         unified_pool: sand.unified,
-        extra_only: false,
+        extra_only: true,
     }
 }
 
@@ -797,143 +783,278 @@ fn percent(pct: f64) -> u64 {
     pct.round().clamp(0.0, 100.0) as u64
 }
 
-// ─── Status (no network) ─────────────────────────────────────────
+// ─── `ailimits-auth status` ──────────────────────────────────────
 
-/// The editor's token as `ailimits-auth status` reports it.
+/// What `ailimits-auth status` used to report of the editor's own token.
+/// The app no longer reads it (nor anything else of the editor for a
+/// sign-in), so `editor_token_state` only ever answers `Unreadable` with
+/// why. Kept for one step so the CLI builds: its status line goes, and
+/// these two with it.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditorTokenState {
-    /// No state database: Cursor is not installed for this user.
     NotInstalled,
-    /// The database holds no session token.
     Absent,
-    /// The editor keeps it encrypted; the widget does not read it.
     Encrypted,
-    /// A plain token, with its expiry when stated.
     Plain(Option<DateTime<Utc>>),
-    /// A plain token past its expiry.
     Expired(DateTime<Utc>),
-    /// The database or the token could not be read.
     Unreadable(String),
 }
 
-/// The editor's token as the provider would find it right now.
+/// See `EditorTokenState`: nothing is opened or read.
+#[doc(hidden)]
 pub fn editor_token_state() -> EditorTokenState {
-    let path = state_db_path();
-    if !path.exists() {
-        return EditorTokenState::NotInstalled;
-    }
-    let token = match read_editor_token(&path) {
-        Ok(EditorToken::Plain(token)) => token,
-        Ok(EditorToken::Absent) => return EditorTokenState::Absent,
-        Ok(EditorToken::Encrypted) => return EditorTokenState::Encrypted,
-        Err(e) => return EditorTokenState::Unreadable(e.to_string()),
-    };
-    match parse_session_claims(&token) {
-        Some(claims) => match claims.expires_at {
-            Some(exp) if claims.is_expired(Utc::now()) => EditorTokenState::Expired(exp),
-            exp => EditorTokenState::Plain(exp),
-        },
-        None => EditorTokenState::Unreadable("unrecognized session token".to_string()),
-    }
+    EditorTokenState::Unreadable("not read: AI Limits uses only its own Cursor sign-in".to_string())
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::sqlite::test_support::{TempDb, TestDb};
+    use crate::providers::test_server::{Reply, TestServer};
 
     /// A fake token: a JWT-shaped string whose payload is
     /// {"sub":"github|user_01TESTFIXTURE","exp":4102444800,…} (year 2100).
     const FAKE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJ8dXNlcl8wMVRFU1RGSVhUVVJFIiwiZXhwIjo0MTAyNDQ0ODAwLCJpc3MiOiJodHRwczovL2F1dGhlbnRpY2F0aW9uLmN1cnNvci5zaCIsImF1ZCI6Imh0dHBzOi8vY3Vyc29yLmNvbSJ9.c2lnbmF0dXJl";
 
-    /// The editor's table, as VS Code creates it.
-    const SCHEMA: &str =
-        "CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);";
+    const USAGE_BODY: &str = r#"{"billingCycleStart":"1794265288407","billingCycleEnd":"4102444800000","planUsage":{"totalPercentUsed":37.0}}"#;
+    const PLAN_BODY: &str = r#"{"planInfo":{"planName":"Premium","includedUsagePeriod":"INCLUDED_USAGE_PERIOD_WEEKLY"}}"#;
+    const SAND_BODY: &str = r#"{"nextResetTimestampUtc":"2099-11-16T23:01:28.407Z","usagePercent":12,"hasAvailableUsage":true,"isUnified":true}"#;
 
-    #[test]
-    fn the_token_is_read_back_from_a_state_database() {
-        let tmp = TempDb::new("cursor-token");
-        {
-            let db = TestDb::create(&tmp.0);
-            db.exec("PRAGMA journal_mode=WAL;");
-            db.exec(SCHEMA);
-            db.exec(&format!(
-                "INSERT INTO ItemTable VALUES ('{ACCESS_TOKEN_KEY}', '{FAKE_TOKEN}');"
-            ));
-            db.exec("INSERT INTO ItemTable VALUES ('cursorAuth/stripeMembershipType', 'free');");
-        }
-        assert_eq!(
-            read_editor_token(&tmp.0).expect("readable"),
-            EditorToken::Plain(FAKE_TOKEN.to_string())
-        );
-        let claims = parse_session_claims(FAKE_TOKEN).expect("claims");
-        assert_eq!(claims.subject, "github|user_01TESTFIXTURE");
-        assert!(!claims.is_expired(Utc::now()));
+    /// A session store in memory.
+    #[derive(Default)]
+    struct Memory {
+        kept: Mutex<Option<OwnSession>>,
     }
 
-    #[test]
-    fn an_encrypted_token_is_left_alone() {
-        let tmp = TempDb::new("cursor-encrypted");
-        {
-            let db = TestDb::create(&tmp.0);
-            db.exec(SCHEMA);
-            // The editor's at-rest form: the prefix, then base64 of "v10"
-            // and the AES-GCM ciphertext (made-up bytes here).
-            db.exec(&format!(
-                "INSERT INTO ItemTable VALUES ('{ACCESS_TOKEN_KEY}', '{ENCRYPTED_PREFIX}v1:djEwAAAAAAAAAAAAAAAAAAAAAAAA');"
-            ));
+    impl SessionStore for Memory {
+        fn load(&self) -> std::result::Result<Option<OwnSession>, StoreError> {
+            Ok(self.kept.lock().unwrap().clone())
         }
-        assert_eq!(
-            read_editor_token(&tmp.0).expect("readable"),
-            EditorToken::Encrypted
-        );
+
+        fn replace(
+            &self,
+            previous: &str,
+            next: &OwnSession,
+        ) -> std::result::Result<bool, StoreError> {
+            let mut kept = self.kept.lock().unwrap();
+            match kept.as_ref() {
+                Some(current) if current.access_token == previous => {
+                    *kept = Some(next.clone());
+                    Ok(true)
+                }
+                _ => Ok(false),
+            }
+        }
     }
 
-    #[test]
-    fn a_signed_out_database_has_no_token() {
-        let tmp = TempDb::new("cursor-signed-out");
-        {
-            let db = TestDb::create(&tmp.0);
-            db.exec(SCHEMA);
-            db.exec("INSERT INTO ItemTable VALUES ('cursorAuth/cachedEmail', 'x');");
-            // Signing out leaves an empty value behind in some versions.
-            db.exec(&format!(
-                "INSERT INTO ItemTable VALUES ('{ACCESS_TOKEN_KEY}', '');"
-            ));
+    fn config() -> ProviderConfig {
+        ProviderConfig {
+            id: "cursor".to_string(),
+            enabled: true,
+            auth_method: Default::default(),
+            credential_label: String::new(),
+            tool_files: true,
+            alert_threshold: 80,
         }
-        assert_eq!(
-            read_editor_token(&tmp.0).expect("readable"),
-            EditorToken::Absent
-        );
     }
 
-    #[test]
-    fn a_database_without_the_table_is_unreadable_not_signed_out() {
-        let tmp = TempDb::new("cursor-no-table");
-        {
-            let db = TestDb::create(&tmp.0);
-            db.exec("CREATE TABLE other (k TEXT);");
+    fn signed_in(
+        server: &TestServer,
+        session: Option<OwnSession>,
+    ) -> (CursorProvider, Arc<Memory>) {
+        let store = Arc::new(Memory::default());
+        *store.kept.lock().unwrap() = session;
+        let p = CursorProvider::with_parts(
+            config(),
+            Net::local(&server.base),
+            store.clone(),
+            Box::leak(Box::new(AtomicU64::new(0))),
+        );
+        (p, store)
+    }
+
+    fn session() -> OwnSession {
+        OwnSession {
+            access_token: FAKE_TOKEN.to_string(),
+            refresh_token: FAKE_TOKEN.to_string(),
+            expires_at: parse_session_claims(FAKE_TOKEN).and_then(|c| c.expires_at),
+            refreshed_at: None,
+            ended: false,
         }
+    }
+
+    fn message(data: &ProviderData) -> String {
+        match &data.status {
+            ProviderStatus::NetworkError(m) | ProviderStatus::AuthError(m) => m.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// By default one usage request per cycle, the plan once: Grok Bot is
+    /// never asked for while its row is not chosen.
+    #[tokio::test]
+    async fn grok_bot_is_asked_for_only_when_its_row_is_chosen() {
+        let server = TestServer::start();
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
+        server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+        server.route(SAND_USAGE_STATUS, vec![Reply::ok(SAND_BODY)]);
+        let (p, _) = signed_in(&server, Some(session()));
+        for _ in 0..3 {
+            let data = p.fetch().await.unwrap();
+            assert!(matches!(data.status, ProviderStatus::Ok));
+            assert_eq!(data.metrics.len(), 1);
+            assert_eq!(data.metrics[0].label, "Premium");
+        }
+        assert_eq!(server.count(CURRENT_PERIOD_USAGE), 3);
+        assert_eq!(server.count(PLAN_INFO), 1, "the plan at most hourly");
+        assert_eq!(server.count(SAND_USAGE_STATUS), 0);
+
+        let server = TestServer::start();
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
+        server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+        server.route(SAND_USAGE_STATUS, vec![Reply::ok(SAND_BODY)]);
+        let (p, _) = signed_in(&server, Some(session()));
+        let p = p.with_grok_bot(true);
+        let data = p.fetch().await.unwrap();
+        assert_eq!(data.metrics.len(), 2);
+        let bot = &data.metrics[1];
+        assert_eq!(bot.label, "Grok Bot");
+        assert!(bot.extra_only, "for its own row only");
+        assert_eq!(server.count(SAND_USAGE_STATUS), 1);
+        // The Cursor row reads exactly as without it.
+        assert_eq!(data.headline_metric().unwrap().label, "Premium");
+    }
+
+    /// One refusal does not end the session: only several in a row do,
+    /// and any other answer breaks the run.
+    #[tokio::test]
+    async fn the_session_ends_only_after_refusals_in_a_row() {
+        let server = TestServer::start();
+        server.route(
+            CURRENT_PERIOD_USAGE,
+            vec![
+                Reply::status(401),
+                Reply::status(403),
+                Reply::ok(USAGE_BODY),
+                Reply::status(401),
+                Reply::status(401),
+                Reply::status(401),
+            ],
+        );
+        server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+        let (p, store) = signed_in(&server, Some(session()));
+        let words: Vec<String> = {
+            let mut out = Vec::new();
+            for _ in 0..6 {
+                out.push(message(&p.fetch().await.unwrap()));
+            }
+            out
+        };
+        assert_eq!(
+            words,
+            [
+                REFUSED_RETRYING,
+                REFUSED_RETRYING,
+                "Ok",
+                REFUSED_RETRYING,
+                REFUSED_RETRYING,
+                SIGN_IN_AGAIN
+            ]
+        );
+        assert!(store.kept.lock().unwrap().as_ref().unwrap().ended);
+        // Ended: nothing is sent any more.
+        let before = server.count(CURRENT_PERIOD_USAGE);
+        assert_eq!(message(&p.fetch().await.unwrap()), SIGN_IN_AGAIN);
+        assert_eq!(server.count(CURRENT_PERIOD_USAGE), before);
+    }
+
+    /// A refused refresh is not a sign-out: the session goes on with its
+    /// token until it expires; the attempt is noted, so it waits a day.
+    #[tokio::test]
+    async fn a_refused_refresh_keeps_the_session() {
+        let server = TestServer::start();
+        server.route("/oauth/token", vec![Reply::status(401)]);
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
+        server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+        // Six days left: inside the refresh window.
+        let mut near = session();
+        near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+        let (p, store) = signed_in(&server, Some(near));
+        let data = p.fetch().await.unwrap();
+        assert!(
+            matches!(data.status, ProviderStatus::Ok),
+            "{:?}",
+            data.status
+        );
+        let kept = store.kept.lock().unwrap().clone().unwrap();
+        assert!(!kept.ended);
+        assert!(kept.refreshed_at.is_some());
+        assert_eq!(server.count("/oauth/token"), 1);
+        // The next cycle does not ask again.
+        let _ = p.fetch().await.unwrap();
+        assert_eq!(server.count("/oauth/token"), 1);
+    }
+
+    /// Refused near its expiry: one refresh is tried, not one each cycle,
+    /// and three refused fetches end the session.
+    #[tokio::test]
+    async fn a_run_of_refusals_near_expiry_costs_one_refresh() {
+        let server = TestServer::start();
+        server.route("/oauth/token", vec![Reply::status(500)]);
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::status(401)]);
+        let mut near = session();
+        near.expires_at = Some(Utc::now() + chrono::Duration::days(3));
+        let (p, store) = signed_in(&server, Some(near));
+        for _ in 0..3 {
+            let _ = p.fetch().await.unwrap();
+        }
+        assert_eq!(server.count("/oauth/token"), 1);
+        assert_eq!(server.count(CURRENT_PERIOD_USAGE), 3);
+        assert!(store.kept.lock().unwrap().as_ref().unwrap().ended);
+    }
+
+    /// Without the app's own sign-in there is no token at all: nothing is
+    /// read of the editor and nothing is sent.
+    #[tokio::test]
+    async fn without_its_own_sign_in_nothing_is_sent() {
+        let server = TestServer::start();
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
+        let (p, _) = signed_in(&server, None);
+        let data = p.fetch().await.unwrap();
+        assert!(matches!(data.status, ProviderStatus::NotConfigured));
+        assert!(server.seen().is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_answer_and_server_errors_read_honestly() {
+        for (reply, words) in [
+            (Reply::Hangup, "offline, retrying"),
+            (Reply::status(503), "HTTP 503, retrying"),
+            (Reply::status(429), "rate-limited, retrying"),
+        ] {
+            let server = TestServer::start();
+            server.route(CURRENT_PERIOD_USAGE, vec![reply]);
+            let (p, _) = signed_in(&server, Some(session()));
+            assert_eq!(message(&p.fetch().await.unwrap()), words);
+        }
+    }
+
+    /// Nothing of the editor's sign-in is in the app: the key that names
+    /// its token and the prefix of its encrypted form are gone from the
+    /// code, and the status line reads nothing.
+    #[test]
+    fn the_editors_token_is_never_read() {
+        let src = [include_str!("cursor.rs"), include_str!("cursor/session.rs")].concat();
+        let key = ["cursorAuth", "/accessToken"].concat();
+        let prefix = ["cursor-safe", "-storage:"].concat();
+        let database = ["state", ".vscdb"].concat();
+        assert!(!src.contains(&key));
+        assert!(!src.contains(&prefix));
+        assert!(!src.contains(&database));
         assert!(matches!(
-            read_editor_token(&tmp.0),
-            Err(SqliteError::Failed(_))
+            editor_token_state(),
+            EditorTokenState::Unreadable(_)
         ));
-    }
-
-    #[test]
-    fn a_json_quoted_value_is_unwrapped() {
-        let tmp = TempDb::new("cursor-quoted");
-        {
-            let db = TestDb::create(&tmp.0);
-            db.exec(SCHEMA);
-            db.exec(&format!(
-                "INSERT INTO ItemTable VALUES ('{ACCESS_TOKEN_KEY}', '\"{FAKE_TOKEN}\"');"
-            ));
-        }
-        assert_eq!(
-            read_editor_token(&tmp.0).expect("readable"),
-            EditorToken::Plain(FAKE_TOKEN.to_string())
-        );
     }
 
     #[test]
@@ -984,5 +1105,13 @@ mod tests {
             UsagePeriod::parse("INCLUDED_USAGE_PERIOD_UNSPECIFIED"),
             None
         );
+    }
+
+    #[test]
+    fn plan_names_are_cleaned() {
+        let plan = parse_plan_info(r#"{"planInfo":{"planName":"Pro\u0007 Plus"}}"#).unwrap();
+        assert_eq!(plan.name.as_deref(), Some("Pro Plus"));
+        let long = format!(r#"{{"planInfo":{{"planName":"{}"}}}}"#, "x".repeat(90));
+        assert_eq!(parse_plan_info(&long).unwrap().name.unwrap().len(), 32);
     }
 }

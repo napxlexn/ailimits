@@ -9,7 +9,7 @@
 
 use crate::config::schema::{Config, ModelPart, Surface};
 use crate::models::{self, ModelInfo, Models};
-use crate::providers::{Metric, ProviderData, ProviderId};
+use crate::providers::{Metric, ProviderData, ProviderId, ProviderStatus};
 use std::collections::BTreeMap;
 
 /// An extra row: one metric of a provider, shown as a row of its own.
@@ -216,15 +216,22 @@ pub fn row_chosen(config: &Config, surface: Surface, id: &str) -> bool {
 }
 
 /// The rows a surface shows, in order: each provider's own row, then its
-/// extra rows, providers in the order of `visible` (the data the widget
+/// extra rows, providers in the order of `visible` (the providers the widget
 /// shows today, see app.rs `visible_data`).
 ///
 /// An extra row needs its metric in the provider's data: a plan without an
 /// Opus week has no Opus row, and while a provider has no data yet its extra
 /// rows wait for it rather than show an empty bar.
 ///
+/// Each row is aged for display on its own (`ProviderData::aged_for_display`):
+/// a provider's own row by its own windows, an extra row by its one metric,
+/// so a reset in one never makes another an estimate. `visible` is best the
+/// data as the providers sent it; data already aged gives the same own rows
+/// and nearly the same extra rows (see `extra_row_data`).
+///
 /// With the default config this is exactly one row per entry of `visible`,
-/// carrying that entry unchanged but for the metrics only an extra row shows.
+/// carrying that entry aged for display, without the metrics only an extra
+/// row shows.
 pub fn visible_rows(
     config: &Config,
     visible: &[ProviderData],
@@ -247,7 +254,7 @@ pub fn visible_rows(
                 id: provider.config_id(),
                 provider: provider.clone(),
                 names: base_names(&provider),
-                data: own_row_data(data),
+                data: own_row_data(&data.aged_for_display()),
                 model,
             });
         }
@@ -266,14 +273,7 @@ pub fn visible_rows(
                 id: sub.id,
                 provider: provider.clone(),
                 names: sub.names,
-                data: ProviderData {
-                    // On its own row the metric is that row's headline.
-                    metrics: vec![Metric {
-                        extra_only: false,
-                        ..metric.clone()
-                    }],
-                    ..data.clone()
-                },
+                data: extra_row_data(data, metric),
                 model: None,
             });
         }
@@ -283,7 +283,8 @@ pub fn visible_rows(
 
 /// A provider's data as its own row draws it: without the metrics only an
 /// extra row shows (`Metric::extra_only`), so its own row looks the same
-/// whether the provider reports them or not.
+/// whether the provider reports them or not. Its status is the provider's,
+/// which only its own windows decide (`aged_for_display`).
 fn own_row_data(data: &ProviderData) -> ProviderData {
     if !data.metrics.iter().any(|m| m.extra_only) {
         return data.clone();
@@ -297,6 +298,39 @@ fn own_row_data(data: &ProviderData) -> ProviderData {
             .collect(),
         ..data.clone()
     }
+}
+
+/// An extra row's data: the provider's data narrowed to `metric`, the row's
+/// headline, aged by that metric alone. Its own reset passed: an estimate,
+/// "≈0%"; another window's reset leaves it as it is.
+///
+/// From data already aged the provider-wide status is set aside — it may
+/// come from another window. A metric only an extra row shows is never
+/// aged there, so its row still ages exactly. One of the provider's own
+/// windows was zeroed there if its reset passed: read back as an estimate
+/// when it is 0 with no reset left in an estimate, the one guess this makes.
+fn extra_row_data(data: &ProviderData, metric: &Metric) -> ProviderData {
+    let estimated = matches!(data.status, ProviderStatus::Estimated);
+    let rolled_over_upstream =
+        estimated && !metric.extra_only && metric.used == 0 && metric.reset_at.is_none();
+    let one = ProviderData {
+        status: if estimated {
+            ProviderStatus::Ok
+        } else {
+            data.status.clone()
+        },
+        // On its own row the metric is that row's headline.
+        metrics: vec![Metric {
+            extra_only: false,
+            ..metric.clone()
+        }],
+        ..data.clone()
+    };
+    let mut aged = one.aged_for_display();
+    if rolled_over_upstream && matches!(aged.status, ProviderStatus::Ok) {
+        aged.status = ProviderStatus::Estimated;
+    }
+    aged
 }
 
 /// Whether no provider may run yet: a fresh install before the first tick,
@@ -481,6 +515,127 @@ mod tests {
         assert_eq!(rows[1].data.primary_percentage(), Some(100.0));
         assert_eq!(rows[1].data.headline_reset(), after[0].metrics[4].reset_at);
         assert_eq!(rows[1].name(), "Claude · Fable");
+    }
+
+    /// Claude with a Fable week whose reset is `fable_reset` from now and a
+    /// session whose reset is `session_reset` from now.
+    fn claude_with_fable(
+        session_reset: chrono::Duration,
+        fable_reset: chrono::Duration,
+    ) -> ProviderData {
+        let mut d = sample().remove(0);
+        d.metrics[0].reset_at = Some(Utc::now() + session_reset);
+        let mut fable = metric("Fable", 40, MetricWindow::Long);
+        fable.reset_at = Some(Utc::now() + fable_reset);
+        fable.extra_only = true;
+        d.metrics.push(fable);
+        d
+    }
+
+    fn is_estimate(d: &ProviderData) -> bool {
+        matches!(d.status, ProviderStatus::Estimated)
+    }
+
+    /// Fable's week reset five minutes ago, nothing chosen: the Claude row,
+    /// the tray and the panel read exactly as before — live, not "≈".
+    #[test]
+    fn a_passed_fable_reset_leaves_the_claude_row_live() {
+        let raw = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+        // What the tray and the panel get (app.rs `visible_data`).
+        let shown = raw.aged_for_display();
+        assert!(matches!(shown.status, ProviderStatus::Ok));
+        assert!(!shown.is_aged());
+        assert_eq!(shown.primary_percentage(), Some(25.0));
+        // The widget and the tooltip, from the raw data and from aged data.
+        for input in [raw.clone(), shown] {
+            for surface in [Surface::Widget, Surface::Tooltip] {
+                let rows = visible_rows(
+                    &Config::default(),
+                    std::slice::from_ref(&input),
+                    surface,
+                    &Models::new(),
+                );
+                assert_eq!(ids(&rows), ["claude"]);
+                let row = &rows[0].data;
+                assert!(matches!(row.status, ProviderStatus::Ok), "{:?}", row.status);
+                let used: Vec<u64> = row.metrics.iter().map(|m| m.used).collect();
+                assert_eq!(used, [25, 34, 61, 12], "the same metrics, untouched");
+            }
+        }
+    }
+
+    /// The Fable row ages by its own week only: a passed session reset
+    /// leaves it live, its own passed reset makes it "≈0%".
+    #[test]
+    fn an_extra_row_ages_by_its_own_metric() {
+        let mut config = Config::default();
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.fable".into()]);
+        let rows_of = |d: &ProviderData| {
+            let raw = visible_rows(
+                &config,
+                std::slice::from_ref(d),
+                Surface::Widget,
+                &Models::new(),
+            );
+            let aged = visible_rows(
+                &config,
+                &[d.aged_for_display()],
+                Surface::Widget,
+                &Models::new(),
+            );
+            (raw, aged)
+        };
+
+        // The session rolled over, Fable's week did not.
+        let d = claude_with_fable(-chrono::Duration::minutes(5), chrono::Duration::days(3));
+        for rows in <[_; 2]>::from(rows_of(&d)) {
+            assert_eq!(ids(&rows), ["claude", "claude.fable"]);
+            assert!(is_estimate(&rows[0].data), "the session reset: ≈0%");
+            assert!(!is_estimate(&rows[1].data), "not Fable's");
+            assert_eq!(rows[1].data.metrics[0].used, 40);
+        }
+
+        // Fable's week rolled over, the session did not.
+        let d = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+        for rows in <[_; 2]>::from(rows_of(&d)) {
+            assert!(!is_estimate(&rows[0].data));
+            assert!(is_estimate(&rows[1].data));
+            assert_eq!(rows[1].data.metrics[0].used, 0);
+            assert_eq!(rows[1].data.metrics[0].reset_at, None);
+        }
+    }
+
+    /// The same for an extra row of one of the provider's own windows: the
+    /// Opus row is an estimate for Opus's reset, never for the session's.
+    #[test]
+    fn an_own_window_row_ages_by_its_own_metric() {
+        let mut config = Config::default();
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.opus".into()]);
+        let rows = |d: &ProviderData| {
+            visible_rows(
+                &config,
+                std::slice::from_ref(d),
+                Surface::Widget,
+                &Models::new(),
+            )
+        };
+
+        let mut session_reset = sample().remove(0);
+        session_reset.metrics[0].reset_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        for input in [session_reset.clone(), session_reset.aged_for_display()] {
+            let r = rows(&input);
+            assert!(is_estimate(&r[0].data));
+            assert!(!is_estimate(&r[1].data), "Opus did not reset");
+            assert_eq!(r[1].data.metrics[0].used, 61);
+        }
+
+        let mut opus_reset = sample().remove(0);
+        opus_reset.metrics[2].reset_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        for input in [opus_reset.clone(), opus_reset.aged_for_display()] {
+            let r = rows(&input);
+            assert!(is_estimate(&r[1].data));
+            assert_eq!(r[1].data.metrics[0].used, 0);
+        }
     }
 
     #[test]

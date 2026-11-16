@@ -3,12 +3,20 @@
 //
 // Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
 
-use super::{Metric, MetricUnit, MetricWindow, Provider, ProviderData, ProviderId, ProviderStatus};
+use super::{
+    clean_label, generation_of, status_words, transport_error, unless_superseded, Metric,
+    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus,
+};
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tracing::warn;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+use tracing::{debug, warn};
 
 /// Onboarding endpoint that reports the account's Code Assist project id.
 /// Quota queries need it — every quota endpoint answers a misleading
@@ -30,13 +38,28 @@ const SUMMARY_URL: &str =
 /// The Windows Credential Manager target Antigravity keeps its token under.
 const ANTIGRAVITY_CREDENTIAL_TARGET: &str = "gemini:antigravity";
 
+/// After the summary answered nothing usable and the per-model endpoint did,
+/// the per-model endpoint goes first for this long: one request per cycle,
+/// the summary tried first again once an hour.
+const PREFER_MODELS_FOR: Duration = Duration::from_secs(3600);
+
+/// Reads Antigravity's sign-in — the real sources, or a test's stand-in.
+type LoginReader =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<AntigravityLogin>> + Send>> + Send + Sync>;
+
 pub struct AntigravityProvider {
     config: ProviderConfig,
-    http: reqwest::Client,
+    /// Never follows a 3xx — keeps the bearer token from leaking to a
+    /// redirected host. The quota endpoints return 200 directly.
+    net: Net,
+    login: LoginReader,
     /// Code Assist project id from loadCodeAssist, cached after the first
     /// success — it is stable for the account, and quota queries need it.
     /// Forgotten when the token is rejected (see `token_rejected`).
-    project: std::sync::Mutex<Option<String>>,
+    project: Mutex<Option<String>>,
+    /// Until when fetchAvailableModels goes before the summary.
+    prefer_models_until: Mutex<Option<Instant>>,
+    generation: &'static AtomicU64,
 }
 
 /// Outcome of one quota request (retrieveUserQuotaSummary or
@@ -44,12 +67,24 @@ pub struct AntigravityProvider {
 enum QuotaOutcome {
     /// Usable metrics.
     Metrics(Vec<Metric>),
-    /// The endpoint answered, but with nothing we can trust (non-200 other
-    /// than 401/403, an unparseable body, or a recognized-but-empty shape).
+    /// The endpoint answered, but with nothing we can trust: a 200 with an
+    /// unparseable body or a recognized-but-empty shape, or a client error
+    /// other than 401/403/429. Only this moves on to the other endpoint.
     Unusable,
     /// The token was rejected (401/403). No other source will do better —
     /// callers must stop the fallback chain and report this directly.
     TokenRejected,
+    /// A rate limit, a server error or no answer at all: it passes by
+    /// itself, and the other endpoint is on the same service. The chain
+    /// stops on the row's words for it — no second request this cycle.
+    Passing(String),
+}
+
+/// The two quota endpoints, in the order they are tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Quota {
+    Summary,
+    Models,
 }
 
 /// What the Antigravity token sources hold for the widget.
@@ -79,10 +114,20 @@ impl std::fmt::Debug for AntigravityLogin {
 enum ProjectResolution {
     /// Resolved project id (from cache or a fresh loadCodeAssist call).
     Project(String),
-    /// The endpoint answered, but with nothing we can use.
-    Unusable,
+    /// The endpoint answered, but named no project: the account has not
+    /// been set up for Code Assist (Antigravity does that on first use).
+    NoProject,
     /// The token was rejected (401/403).
     TokenRejected,
+    /// No answer, a rate limit or a server error: says nothing about the
+    /// account. The row's words for it.
+    Passing(String),
+}
+
+/// The outcome of a non-200 status from a Code Assist endpoint that says
+/// nothing about the token: a rate limit or a server error passes by itself.
+fn passing_status(code: u16) -> bool {
+    code == 429 || (500..600).contains(&code)
 }
 
 /// Identify like Antigravity's own client. Google treats anonymous callers
@@ -96,79 +141,90 @@ fn identified(req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
 
 impl AntigravityProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            // Never follow a 3xx — keeps the bearer token from leaking to a
-            // redirected host. The quota endpoint returns 200 directly.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("Failed to build HTTP client");
         Self {
             config,
-            http,
-            project: std::sync::Mutex::new(None),
+            net: Net::new(),
+            login: Arc::new(|| Box::pin(read_antigravity_login())),
+            project: Mutex::new(None),
+            prefer_models_until: Mutex::new(None),
+            generation: generation_of(&ProviderId::Antigravity),
         }
     }
 
-    /// One fetchAvailableModels request. 401/403 → TokenRejected; any other
-    /// non-200 or an unparseable/empty body → Unusable.
-    async fn fetch_models_quota(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
-        let resp = identified(self.http.post(MODELS_URL))
+    /// A provider that sends to a local test server, with a stand-in for
+    /// the sign-in.
+    #[cfg(test)]
+    fn for_test(config: ProviderConfig, server: &str, login: LoginReader) -> Self {
+        Self {
+            config,
+            net: Net::local(server),
+            login,
+            project: Mutex::new(None),
+            prefer_models_until: Mutex::new(None),
+            generation: Box::leak(Box::new(AtomicU64::new(0))),
+        }
+    }
+
+    /// One quota request, to the summary or to the per-model endpoint.
+    async fn fetch_quota(&self, quota: Quota, token: &str, project: &str) -> QuotaOutcome {
+        let (url, name) = match quota {
+            Quota::Summary => (SUMMARY_URL, "retrieveUserQuotaSummary"),
+            Quota::Models => (MODELS_URL, "fetchAvailableModels"),
+        };
+        let resp = match identified(self.net.http.post(self.net.url(url)))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body(serde_json::json!({ "project": project }).to_string())
             .send()
-            .await?;
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                warn!("{name} request failed: {e}");
+                return QuotaOutcome::Passing(transport_error(&e).to_string());
+            }
+        };
         match resp.status().as_u16() {
             200 => {}
-            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
+            401 | 403 => return QuotaOutcome::TokenRejected,
+            code if passing_status(code) => {
+                warn!("{name} returned HTTP {code}");
+                return QuotaOutcome::Passing(status_words(code));
+            }
             other => {
-                warn!("fetchAvailableModels returned HTTP {other}");
-                return Ok(QuotaOutcome::Unusable);
+                warn!("{name} returned HTTP {other}");
+                return QuotaOutcome::Unusable;
             }
         }
-        let body = resp.text().await?;
-        let metrics = parse_available_models_quota(&body)?;
-        if metrics.is_empty() {
-            Ok(QuotaOutcome::Unusable)
-        } else {
-            Ok(QuotaOutcome::Metrics(metrics))
+        let body = match resp.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                warn!("{name} body read failed: {e}");
+                return QuotaOutcome::Passing(transport_error(&e).to_string());
+            }
+        };
+        let parsed = match quota {
+            Quota::Summary => parse_quota_summary(&body),
+            Quota::Models => parse_available_models_quota(&body),
+        };
+        match parsed {
+            Ok(metrics) if !metrics.is_empty() => QuotaOutcome::Metrics(metrics),
+            Ok(_) => QuotaOutcome::Unusable,
+            Err(e) => {
+                // serde names a position in the body, never its content.
+                warn!("{name} body is not JSON: {e}");
+                QuotaOutcome::Unusable
+            }
         }
     }
 
-    /// One retrieveUserQuotaSummary request. 401/403 → TokenRejected; any
-    /// other non-200 or an unparseable/empty body → Unusable.
-    async fn fetch_quota_summary(&self, token: &str, project: &str) -> Result<QuotaOutcome> {
-        let resp = identified(self.http.post(SUMMARY_URL))
-            .bearer_auth(token)
-            .header("Content-Type", "application/json")
-            .body(serde_json::json!({ "project": project }).to_string())
-            .send()
-            .await?;
-        match resp.status().as_u16() {
-            200 => {}
-            401 | 403 => return Ok(QuotaOutcome::TokenRejected),
-            other => {
-                warn!("retrieveUserQuotaSummary returned HTTP {other}");
-                return Ok(QuotaOutcome::Unusable);
-            }
-        }
-        let body = resp.text().await?;
-        let metrics = parse_quota_summary(&body)?;
-        if metrics.is_empty() {
-            Ok(QuotaOutcome::Unusable)
-        } else {
-            Ok(QuotaOutcome::Metrics(metrics))
-        }
-    }
-
-    /// Resolve the Code Assist project id (cached). Unusable/TokenRejected on
-    /// failure — callers must treat both as fatal.
+    /// Resolve the Code Assist project id (cached). Every other outcome ends
+    /// the cycle.
     async fn resolve_project(&self, token: &str) -> ProjectResolution {
         if let Some(p) = self.project.lock().ok().and_then(|g| g.clone()) {
             return ProjectResolution::Project(p);
         }
-        let resp = match identified(self.http.post(LOAD_URL))
+        let resp = match identified(self.net.http.post(self.net.url(LOAD_URL)))
             .bearer_auth(token)
             .header("Content-Type", "application/json")
             .body("{}")
@@ -178,7 +234,7 @@ impl AntigravityProvider {
             Ok(resp) => resp,
             Err(e) => {
                 warn!("loadCodeAssist request failed: {e}");
-                return ProjectResolution::Unusable;
+                return ProjectResolution::Passing(transport_error(&e).to_string());
             }
         };
         match resp.status().as_u16() {
@@ -186,19 +242,19 @@ impl AntigravityProvider {
             401 | 403 => return ProjectResolution::TokenRejected,
             other => {
                 warn!("loadCodeAssist returned HTTP {other}");
-                return ProjectResolution::Unusable;
+                return ProjectResolution::Passing(status_words(other));
             }
         }
         let body = match resp.text().await {
             Ok(body) => body,
             Err(e) => {
                 warn!("loadCodeAssist body read failed: {e}");
-                return ProjectResolution::Unusable;
+                return ProjectResolution::Passing(transport_error(&e).to_string());
             }
         };
         let Some(project) = parse_load_code_assist_project(&body) else {
             warn!("loadCodeAssist returned no cloudaicompanionProject");
-            return ProjectResolution::Unusable;
+            return ProjectResolution::NoProject;
         };
         if let Ok(mut guard) = self.project.lock() {
             *guard = Some(project.clone());
@@ -207,7 +263,9 @@ impl AntigravityProvider {
     }
 
     /// The single message produced when Antigravity rejects the token — used
-    /// at every request site so the wording never drifts.
+    /// at every request site so the wording never drifts. A short message
+    /// the row shows as it is; the hover adds "run Antigravity", which
+    /// refreshes the token. Not "check the key": no key was given.
     ///
     /// Also forgets the cached project id: after a switch to another Google
     /// account the old account's project is what gets refused, and only a
@@ -218,11 +276,23 @@ impl AntigravityProvider {
             *guard = None;
         }
         self.data(
-            ProviderStatus::AuthError(
-                "Antigravity token rejected — run Antigravity CLI once".to_string(),
-            ),
+            ProviderStatus::NetworkError("token rejected".to_string()),
             vec![],
         )
+    }
+
+    /// The quota endpoint to ask first: the summary, unless it lately had
+    /// nothing usable and the per-model endpoint had.
+    fn first_quota(&self, now: Instant) -> Quota {
+        let until = *self
+            .prefer_models_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if until.is_some_and(|t| now < t) {
+            Quota::Models
+        } else {
+            Quota::Summary
+        }
     }
 
     fn data(&self, status: ProviderStatus, metrics: Vec<Metric>) -> ProviderData {
@@ -241,7 +311,7 @@ impl AntigravityProvider {
         if !self.config.tool_files {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        let token = match read_antigravity_login().await {
+        let token = match (self.login)().await {
             Ok(AntigravityLogin::Token(t)) => t,
             // Never signed in here — the row stays hidden.
             Ok(AntigravityLogin::Missing) => {
@@ -267,40 +337,61 @@ impl AntigravityProvider {
         };
 
         // The project id is REQUIRED — report an honest error instead of
-        // rendering numbers we know may be wrong.
+        // rendering numbers we know may be wrong. Asked once a session: the
+        // answer is kept until the token is refused.
         let project = match self.resolve_project(&token).await {
             ProjectResolution::Project(p) => p,
             ProjectResolution::TokenRejected => return Ok(self.token_rejected()),
-            ProjectResolution::Unusable => {
+            // The hover adds "run Antigravity": its first run sets the
+            // account up.
+            ProjectResolution::NoProject => {
                 return Ok(self.data(
-                    ProviderStatus::NetworkError(
-                        "no Code Assist project id — open Antigravity once".to_string(),
-                    ),
+                    ProviderStatus::NetworkError("no Code Assist project".to_string()),
                     vec![],
                 ));
             }
+            // Offline is not a missing project: say what it is.
+            ProjectResolution::Passing(words) => {
+                return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
+            }
         };
 
-        // Primary: the shared pools Antigravity itself shows.
-        match self.fetch_quota_summary(&token, &project).await {
-            Ok(QuotaOutcome::Metrics(metrics)) => {
-                return Ok(self.data(ProviderStatus::Ok, metrics));
+        // The shared pools Antigravity itself shows (the summary), else the
+        // per-model quota. Only an answer with nothing usable in it moves on
+        // to the other endpoint; once that one worked, it goes first for
+        // `PREFER_MODELS_FOR`, so a cycle stays one request.
+        let now = Instant::now();
+        let first = self.first_quota(now);
+        let order = match first {
+            Quota::Summary => [Quota::Summary, Quota::Models],
+            Quota::Models => [Quota::Models, Quota::Summary],
+        };
+        for quota in order {
+            match self.fetch_quota(quota, &token, &project).await {
+                QuotaOutcome::Metrics(metrics) => {
+                    let mut prefer = self
+                        .prefer_models_until
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    match (quota, first) {
+                        // Fell back to it: it goes first for a while.
+                        (Quota::Models, Quota::Summary) => *prefer = Some(now + PREFER_MODELS_FOR),
+                        // Already first: the while runs on as it was.
+                        (Quota::Models, Quota::Models) => {}
+                        // The summary works (again).
+                        (Quota::Summary, _) => *prefer = None,
+                    }
+                    drop(prefer);
+                    return Ok(self.data(ProviderStatus::Ok, metrics));
+                }
+                QuotaOutcome::TokenRejected => return Ok(self.token_rejected()),
+                QuotaOutcome::Passing(words) => {
+                    return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
+                }
+                QuotaOutcome::Unusable => {
+                    debug!("{quota:?} had nothing usable; trying the other endpoint");
+                }
             }
-            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
-            Ok(QuotaOutcome::Unusable) => {
-                warn!("retrieveUserQuotaSummary returned no usable pools, falling back")
-            }
-            Err(e) => warn!("retrieveUserQuotaSummary failed, falling back: {e}"),
-        }
-
-        // Per-model quota (the pools Antigravity itself meters).
-        match self.fetch_models_quota(&token, &project).await {
-            Ok(QuotaOutcome::Metrics(metrics)) => {
-                return Ok(self.data(ProviderStatus::Ok, metrics));
-            }
-            Ok(QuotaOutcome::TokenRejected) => return Ok(self.token_rejected()),
-            Ok(QuotaOutcome::Unusable) => warn!("fetchAvailableModels returned no usable quota"),
-            Err(e) => warn!("fetchAvailableModels failed: {e}"),
         }
 
         // Both real sources failed or returned nothing usable. There is no
@@ -327,7 +418,9 @@ impl Provider for AntigravityProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        self.fetch_via_subscription().await
+        let started = self.generation.load(Ordering::SeqCst);
+        let data = self.fetch_via_subscription().await?;
+        unless_superseded(data, started, self.generation)
     }
 }
 
@@ -358,12 +451,16 @@ pub fn combine_logins(
     }
 }
 
-/// Read the legacy Gemini CLI login. A missing file is `Missing`.
+/// Read the legacy Gemini CLI login. A missing file is `Missing`, and so is
+/// a machine without an absolute home folder: nothing is read relative to
+/// the working directory.
 async fn read_legacy_gemini_login() -> Result<AntigravityLogin> {
-    let path = dirs::home_dir()
-        .unwrap_or_default()
-        .join(".gemini")
-        .join("oauth_creds.json");
+    let Some(path) = dirs::home_dir()
+        .filter(|p| p.is_absolute())
+        .map(|home| home.join(".gemini").join("oauth_creds.json"))
+    else {
+        return Ok(AntigravityLogin::Missing);
+    };
     if !path.exists() {
         return Ok(AntigravityLogin::Missing);
     }
@@ -545,7 +642,9 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
     Ok(metrics)
 }
 
-/// Compact pool name for the widget's narrow rows.
+/// Compact pool name for the widget's narrow rows. A name the app does not
+/// know is shown as the server sent it, cleaned: no control characters, 32
+/// characters at most.
 fn short_pool_label(display_name: &str) -> String {
     let lower = display_name.to_ascii_lowercase();
     if lower.contains("gemini") {
@@ -553,7 +652,7 @@ fn short_pool_label(display_name: &str) -> String {
     } else if lower.contains("claude") || lower.contains("gpt") {
         "Claude/GPT".to_string()
     } else {
-        display_name.to_string()
+        clean_label(display_name).unwrap_or_else(|| "Pool".to_string())
     }
 }
 
@@ -721,11 +820,140 @@ mod tests {
         *provider.project.lock().unwrap() = Some("old-account-project".to_string());
 
         let data = provider.token_rejected();
-        assert!(matches!(data.status, ProviderStatus::AuthError(_)));
+        // The row's own words, not "check the key": no key was given.
+        assert!(matches!(&data.status, ProviderStatus::NetworkError(m) if m == "token rejected"));
         assert_eq!(
             *provider.project.lock().unwrap(),
             None,
             "the next cycle must ask loadCodeAssist again with the current token"
         );
+    }
+
+    // ─── One request per cycle ───────────────────────────────────
+
+    use crate::providers::test_server::{Reply, TestServer};
+
+    const LOAD: &str = ":loadCodeAssist";
+    const SUMMARY: &str = ":retrieveUserQuotaSummary";
+    const MODELS: &str = ":fetchAvailableModels";
+    const LOAD_BODY: &str = r#"{"cloudaicompanionProject": "test-project"}"#;
+    const SUMMARY_BODY: &str = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingFraction": 0.7, "resetTime": "2099-01-01T00:00:00Z"}]}]}"#;
+    const MODELS_BODY: &str = r#"{"models": {"gemini-2.5-pro": {"quotaInfo": {"remainingFraction": 0.63, "resetTime": "2099-01-01T00:00:00Z"}}}}"#;
+
+    fn signed_in(server: &TestServer) -> AntigravityProvider {
+        AntigravityProvider::for_test(
+            ProviderConfig {
+                id: "antigravity".to_string(),
+                enabled: true,
+                auth_method: Default::default(),
+                credential_label: String::new(),
+                tool_files: true,
+                alert_threshold: 80,
+            },
+            &server.base,
+            Arc::new(|| Box::pin(async { Ok(AntigravityLogin::Token("ag-token".to_string())) })),
+        )
+    }
+
+    fn message(data: &ProviderData) -> String {
+        match &data.status {
+            ProviderStatus::NetworkError(m) | ProviderStatus::AuthError(m) => m.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// A rate limit, a server error or no answer from the summary ends the
+    /// cycle: the per-model endpoint is on the same service and is not
+    /// asked as well.
+    #[tokio::test]
+    async fn a_passing_failure_asks_no_second_endpoint() {
+        for (reply, words) in [
+            (Reply::status(429), "rate-limited, retrying"),
+            (Reply::status(503), "HTTP 503, retrying"),
+            (Reply::Hangup, "offline, retrying"),
+        ] {
+            let server = TestServer::start();
+            server.route(LOAD, vec![Reply::ok(LOAD_BODY)]);
+            server.route(SUMMARY, vec![reply]);
+            server.route(MODELS, vec![Reply::ok(MODELS_BODY)]);
+            let p = signed_in(&server);
+            for _ in 0..2 {
+                assert_eq!(message(&p.fetch().await.unwrap()), words);
+            }
+            assert_eq!(server.count(LOAD), 1, "the project is asked once");
+            assert_eq!(server.count(SUMMARY), 2, "one request per cycle");
+            assert_eq!(server.count(MODELS), 0, "{words}");
+        }
+    }
+
+    /// A summary with nothing usable moves on to the per-model endpoint,
+    /// which then goes first: the next cycles are one request again.
+    #[tokio::test]
+    async fn an_unusable_summary_hands_over_to_the_models_for_a_while() {
+        let server = TestServer::start();
+        server.route(LOAD, vec![Reply::ok(LOAD_BODY)]);
+        server.route(SUMMARY, vec![Reply::ok("{}")]);
+        server.route(MODELS, vec![Reply::ok(MODELS_BODY)]);
+        let p = signed_in(&server);
+        for _ in 0..3 {
+            assert!(matches!(
+                p.fetch().await.unwrap().status,
+                ProviderStatus::Ok
+            ));
+        }
+        assert_eq!(server.count(SUMMARY), 1);
+        assert_eq!(server.count(MODELS), 3);
+
+        // The summary answers again once the hour is over.
+        server.route(SUMMARY, vec![Reply::ok(SUMMARY_BODY)]);
+        *p.prefer_models_until.lock().unwrap() = Some(Instant::now());
+        assert!(matches!(
+            p.fetch().await.unwrap().status,
+            ProviderStatus::Ok
+        ));
+        assert_eq!(server.count(SUMMARY), 2);
+        assert_eq!(server.count(MODELS), 3);
+        assert!(p.prefer_models_until.lock().unwrap().is_none());
+    }
+
+    /// Offline while asking for the project is offline, not a missing
+    /// project; a project the server does not name is said in a few words
+    /// the row can show.
+    #[tokio::test]
+    async fn the_project_step_tells_offline_from_no_project() {
+        let server = TestServer::start();
+        server.route(LOAD, vec![Reply::Hangup]);
+        let p = signed_in(&server);
+        assert_eq!(message(&p.fetch().await.unwrap()), "offline, retrying");
+        assert_eq!(server.count(SUMMARY), 0);
+
+        let server = TestServer::start();
+        server.route(
+            LOAD,
+            vec![Reply::ok(r#"{"currentTier": {"id": "free-tier"}}"#)],
+        );
+        let p = signed_in(&server);
+        let words = message(&p.fetch().await.unwrap());
+        assert_eq!(words, "no Code Assist project");
+        assert!(words.chars().count() <= 32);
+    }
+
+    #[tokio::test]
+    async fn a_refused_token_reads_token_rejected() {
+        let server = TestServer::start();
+        server.route(LOAD, vec![Reply::ok(LOAD_BODY)]);
+        server.route(SUMMARY, vec![Reply::status(401)]);
+        let p = signed_in(&server);
+        assert_eq!(message(&p.fetch().await.unwrap()), "token rejected");
+        assert_eq!(server.count(MODELS), 0);
+    }
+
+    #[test]
+    fn unknown_pool_names_are_cleaned() {
+        assert_eq!(short_pool_label("Gemini Models"), "Gemini");
+        assert_eq!(short_pool_label("Claude and GPT models"), "Claude/GPT");
+        assert_eq!(short_pool_label("Image\u{7} models"), "Image models");
+        assert_eq!(short_pool_label(&"x".repeat(80)).chars().count(), 32);
+        assert_eq!(short_pool_label("  "), "Pool");
     }
 }

@@ -194,7 +194,7 @@ fn an_offline_claude_is_not_an_expired_token() {
     // A valid Claude Code token, but no request got an answer.
     let offline = ChainOutcome {
         credentials_file: true,
-        offline: true,
+        no_answer: Some("offline, retrying"),
         ..ChainOutcome::default()
     };
     let status = offline.status();
@@ -333,39 +333,62 @@ fn copilot_internal_quotas_parse_to_metrics() {
 
 #[test]
 fn copilot_answers_map_to_honest_statuses() {
-    use ailimits::providers::copilot::quota_outcome;
+    use ailimits::providers::copilot::{quota_outcome, TokenSource};
 
     let body = r#"{"quota_reset_date": "2026-07-01", "quota_snapshots": {
         "premium_interactions": {"entitlement": 50, "remaining": 10, "unlimited": false}}}"#;
-    let (status, metrics) = quota_outcome(200, body);
+    let (status, metrics) = quota_outcome(200, body, TokenSource::Pat);
     assert!(matches!(status, ProviderStatus::Ok));
     assert_eq!(metrics[0].used, 40);
 
     // A 200 with a body we cannot read — an HTML page, another shape — is an
     // honest row, never a dropped update.
     for body in ["<html>oops</html>", r#"{"foo": 1}"#, ""] {
-        let (status, metrics) = quota_outcome(200, body);
+        let (status, metrics) = quota_outcome(200, body, TokenSource::Gh);
         assert!(
-            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized copilot_internal schema"),
+            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized Copilot schema"),
             "{body}: {status:?}"
         );
         assert!(metrics.is_empty());
     }
 
+    // A pasted PAT refused: the user's own key is the thing to check.
     for code in [401, 403, 404] {
-        let (status, metrics) = quota_outcome(code, body);
+        let (status, metrics) = quota_outcome(code, body, TokenSource::Pat);
         assert!(
             matches!(&status, ProviderStatus::AuthError(m) if m == "token has no Copilot access")
         );
         assert!(metrics.is_empty());
     }
-    for code in [302, 429, 500] {
-        let (status, metrics) = quota_outcome(code, body);
+    // gh's token refused: no key was given, so the row says what it is in
+    // words it shows as they are (never "check the key"), at most 32
+    // characters.
+    for (code, words) in [
+        (404, "no Copilot on this account"),
+        (401, "gh token rejected"),
+        (403, "no Copilot access"),
+    ] {
+        let (status, metrics) = quota_outcome(code, body, TokenSource::Gh);
         assert!(
-            matches!(&status, ProviderStatus::NetworkError(m) if *m == format!("HTTP {code}")),
+            matches!(&status, ProviderStatus::NetworkError(m) if m == words),
             "{code}: {status:?}"
         );
-        assert!(metrics.is_empty(), "a non-200 body is never parsed");
+        assert!(words.chars().count() <= 32);
+        assert!(metrics.is_empty());
+    }
+    for (code, words) in [
+        (302, "HTTP 302"),
+        (429, "rate-limited, retrying"),
+        (500, "HTTP 500, retrying"),
+    ] {
+        for source in [TokenSource::Pat, TokenSource::Gh] {
+            let (status, metrics) = quota_outcome(code, body, source);
+            assert!(
+                matches!(&status, ProviderStatus::NetworkError(m) if m == words),
+                "{code}: {status:?}"
+            );
+            assert!(metrics.is_empty(), "a non-200 body is never parsed");
+        }
     }
 }
 
@@ -1259,11 +1282,14 @@ fn grok_billing_full_body_parses_to_the_weekly_limit_and_its_products() {
         Utc.with_ymd_and_hms(2026, 11, 16, 23, 1, 28).single()
     );
 
-    // The per-product share rides along, compactly labelled.
+    // The per-product share rides along, compactly labelled, for its extra
+    // row only: the Grok row is the same with or without it.
     assert_eq!(metrics[1].label, "Build");
     assert_eq!(metrics[1].used, 1);
     assert_eq!(metrics[1].window, MetricWindow::Long);
     assert_eq!(metrics[1].reset_at, Some(reset));
+    assert!(!metrics[0].extra_only);
+    assert!(metrics[1].extra_only);
 
     let data = ProviderData {
         id: ProviderId::Grok,
@@ -1366,8 +1392,8 @@ fn grok_billing_non_200_degrades_to_an_honest_error() {
     for (code, want) in [
         (401, "token rejected"),
         (403, "token rejected"),
-        (429, "HTTP 429"),
-        (500, "HTTP 500"),
+        (429, "rate-limited, retrying"),
+        (500, "HTTP 500, retrying"),
         (302, "HTTP 302"),
     ] {
         // Even a body that would parse is ignored off a non-200.
@@ -1599,27 +1625,30 @@ fn cursor_usage_answers_map_to_honest_statuses() {
             Err(UsageError::Rejected)
         );
     }
-    // The widget's own session asks for a new sign-in; the editor's token
-    // is only rejected (the editor owns it).
-    let (status, metrics) = usage_error_status(&UsageError::Rejected, true);
-    assert!(matches!(&status, ProviderStatus::AuthError(m) if m == "sign in to Cursor again"));
+    // The widget's own session, once over, asks for a new sign-in — in the
+    // row's own words, not "check the key": no key was given.
+    let (status, metrics) = usage_error_status(&UsageError::Rejected);
+    assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "sign in to Cursor again"));
     assert!(metrics.is_empty());
-    let (status, _) = usage_error_status(&UsageError::Rejected, false);
-    assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "token rejected"));
 
-    let (status, _) = usage_error_status(&UsageError::Unrecognized, true);
+    let (status, _) = usage_error_status(&UsageError::Unrecognized);
     assert!(matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized usage schema"));
 
-    // Anything else, a redirect included, is the bare status; a non-200
-    // body is never parsed.
-    for code in [302, 429, 500, 503] {
+    // Anything else is the status, a passing one saying it retries; a
+    // non-200 body is never parsed.
+    for (code, words) in [
+        (302, "HTTP 302"),
+        (429, "rate-limited, retrying"),
+        (500, "HTTP 500, retrying"),
+        (503, "HTTP 503, retrying"),
+    ] {
         assert_eq!(
             interpret_period_usage(code, CURSOR_USAGE_BODY),
             Err(UsageError::Status(code))
         );
-        let (status, metrics) = usage_error_status(&UsageError::Status(code), true);
+        let (status, metrics) = usage_error_status(&UsageError::Status(code));
         assert!(
-            matches!(&status, ProviderStatus::NetworkError(m) if *m == format!("HTTP {code}")),
+            matches!(&status, ProviderStatus::NetworkError(m) if m == words),
             "{code}: {status:?}"
         );
         assert!(metrics.is_empty());
@@ -1699,6 +1728,7 @@ fn cursor_grok_bot_is_an_extra_that_never_takes_the_headline() {
     assert_eq!(m.label, "Grok Bot");
     assert_eq!(m.window, MetricWindow::Session);
     assert!(m.unified_pool, "isUnified is carried for the display");
+    assert!(m.extra_only, "shown by its extra row only");
 
     // Even a spent Grok Bot never takes over the row: the headline is the
     // Cursor plan's usage.
@@ -1737,31 +1767,6 @@ fn cursor_grok_bot_is_an_extra_that_never_takes_the_headline() {
     ] {
         assert_eq!(parse_sand_usage(body), None, "{body}");
     }
-}
-
-#[test]
-fn cursor_editor_values_are_classified_never_decrypted() {
-    use ailimits::providers::cursor::{classify_editor_value, EditorToken};
-
-    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln";
-    assert_eq!(classify_editor_value(None), EditorToken::Absent);
-    assert_eq!(classify_editor_value(Some("")), EditorToken::Absent);
-    assert_eq!(classify_editor_value(Some(" \"\" ")), EditorToken::Absent);
-    // The editor's at-rest encryption: left alone, whatever follows.
-    for value in [
-        "cursor-safe-storage:v1:djEwAAAA",
-        "\"cursor-safe-storage:v1:djEwAAAA\"",
-        "cursor-safe-storage:v2:anything",
-    ] {
-        assert_eq!(
-            classify_editor_value(Some(value)),
-            EditorToken::Encrypted,
-            "{value}"
-        );
-    }
-    let plain = classify_editor_value(Some(&format!("\"{jwt}\"")));
-    assert_eq!(plain, EditorToken::Plain(jwt.to_string()));
-    assert!(!format!("{plain:?}").contains(jwt), "Debug never shows it");
 }
 
 #[test]
@@ -1814,7 +1819,7 @@ fn cursor_session_claims_come_from_the_token_payload() {
 }
 
 #[test]
-fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
+fn cursor_hover_reasons_name_the_fix_or_none_while_retrying() {
     use ailimits::ui::renderer::hover_reason;
     use chrono::Duration;
     use std::collections::HashMap;
@@ -1850,14 +1855,11 @@ fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
         Some("sign in to Cursor again")
     );
 
-    // A transient busy database retries by itself: no action appended.
-    errors.insert(
-        ProviderId::Cursor,
-        "state database busy, retrying".to_string(),
-    );
+    // A refusal still being counted retries by itself: no action appended.
+    errors.insert(ProviderId::Cursor, "token rejected, retrying".to_string());
     assert_eq!(
         hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
-        Some("state database busy, retrying")
+        Some("token rejected, retrying")
     );
     // Claude's rate-limit message keeps its behaviour.
     errors.insert(ProviderId::Claude, "rate-limited, retrying".to_string());
@@ -1878,4 +1880,131 @@ fn cursor_config_id_round_trips() {
     assert_eq!(json, "\"cursor\"");
     let back: ProviderId = serde_json::from_str(&json).unwrap();
     assert_eq!(back, ProviderId::Cursor);
+}
+
+// ─── Extra-only metrics and the display (C-06) ───────────────────
+
+/// Claude as the usage endpoint reports it on a plan with a Fable week:
+/// Session 25, Weekly 34, Fable 40 (extra-only), with the given resets.
+fn claude_with_fable(
+    session_reset: chrono::Duration,
+    fable_reset: chrono::Duration,
+) -> ProviderData {
+    let pct = |label: &str, used: u64, window, reset: chrono::Duration, extra_only| Metric {
+        label: label.to_string(),
+        used,
+        limit: Some(100),
+        unit: MetricUnit::Percent,
+        reset_at: Some(Utc::now() + reset),
+        window,
+        unified_pool: false,
+        extra_only,
+    };
+    ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            pct("Session", 25, MetricWindow::Session, session_reset, false),
+            pct(
+                "Weekly",
+                34,
+                MetricWindow::Long,
+                chrono::Duration::days(3),
+                false,
+            ),
+            pct("Fable", 40, MetricWindow::Long, fable_reset, true),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    }
+}
+
+/// Fable's week reset five minutes ago and nothing is chosen: every
+/// surface reads Claude exactly as before — live, the same numbers.
+#[test]
+fn a_passed_fable_reset_leaves_every_claude_surface_live() {
+    use ailimits::config::schema::{Config, Surface};
+    use ailimits::models::Models;
+
+    let raw = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    // The tray, the panel and the alerts (app.rs `visible_data`).
+    let shown = raw.aged_for_display();
+    assert!(
+        matches!(shown.status, ProviderStatus::Ok),
+        "{:?}",
+        shown.status
+    );
+    assert!(!shown.is_aged());
+    assert_eq!(shown.primary_percentage(), Some(25.0));
+    // The widget and the tooltip.
+    for input in [raw, shown] {
+        for surface in [Surface::Widget, Surface::Tooltip] {
+            let rows = ailimits::rows::visible_rows(
+                &Config::default(),
+                std::slice::from_ref(&input),
+                surface,
+                &Models::new(),
+            );
+            assert_eq!(rows.len(), 1);
+            let row = &rows[0].data;
+            assert!(matches!(row.status, ProviderStatus::Ok));
+            let used: Vec<u64> = row.metrics.iter().map(|m| m.used).collect();
+            assert_eq!(used, [25, 34]);
+        }
+    }
+}
+
+/// The session's reset does not make the Fable row an estimate; Fable's
+/// own reset does.
+#[test]
+fn the_fable_row_ages_by_its_own_week() {
+    use ailimits::config::schema::{Config, Surface};
+    use ailimits::models::Models;
+
+    let mut config = Config::default();
+    config.ui.rows.widget = Some(vec!["claude".into(), "claude.fable".into()]);
+    let fable_row = |d: &ProviderData| {
+        let rows = ailimits::rows::visible_rows(
+            &config,
+            std::slice::from_ref(d),
+            Surface::Widget,
+            &Models::new(),
+        );
+        assert_eq!(rows[1].id, "claude.fable");
+        rows[1].data.clone()
+    };
+
+    let session_reset = claude_with_fable(-chrono::Duration::minutes(5), chrono::Duration::days(3));
+    for input in [session_reset.clone(), session_reset.aged_for_display()] {
+        let row = fable_row(&input);
+        assert!(matches!(row.status, ProviderStatus::Ok), "{:?}", row.status);
+        assert_eq!(row.metrics[0].used, 40);
+    }
+
+    let fable_reset = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    for input in [fable_reset.clone(), fable_reset.aged_for_display()] {
+        let row = fable_row(&input);
+        assert!(matches!(row.status, ProviderStatus::Estimated));
+        assert_eq!(row.metrics[0].used, 0);
+    }
+}
+
+// ─── Pasted usage tokens (C-20) ──────────────────────────────────
+
+#[test]
+fn a_pasted_usage_token_is_judged_by_its_shape_first() {
+    use ailimits::providers::{usage_token_problem, MAX_USAGE_TOKEN_LEN};
+
+    assert_eq!(usage_token_problem("claude", "sk-ant-oat01-abc"), None);
+    let jwt = format!(
+        "eyJ{}.eyJ{}.{}",
+        "a".repeat(600),
+        "b".repeat(600),
+        "c".repeat(342)
+    );
+    assert!(jwt.len() > 500, "longer than the old limit");
+    assert_eq!(usage_token_problem("codex", &jwt), None);
+    assert!(usage_token_problem("claude", "my-old-password-123").is_some());
+    assert!(usage_token_problem("codex", "sk-ant-oat01-abc").is_some());
+    assert!(usage_token_problem("claude", &"sk-ant-".repeat(MAX_USAGE_TOKEN_LEN)).is_some());
 }

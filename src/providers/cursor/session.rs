@@ -2,14 +2,16 @@
 // See docs/en/PROVIDERS.md, section "Cursor".
 //
 // AI Limits signs in to Cursor by itself, the way the editor does: a login
-// link the user approves in the browser, then a poll that hands the session
-// over. PKCE binds the two: the link carries only the challenge, and only
-// the holder of the verifier can collect the tokens. The session is kept in
-// Credential Manager and belongs to the widget, so it is the one Cursor
-// token the widget ever refreshes. The editor's session is never refreshed,
-// and never decrypted.
+// link the user approves in the browser (Cursor's own sign-in page, for the
+// editor's OAuth client — Cursor offers no other), then a poll that hands
+// the session over. PKCE binds the two: the link carries only the challenge,
+// and only the holder of the verifier can collect the tokens. The session is
+// kept in Credential Manager and belongs to the widget, so it is the one
+// Cursor token the widget ever refreshes. Nothing of the editor's own
+// session is read.
 
 use super::{base64url_encode, parse_session_claims};
+use crate::providers::{bump_generation, Net, ProviderId};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration as StdDuration;
@@ -260,10 +262,11 @@ fn keep(tokens: Tokens) -> SignInOutcome {
     }
 }
 
-/// The client for the sign-in and the refresh. It never follows a
-/// redirect, so neither the verifier nor a token can reach another host.
+/// The client for the sign-in. It never follows a redirect, so neither the
+/// verifier nor a token can reach another host. The proxy set in Windows is
+/// used once the app asked for it (`providers::follow_windows_proxy`).
 pub fn http_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::providers::proxy::with_windows_proxy(reqwest::Client::builder())
         .timeout(StdDuration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -282,8 +285,9 @@ pub struct OwnSession {
     /// The last refresh attempt that got an answer.
     pub refreshed_at: Option<DateTime<Utc>>,
     /// The server ended the session: a refresh answered `shouldLogout`, or
-    /// the usage call refused it. A new sign-in is needed. Kept instead of
-    /// deleted, so the row can say so rather than disappear.
+    /// the usage call refused it several fetches in a row. A new sign-in is
+    /// needed. Kept instead of deleted, so the row can say so rather than
+    /// disappear.
     pub ended: bool,
 }
 
@@ -438,9 +442,12 @@ pub fn load() -> Result<Option<OwnSession>, StoreError> {
     load_at(SESSION_LABEL)
 }
 
-/// Keep `session`, replacing any earlier one.
+/// Keep `session`, replacing any earlier one: a sign-in. A fetch still in
+/// flight with the session from before has its answer dropped.
 pub fn store(session: &OwnSession) -> Result<(), StoreError> {
-    store_at(SESSION_LABEL, session)
+    let stored = store_at(SESSION_LABEL, session);
+    bump_generation(&ProviderId::Cursor);
+    stored
 }
 
 /// Keep `next` in place of the session whose access token was
@@ -451,9 +458,13 @@ pub fn replace(previous_token: &str, next: &OwnSession) -> Result<bool, StoreErr
     replace_at(SESSION_LABEL, previous_token, next)
 }
 
-/// Forget the session. Nothing kept is not an error.
+/// Forget the session: a sign-out. Nothing kept is not an error. A fetch
+/// still in flight with the session has its answer dropped, so nothing of
+/// the account comes back on screen.
 pub fn delete() -> Result<(), StoreError> {
-    delete_at(SESSION_LABEL)
+    let deleted = delete_at(SESSION_LABEL);
+    bump_generation(&ProviderId::Cursor);
+    deleted
 }
 
 /// Whether a record is kept, readable or not — there is something to sign
@@ -528,8 +539,11 @@ impl std::fmt::Debug for RefreshAnswer {
 
 /// Map one refresh answer. Verified 2026-11-10 right after a sign-in: 200
 /// {"access_token": "...", "id_token": "...", "shouldLogout": false}, with
-/// a new token. `shouldLogout: true` ends the session; so does a refused
-/// refresh (401/403, not seen yet, and no other reading of it exists).
+/// a new token. Only `shouldLogout: true` ends the session. A refused
+/// refresh (401/403, never seen, its body not read) is a status like any
+/// other: the session goes on with its token until that expires, and the
+/// usage call decides whether the service still takes it — so a proxy's
+/// or a glitch's 403 cannot sign the user out.
 pub fn interpret_refresh(code: u16, body: &str) -> RefreshAnswer {
     match code {
         200 => {
@@ -549,7 +563,6 @@ pub fn interpret_refresh(code: u16, body: &str) -> RefreshAnswer {
                 None => RefreshAnswer::Unrecognized,
             }
         }
-        401 | 403 => RefreshAnswer::LoggedOut,
         other => RefreshAnswer::Status(other),
     }
 }
@@ -557,16 +570,13 @@ pub fn interpret_refresh(code: u16, body: &str) -> RefreshAnswer {
 /// One refresh request for the widget's own session — never for any other
 /// app's token. None when no answer came at all (offline): nothing was
 /// learnt, a later cycle may try again.
-pub async fn request_refresh(
-    http: &reqwest::Client,
-    session: &OwnSession,
-) -> Option<RefreshAnswer> {
+pub(crate) async fn request_refresh(net: &Net, session: &OwnSession) -> Option<RefreshAnswer> {
     let body = serde_json::json!({
         "grant_type": "refresh_token",
         "client_id": CLIENT_ID,
         "refresh_token": session.refresh_token,
     });
-    let resp = match http.post(REFRESH_URL).json(&body).send().await {
+    let resp = match net.http.post(net.url(REFRESH_URL)).json(&body).send().await {
         Ok(resp) => resp,
         Err(e) => {
             debug!("cursor refresh failed: {e}");
@@ -797,11 +807,14 @@ mod tests {
         let ended = old.after_refresh(&answer, now);
         assert!(ended.ended);
         assert_eq!(ended.access_token, old.access_token);
+        // A refused refresh is no sign-out: the session goes on, the try is
+        // noted.
         for code in [401, 403] {
-            assert!(matches!(
-                interpret_refresh(code, ""),
-                RefreshAnswer::LoggedOut
-            ));
+            let answer = interpret_refresh(code, "");
+            assert!(matches!(answer, RefreshAnswer::Status(c) if c == code));
+            let kept = old.after_refresh(&answer, now);
+            assert!(!kept.ended);
+            assert_eq!(kept.refreshed_at, Some(now));
         }
 
         // Unknown bodies and other statuses keep the session, noting the try.

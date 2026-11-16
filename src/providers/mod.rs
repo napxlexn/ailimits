@@ -6,14 +6,21 @@ pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod grok;
+pub(crate) mod proxy;
+#[cfg(test)]
+mod test_server;
+
+pub use proxy::follow_windows_proxy;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use tracing::warn;
 
 /// Provider identifiers.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,6 +78,326 @@ impl ProviderId {
             _ => None,
         }
     }
+
+    /// The provider's slot in per-provider tables.
+    fn index(&self) -> usize {
+        match self {
+            ProviderId::Claude => 0,
+            ProviderId::Codex => 1,
+            ProviderId::Copilot => 2,
+            ProviderId::Antigravity => 3,
+            ProviderId::Grok => 4,
+            ProviderId::Cursor => 5,
+        }
+    }
+}
+
+// ─── Account generations ─────────────────────────────────────────
+
+/// One counter per provider, raised whenever the account a provider reads
+/// may have changed: a sign-in or sign-out, a key or usage token stored or
+/// removed, a reading allowed or revoked. A fetch notes the counter when it
+/// starts; if it moved by the time the answer is in, the answer belongs to
+/// the account from before and is dropped instead of shown or cached.
+static GENERATIONS: [AtomicU64; 6] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+];
+
+/// The account counter of a provider (see `GENERATIONS`).
+pub(crate) fn generation_of(id: &ProviderId) -> &'static AtomicU64 {
+    &GENERATIONS[id.index()]
+}
+
+/// Say that the account behind `id` may have changed: every fetch of it
+/// still in flight has its answer dropped. The app calls this whenever it
+/// changes what a provider may read or sign in with.
+pub fn bump_generation(id: &ProviderId) {
+    generation_of(id).fetch_add(1, Ordering::SeqCst);
+}
+
+/// The answer of a fetch that started at generation `started` of `counter`:
+/// kept, or an error when the account changed meanwhile. The scheduler and
+/// the app only log an error, so the stale answer never reaches the screen,
+/// the cache or an alert.
+pub(crate) fn unless_superseded(
+    data: ProviderData,
+    started: u64,
+    counter: &AtomicU64,
+) -> Result<ProviderData> {
+    if counter.load(Ordering::SeqCst) == started {
+        Ok(data)
+    } else {
+        Err(anyhow::anyhow!(
+            "{:?}: the account changed while this fetch ran; its answer is dropped",
+            data.id
+        ))
+    }
+}
+
+// ─── Shared request helpers ──────────────────────────────────────
+
+/// The HTTP client a provider sends with, and where its requests go: to the
+/// provider's own hosts, or in tests to a local server standing in for them.
+#[derive(Clone)]
+pub(crate) struct Net {
+    pub(crate) http: reqwest::Client,
+    /// "http://127.0.0.1:port" in tests: every URL's scheme and host are
+    /// swapped for it. None in the app.
+    base: Option<String>,
+}
+
+impl Net {
+    /// The app's client: a 10-second timeout and no redirects. These
+    /// endpoints answer directly; refusing 3xx keeps a bearer token or an
+    /// x-api-key header from ever being forwarded to another host.
+    /// The proxy set in Windows is used once the app asked for it
+    /// (`follow_windows_proxy`), unless an HTTP(S)_PROXY variable is set.
+    pub(crate) fn new() -> Self {
+        Self {
+            http: proxy::with_windows_proxy(reqwest::Client::builder())
+                .timeout(Duration::from_secs(10))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("Failed to build HTTP client"),
+            base: None,
+        }
+    }
+
+    /// A client for a local test server: no proxy, a short timeout.
+    #[cfg(test)]
+    pub(crate) fn local(base: &str) -> Self {
+        Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .expect("test client"),
+            base: Some(base.trim_end_matches('/').to_string()),
+        }
+    }
+
+    /// `url` as this client sends it: unchanged in the app; in tests with
+    /// its scheme and host replaced by the test server's.
+    pub(crate) fn url(&self, url: &str) -> String {
+        let Some(base) = &self.base else {
+            return url.to_string();
+        };
+        let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+        let path = after_scheme
+            .find('/')
+            .map_or("/", |slash| &after_scheme[slash..]);
+        format!("{base}{path}")
+    }
+}
+
+/// The row's words for a request that got no HTTP answer: offline, DNS, a
+/// timeout, a refused certificate, a body cut off. Never the raw error,
+/// which quotes the URL. At most 32 characters, so the widget shows it as it
+/// is, and ending in ", retrying", so the hover adds no action: the next
+/// cycle simply tries again, and no tool needs to run.
+pub(crate) fn transport_error(e: &reqwest::Error) -> &'static str {
+    if e.is_timeout() {
+        "timed out, retrying"
+    } else if certificate_refused(e) {
+        // A proxy that inspects TLS with its own root, say: the machine is
+        // online, and calling it offline would send the user looking in the
+        // wrong place.
+        "untrusted certificate, retrying"
+    } else {
+        "offline, retrying"
+    }
+}
+
+/// Whether an error, or anything behind it, is about the server's
+/// certificate (rustls words every such failure with "certificate").
+fn certificate_refused(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cause = Some(e);
+    while let Some(err) = cause {
+        if err.to_string().to_ascii_lowercase().contains("certificate") {
+            return true;
+        }
+        cause = err.source();
+    }
+    false
+}
+
+/// The row's words for an HTTP status that says nothing about the token: a
+/// rate limit or a server error (5xx, Anthropic's 529 "overloaded" among
+/// them) passes by itself and says so, so the hover adds no action that
+/// would not help; anything else is named as it is.
+pub(crate) fn status_words(code: u16) -> String {
+    match code {
+        429 => "rate-limited, retrying".to_string(),
+        500..=599 => format!("HTTP {code}, retrying"),
+        other => format!("HTTP {other}"),
+    }
+}
+
+/// A name a server sent, fit for a row: control characters dropped, trimmed,
+/// at most 32 characters. None when nothing is left.
+pub(crate) fn clean_label(name: &str) -> Option<String> {
+    let kept: String = name.chars().filter(|c| !c.is_control()).collect();
+    let cut: String = kept.trim().chars().take(32).collect();
+    let cut = cut.trim_end();
+    (!cut.is_empty()).then(|| cut.to_string())
+}
+
+/// A tool folder named by an environment variable when it holds an
+/// absolute path, otherwise `default` under the user's home. None without
+/// an absolute home: no path is ever taken relative to the working
+/// directory. The rule models/mod.rs follows for the same folders, so a
+/// provider's sign-in and its model label come from one place.
+pub(crate) fn tool_home(var: &str, default: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            dirs::home_dir()
+                .filter(|p| p.is_absolute())
+                .map(|home| home.join(default))
+        })
+}
+
+/// How long a stored token the server refused is not sent again.
+pub const REFUSED_TOKEN_PAUSE: Duration = Duration::from_secs(30 * 60);
+
+/// The last token a server refused, by a hash of it (never the token): it
+/// is not sent again for `REFUSED_TOKEN_PAUSE`, so a stale stored token
+/// costs no request each cycle. A different token, pasted anew, is tried at
+/// once.
+#[derive(Default)]
+pub(crate) struct Refusals {
+    last: Mutex<Option<(u64, Instant)>>,
+}
+
+impl Refusals {
+    fn hash(token: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::hash::DefaultHasher::new();
+        token.hash(&mut h);
+        h.finish()
+    }
+
+    /// Whether `token` was refused less than `REFUSED_TOKEN_PAUSE` before
+    /// `now`.
+    pub(crate) fn paused_at(&self, token: &str, now: Instant) -> bool {
+        let last = self.last.lock().unwrap_or_else(PoisonError::into_inner);
+        last.is_some_and(|(hash, at)| {
+            hash == Self::hash(token) && now.saturating_duration_since(at) < REFUSED_TOKEN_PAUSE
+        })
+    }
+
+    pub(crate) fn paused(&self, token: &str) -> bool {
+        self.paused_at(token, Instant::now())
+    }
+
+    /// The server refused `token` at `now`.
+    pub(crate) fn note_at(&self, token: &str, now: Instant) {
+        *self.last.lock().unwrap_or_else(PoisonError::into_inner) = Some((Self::hash(token), now));
+    }
+
+    pub(crate) fn note(&self, token: &str) {
+        self.note_at(token, Instant::now());
+    }
+}
+
+// ─── Pasted usage tokens ─────────────────────────────────────────
+
+/// The longest usage token taken. ChatGPT's access tokens are JWTs well over
+/// a thousand characters; nothing a provider issues comes near this.
+pub const MAX_USAGE_TOKEN_LEN: usize = 8192;
+
+/// Why `token` cannot be a usage token for the provider `provider_id`,
+/// judged before anything is sent; None when it may be one. Claude's are
+/// OAuth tokens starting "sk-ant-"; ChatGPT's (Codex) are JWTs, three
+/// dot-separated base64url parts. The words suit a toast or the CLI.
+pub fn usage_token_problem(provider_id: &str, token: &str) -> Option<&'static str> {
+    if token.is_empty() {
+        return Some("nothing to store");
+    }
+    if token.len() > MAX_USAGE_TOKEN_LEN {
+        return Some("too long for a usage token");
+    }
+    if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Some("a usage token has no spaces or line breaks");
+    }
+    let jwt = || {
+        let parts: Vec<&str> = token.split('.').collect();
+        parts.len() == 3
+            && parts.iter().all(|p| {
+                !p.is_empty()
+                    && p.bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'=')
+            })
+    };
+    match provider_id {
+        "claude" if !token.starts_with("sk-ant-") => {
+            Some("not a Claude usage token: those start with sk-ant-")
+        }
+        "codex" if !jwt() => Some("not a ChatGPT usage token: those have three parts"),
+        "claude" | "codex" => None,
+        _ => Some("this provider takes no usage token"),
+    }
+}
+
+/// What one check of a pasted usage token found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenCheck {
+    /// The endpoint took it: usage (200), or its rate limit (429, a bucket
+    /// shared with the tool's own polling, which only answers a token it
+    /// knows).
+    Accepted,
+    /// The endpoint refused it (401/403).
+    Refused,
+    /// No answer that says either: why, in words for a toast or the CLI.
+    Unchecked(String),
+}
+
+/// One read-only request to the usage endpoint of `provider_id` ("claude"
+/// or "codex") with a pasted `token`, to check it before it is stored. The
+/// token goes only to the host the provider sends it to anyway.
+pub async fn check_usage_token(provider_id: &str, token: &str) -> TokenCheck {
+    let net = Net::new();
+    match provider_id {
+        "claude" => claude::check_usage_token(&net, token).await,
+        "codex" => codex::check_usage_token(&net, token).await,
+        _ => TokenCheck::Unchecked("this provider takes no usage token".to_string()),
+    }
+}
+
+/// A check's answer.
+pub(crate) fn token_check(answer: reqwest::Result<reqwest::Response>) -> TokenCheck {
+    match answer.map(|r| r.status().as_u16()) {
+        Ok(200 | 429) => TokenCheck::Accepted,
+        Ok(401 | 403) => TokenCheck::Refused,
+        Ok(code) => TokenCheck::Unchecked(format!("the usage endpoint answered HTTP {code}")),
+        Err(e) => {
+            warn!("usage token check: no answer: {e}");
+            TokenCheck::Unchecked("the usage endpoint did not answer".to_string())
+        }
+    }
+}
+
+/// A secret the app keeps in Credential Manager (service `ailimits`), read
+/// fresh on every call — or, in tests, whatever the test hands in.
+pub(crate) type SecretSource = Box<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The app's own secret under `label`, trimmed; None when there is none.
+pub(crate) fn keyring_secret(label: &'static str) -> SecretSource {
+    Box::new(move || {
+        keyring::Entry::new("ailimits", label)
+            .and_then(|e| e.get_password())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    })
 }
 
 /// Credential Manager key label per provider id (Codex has no key —
@@ -139,10 +466,11 @@ pub struct Metric {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unified_pool: bool,
     /// A part the provider meters on its own beside its main windows, shown
-    /// only by an extra row the user chose (Claude's Fable week). Never the
-    /// provider's headline, its reset or a part of its own row: a provider
-    /// that starts to report one looks exactly as before until that row is
-    /// chosen. Left out of the cache when false.
+    /// only by an extra row the user chose (Claude's Fable week, Cursor's
+    /// Grok Bot, a Grok product's share). Never the provider's headline, its
+    /// reset, a part of its own row or a reason to call that row an
+    /// estimate: a provider that starts to report one looks exactly as
+    /// before until that row is chosen. Left out of the cache when false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub extra_only: bool,
 }
@@ -425,6 +753,11 @@ impl ProviderData {
     /// passed during the idle pause, which does not age data, is still a fact
     /// the row must show. Windows that have not reset yet keep their last
     /// value: actual usage is at least the last known one.
+    ///
+    /// Only the provider's own windows decide the status. A metric only an
+    /// extra row shows (`Metric::extra_only`) is left as it came: its reset
+    /// never makes the provider's row, the tray or the panel an estimate,
+    /// and the extra row ages it on its own (rows.rs).
     pub fn aged_for_display(&self) -> ProviderData {
         if !matches!(self.status, ProviderStatus::Ok) {
             return self.clone();
@@ -440,7 +773,7 @@ impl ProviderData {
             .iter()
             .map(|m| match m.reset_at {
                 // Reset passed → the window rolled over; the next reset is unknown.
-                Some(reset) if reset <= cutoff => {
+                Some(reset) if reset <= cutoff && !m.extra_only => {
                     any_reset_passed = true;
                     Metric {
                         used: 0,
@@ -473,6 +806,228 @@ pub trait Provider: Send + Sync {
     fn id(&self) -> ProviderId;
 
     async fn fetch(&self) -> Result<ProviderData>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_test_client_sends_every_url_to_the_local_server() {
+        let net = Net::local("http://127.0.0.1:9/");
+        assert_eq!(
+            net.url("https://api.anthropic.com/api/oauth/usage"),
+            "http://127.0.0.1:9/api/oauth/usage"
+        );
+        assert_eq!(
+            net.url("https://cli-chat-proxy.grok.com/v1/billing?format=credits"),
+            "http://127.0.0.1:9/v1/billing?format=credits"
+        );
+        assert_eq!(net.url("https://host.invalid"), "http://127.0.0.1:9/");
+        // The app's client leaves every URL as it is.
+        let real = "https://api.github.com/copilot_internal/user";
+        assert_eq!(Net::new().url(real), real);
+    }
+
+    #[test]
+    fn statuses_that_pass_say_so() {
+        assert_eq!(status_words(429), "rate-limited, retrying");
+        assert_eq!(status_words(500), "HTTP 500, retrying");
+        assert_eq!(status_words(529), "HTTP 529, retrying");
+        assert_eq!(status_words(404), "HTTP 404");
+        assert_eq!(status_words(302), "HTTP 302");
+        for code in [429, 500, 503, 529, 599] {
+            assert!(status_words(code).chars().count() <= 32);
+        }
+    }
+
+    #[test]
+    fn server_names_are_cleaned_for_a_row() {
+        assert_eq!(clean_label("  Premium ").as_deref(), Some("Premium"));
+        assert_eq!(
+            clean_label("Pro\u{0}\u{1b}Plus").as_deref(),
+            Some("ProPlus")
+        );
+        assert_eq!(clean_label("a\nb").as_deref(), Some("ab"));
+        assert_eq!(
+            clean_label(&"é".repeat(40)).map(|s| s.chars().count()),
+            Some(32)
+        );
+        assert_eq!(
+            clean_label(&format!("{} x", "a".repeat(31))).as_deref(),
+            Some(&*"a".repeat(31))
+        );
+        assert_eq!(clean_label(" \u{7}\t "), None);
+        assert_eq!(clean_label(""), None);
+    }
+
+    #[test]
+    fn a_refused_token_waits_half_an_hour_and_another_goes_at_once() {
+        let refusals = Refusals::default();
+        let t0 = Instant::now();
+        assert!(!refusals.paused_at("a", t0));
+        refusals.note_at("a", t0);
+        assert!(refusals.paused_at("a", t0));
+        assert!(refusals.paused_at("a", t0 + REFUSED_TOKEN_PAUSE - Duration::from_secs(1)));
+        assert!(!refusals.paused_at("a", t0 + REFUSED_TOKEN_PAUSE));
+        assert!(!refusals.paused_at("b", t0), "a token pasted anew is tried");
+    }
+
+    #[test]
+    fn an_answer_from_before_an_account_change_is_dropped() {
+        let data = ProviderData {
+            id: ProviderId::Grok,
+            status: ProviderStatus::Ok,
+            metrics: vec![],
+            updated_at: Utc::now(),
+            received_at: None,
+        };
+        let counter = AtomicU64::new(7);
+        assert!(unless_superseded(data.clone(), 7, &counter).is_ok());
+        counter.fetch_add(1, Ordering::SeqCst);
+        assert!(unless_superseded(data, 7, &counter).is_err());
+
+        // Each provider has its own counter.
+        let (grok, claude) = (
+            generation_of(&ProviderId::Grok).load(Ordering::SeqCst),
+            generation_of(&ProviderId::Claude).load(Ordering::SeqCst),
+        );
+        bump_generation(&ProviderId::Grok);
+        assert!(generation_of(&ProviderId::Grok).load(Ordering::SeqCst) > grok);
+        assert_eq!(
+            generation_of(&ProviderId::Claude).load(Ordering::SeqCst),
+            claude
+        );
+    }
+
+    #[derive(Debug)]
+    struct Chain(&'static str, Option<Box<Chain>>);
+
+    impl std::fmt::Display for Chain {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Chain {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1.as_deref().map(|e| e as _)
+        }
+    }
+
+    #[test]
+    fn a_refused_certificate_is_found_anywhere_in_the_chain() {
+        let tls = Chain(
+            "error sending request",
+            Some(Box::new(Chain(
+                "client error (Connect)",
+                Some(Box::new(Chain(
+                    "invalid peer certificate: UnknownIssuer",
+                    None,
+                ))),
+            ))),
+        );
+        assert!(certificate_refused(&tls));
+        let refused = Chain(
+            "error sending request",
+            Some(Box::new(Chain("connection refused", None))),
+        );
+        assert!(!certificate_refused(&refused));
+    }
+
+    /// A port nobody listens on: offline, in words the row can show.
+    #[tokio::test]
+    async fn a_refused_connection_reads_offline() {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let net = Net::local(&format!("http://127.0.0.1:{port}"));
+        let e = net
+            .http
+            .get(net.url("https://host.invalid/x"))
+            .send()
+            .await
+            .expect_err("nobody listens there");
+        assert_eq!(transport_error(&e), "offline, retrying");
+    }
+
+    #[test]
+    fn a_pasted_text_must_look_like_the_providers_usage_token() {
+        let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl";
+        assert_eq!(usage_token_problem("claude", "sk-ant-oat01-abcdef"), None);
+        assert_eq!(usage_token_problem("codex", jwt), None);
+        // A long ChatGPT token fits; the old 500-character cap did not.
+        let long = format!(
+            "{}.{}.{}",
+            "a".repeat(900),
+            "b".repeat(900),
+            "c".repeat(300)
+        );
+        assert_eq!(usage_token_problem("codex", &long), None);
+
+        for (provider, text) in [
+            ("claude", ""),
+            ("claude", "hunter2-my-password"),
+            ("claude", "sk-ant-oat01 with spaces"),
+            ("claude", "sk-ant-oat01-a\nb"),
+            ("codex", "sk-ant-oat01-abcdef"),
+            ("codex", "a.b"),
+            ("codex", "a..c"),
+            ("codex", "a.b!.c"),
+            ("copilot", jwt),
+        ] {
+            assert!(
+                usage_token_problem(provider, text).is_some(),
+                "{provider}: {text:?}"
+            );
+        }
+        let too_long = format!("sk-ant-{}", "x".repeat(MAX_USAGE_TOKEN_LEN));
+        assert!(usage_token_problem("claude", &too_long).is_some());
+    }
+
+    /// A check takes 200 and 429, refuses 401/403, and says what else came.
+    #[tokio::test]
+    async fn a_usage_token_check_reads_the_status() {
+        use crate::providers::test_server::{Reply, TestServer};
+        for (reply, want) in [
+            (Reply::ok("{}"), TokenCheck::Accepted),
+            (Reply::status(429), TokenCheck::Accepted),
+            (Reply::status(401), TokenCheck::Refused),
+            (Reply::status(403), TokenCheck::Refused),
+            (
+                Reply::status(503),
+                TokenCheck::Unchecked("the usage endpoint answered HTTP 503".to_string()),
+            ),
+            (
+                Reply::Hangup,
+                TokenCheck::Unchecked("the usage endpoint did not answer".to_string()),
+            ),
+        ] {
+            let server = TestServer::start();
+            server.route("/api/oauth/usage", vec![reply.clone()]);
+            server.route("/backend-api/wham/usage", vec![reply]);
+            let net = Net::local(&server.base);
+            assert_eq!(claude::check_usage_token(&net, "sk-ant-x").await, want);
+            assert_eq!(codex::check_usage_token(&net, "a.b.c").await, want);
+            let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
+            assert_eq!(auths, ["Bearer sk-ant-x", "Bearer a.b.c"]);
+        }
+    }
+
+    #[test]
+    fn tool_homes_are_absolute_or_the_default() {
+        let home = dirs::home_dir().expect("a home folder");
+        let unset = "AILIMITS_TEST_TOOL_HOME_UNSET";
+        assert_eq!(tool_home(unset, ".tool"), Some(home.join(".tool")));
+        let relative = "AILIMITS_TEST_TOOL_HOME_RELATIVE";
+        std::env::set_var(relative, r"some\relative\dir");
+        assert_eq!(tool_home(relative, ".tool"), Some(home.join(".tool")));
+        let absolute = "AILIMITS_TEST_TOOL_HOME_ABSOLUTE";
+        let dir = std::env::temp_dir().join("ailimits-tool-home");
+        std::env::set_var(absolute, &dir);
+        assert_eq!(tool_home(absolute, ".tool"), Some(dir));
+    }
 }
 
 #[cfg(test)]
