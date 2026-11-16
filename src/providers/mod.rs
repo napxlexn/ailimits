@@ -6,8 +6,11 @@ pub mod codex;
 pub mod copilot;
 pub mod cursor;
 pub mod grok;
+mod proxy;
 #[cfg(test)]
 mod test_server;
+
+pub use proxy::follow_windows_proxy;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -152,9 +155,11 @@ impl Net {
     /// The app's client: a 10-second timeout and no redirects. These
     /// endpoints answer directly; refusing 3xx keeps a bearer token or an
     /// x-api-key header from ever being forwarded to another host.
+    /// The proxy set in Windows is used once the app asked for it
+    /// (`follow_windows_proxy`), unless an HTTP(S)_PROXY variable is set.
     pub(crate) fn new() -> Self {
         Self {
-            http: reqwest::Client::builder()
+            http: proxy::with_windows_proxy(reqwest::Client::builder())
                 .timeout(Duration::from_secs(10))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()

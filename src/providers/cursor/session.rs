@@ -262,10 +262,11 @@ fn keep(tokens: Tokens) -> SignInOutcome {
     }
 }
 
-/// The client for the sign-in and the refresh. It never follows a
-/// redirect, so neither the verifier nor a token can reach another host.
+/// The client for the sign-in. It never follows a redirect, so neither the
+/// verifier nor a token can reach another host. The proxy set in Windows is
+/// used once the app asked for it (`providers::follow_windows_proxy`).
 pub fn http_client() -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
+    crate::providers::proxy::with_windows_proxy(reqwest::Client::builder())
         .timeout(StdDuration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
         .build()
