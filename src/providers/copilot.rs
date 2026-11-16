@@ -327,7 +327,7 @@ pub fn quota_outcome(code: u16, body: &str, source: TokenSource) -> (ProviderSta
     // The internal API schema changed — an honest signal.
     let unrecognized = || {
         (
-            ProviderStatus::NetworkError("unrecognized copilot_internal schema".to_string()),
+            ProviderStatus::NetworkError("unrecognized Copilot schema".to_string()),
             vec![],
         )
     };

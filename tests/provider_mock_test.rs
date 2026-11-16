@@ -346,7 +346,7 @@ fn copilot_answers_map_to_honest_statuses() {
     for body in ["<html>oops</html>", r#"{"foo": 1}"#, ""] {
         let (status, metrics) = quota_outcome(200, body, TokenSource::Gh);
         assert!(
-            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized copilot_internal schema"),
+            matches!(&status, ProviderStatus::NetworkError(m) if m == "unrecognized Copilot schema"),
             "{body}: {status:?}"
         );
         assert!(metrics.is_empty());
@@ -1819,7 +1819,7 @@ fn cursor_session_claims_come_from_the_token_payload() {
 }
 
 #[test]
-fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
+fn cursor_hover_reasons_name_the_fix_or_none_while_retrying() {
     use ailimits::ui::renderer::hover_reason;
     use chrono::Duration;
     use std::collections::HashMap;
@@ -1855,14 +1855,11 @@ fn cursor_hover_reasons_name_the_fix_or_none_for_a_busy_database() {
         Some("sign in to Cursor again")
     );
 
-    // A transient busy database retries by itself: no action appended.
-    errors.insert(
-        ProviderId::Cursor,
-        "state database busy, retrying".to_string(),
-    );
+    // A refusal still being counted retries by itself: no action appended.
+    errors.insert(ProviderId::Cursor, "token rejected, retrying".to_string());
     assert_eq!(
         hover_reason(&stale(ProviderId::Cursor), &errors).as_deref(),
-        Some("state database busy, retrying")
+        Some("token rejected, retrying")
     );
     // Claude's rate-limit message keeps its behaviour.
     errors.insert(ProviderId::Claude, "rate-limited, retrying".to_string());
@@ -1883,4 +1880,131 @@ fn cursor_config_id_round_trips() {
     assert_eq!(json, "\"cursor\"");
     let back: ProviderId = serde_json::from_str(&json).unwrap();
     assert_eq!(back, ProviderId::Cursor);
+}
+
+// ─── Extra-only metrics and the display (C-06) ───────────────────
+
+/// Claude as the usage endpoint reports it on a plan with a Fable week:
+/// Session 25, Weekly 34, Fable 40 (extra-only), with the given resets.
+fn claude_with_fable(
+    session_reset: chrono::Duration,
+    fable_reset: chrono::Duration,
+) -> ProviderData {
+    let pct = |label: &str, used: u64, window, reset: chrono::Duration, extra_only| Metric {
+        label: label.to_string(),
+        used,
+        limit: Some(100),
+        unit: MetricUnit::Percent,
+        reset_at: Some(Utc::now() + reset),
+        window,
+        unified_pool: false,
+        extra_only,
+    };
+    ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![
+            pct("Session", 25, MetricWindow::Session, session_reset, false),
+            pct(
+                "Weekly",
+                34,
+                MetricWindow::Long,
+                chrono::Duration::days(3),
+                false,
+            ),
+            pct("Fable", 40, MetricWindow::Long, fable_reset, true),
+        ],
+        updated_at: Utc::now(),
+        received_at: Some(std::time::Instant::now()),
+    }
+}
+
+/// Fable's week reset five minutes ago and nothing is chosen: every
+/// surface reads Claude exactly as before — live, the same numbers.
+#[test]
+fn a_passed_fable_reset_leaves_every_claude_surface_live() {
+    use ailimits::config::schema::{Config, Surface};
+    use ailimits::models::Models;
+
+    let raw = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    // The tray, the panel and the alerts (app.rs `visible_data`).
+    let shown = raw.aged_for_display();
+    assert!(
+        matches!(shown.status, ProviderStatus::Ok),
+        "{:?}",
+        shown.status
+    );
+    assert!(!shown.is_aged());
+    assert_eq!(shown.primary_percentage(), Some(25.0));
+    // The widget and the tooltip.
+    for input in [raw, shown] {
+        for surface in [Surface::Widget, Surface::Tooltip] {
+            let rows = ailimits::rows::visible_rows(
+                &Config::default(),
+                std::slice::from_ref(&input),
+                surface,
+                &Models::new(),
+            );
+            assert_eq!(rows.len(), 1);
+            let row = &rows[0].data;
+            assert!(matches!(row.status, ProviderStatus::Ok));
+            let used: Vec<u64> = row.metrics.iter().map(|m| m.used).collect();
+            assert_eq!(used, [25, 34]);
+        }
+    }
+}
+
+/// The session's reset does not make the Fable row an estimate; Fable's
+/// own reset does.
+#[test]
+fn the_fable_row_ages_by_its_own_week() {
+    use ailimits::config::schema::{Config, Surface};
+    use ailimits::models::Models;
+
+    let mut config = Config::default();
+    config.ui.rows.widget = Some(vec!["claude".into(), "claude.fable".into()]);
+    let fable_row = |d: &ProviderData| {
+        let rows = ailimits::rows::visible_rows(
+            &config,
+            std::slice::from_ref(d),
+            Surface::Widget,
+            &Models::new(),
+        );
+        assert_eq!(rows[1].id, "claude.fable");
+        rows[1].data.clone()
+    };
+
+    let session_reset = claude_with_fable(-chrono::Duration::minutes(5), chrono::Duration::days(3));
+    for input in [session_reset.clone(), session_reset.aged_for_display()] {
+        let row = fable_row(&input);
+        assert!(matches!(row.status, ProviderStatus::Ok), "{:?}", row.status);
+        assert_eq!(row.metrics[0].used, 40);
+    }
+
+    let fable_reset = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    for input in [fable_reset.clone(), fable_reset.aged_for_display()] {
+        let row = fable_row(&input);
+        assert!(matches!(row.status, ProviderStatus::Estimated));
+        assert_eq!(row.metrics[0].used, 0);
+    }
+}
+
+// ─── Pasted usage tokens (C-20) ──────────────────────────────────
+
+#[test]
+fn a_pasted_usage_token_is_judged_by_its_shape_first() {
+    use ailimits::providers::{usage_token_problem, MAX_USAGE_TOKEN_LEN};
+
+    assert_eq!(usage_token_problem("claude", "sk-ant-oat01-abc"), None);
+    let jwt = format!(
+        "eyJ{}.eyJ{}.{}",
+        "a".repeat(600),
+        "b".repeat(600),
+        "c".repeat(342)
+    );
+    assert!(jwt.len() > 500, "longer than the old limit");
+    assert_eq!(usage_token_problem("codex", &jwt), None);
+    assert!(usage_token_problem("claude", "my-old-password-123").is_some());
+    assert!(usage_token_problem("codex", "sk-ant-oat01-abc").is_some());
+    assert!(usage_token_problem("claude", &"sk-ant-".repeat(MAX_USAGE_TOKEN_LEN)).is_some());
 }

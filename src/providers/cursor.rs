@@ -193,8 +193,9 @@ impl CursorProvider {
         let mut answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
         if matches!(answer, Ok((code, _)) if is_rejected(code)) {
             // Refused. Near its expiry one refresh may still save the
-            // session.
-            if !renewed && own.near_expiry(Utc::now()) {
+            // session — at most one a day, like any refresh, so a run of
+            // refusals costs no refresh each cycle.
+            if !renewed && own.needs_refresh(Utc::now()) {
                 (own, renewed) = self.refresh(own).await;
                 if renewed {
                     answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
@@ -992,6 +993,24 @@ mod tests {
         // The next cycle does not ask again.
         let _ = p.fetch().await.unwrap();
         assert_eq!(server.count("/oauth/token"), 1);
+    }
+
+    /// Refused near its expiry: one refresh is tried, not one each cycle,
+    /// and three refused fetches end the session.
+    #[tokio::test]
+    async fn a_run_of_refusals_near_expiry_costs_one_refresh() {
+        let server = TestServer::start();
+        server.route("/oauth/token", vec![Reply::status(500)]);
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::status(401)]);
+        let mut near = session();
+        near.expires_at = Some(Utc::now() + chrono::Duration::days(3));
+        let (p, store) = signed_in(&server, Some(near));
+        for _ in 0..3 {
+            let _ = p.fetch().await.unwrap();
+        }
+        assert_eq!(server.count("/oauth/token"), 1);
+        assert_eq!(server.count(CURRENT_PERIOD_USAGE), 3);
+        assert!(store.kept.lock().unwrap().as_ref().unwrap().ended);
     }
 
     /// Without the app's own sign-in there is no token at all: nothing is
