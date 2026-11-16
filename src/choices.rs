@@ -2,11 +2,12 @@
 // to the config. Pure: no window, no files; app.rs applies the result to the
 // surfaces and saves the config.
 
-use crate::config::schema::{Config, ModelPart, PendingNotice, Surface};
+use crate::config::schema::{Config, ModelPart, ModelSource, PendingNotice, Surface};
 use crate::models::{self, Models};
 use crate::providers::{ProviderData, ProviderId, ProviderStatus};
 use crate::rows::{self, SUB_ROWS};
 use crate::ui::picker::{ModelChoice, PickerAction, PickerInput, PickerMode, ReadKind, RowChoice};
+use std::collections::BTreeMap;
 
 /// Every row id there is, in display order: each provider of the config in
 /// its order, its own row first, then its extra rows.
@@ -101,6 +102,72 @@ pub fn show_provider_rows(config: &mut Config, provider: &str) {
     }
 }
 
+// ─── Model names ─────────────────────────────────────────────────
+
+/// Whether a model id is a tool's own router rather than a model: "auto"
+/// in Copilot and in Cursor are two different things, so each tool names
+/// its own.
+fn tool_specific(id: &str) -> bool {
+    id.eq_ignore_ascii_case("auto") || id.eq_ignore_ascii_case("default")
+}
+
+/// The key a model's name is kept under in `[ui.model] names`: the id the
+/// tool stores ("gpt-6.1-sol", one name for every tool that offers it), or
+/// for a tool's own router "provider:id" ("copilot:auto").
+pub fn model_key(provider: &ProviderId, id: &str) -> String {
+    if tool_specific(id) {
+        format!("{}:{id}", provider.config_id())
+    } else {
+        id.to_string()
+    }
+}
+
+/// The user's name for a tool's model: under its key, or for a router the
+/// name an earlier version kept under the bare id. The widget's labels
+/// (`rows::model_label`) must look names up through this as well, so the
+/// picker and the widget agree.
+pub fn model_name<'a>(
+    names: &'a BTreeMap<String, String>,
+    provider: &ProviderId,
+    id: &str,
+) -> Option<&'a str> {
+    names
+        .get(&model_key(provider, id))
+        .or_else(|| tool_specific(id).then(|| names.get(id)).flatten())
+        .map(String::as_str)
+}
+
+/// Rename a model by its key. A router's name kept under the bare id by an
+/// earlier version applied to every tool: it is split first, so each tool
+/// keeps it until renamed on its own.
+fn rename(config: &mut Config, key: &str, name: Option<&str>) {
+    let names = &mut config.ui.model.names;
+    if let Some((_, id)) = key.split_once(':').filter(|(_, id)| tool_specific(id)) {
+        if let Some(old) = names.remove(id) {
+            for pc in &config.providers {
+                let Some(pid) = ProviderId::from_config_id(&pc.id) else {
+                    continue;
+                };
+                if models::catalog::known(&pid).contains(&id) {
+                    names
+                        .entry(model_key(&pid, id))
+                        .or_insert_with(|| old.clone());
+                }
+            }
+        }
+    }
+    match name.map(str::trim).filter(|n| !n.is_empty()) {
+        Some(n) => {
+            names.insert(key.to_string(), n.to_string());
+        }
+        None => {
+            names.remove(key);
+        }
+    }
+}
+
+// ─── Applying an action ──────────────────────────────────────────
+
 /// What an applied action leaves for the app to do.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Applied {
@@ -159,26 +226,26 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                     ModelPart::Effort => 2,
                 });
             }
+            // No part left on either surface: nothing of the tools' files is
+            // read for the label any more, and the next tick asks again
+            // ("Untick Model, Version and Effort to stop").
+            if config.ui.model.widget.is_empty() && config.ui.model.tooltip.is_empty() {
+                config.reads.tool_settings = false;
+                config.reads.last_session = false;
+            }
             out.models = true;
         }
         PickerAction::SetSource(source) => {
             config.ui.model.source = *source;
+            // Back to the tools' settings: the sessions are not read any
+            // more, and Last used asks again ("Switch back to As set in the
+            // tool to stop").
+            if *source == ModelSource::Configured {
+                config.reads.last_session = false;
+            }
             out.models = true;
         }
-        PickerAction::Rename { model_id, name } => {
-            match name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                Some(n) => {
-                    config
-                        .ui
-                        .model
-                        .names
-                        .insert(model_id.clone(), n.to_string());
-                }
-                None => {
-                    config.ui.model.names.remove(model_id);
-                }
-            }
-        }
+        PickerAction::Rename { key, name } => rename(config, key, name.as_deref()),
         PickerAction::Allow(kind) => match kind {
             ReadKind::SignIn(provider) => {
                 config.allow_sign_in(provider);
@@ -186,18 +253,6 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                     pc.enabled = true;
                 }
                 out.provider = Some(provider.clone());
-                out.models = true;
-            }
-            // The picker sends one SignIn per tool found instead (each
-            // provider then starts like a ticked one); allowed together
-            // here all the same.
-            ReadKind::FoundTools(ids) => {
-                for provider in ids {
-                    config.allow_sign_in(provider);
-                    if let Some(pc) = config.providers.iter_mut().find(|p| p.id == *provider) {
-                        pc.enabled = true;
-                    }
-                }
                 out.models = true;
             }
             ReadKind::ToolSettings => {
@@ -220,12 +275,23 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
     out
 }
 
+// ─── What the picker shows ───────────────────────────────────────
+
 /// The note under a provider's own row in the picker: in an error, the
 /// widget's own words for it (`renderer::error_words`), so the two never
-/// disagree; before any data, "No data yet".
-fn base_note(data: Option<&ProviderData>) -> std::borrow::Cow<'static, str> {
+/// disagree; a running provider with nothing to sign in with says what is
+/// missing; before any data, "No data yet".
+fn base_note(
+    data: Option<&ProviderData>,
+    pid: &ProviderId,
+    runs: bool,
+) -> std::borrow::Cow<'static, str> {
     match data.map(|d| &d.status) {
         Some(ProviderStatus::Ok) => "Today's row".into(),
+        Some(ProviderStatus::NotConfigured) if runs => match pid {
+            ProviderId::Cursor => "Sign in from the menu: Providers > Cursor".into(),
+            _ => "No sign-in found on this PC".into(),
+        },
         Some(status) => crate::ui::renderer::error_words(status)
             .filter(|w| !w.trim().is_empty())
             .unwrap_or_else(|| "No data yet".into()),
@@ -241,19 +307,41 @@ pub fn picker_input(
     mode: PickerMode,
     found: &[&'static str],
 ) -> PickerInput {
+    picker_input_with(
+        config,
+        display,
+        models,
+        mode,
+        found,
+        crate::consent::found_surely,
+    )
+}
+
+/// `picker_input`, with whether a tool found was found surely (by a folder
+/// of its own: `consent::found_surely`) given, for tests.
+pub(crate) fn picker_input_with(
+    config: &Config,
+    display: &[ProviderData],
+    models: &Models,
+    mode: PickerMode,
+    found: &[&'static str],
+    surely: impl Fn(&str) -> bool,
+) -> PickerInput {
     let mut rows_out = Vec::new();
     for pc in &config.providers {
         let Some(pid) = ProviderId::from_config_id(&pc.id) else {
             continue;
         };
         let data = display.iter().find(|d| d.id == pid);
+        let ok = data.is_some_and(|d| matches!(d.status, ProviderStatus::Ok));
         rows_out.push(RowChoice {
             id: pid.config_id(),
             provider: pid.config_id(),
             name: pid.display_name(),
-            note: base_note(data),
+            note: base_note(data, &pid, config.provider_active(pc)),
             hint: "",
-            has_data: data.is_some_and(|d| matches!(d.status, ProviderStatus::Ok)),
+            has_data: ok,
+            provider_ok: ok,
         });
         for sub in SUB_ROWS.iter().filter(|s| s.provider == pid) {
             let has = data.is_some_and(|d| {
@@ -268,39 +356,7 @@ pub fn picker_input(
                 note: sub.note.into(),
                 hint: sub.hint,
                 has_data: has,
-            });
-        }
-    }
-    // Every model each running tool offers (models::catalog), the one it
-    // uses now first. Two tools on the same model id share one name: one
-    // field, under the first. An effort with no model (an empty id) has no
-    // name to change.
-    let mut model_choices: Vec<ModelChoice> = Vec::new();
-    for pc in config
-        .providers
-        .iter()
-        .filter(|p| config.provider_active(p))
-    {
-        let Some(pid) = ProviderId::from_config_id(&pc.id) else {
-            continue;
-        };
-        let current = models
-            .get(&pid)
-            .map(|info| info.id.as_str())
-            .filter(|id| !id.is_empty());
-        let ids = current
-            .into_iter()
-            .chain(models::catalog::known(&pid).iter().copied());
-        for id in ids {
-            if model_choices.iter().any(|c| c.model_id == id) {
-                continue;
-            }
-            model_choices.push(ModelChoice {
-                provider: pid.config_id(),
-                model_id: id.to_string(),
-                automatic: models::name_parts(id, &pid, None).with_version,
-                renamed: config.ui.model.names.get(id).cloned(),
-                current: current == Some(id),
+                provider_ok: ok,
             });
         }
     }
@@ -318,14 +374,70 @@ pub fn picker_input(
             .filter_map(|p| ProviderId::from_config_id(&p.id).map(|i| i.config_id()))
             .collect(),
         found: found.to_vec(),
-        models: model_choices,
+        found_weak: found.iter().copied().filter(|id| !surely(id)).collect(),
+        models: model_choices(config, models),
     }
+}
+
+/// The models each running tool is known to offer (models::catalog), the
+/// one it uses now first, listed under every tool that offers it: a model
+/// two tools share is one name, its field under each of them.
+fn model_choices(config: &Config, models: &Models) -> Vec<ModelChoice> {
+    let mut lists: Vec<(ProviderId, Option<String>, Vec<String>)> = Vec::new();
+    for pc in config
+        .providers
+        .iter()
+        .filter(|p| config.provider_active(p))
+    {
+        let Some(pid) = ProviderId::from_config_id(&pc.id) else {
+            continue;
+        };
+        // An effort with no model (an empty id) has no name to change.
+        let current = models
+            .get(&pid)
+            .map(|info| info.id.clone())
+            .filter(|id| !id.is_empty());
+        let mut ids: Vec<String> = Vec::new();
+        for id in current
+            .iter()
+            .cloned()
+            .chain(models::catalog::known(&pid).iter().map(|s| s.to_string()))
+        {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        lists.push((pid, current, ids));
+    }
+    let names = &config.ui.model.names;
+    let mut out = Vec::new();
+    for (pid, current, ids) in &lists {
+        for id in ids {
+            let key = model_key(pid, id);
+            let shared_with = lists
+                .iter()
+                .filter(|(other, _, other_ids)| {
+                    other != pid && other_ids.iter().any(|o| model_key(other, o) == key)
+                })
+                .map(|(other, ..)| other.display_name())
+                .collect();
+            out.push(ModelChoice {
+                provider: pid.config_id(),
+                model_id: id.clone(),
+                key,
+                automatic: models::name_parts(id, pid, None).with_version,
+                renamed: model_name(names, pid, id).map(String::from),
+                current: current.as_deref() == Some(id.as_str()),
+                shared_with,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::ModelSource;
     use crate::models::ModelInfo;
 
     fn row(surface: Surface, row: &str, on: bool) -> PickerAction {
@@ -334,6 +446,10 @@ mod tests {
             row: row.to_string(),
             on,
         }
+    }
+
+    fn input(config: &Config, models: &Models, found: &[&'static str]) -> PickerInput {
+        picker_input_with(config, &[], models, PickerMode::Normal, found, |_| true)
     }
 
     #[test]
@@ -426,7 +542,7 @@ mod tests {
         assert!(apply(&mut config, &PickerAction::SetSource(ModelSource::LastUsed)).models);
         assert_eq!(config.ui.model.source, ModelSource::LastUsed);
         let rename = |name: Option<&str>| PickerAction::Rename {
-            model_id: "gpt-6.1-sol".into(),
+            key: "gpt-6.1-sol".into(),
             name: name.map(String::from),
         };
         apply(&mut config, &rename(Some(" Sol ")));
@@ -438,6 +554,40 @@ mod tests {
         assert_eq!(config.reads.pending, PendingNotice::None);
         let close = apply(&mut config, &PickerAction::Close);
         assert!(close.close && !close.changed);
+    }
+
+    /// Unticking the last model part stops the reads of the tools' files
+    /// for the label: the next tick asks again. Going back to "As set in
+    /// the tool" stops the session reads alone.
+    #[test]
+    fn the_model_reads_can_be_taken_back() {
+        let mut config = Config::default();
+        apply(&mut config, &PickerAction::Allow(ReadKind::ToolSettings));
+        apply(&mut config, &PickerAction::Allow(ReadKind::LastSession));
+        let part = |surface, part, on| PickerAction::SetPart { surface, part, on };
+        apply(&mut config, &part(Surface::Widget, ModelPart::Model, true));
+        apply(
+            &mut config,
+            &part(Surface::Tooltip, ModelPart::Effort, true),
+        );
+        apply(&mut config, &PickerAction::SetSource(ModelSource::LastUsed));
+        // Back to the settings: only the sessions stop.
+        apply(
+            &mut config,
+            &PickerAction::SetSource(ModelSource::Configured),
+        );
+        assert!(config.reads.tool_settings && !config.reads.last_session);
+        apply(&mut config, &PickerAction::Allow(ReadKind::LastSession));
+        // One part still on: everything stays.
+        apply(&mut config, &part(Surface::Widget, ModelPart::Model, false));
+        assert!(config.reads.tool_settings && config.reads.last_session);
+        // The last one off: both stop.
+        let done = apply(
+            &mut config,
+            &part(Surface::Tooltip, ModelPart::Effort, false),
+        );
+        assert!(done.models);
+        assert!(!config.reads.tool_settings && !config.reads.last_session);
     }
 
     #[test]
@@ -473,39 +623,102 @@ mod tests {
         assert!(!config.app_sign_in_allowed("cursor"));
     }
 
+    fn uses(models: &mut Models, p: ProviderId, id: &str) {
+        models.insert(
+            p,
+            ModelInfo {
+                id: id.into(),
+                effort: None,
+            },
+        );
+    }
+
+    /// A model two tools share is one name: its field is listed under each
+    /// tool, with the same key, marked in use for the tool that uses it and
+    /// naming the other.
     #[test]
-    fn one_name_field_per_model_id() {
+    fn a_shared_model_is_one_name_under_each_tool() {
         let mut config = Config::default();
         config.allow_sign_in("codex");
         config.allow_sign_in("copilot");
         let mut models = Models::new();
-        for p in [ProviderId::Codex, ProviderId::Copilot] {
-            models.insert(
-                p,
-                ModelInfo {
-                    id: "gpt-5".into(),
-                    effort: None,
-                },
-            );
-        }
-        let input = picker_input(&config, &[], &models, PickerMode::Normal, &[]);
-        let fields = |id: &str| input.models.iter().filter(|m| m.model_id == id).count();
-        assert_eq!(fields("gpt-5"), 1);
+        uses(&mut models, ProviderId::Codex, "gpt-5");
+        uses(&mut models, ProviderId::Copilot, "gpt-5.6-sol");
+        let input = input(&config, &models, &[]);
+        let find = |provider: &str, id: &str| {
+            input
+                .models
+                .iter()
+                .find(|m| m.provider == provider && m.model_id == id)
+                .unwrap_or_else(|| panic!("{provider} {id}"))
+                .clone()
+        };
+        // Each tool's list starts with the model it uses now.
         assert_eq!(input.models[0].model_id, "gpt-5");
-        assert_eq!(input.models[0].provider, "codex");
-        // A model both tools offer is one field too, under the first.
-        assert_eq!(fields("gpt-5.6-sol"), 1);
-        let sol = input
-            .models
-            .iter()
-            .find(|m| m.model_id == "gpt-5.6-sol")
-            .unwrap();
-        assert_eq!(sol.provider, "codex");
-        // Copilot keeps the rest of its list.
-        assert!(input
-            .models
-            .iter()
-            .any(|m| m.provider == "copilot" && m.model_id == "auto"));
+        assert!(input.models[0].current);
+        // gpt-5.6-sol: in both lists, one key, in use under Copilot only.
+        let (codex, copilot) = (find("codex", "gpt-5.6-sol"), find("copilot", "gpt-5.6-sol"));
+        assert_eq!(codex.key, copilot.key);
+        assert!(!codex.current && copilot.current);
+        assert_eq!(codex.shared_with, ["Copilot"]);
+        assert_eq!(copilot.shared_with, ["Codex"]);
+        // gpt-5 only Codex uses: listed once, shared with nobody.
+        assert_eq!(
+            input
+                .models
+                .iter()
+                .filter(|m| m.model_id == "gpt-5")
+                .count(),
+            1
+        );
+        assert!(find("codex", "gpt-5").shared_with.is_empty());
+    }
+
+    /// "auto" is each tool's own router: Copilot's and Cursor's are named
+    /// apart, under "copilot:auto" and "cursor:auto". A name an earlier
+    /// version kept under the bare id still shows, for both, and is split
+    /// between them at the first rename.
+    #[test]
+    fn a_router_is_named_per_tool() {
+        let mut config = Config::default();
+        config.allow_sign_in("copilot");
+        config.allow_sign_in("cursor");
+        let input_now = |config: &Config| input(config, &Models::new(), &[]);
+        let auto = |input: &PickerInput, p: &str| {
+            input
+                .models
+                .iter()
+                .find(|m| m.provider == p && m.model_id == "auto")
+                .unwrap()
+                .clone()
+        };
+        let i = input_now(&config);
+        assert_eq!(auto(&i, "copilot").key, "copilot:auto");
+        assert_eq!(auto(&i, "cursor").key, "cursor:auto");
+        assert!(auto(&i, "copilot").shared_with.is_empty());
+        // An earlier version's shared name.
+        config.ui.model.names.insert("auto".into(), "Router".into());
+        let i = input_now(&config);
+        assert_eq!(auto(&i, "copilot").renamed.as_deref(), Some("Router"));
+        assert_eq!(auto(&i, "cursor").renamed.as_deref(), Some("Router"));
+        apply(
+            &mut config,
+            &PickerAction::Rename {
+                key: "copilot:auto".into(),
+                name: Some("Cop".into()),
+            },
+        );
+        let names = &config.ui.model.names;
+        assert!(!names.contains_key("auto"));
+        assert_eq!(names["copilot:auto"], "Cop");
+        assert_eq!(names["cursor:auto"], "Router");
+        assert_eq!(
+            model_name(names, &ProviderId::Cursor, "auto"),
+            Some("Router")
+        );
+        assert_eq!(model_name(names, &ProviderId::Copilot, "AUTO"), None);
+        // An ordinary model keeps one name for every tool.
+        assert_eq!(model_key(&ProviderId::Copilot, "gpt-5.5"), "gpt-5.5");
     }
 
     #[test]
@@ -540,12 +753,13 @@ mod tests {
                 effort: Some("high".into()),
             },
         );
-        let input = picker_input(&config, &[], &models, PickerMode::Normal, &["codex"]);
+        let input = input(&config, &models, &["codex"]);
         let ids: Vec<&str> = input.rows.iter().map(|r| r.id).collect();
         assert_eq!(&ids[..3], ["claude", "claude.opus", "claude.sonnet"]);
         assert_eq!(ids.len(), 6 + SUB_ROWS.len());
         assert_eq!(input.widget_rows, ["codex"]);
-        // Every model Codex offers, the one in use first and marked.
+        // Every model Codex is known to offer, the one in use first and
+        // marked.
         let known = crate::models::catalog::known(&ProviderId::Codex);
         assert_eq!(input.models.len(), known.len());
         assert_eq!(input.models[0].model_id, "gpt-6.1-sol");
@@ -557,5 +771,81 @@ mod tests {
         // A tool not running offers nothing to rename.
         assert!(input.models.iter().all(|m| m.provider == "codex"));
         assert_eq!(input.found, ["codex"]);
+        assert!(input.found_weak.is_empty());
+    }
+
+    /// A tool found only by a related tool's folder is passed on as found
+    /// weakly: the welcome marks it but does not tick it.
+    #[test]
+    fn weak_finds_are_passed_on() {
+        let config = Config::default();
+        let input = picker_input_with(
+            &config,
+            &[],
+            &Models::new(),
+            PickerMode::Welcome,
+            &["claude", "copilot", "antigravity"],
+            |id| id == "claude",
+        );
+        assert_eq!(input.found, ["claude", "copilot", "antigravity"]);
+        assert_eq!(input.found_weak, ["copilot", "antigravity"]);
+    }
+
+    fn data(id: ProviderId, status: ProviderStatus, metrics: &[&str]) -> ProviderData {
+        ProviderData {
+            id,
+            status,
+            metrics: metrics
+                .iter()
+                .map(|label| crate::providers::Metric {
+                    label: label.to_string(),
+                    used: 1,
+                    limit: Some(100),
+                    unit: crate::providers::MetricUnit::Percent,
+                    reset_at: None,
+                    window: crate::providers::MetricWindow::Long,
+                    unified_pool: false,
+                    extra_only: false,
+                })
+                .collect(),
+            updated_at: chrono::Utc::now(),
+            received_at: None,
+        }
+    }
+
+    /// The notes under a row: an extra row is said to be missing only once
+    /// its provider answered (not while it loads); a running provider with
+    /// no sign-in says what is missing, Cursor where to sign in.
+    #[test]
+    fn notes_wait_for_an_answer_and_say_what_is_missing() {
+        let mut config = Config::default();
+        for p in ["claude", "cursor", "codex"] {
+            config.allow_sign_in(p);
+        }
+        let display = [
+            data(ProviderId::Claude, ProviderStatus::Loading, &[]),
+            data(ProviderId::Cursor, ProviderStatus::NotConfigured, &[]),
+            data(ProviderId::Codex, ProviderStatus::NotConfigured, &[]),
+            data(ProviderId::Grok, ProviderStatus::Ok, &["Weekly"]),
+        ];
+        let input = picker_input_with(
+            &config,
+            &display,
+            &Models::new(),
+            PickerMode::Normal,
+            &[],
+            |_| true,
+        );
+        let row = |id: &str| input.rows.iter().find(|r| r.id == id).unwrap().clone();
+        assert!(!row("claude.opus").provider_ok);
+        assert!(row("grok.build").provider_ok && !row("grok.build").has_data);
+        assert_eq!(
+            row("cursor").note,
+            "Sign in from the menu: Providers > Cursor"
+        );
+        assert_eq!(row("codex").note, "No sign-in found on this PC");
+        assert_eq!(row("grok").note, "Today's row");
+        // Not running: nothing to say yet.
+        assert_eq!(row("copilot").note, "No data yet");
     }
 }

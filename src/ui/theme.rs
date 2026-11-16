@@ -302,8 +302,9 @@ impl Dimensions {
 
 // ─── Picker ──────────────────────────────────────────────────────
 
-/// Colours of the "Rows and models" window (ui/picker.rs). It follows the
-/// system's light or dark theme like a Windows 11 flyout; the values are the
+/// Colours of the "Rows and models" window (ui/picker.rs). It follows
+/// Windows' apps mode, light or dark, like the app's other windows, and High
+/// contrast's own colours when that is on; the light and dark values are the
 /// workshop mock's (design/workshop/countdown/page.html, `.rpk`). Separate
 /// from `ComputedTheme`: the widget keeps its one dark look.
 #[derive(Debug, Clone)]
@@ -321,11 +322,73 @@ pub struct PickerTheme {
     /// The wash of a hovered row, a field, a secondary button.
     pub hover: Color,
     pub separator: Color,
+    /// The shadow's colour; the rings below set its alpha.
+    pub shadow_color: Color,
     /// Shadow rings around a box, outermost first: (spread px, alpha). The
     /// alphas compound, as in the tray tooltip's shadow.
     pub shadow: [(f32, u8); 6],
     /// How far the shadow falls below the box.
     pub shadow_drop: f32,
+    /// How strongly each state lays an ink on (`picker::Level`).
+    pub levels: PickerLevels,
+}
+
+/// Factors on an ink's own alpha, one per `picker::Level` besides `Full`.
+/// A factor above 1 deepens a translucent wash (a hovered button).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PickerLevels {
+    pub field_hover: f32,
+    pub hovered: f32,
+    pub pressed: f32,
+    pub accent_hover: f32,
+    pub accent_pressed: f32,
+    pub mark_pressed: f32,
+    pub disabled: f32,
+    pub disabled_mark: f32,
+    /// A field's automatic name: at least 4.5:1 against the field.
+    pub placeholder: f32,
+    /// A scroll bar's thumb: at least 3:1 against the box.
+    pub thumb: f32,
+}
+
+impl PickerLevels {
+    fn standard(placeholder: f32, thumb: f32) -> Self {
+        Self {
+            field_hover: 1.6,
+            hovered: 2.0,
+            pressed: 3.0,
+            accent_hover: 0.9,
+            accent_pressed: 0.8,
+            mark_pressed: 0.8,
+            disabled: 0.4,
+            disabled_mark: 0.35,
+            placeholder,
+            thumb,
+        }
+    }
+}
+
+/// The colours High contrast sets (Windows' system colours), as RGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContrastColors {
+    pub window: [u8; 3],
+    pub window_text: [u8; 3],
+    pub highlight: [u8; 3],
+    pub highlight_text: [u8; 3],
+    pub gray_text: [u8; 3],
+}
+
+impl Default for ContrastColors {
+    /// Windows' black contrast scheme, for a colour it does not give.
+    fn default() -> Self {
+        Self {
+            window: [0, 0, 0],
+            window_text: [255, 255, 255],
+            highlight: [26, 235, 255],
+            highlight_text: [0, 0, 0],
+            gray_text: [63, 242, 63],
+        }
+    }
 }
 
 impl PickerTheme {
@@ -339,6 +402,7 @@ impl PickerTheme {
             on_accent: Color::rgba(0, 0, 0, 255),
             hover: Color::rgba(255, 255, 255, 15),
             separator: Color::rgba(62, 62, 62, 255),
+            shadow_color: Color::rgba(0, 0, 0, 255),
             shadow: [
                 (10.0, 3),
                 (8.0, 5),
@@ -348,6 +412,7 @@ impl PickerTheme {
                 (1.0, 18),
             ],
             shadow_drop: 3.0,
+            levels: PickerLevels::standard(0.78, 0.55),
         }
     }
 
@@ -361,12 +426,39 @@ impl PickerTheme {
             on_accent: Color::rgba(255, 255, 255, 255),
             hover: Color::rgba(0, 0, 0, 11),
             separator: Color::rgba(225, 225, 225, 255),
+            shadow_color: Color::rgba(0, 0, 0, 255),
             shadow: [(10.0, 1), (8.0, 2), (6.0, 3), (4.0, 4), (2.0, 6), (1.0, 8)],
             shadow_drop: 3.0,
+            levels: PickerLevels::standard(0.92, 0.75),
         }
     }
 
-    /// The theme for the system's setting (`platform::system_uses_light_theme`).
+    /// High contrast: its own colours, solid. Text and notes alike in the
+    /// text colour, every line in it too, the accent its highlight; no
+    /// shadow, nothing faded but what cannot be used.
+    pub fn high_contrast(c: &ContrastColors) -> Self {
+        let rgb = |[r, g, b]: [u8; 3], a: u8| Color::rgba(r, g, b, a);
+        Self {
+            surface: rgb(c.window, 255),
+            border: rgb(c.window_text, 255),
+            text: rgb(c.window_text, 255),
+            muted: rgb(c.window_text, 255),
+            accent: rgb(c.highlight, 255),
+            on_accent: rgb(c.highlight_text, 255),
+            hover: rgb(c.highlight, 48),
+            separator: rgb(c.gray_text, 255),
+            shadow_color: rgb(c.window_text, 255),
+            shadow: [(10.0, 0), (8.0, 0), (6.0, 0), (4.0, 0), (2.0, 0), (1.0, 0)],
+            shadow_drop: 0.0,
+            levels: PickerLevels {
+                disabled: 0.6,
+                disabled_mark: 0.6,
+                ..PickerLevels::standard(1.0, 1.0)
+            },
+        }
+    }
+
+    /// The theme for Windows' apps mode.
     pub fn for_system(light: bool) -> Self {
         if light {
             Self::light()
@@ -375,3 +467,98 @@ impl PickerTheme {
         }
     }
 }
+
+// ─── Tray icon, its tooltip, the taskbar panel ───────────────────
+//
+// These follow the taskbar's own light or dark theme
+// (`platform::system_uses_light_theme`), not the widget's palette; the values
+// were measured against the shell's own clock and tooltips.
+
+/// The tray icon's ink: near-black on a light taskbar, near-white on a dark
+/// one (the panel's ink's sibling), so it reads on either. `a` is the alpha:
+/// 255 for a solid fill or digit, about 64 for the faint track ring, about
+/// 200 for an inactive dot.
+pub fn tray_ink(light: bool, a: u8) -> Color {
+    if light {
+        Color::rgba(20, 20, 20, a)
+    } else {
+        Color::rgba(236, 236, 236, a)
+    }
+}
+
+/// The tray tooltip's colours on a light or a dark taskbar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TipColors {
+    /// Shadow rings, outermost first: (step px, alpha), in `shadow_color`.
+    /// The alphas COMPOUND: each ring is painted over the previous one, so
+    /// the cumulative darkening at distance d is 1-prod(1-a). Fitted to the
+    /// measured falloff (-3,-4,-7,-10 luma at 5..2px out over grey 128) rather
+    /// than by eye; a first pass at 6/8/10/14 compounded to -15..-31, three
+    /// times too heavy. The light theme casts a much softer shadow: measured
+    /// -2/-4/-6 at 4..2px out against the dark theme's -4/-7/-10.
+    pub shadow: [(f32, u8); 5],
+    pub shadow_color: Color,
+    /// The light tooltip's 1px hairline under its body (a near-white body
+    /// needs one); the dark one has none: scanning inward from the edge of
+    /// the measured tooltip over black gives 45,44,45,45, flat body from the
+    /// first pixel.
+    pub hairline: Option<Color>,
+    /// The body. Dark: grey 46 at 246, which reproduces the measured
+    /// tooltip over black (49) now that the box is punched out of its
+    /// shadow. Light: 249 at 219, markedly more translucent: measured over
+    /// grey 128 it reads 232, over white 249. Windows' light acrylic is not a
+    /// plain alpha blend, so this is fitted to the two backdrops that occur
+    /// under a tooltip, a light taskbar and light windows.
+    pub body: Color,
+    pub text: Color,
+}
+
+/// The tray tooltip's colours for the taskbar's theme.
+pub fn tip_colors(light: bool) -> TipColors {
+    if light {
+        TipColors {
+            shadow: [(5.0, 1), (4.0, 2), (3.0, 3), (2.0, 4), (1.0, 6)],
+            shadow_color: Color::rgba(0, 0, 0, 255),
+            hairline: Some(Color::rgba(0, 0, 0, 36)),
+            body: Color::rgba(249, 249, 249, 219),
+            text: Color::rgba(26, 26, 26, 255),
+        }
+    } else {
+        TipColors {
+            shadow: [(5.0, 4), (4.0, 4), (3.0, 5), (2.0, 6), (1.0, 8)],
+            shadow_color: Color::rgba(0, 0, 0, 255),
+            hairline: None,
+            body: Color::rgba(46, 46, 46, 246),
+            text: Color::rgba(255, 255, 255, 255),
+        }
+    }
+}
+
+/// The taskbar panel's ink and bar track: near-black on a light taskbar,
+/// near-white on a dark one; the track is the ink at a low alpha so it reads
+/// as a faint groove rather than a filled box.
+///
+/// The light ink is 36, not the 20 it used to be. Measured against the
+/// shell's own clock on the same bar: our digits had a median ink luma of 110
+/// where the clock's was 119, over a background of 228 — we were ~8% darker,
+/// and read as heavier and higher-contrast than everything else in the tray.
+/// Solving `median = ink*cov + bg*(1-cov)` at the measured coverage of 0.567
+/// gives 36. This is a CONTRAST correction, not a weight one: fontdue
+/// rasterises with crisper edges than DirectWrite, so matching the shell's
+/// darkness is the closest we get without swapping the rasteriser.
+pub fn panel_ink(light: bool) -> (Color, Color) {
+    if light {
+        (Color::rgba(36, 36, 36, 255), Color::rgba(36, 36, 36, 64))
+    } else {
+        (
+            Color::rgba(236, 236, 236, 255),
+            Color::rgba(236, 236, 236, 66),
+        )
+    }
+}
+
+/// The panel's otherwise transparent background: just enough alpha that
+/// every pixel catches the mouse (a layered window passes clicks through a
+/// fully transparent pixel to the taskbar beneath), yet imperceptible over
+/// the taskbar.
+pub const PANEL_HIT: Color = Color::rgba(0, 0, 0, 1);

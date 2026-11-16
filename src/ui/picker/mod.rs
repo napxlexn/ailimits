@@ -1,0 +1,1537 @@
+// ui/picker/mod.rs — the "Rows and models" window: the app's own window,
+// drawn by the renderer, that chooses rows, model labels and model names, and
+// asks before each read of another tool's files.
+//
+// The picker never reads or writes config.toml or any other file. It shows a
+// `PickerInput` the app gives it and answers with `PickerAction`s; the app
+// applies each one at once (widget, tooltip, panel, tray) and gives it a new
+// input.
+//
+// Three parts:
+// - `Picker`, a pure state machine: input events in, actions out, plus a
+//   `PickerScene` (shapes in logical pixels) for the renderer. All the logic
+//   lives here and is unit-tested without a window.
+// - `PickerWindow`, thin glue: a tao window presented through softbuffer
+//   like the widget, which turns window events into `PickerEvent`s. It
+//   repaints only on input; it has no timers.
+// - The drawing itself is `Renderer::draw_picker` (ui/renderer.rs), the
+//   colours `PickerTheme` (ui/theme.rs).
+//
+// This file holds the types, the text and the state read from the input;
+// `Picker`'s work is split by what it does:
+// - text.rs: measuring and wrapping text;
+// - layout.rs: the window laid out for a state (`Frame`);
+// - scene.rs: shapes for the renderer, hit testing, descriptions;
+// - input.rs: pointer, keyboard, questions and answers, editing a name;
+// - window.rs: `PickerWindow`, placement, the Windows settings followed;
+// - tests.rs.
+
+use crate::config::schema::{ModelPart, ModelSource, Reads, Surface, UiModel};
+use crate::ui::layout::Rect;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
+/// What the picker opens as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerMode {
+    /// From the menu.
+    Normal,
+    /// By itself on a fresh install: "Welcome to AI Limits", the tools found
+    /// on this PC marked.
+    Welcome,
+    /// Once, on the first start after the update that added `[reads]`: every
+    /// file read and every host contacted, with OK and Review.
+    UpdateNotice,
+}
+
+/// A read the picker asks about before the first tick that needs it. The
+/// welcome's question about the tools found answers with one `SignIn` per
+/// tool ticked in it, as ticking each row would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadKind {
+    /// A provider's sign-in (config id).
+    SignIn(String),
+    /// The tools' settings files (model and effort).
+    ToolSettings,
+    /// The ends of the newest session files (model last used).
+    LastSession,
+}
+
+/// What the picker asks the app to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PickerAction {
+    /// Show or hide a row ("claude", "claude.opus") on a surface.
+    SetRow {
+        surface: Surface,
+        row: String,
+        on: bool,
+    },
+    /// Show or hide a part of the model label on a surface.
+    SetPart {
+        surface: Surface,
+        part: ModelPart,
+        on: bool,
+    },
+    SetSource(ModelSource),
+    /// Rename a model by the key its name is kept under (`ModelChoice::key`);
+    /// None brings the automatic name back. The picker has already held the
+    /// name to `crate::rows::name_fits`.
+    Rename {
+        key: String,
+        name: Option<String>,
+    },
+    /// The user allowed a read in the picker's question. Sent before the tick
+    /// that needed it.
+    Allow(ReadKind),
+    /// The welcome or the update notice was answered (a button, the cross,
+    /// Esc, Alt+F4 or an answered question); it is not owed again. Losing
+    /// the focus to another window is no answer.
+    NoticeDone,
+    /// Esc, the cross, or a click outside.
+    Close,
+}
+
+/// A row the picker offers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RowChoice {
+    /// What the row counts, shown on hover; empty for none.
+    pub hint: &'static str,
+    /// "claude", "claude.opus".
+    pub id: &'static str,
+    /// Provider config id.
+    pub provider: &'static str,
+    /// "Claude" or "Claude · Opus".
+    pub name: &'static str,
+    /// "Today's row", "Weekly, a limit of its own", or the provider's own
+    /// short status ("token expired") as the widget words it.
+    pub note: std::borrow::Cow<'static, str>,
+    /// The provider reports this row's metric right now. A row without it
+    /// can still be ticked; it appears when the metric does.
+    pub has_data: bool,
+    /// The provider answered with data: only then can an extra row be said
+    /// to be missing from it (not while it is still loading).
+    pub provider_ok: bool,
+}
+
+/// A model the picker offers to rename, under one tool's heading.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelChoice {
+    /// Provider config id: the tool it is listed under.
+    pub provider: &'static str,
+    /// The id as the tool stores it.
+    pub model_id: String,
+    /// The key its name is kept under (`choices::model_key`): the id, or
+    /// "copilot:auto" for a tool's own router. A model two tools share has
+    /// one key, and its field under each of them.
+    pub key: String,
+    /// The automatic name, shown as the field's placeholder.
+    pub automatic: String,
+    /// The user's name, if any.
+    pub renamed: Option<String>,
+    /// The model this tool uses right now.
+    pub current: bool,
+    /// The other running tools that offer it under the same key (their
+    /// names): renaming it renames it there too.
+    pub shared_with: Vec<&'static str>,
+}
+
+/// Everything the picker shows. A snapshot: the app sends a new one after
+/// every change it applies.
+#[derive(Debug, Clone)]
+pub struct PickerInput {
+    pub mode: PickerMode,
+    /// Every row there is, providers in config order, each provider's own
+    /// row first.
+    pub rows: Vec<RowChoice>,
+    /// The rows ticked for the widget and for the tooltip (resolved: the
+    /// default is spelled out).
+    pub widget_rows: Vec<String>,
+    pub tooltip_rows: Vec<String>,
+    pub model: UiModel,
+    pub reads: Reads,
+    /// Providers switched on in the config (the Providers menu).
+    pub enabled: Vec<&'static str>,
+    /// Providers whose tool folder exists on this PC (`consent::found_tools`).
+    pub found: Vec<&'static str>,
+    /// Those of `found` found only by a related tool's folder (GitHub CLI
+    /// for Copilot, `.gemini` for Antigravity): marked, never ticked for
+    /// the user, never started by Allow all.
+    pub found_weak: Vec<&'static str>,
+    /// Models that can be renamed, each listed under the tool offering it.
+    pub models: Vec<ModelChoice>,
+}
+
+// ─── Events ──────────────────────────────────────────────────────
+
+/// A key the picker acts on. Typed characters arrive as `PickerEvent::Text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerKey {
+    Tab,
+    /// Shift+Tab.
+    BackTab,
+    Up,
+    Down,
+    Left,
+    Right,
+    Space,
+    Enter,
+    Escape,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Backspace,
+    Delete,
+}
+
+/// Input to the picker. Positions are in the window's logical pixels
+/// (physical pixels divided by the scale factor), from its top-left corner.
+#[derive(Debug, Clone, PartialEq)]
+pub enum PickerEvent {
+    PointerMove {
+        x: f32,
+        y: f32,
+    },
+    /// The left button went down.
+    PointerDown {
+        x: f32,
+        y: f32,
+    },
+    /// The left button came up.
+    PointerUp {
+        x: f32,
+        y: f32,
+    },
+    PointerLeave,
+    /// A wheel turn in logical pixels; positive scrolls toward the top, as a
+    /// wheel turned away from the user does.
+    Wheel {
+        dy: f32,
+    },
+    Key(PickerKey),
+    /// Typed text: one character, or a whole IME composition.
+    Text(String),
+    /// Ctrl+V: the clipboard's text, read by the caller.
+    Paste(String),
+    /// The window lost the keyboard focus to another window: a click
+    /// outside it, or a shell panel (Win+V, Win+.) while a name is typed.
+    FocusLost,
+    /// The window was asked to close (Alt+F4).
+    CloseRequested,
+}
+
+// ─── Scene: what the renderer draws ──────────────────────────────
+
+/// What a shape is painted with. `PickerTheme` (ui/theme.rs) gives each one
+/// its light and dark colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ink {
+    /// The box.
+    Surface,
+    /// Hairlines: the box, buttons, fields.
+    Border,
+    Text,
+    /// Notes, hints, column heads.
+    Muted,
+    Accent,
+    /// Text and marks on the accent.
+    OnAccent,
+    /// The translucent wash of a hovered row or a field.
+    Hover,
+    Separator,
+}
+
+/// How strongly an ink is laid on. `PickerTheme` (ui/theme.rs) gives each
+/// level its factor on the ink's own alpha, so no colour is decided here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// The ink as it is.
+    Full,
+    /// A hovered name field's wash.
+    FieldHover,
+    /// A hovered secondary button; a toggle or the cross held down.
+    Hovered,
+    /// A secondary button held down.
+    Pressed,
+    /// The primary button hovered.
+    AccentHover,
+    /// The primary button held down.
+    AccentPressed,
+    /// A tick or a radio button held down.
+    MarkPressed,
+    /// A control that cannot be used now, and its label.
+    Disabled,
+    /// A tick that cannot be used now.
+    DisabledMark,
+    /// A name field's automatic name.
+    Placeholder,
+    /// A scroll bar's thumb.
+    Thumb,
+}
+
+/// One thing to draw, in logical pixels.
+#[derive(Debug, Clone)]
+pub enum Shape {
+    /// A filled rounded rectangle.
+    Fill {
+        rect: Rect,
+        radius: f32,
+        ink: Ink,
+        alpha: Level,
+    },
+    /// A rounded outline `width` wide, inside `rect`.
+    Stroke {
+        rect: Rect,
+        radius: f32,
+        width: f32,
+        ink: Ink,
+        alpha: Level,
+    },
+    /// One line of text; `y` is the top of its line box.
+    Text {
+        x: f32,
+        y: f32,
+        text: String,
+        size: f32,
+        ink: Ink,
+        bold: bool,
+        italic: bool,
+        alpha: Level,
+    },
+    /// A check box filling `rect`.
+    Check { rect: Rect, on: bool, alpha: Level },
+    /// A radio button filling `rect`.
+    Radio { rect: Rect, on: bool, alpha: Level },
+    /// The close cross, centred in `rect`.
+    Cross { rect: Rect, ink: Ink },
+    /// The soft shadow of a box.
+    Shadow { rect: Rect, radius: f32 },
+}
+
+impl Shape {
+    fn moved(&self, dx: f32, dy: f32) -> Shape {
+        let m = |r: &Rect| Rect {
+            x: r.x + dx,
+            y: r.y + dy,
+            ..*r
+        };
+        let mut s = self.clone();
+        match &mut s {
+            Shape::Fill { rect, .. }
+            | Shape::Stroke { rect, .. }
+            | Shape::Check { rect, .. }
+            | Shape::Radio { rect, .. }
+            | Shape::Cross { rect, .. }
+            | Shape::Shadow { rect, .. } => *rect = m(rect),
+            Shape::Text { x, y, .. } => {
+                *x += dx;
+                *y += dy;
+            }
+        }
+        s
+    }
+}
+
+/// The picker as shapes, in logical pixels. The window draws it at its scale
+/// factor: chrome first, then the list clipped to `viewport`, then the
+/// overlay (scroll bar, the read question's box), then the question's text
+/// clipped to `ask_viewport`, then the top (the question's buttons, the
+/// outline, a description).
+#[derive(Debug, Clone)]
+pub struct PickerScene {
+    /// The whole window, shadow margin included.
+    pub width: f32,
+    pub height: f32,
+    /// Window coordinates.
+    pub chrome: Vec<Shape>,
+    /// The scrolling list's visible part, in window coordinates.
+    pub viewport: Rect,
+    /// The list, in viewport coordinates (already scrolled); drawn clipped.
+    pub body: Vec<Shape>,
+    /// Window coordinates.
+    pub overlay: Vec<Shape>,
+    /// The visible part of an open question's text, in window coordinates.
+    pub ask_viewport: Option<Rect>,
+    /// The question's text, in `ask_viewport` coordinates (already
+    /// scrolled); drawn clipped.
+    pub ask_body: Vec<Shape>,
+    /// Window coordinates, over everything.
+    pub top: Vec<Shape>,
+}
+
+impl PickerScene {
+    /// Every text drawn, in order (tests and diagnostics).
+    pub fn texts(&self) -> Vec<&str> {
+        self.chrome
+            .iter()
+            .chain(&self.body)
+            .chain(&self.overlay)
+            .chain(&self.ask_body)
+            .chain(&self.top)
+            .filter_map(|s| match s {
+                Shape::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+// ─── Layout constants (logical pixels) ───────────────────────────
+
+/// The box's width. The mock's `.rpk` is 320 to 390 wide.
+const BOX_W: f32 = 380.0;
+/// Room around the box for its shadow. A press there is a click outside.
+pub const MARGIN: f32 = 12.0;
+/// The tallest the box grows; beyond it the list scrolls.
+const MAX_BOX_H: f32 = 560.0;
+/// The smallest maximum a short work area can impose.
+const MIN_BOX_H: f32 = 200.0;
+const HEADER_H: f32 = 42.0;
+/// The notice's button row.
+const FOOTER_H: f32 = 50.0;
+const PAD_X: f32 = 14.0;
+/// The Widget and Tooltip columns.
+const COL_W: f32 = 54.0;
+const COL_TOOLTIP: f32 = BOX_W - PAD_X - COL_W / 2.0;
+const COL_WIDGET: f32 = COL_TOOLTIP - COL_W;
+/// Where a row's label must end, before the Widget column.
+const LABEL_RIGHT: f32 = COL_WIDGET - COL_W / 2.0 - 6.0;
+/// An extra row's label, and the notes under a group.
+const SUB_X: f32 = 28.0;
+const ROW_H: f32 = 36.0;
+const COLS_H: f32 = 20.0;
+const TICK: f32 = 20.0;
+const TICK_RING: f32 = 34.0;
+const RADIO: f32 = 18.0;
+const RADIO_H: f32 = 26.0;
+const FIELD_H: f32 = 32.0;
+const BUTTON_H: f32 = 32.0;
+const BUTTON_MIN_W: f32 = 88.0;
+const SIZE_TITLE: f32 = 13.0;
+const SIZE_TEXT: f32 = 12.0;
+const SIZE_NOTE: f32 = 11.0;
+const SIZE_BADGE: f32 = 10.5;
+/// The question box's inset from the picker box.
+const ASK_INSET: f32 = 8.0;
+const ASK_PAD: f32 = 14.0;
+/// Inside the question box: above its text, between the text and the
+/// buttons, below the buttons.
+const ASK_TOP: f32 = 12.0;
+const ASK_GAP: f32 = 10.0;
+const ASK_BOTTOM: f32 = 12.0;
+/// A tool's check box in the welcome's question.
+const PICK_BOX: f32 = 18.0;
+/// The widest a model id is shown above its field: a longer one (a cloud
+/// ARN) ends in an ellipsis.
+const ID_CHARS: usize = 80;
+/// A scroll bar's grip: wider than the thumb it moves.
+const GRIP_W: f32 = 12.0;
+
+/// The line height for a text size: 16 for 12 px, as the mock's 1.3 rounds.
+fn lh(size: f32) -> f32 {
+    (size * 4.0 / 3.0).round()
+}
+
+fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect { x, y, w, h }
+}
+
+fn contains(r: &Rect, x: f32, y: f32) -> bool {
+    x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
+}
+
+fn bottom(r: &Rect) -> f32 {
+    r.y + r.h
+}
+
+/// The current config id ("gemini" became "antigravity").
+fn canonical(id: &str) -> &str {
+    if id == "gemini" {
+        "antigravity"
+    } else {
+        id
+    }
+}
+
+// ─── UI text ─────────────────────────────────────────────────────
+
+const TITLE_ROWS: &str = "Rows and models";
+const TITLE_WELCOME: &str = "Welcome to AI Limits";
+const TITLE_NOTICE: &str = "What AI Limits reads";
+const FOUND: &str = "found on this PC";
+const ONE_LIMIT: &str = "One limit for every model";
+const OFF_IN_MENU: &str = "Off in the Providers menu";
+const NOT_REPORTED: &str = "Not reported right now; shows once it is";
+const READ_NOTE: &str =
+    "Read from each running tool's own settings file; asked before the first read.";
+const MODEL_SHOWN: &str = "Model shown";
+const SOURCE_SET: &str = "As set in the tool";
+const SOURCE_LAST: &str = "Last used";
+const NAMES: &str = "Model names";
+const NAMES_OFF: &str = "Once Model is on, each model can be renamed here.";
+const NAMES_ON: &str =
+    "Made from the id the tool stores. Type to rename; clear the field to get the automatic name back. A model two tools share has one name.";
+const NAMES_HINT: &str = "Your own name for a model, shown everywhere instead of the automatic one. Listed are the models each running tool is known to offer and the one it uses now, marked in use.";
+const IN_USE: &str = "in use";
+const SOURCE_SET_HINT: &str =
+    "The model chosen in each tool's settings, whatever a session is using.";
+const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI session, read from the end of its file. The other tools show the model as set.";
+const ALLOW_ALL: &str = "Allow all";
+const ALLOW_ALL_LEAD: &str = "Allow all also starts the other tools found on this PC:";
+const FOUND_TITLE: &str = "Show the tools found on this PC?";
+const FOUND_LEAD: &str = "Tick the tools to show. For each one ticked, AI Limits reads:";
+const FOUND_OUTRO: &str = "Each sign-in stays on this PC and goes only to the service named with it, to ask for your usage. A tool's own token is never changed or refreshed. Cancel to tick the tools yourself; untick a tool's rows to stop.";
+/// Ordinary text for the "room left" estimate: what typing would add.
+const ROOM_SAMPLE: &str = "Sonnet 4.6 Opus Max GPT 5.5 Haiku Grok Fast ";
+
+/// "1 model", "4 models".
+fn count_of(n: usize, one: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {one}s")
+    }
+}
+
+/// What each model part shows, on hover.
+fn part_hint(part: ModelPart) -> &'static str {
+    match part {
+        ModelPart::Model => {
+            "The model the tool uses, by name: Opus, GPT, Grok. Shown on the tool's own row."
+        }
+        ModelPart::Version => {
+            "The model's version beside its name: Opus 5.5, GPT-6.1 Sol. Needs Model."
+        }
+        ModelPart::Effort => {
+            "How hard the model thinks, as the tool calls it. It can show without the model."
+        }
+    }
+}
+
+const PARTS: [(ModelPart, &str, &str); 3] = [
+    (ModelPart::Model, "Model", "Opus · GPT · Grok · Auto"),
+    (ModelPart::Version, "Version", "5.5 · 6.1 Sol · 4.7"),
+    (
+        ModelPart::Effort,
+        "Effort",
+        "low · medium · high · xhigh · max",
+    ),
+];
+
+const SURFACES: [(Surface, f32); 2] = [
+    (Surface::Widget, COL_WIDGET),
+    (Surface::Tooltip, COL_TOOLTIP),
+];
+
+/// What the hint under a name field says: the room left for ordinary text.
+fn room_text(chars_left: usize, empty: bool) -> String {
+    if empty {
+        format!("Up to about {chars_left} characters, so it fits every widget size.")
+    } else if chars_left > 0 {
+        let s = if chars_left == 1 { "" } else { "s" };
+        format!("Fits every size. Room for about {chars_left} more character{s}.")
+    } else {
+        "Full: it just fits the smallest widget size.".to_string()
+    }
+}
+
+// ─── Text layout ─────────────────────────────────────────────────
+
+/// A piece of text in one style, for wrapping.
+#[derive(Debug, Clone)]
+struct Span {
+    text: String,
+    size: f32,
+    ink: Ink,
+    bold: bool,
+}
+
+fn span(text: impl Into<String>, size: f32, ink: Ink, bold: bool) -> Span {
+    Span {
+        text: text.into(),
+        size,
+        ink,
+        bold,
+    }
+}
+
+/// A wrapped line's piece: text in one style at `x` from the line's start.
+#[derive(Debug, Clone)]
+struct Run {
+    x: f32,
+    text: String,
+    size: f32,
+    ink: Ink,
+    bold: bool,
+    /// The span it came from.
+    style: usize,
+}
+
+// ─── Layout elements ─────────────────────────────────────────────
+
+/// Something the user can act on.
+#[derive(Debug, Clone, PartialEq)]
+enum Target {
+    Close,
+    Row {
+        row: String,
+        surface: Surface,
+    },
+    Part {
+        part: ModelPart,
+        surface: Surface,
+    },
+    Source(ModelSource),
+    /// A name field: the key its name is kept under, and the tool it is
+    /// listed under (a shared model has a field under each tool).
+    Field {
+        key: String,
+        provider: String,
+    },
+    /// A tool's tick in the welcome's question about the tools found.
+    Pick(String),
+    Allow,
+    /// The sign-in question's second answer: this tool and every other
+    /// tool found on this PC that is not running yet.
+    AllowAll,
+    Cancel,
+    NoticeOk,
+    NoticeReview,
+    /// Open or close the list of model names.
+    Names,
+    /// Open or close one tool's models in that list (config id).
+    NamesOf(String),
+}
+
+/// Keyboard grid position: (row, column).
+type Nav = (u32, u32);
+
+/// A laid-out element. Interactive ones become shapes once hover, focus and
+/// the edit in progress are known.
+#[derive(Debug, Clone)]
+enum El {
+    Shape(Shape),
+    /// A row's hover wash.
+    RowBg(Rect),
+    /// A check box centred in its cell.
+    Tick {
+        target: Target,
+        cell: Rect,
+        on: bool,
+        enabled: bool,
+        nav: Nav,
+    },
+    Radio {
+        target: Target,
+        rect: Rect,
+        label: String,
+        on: bool,
+        enabled: bool,
+        nav: Nav,
+    },
+    /// A name field, `model` indexing `PickerInput::models`.
+    Field {
+        target: Target,
+        rect: Rect,
+        model: usize,
+        nav: Nav,
+    },
+    /// A tool's tick in a question: the box at `check`, the whole entry
+    /// (box, name and what is read) answering to the pointer.
+    Pick {
+        target: Target,
+        rect: Rect,
+        check: Rect,
+        on: bool,
+        nav: Nav,
+    },
+    Button {
+        target: Target,
+        rect: Rect,
+        label: String,
+        primary: bool,
+        /// Allow with no tool ticked cannot be used.
+        enabled: bool,
+        nav: Nav,
+    },
+    Close {
+        rect: Rect,
+        nav: Nav,
+    },
+    /// A heading that opens and closes what is under it: "+ Model names".
+    Toggle {
+        target: Target,
+        rect: Rect,
+        label: String,
+        count: String,
+        open: bool,
+        bold: bool,
+        nav: Nav,
+    },
+    /// What a part of the window is, shown while the pointer rests on it.
+    Hint {
+        rect: Rect,
+        text: String,
+    },
+}
+
+impl El {
+    fn moved(&self, dx: f32, dy: f32) -> El {
+        let m = |r: &Rect| Rect {
+            x: r.x + dx,
+            y: r.y + dy,
+            ..*r
+        };
+        let mut e = self.clone();
+        match &mut e {
+            El::Shape(s) => *s = s.moved(dx, dy),
+            El::RowBg(r) => *r = m(r),
+            El::Tick { cell, .. } => *cell = m(cell),
+            El::Pick { rect, check, .. } => {
+                *rect = m(rect);
+                *check = m(check);
+            }
+            El::Radio { rect, .. }
+            | El::Field { rect, .. }
+            | El::Button { rect, .. }
+            | El::Close { rect, .. }
+            | El::Toggle { rect, .. }
+            | El::Hint { rect, .. } => *rect = m(rect),
+        }
+        e
+    }
+
+    /// The target, its hit area and keyboard position, when it can be used.
+    fn active(&self) -> Option<(&Target, Rect, Nav)> {
+        match self {
+            El::Tick {
+                target,
+                cell,
+                enabled: true,
+                nav,
+                ..
+            } => Some((target, *cell, *nav)),
+            El::Radio {
+                target,
+                rect,
+                enabled: true,
+                nav,
+                ..
+            }
+            | El::Button {
+                target,
+                rect,
+                enabled: true,
+                nav,
+                ..
+            }
+            | El::Field {
+                target, rect, nav, ..
+            }
+            | El::Pick {
+                target, rect, nav, ..
+            }
+            | El::Toggle {
+                target, rect, nav, ..
+            } => Some((target, *rect, *nav)),
+            El::Close { rect, nav } => Some((&Target::Close, *rect, *nav)),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layer {
+    Chrome,
+    /// The scrolling list, clipped to the viewport.
+    Body,
+    Overlay,
+    /// An open question's text, clipped to its own viewport.
+    AskBody,
+    /// Over everything: the question's buttons, the outline.
+    Top,
+}
+
+/// The content of the scrolling list as it is laid out, top to bottom.
+struct Flow {
+    y: f32,
+    els: Vec<El>,
+    nav: u32,
+    /// The column heads: content y, height, shapes in content coordinates.
+    sticky: Option<(f32, f32, Vec<Shape>)>,
+}
+
+impl Flow {
+    fn new() -> Self {
+        Self {
+            y: 0.0,
+            els: Vec::new(),
+            // Row 0 is the header's close button.
+            nav: 1,
+            sticky: None,
+        }
+    }
+
+    fn shape(&mut self, s: Shape) {
+        self.els.push(El::Shape(s));
+    }
+
+    /// Wrapped lines at (x, y), `line` apart; returns the height used.
+    fn lines(&mut self, lines: &[Vec<Run>], x: f32, y: f32, line: f32) -> f32 {
+        for (i, l) in lines.iter().enumerate() {
+            for r in l {
+                self.shape(run_shape(r, x, y + i as f32 * line, line));
+            }
+        }
+        lines.len() as f32 * line
+    }
+}
+
+/// A run's text shape on a line `line` tall: a smaller run sits on the same
+/// baseline as the line's larger text.
+fn run_shape(r: &Run, x: f32, y: f32, line: f32) -> Shape {
+    let drop = ((line - lh(r.size)) * 0.75).max(0.0).round();
+    Shape::Text {
+        x: x + r.x,
+        y: y + drop,
+        text: r.text.clone(),
+        size: r.size,
+        ink: r.ink,
+        bold: r.bold,
+        italic: false,
+        alpha: Level::Full,
+    }
+}
+
+fn text_shape(x: f32, y: f32, text: &str, size: f32, ink: Ink, bold: bool) -> Shape {
+    Shape::Text {
+        x,
+        y,
+        text: text.to_string(),
+        size,
+        ink,
+        bold,
+        italic: false,
+        alpha: Level::Full,
+    }
+}
+
+/// Everything laid out for one state, in window coordinates.
+struct Frame {
+    width: f32,
+    height: f32,
+    boxr: Rect,
+    viewport: Rect,
+    content_h: f32,
+    /// The scroll position, held to the content.
+    scroll: f32,
+    els: Vec<(Layer, El)>,
+    sticky: Option<Sticky>,
+    /// The list's scroll bar, while the list scrolls.
+    bar: Option<Bar>,
+    /// An open question's box and its scrolling text.
+    ask: Option<AskFrame>,
+}
+
+/// The column heads, drawn over the list (window coordinates).
+#[derive(Debug, Clone)]
+struct Sticky {
+    rect: Rect,
+    shapes: Vec<Shape>,
+    /// Held at the list's top, over rows scrolled under it.
+    pinned: bool,
+}
+
+/// A scroll bar (window coordinates): the strip that answers to the
+/// pointer, and the thumb drawn in it.
+#[derive(Debug, Clone, Copy)]
+struct Bar {
+    grip: Rect,
+    thumb: Rect,
+}
+
+impl Bar {
+    /// The bar for `viewport` showing `content_h` scrolled to `scroll`, its
+    /// thumb `x` from the left; None when everything shows.
+    fn of(viewport: &Rect, content_h: f32, scroll: f32, x: f32) -> Option<Bar> {
+        let max = (content_h - viewport.h).max(0.0);
+        if max <= 0.0 {
+            return None;
+        }
+        let th = (viewport.h * viewport.h / content_h).max(24.0);
+        let ty = viewport.y + 2.0 + (viewport.h - 4.0 - th) * scroll / max;
+        Some(Bar {
+            grip: rect(x + 3.0 - GRIP_W, viewport.y, GRIP_W, viewport.h),
+            thumb: rect(x, ty, 3.0, th),
+        })
+    }
+
+    /// The scroll a thumb dragged `dy` from where it was at `from` gives.
+    fn scrolled(&self, viewport: &Rect, content_h: f32, from: f32, dy: f32) -> f32 {
+        let max = (content_h - viewport.h).max(0.0);
+        let run = (viewport.h - 4.0 - self.thumb.h).max(1.0);
+        (from + dy * max / run).clamp(0.0, max)
+    }
+}
+
+/// An open question laid out (window coordinates).
+#[derive(Debug, Clone, Copy)]
+struct AskFrame {
+    /// The question's box (the tests hold its buttons to it).
+    #[cfg_attr(not(test), allow(dead_code))]
+    rect: Rect,
+    /// Where its text shows, above its buttons.
+    viewport: Rect,
+    /// The text's whole height.
+    content_h: f32,
+    /// How far the text is scrolled, held to it.
+    scroll: f32,
+    /// Its scroll bar, while the text is taller than the room for it.
+    bar: Option<Bar>,
+}
+
+impl AskFrame {
+    fn max_scroll(&self) -> f32 {
+        (self.content_h - self.viewport.h).max(0.0)
+    }
+}
+
+/// A question laid out in its box's own coordinates.
+struct AskLayout {
+    /// Where its text ends, from the box's top.
+    text_h: f32,
+    text: Vec<El>,
+    /// Its buttons, their top at 0.
+    buttons: Vec<El>,
+}
+
+impl AskLayout {
+    /// The box's height with all of its text showing.
+    fn height(&self) -> f32 {
+        (self.text_h + ASK_GAP + BUTTON_H + ASK_BOTTOM).ceil()
+    }
+}
+
+/// A scroll bar's thumb.
+fn thumb_shape(b: &Bar) -> Shape {
+    Shape::Fill {
+        rect: b.thumb,
+        radius: 1.5,
+        ink: Ink::Muted,
+        alpha: Level::Thumb,
+    }
+}
+
+/// At most `max` characters of `s`, an ellipsis ending a longer one.
+fn shorten(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+impl Frame {
+    fn max_scroll(&self) -> f32 {
+        (self.content_h - self.viewport.h).max(0.0)
+    }
+
+    /// Where the list shows rows: below the column heads while they are
+    /// pinned.
+    fn list_top(&self) -> f32 {
+        match &self.sticky {
+            Some(s) if s.pinned => bottom(&s.rect),
+            _ => self.viewport.y,
+        }
+    }
+
+    /// Whether a point is on the list's visible rows.
+    fn in_list(&self, x: f32, y: f32) -> bool {
+        contains(&self.viewport, x, y)
+            && y >= self.list_top()
+            && !self
+                .sticky
+                .as_ref()
+                .is_some_and(|s| contains(&s.rect, x, y))
+    }
+
+    /// Whether a point is on an open question's visible text.
+    fn in_ask_text(&self, x: f32, y: f32) -> bool {
+        self.ask.is_some_and(|a| contains(&a.viewport, x, y))
+    }
+}
+
+// ─── State machine ───────────────────────────────────────────────
+
+/// What the picker shows, from the mode it opened as and what has been
+/// answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum View {
+    Rows { welcome: bool },
+    Notice,
+}
+
+/// What an open question asks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Question {
+    /// One read: for a tick that needs it, or from the Providers menu.
+    Read(ReadKind),
+    /// The welcome's: the sign-ins of the tools found on this PC, each
+    /// with a tick of its own (`Ask::tools`, `Ask::picked`).
+    Found,
+}
+
+/// A question open inside the picker.
+#[derive(Debug, Clone)]
+struct Ask {
+    question: Question,
+    /// The tick's own actions, sent after `Allow`.
+    then: Vec<PickerAction>,
+    /// The tick that asked; it gets the focus back. None for the question
+    /// the welcome opens with by itself.
+    from: Option<Target>,
+    /// A `Found` question's tools (config ids) in order, and those ticked.
+    tools: Vec<String>,
+    picked: Vec<String>,
+    /// How far its text is scrolled.
+    scroll: f32,
+}
+
+/// A name field being edited.
+#[derive(Debug, Clone)]
+struct Edit {
+    /// The key the name is kept under (`ModelChoice::key`).
+    key: String,
+    text: String,
+    /// Byte index into `text`, on a char boundary.
+    caret: usize,
+    /// The last edit was stopped or cut at the width limit.
+    full: bool,
+    /// The name last sent (or the input's, before the first send).
+    sent: Option<String>,
+    /// The name when the edit began: Esc brings it back.
+    original: Option<String>,
+}
+
+/// A scroll bar's thumb held down: which bar, the pointer's y and the
+/// scroll when it was pressed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Drag {
+    ask: bool,
+    from_y: f32,
+    from_scroll: f32,
+}
+
+/// `measure(text, size)`: the width of text in the app's font.
+type Measure = Box<dyn Fn(&str, f32) -> f32>;
+
+/// The picker's state. See the module comment.
+pub struct Picker {
+    input: PickerInput,
+    measure: Measure,
+    /// `measure` is a full text layout; the same strings come back often.
+    widths: RefCell<HashMap<(String, u32), f32>>,
+    max_box_h: f32,
+    scroll: f32,
+    pointer: Option<(f32, f32)>,
+    pressed: Option<Target>,
+    focus: Option<Target>,
+    /// Show the focus ring: the keyboard moved the focus last.
+    focus_visible: bool,
+    edit: Option<Edit>,
+    ask: Option<Ask>,
+    /// Whether the list of model names is open (closed on every opening).
+    names_open: bool,
+    /// The tools whose models are open in that list (config ids).
+    open_names: Vec<String>,
+    /// The update notice was answered with Review: the normal picker shows.
+    reviewed: bool,
+    /// `NoticeDone` was sent.
+    notice_done: bool,
+    /// What the window opened as. The welcome keeps its look while open,
+    /// also once the app counts it answered and sends `Normal`.
+    opened_as: PickerMode,
+    /// The welcome's question about the tools found was answered: what it
+    /// left unticked was left on purpose, so Allow all is not offered
+    /// while the window stays open.
+    found_answered: bool,
+    /// A question in the welcome was answered with the welcome still owed
+    /// (the Providers menu's, whose Allow goes alone): `NoticeDone` goes
+    /// with the window's close.
+    welcome_answered: bool,
+    /// A scroll bar's thumb held down.
+    drag: Option<Drag>,
+    dirty: bool,
+    /// Bumped by every new input; part of the layout's cache key.
+    input_gen: u64,
+    /// The last layout and the state it was made from: hover, focus and
+    /// presses do not move anything, so a pointer move reuses it.
+    layout: RefCell<Option<(LayoutKey, Rc<Frame>)>>,
+}
+
+/// Everything a layout depends on besides the input.
+#[derive(Debug, Clone, PartialEq)]
+struct LayoutKey {
+    input: u64,
+    scroll: u32,
+    max_h: u32,
+    /// The open question, its ticks and its scroll.
+    ask: Option<(Question, Vec<String>, u32)>,
+    found_answered: bool,
+    reviewed: bool,
+    /// The edit's key, text and "full" flag: the field's hint follows it.
+    edit: Option<(String, String, bool)>,
+    /// The focused name field: its room-left hint shows under it.
+    field: Option<Target>,
+    /// What is open in the list of names.
+    names: (bool, Vec<String>),
+}
+
+/// What a point is over.
+#[derive(Debug, Clone, PartialEq)]
+enum Hit {
+    /// Outside the box: the shadow margin.
+    Outside,
+    Nothing,
+    Target(Target),
+    /// A scroll bar: the list's, or the open question's.
+    Bar {
+        ask: bool,
+    },
+}
+
+impl Picker {
+    /// A picker showing `input`. `measure(text, size)` is the width of text
+    /// in the app's font, `Renderer::text_width`: it lays the picker out and
+    /// holds a new model name to `rows::name_fits`.
+    ///
+    /// Nothing has the keyboard focus at first. The welcome and the update
+    /// notice may open by themselves while the user types elsewhere, so a
+    /// stray Enter answers nothing: the default button takes the focus at
+    /// the first Tab or arrow key, or a click.
+    pub fn new(input: PickerInput, measure: impl Fn(&str, f32) -> f32 + 'static) -> Self {
+        let opened_as = input.mode;
+        let mut p = Self {
+            input,
+            measure: Box::new(measure),
+            widths: RefCell::new(HashMap::new()),
+            max_box_h: MAX_BOX_H,
+            scroll: 0.0,
+            pointer: None,
+            pressed: None,
+            focus: None,
+            focus_visible: false,
+            edit: None,
+            ask: None,
+            names_open: false,
+            open_names: Vec::new(),
+            reviewed: false,
+            notice_done: false,
+            opened_as,
+            found_answered: false,
+            welcome_answered: false,
+            drag: None,
+            dirty: true,
+            input_gen: 0,
+            layout: RefCell::new(None),
+        };
+        p.ask_found_tools();
+        p
+    }
+
+    /// The welcome starts from the tools found on this PC: one question
+    /// lists each with a tick of its own, ticked when the tool itself was
+    /// found (a folder of its own), unticked when only a related tool was
+    /// (GitHub CLI for Copilot, `.gemini` for Antigravity). Their own rows
+    /// show ticked behind it as its ticks go. Allow starts the tools ticked;
+    /// Cancel leaves nothing ticked and nothing read, and the user ticks
+    /// what they use. Nothing is read before the answer. A tool switched
+    /// off in the Providers menu, or allowed already, is not asked about;
+    /// with nothing found surely, nothing is asked and the rows are only
+    /// marked.
+    fn ask_found_tools(&mut self) {
+        if self.input.mode != PickerMode::Welcome {
+            return;
+        }
+        let tools: Vec<String> = crate::consent::READ_INFO
+            .iter()
+            .filter(|r| self.found(r.id) && self.enabled(r.id) && !self.allowed(r.id))
+            .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
+            .map(|r| r.id.to_string())
+            .collect();
+        let picked: Vec<String> = tools
+            .iter()
+            .filter(|id| !self.found_weakly(id))
+            .cloned()
+            .collect();
+        if picked.is_empty() {
+            return;
+        }
+        self.ask = Some(Ask {
+            question: Question::Found,
+            then: Vec::new(),
+            from: None,
+            tools,
+            picked,
+            scroll: 0.0,
+        });
+        self.dirty = true;
+    }
+
+    /// The other tools found on this PC by a folder of their own that are
+    /// neither allowed yet nor switched off in the Providers menu: what
+    /// Allow all starts besides `provider`. Nothing once the welcome's
+    /// question was answered.
+    fn others_found(&self, provider: &str) -> Vec<String> {
+        if self.found_answered {
+            return Vec::new();
+        }
+        let p = canonical(provider);
+        crate::consent::READ_INFO
+            .iter()
+            .filter(|r| {
+                r.id != p
+                    && self.found(r.id)
+                    && !self.found_weakly(r.id)
+                    && self.enabled(r.id)
+                    && !self.allowed(r.id)
+            })
+            .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
+            .map(|r| r.id.to_string())
+            .collect()
+    }
+
+    /// A tool's own row on both surfaces: what a tool started from a
+    /// question shows.
+    fn own_rows_on(provider: &str) -> [PickerAction; 2] {
+        [Surface::Widget, Surface::Tooltip].map(|surface| PickerAction::SetRow {
+            surface,
+            row: provider.to_string(),
+            on: true,
+        })
+    }
+
+    /// Whether the open question is the welcome's and has `provider` ticked.
+    fn picked(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        matches!(
+            &self.ask,
+            Some(a) if a.question == Question::Found && a.picked.iter().any(|i| i == p)
+        )
+    }
+
+    /// A new snapshot, after the app applied an action. Focus, hover, scroll,
+    /// an open question and an edit in progress stay.
+    pub fn set_input(&mut self, input: PickerInput) {
+        self.input = input;
+        self.input_gen += 1;
+        if let Some(e) = &self.edit {
+            if !self.input.models.iter().any(|m| m.key == e.key) {
+                self.edit = None;
+            }
+        }
+        self.drop_lost_focus();
+        self.settle();
+        self.dirty = true;
+    }
+
+    /// The tallest the box may be, in logical pixels: the work area's height
+    /// less the margins, at most 560.
+    pub fn set_max_height(&mut self, h: f32) {
+        self.max_box_h = h.clamp(MIN_BOX_H, MAX_BOX_H);
+        self.settle();
+        self.dirty = true;
+    }
+
+    /// The window's size in logical pixels, shadow margin included.
+    pub fn window_size(&self) -> (f32, f32) {
+        let f = self.frame();
+        (f.width, f.height)
+    }
+
+    /// What the window is called (screen readers say it): the welcome, the
+    /// notice or "Rows and models", as it opened.
+    pub fn title(&self) -> &'static str {
+        match self.view() {
+            View::Rows { welcome: true } => TITLE_WELCOME,
+            View::Rows { welcome: false } => TITLE_ROWS,
+            View::Notice => TITLE_NOTICE,
+        }
+    }
+
+    /// Ask about a provider's sign-in at once, as ticking its row would: for
+    /// the Providers menu's Enabled tick. Allow then sends only
+    /// `Allow(SignIn)`; nothing is asked when it is allowed already. The
+    /// user asked for it, so Allow has the focus.
+    pub fn ask_sign_in(&mut self, provider: &str) {
+        let row = canonical(provider).to_string();
+        if self.allowed(&row) {
+            return;
+        }
+        self.open_question(
+            ReadKind::SignIn(row.clone()),
+            Vec::new(),
+            Target::Row {
+                row,
+                surface: Surface::Widget,
+            },
+        );
+    }
+
+    /// Whether anything visible changed since the last call.
+    pub fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
+    /// Whether a name field is being edited (a paste has somewhere to go).
+    pub fn editing(&self) -> bool {
+        self.edit.is_some() && matches!(self.focus, Some(Target::Field { .. }))
+    }
+
+    /// Where the caret of the field being edited is, in logical pixels: the
+    /// IME's candidate window opens there.
+    pub fn caret_spot(&self) -> Option<(f32, f32)> {
+        if !self.editing() {
+            return None;
+        }
+        let f = self.frame();
+        let t = self.focus.as_ref()?;
+        let (r, model) = f.els.iter().find_map(|(_, el)| match el {
+            El::Field {
+                target,
+                rect,
+                model,
+                ..
+            } if target == t => Some((*rect, *model)),
+            _ => None,
+        })?;
+        let text = self.field_text(&self.input.models[model]);
+        let caret = self
+            .edit
+            .as_ref()
+            .map_or(text.len(), |e| e.caret.min(text.len()));
+        Some((
+            (r.x + 8.0 + self.adv(&text[..caret], SIZE_TEXT)).round(),
+            bottom(&r),
+        ))
+    }
+
+    /// Whether the pointer is over a name field (the window shows the text
+    /// cursor there).
+    pub fn wants_text_cursor(&self) -> bool {
+        let Some((x, y)) = self.pointer else {
+            return false;
+        };
+        matches!(
+            self.hit(&self.frame(), x, y),
+            Hit::Target(Target::Field { .. })
+        )
+    }
+
+    /// Feed one event; returns what the app should do, in order.
+    pub fn handle(&mut self, event: PickerEvent) -> Vec<PickerAction> {
+        // Only a pointer that moves leaves the layout as it was.
+        let relayout = !matches!(
+            event,
+            PickerEvent::PointerMove { .. } | PickerEvent::PointerLeave
+        );
+        let out = match event {
+            PickerEvent::PointerMove { x, y } => {
+                if let Some(d) = self.drag {
+                    self.drag_to(d, y);
+                }
+                let before = self.hover_state();
+                self.pointer = Some((x, y));
+                if self.hover_state() != before {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            PickerEvent::PointerLeave => {
+                if self.pointer.take().is_some() {
+                    self.dirty = true;
+                }
+                Vec::new()
+            }
+            PickerEvent::PointerDown { x, y } => self.pointer_down(x, y),
+            PickerEvent::PointerUp { x, y } => self.pointer_up(x, y),
+            PickerEvent::Wheel { dy } => {
+                self.scroll_by(-dy);
+                Vec::new()
+            }
+            PickerEvent::Key(k) => self.key(k),
+            PickerEvent::Text(t) => self.type_text(&t),
+            PickerEvent::Paste(t) => self.paste(&t),
+            PickerEvent::FocusLost => self.focus_lost(),
+            PickerEvent::CloseRequested => self.close(),
+        };
+        if relayout {
+            self.settle();
+        }
+        out
+    }
+
+    // ─── Reading the input ───────────────────────────────────────
+
+    fn view(&self) -> View {
+        match self.opened_as {
+            PickerMode::UpdateNotice if !self.reviewed => View::Notice,
+            // The welcome keeps its intro and marks while it is open, also
+            // once it counts as answered: the rows do not jump under the
+            // cursor after the first Allow.
+            PickerMode::Welcome => View::Rows { welcome: true },
+            _ => View::Rows { welcome: false },
+        }
+    }
+
+    /// Whether the provider may run: its sign-in allowed, or set up with the
+    /// app's own (a pasted key, the menu's Cursor sign-in), which needs no
+    /// question.
+    fn allowed(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        let reads = &self.input.reads;
+        reads
+            .sign_in
+            .iter()
+            .chain(reads.app_sign_in.iter())
+            .any(|s| canonical(s) == p)
+    }
+
+    fn enabled(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        self.input.enabled.iter().any(|e| canonical(e) == p)
+    }
+
+    fn found(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        self.input.found.iter().any(|e| canonical(e) == p)
+    }
+
+    /// Found only by a related tool's folder: marked, never ticked for the
+    /// user.
+    fn found_weakly(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        self.input.found_weak.iter().any(|e| canonical(e) == p)
+    }
+
+    /// A row shows as ticked only when it is chosen AND its provider may be
+    /// read: what is not read cannot show. While the welcome asks about the
+    /// tools found, the own rows of those ticked in it show ticked: what
+    /// Allow will start.
+    fn row_on(&self, surface: Surface, row: &RowChoice) -> bool {
+        if row.id == canonical(row.provider) && self.picked(row.provider) {
+            return true;
+        }
+        let list = match surface {
+            Surface::Widget => &self.input.widget_rows,
+            Surface::Tooltip => &self.input.tooltip_rows,
+        };
+        list.iter().any(|r| r == row.id) && self.allowed(row.provider)
+    }
+
+    /// A part shows as ticked only with the settings files allowed; the
+    /// version only with the model.
+    fn part_on(&self, surface: Surface, part: ModelPart) -> bool {
+        let parts = self.input.model.parts(surface);
+        self.input.reads.tool_settings
+            && parts.contains(&part)
+            && (part != ModelPart::Version || parts.contains(&ModelPart::Model))
+    }
+
+    fn part_enabled(&self, surface: Surface, part: ModelPart) -> bool {
+        part != ModelPart::Version || self.part_on(surface, ModelPart::Model)
+    }
+
+    fn any_part_on(&self) -> bool {
+        [Surface::Widget, Surface::Tooltip]
+            .iter()
+            .any(|&s| PARTS.iter().any(|(p, _, _)| self.part_on(s, *p)))
+    }
+
+    fn model_on(&self) -> bool {
+        self.part_on(Surface::Widget, ModelPart::Model)
+            || self.part_on(Surface::Tooltip, ModelPart::Model)
+    }
+
+    fn source(&self) -> ModelSource {
+        if self.input.model.source == ModelSource::LastUsed && self.input.reads.last_session {
+            ModelSource::LastUsed
+        } else {
+            ModelSource::Configured
+        }
+    }
+
+    /// The models offered for renaming: those of providers that may be read.
+    fn renamable(&self) -> Vec<usize> {
+        if !(self.model_on() && self.input.reads.tool_settings) {
+            return Vec::new();
+        }
+        (0..self.input.models.len())
+            .filter(|&i| self.allowed(self.input.models[i].provider))
+            .collect()
+    }
+
+    /// A provider's name as the picker shows it: its own row's name.
+    fn provider_name(&self, provider: &str) -> String {
+        let p = canonical(provider);
+        self.input
+            .rows
+            .iter()
+            .find(|r| canonical(r.provider) == p && !r.id.contains('.'))
+            .map(|r| r.name.to_string())
+            .or_else(|| crate::consent::read_info(p).map(|i| i.tool.to_string()))
+            .unwrap_or_else(|| p.to_string())
+    }
+
+    /// What a name field shows: the edit in progress (under every tool the
+    /// model is listed under), or the input's name.
+    fn field_text(&self, model: &ModelChoice) -> String {
+        match &self.edit {
+            Some(e) if e.key == model.key => e.text.clone(),
+            _ => model.renamed.clone().unwrap_or_default(),
+        }
+    }
+
+    /// One tool in the welcome's question or in Allow all's list: its files
+    /// and where its token goes, and the settings and session files already
+    /// allowed for every tool, which apply to it too.
+    fn found_entry(&self, i: &crate::consent::ReadInfo) -> String {
+        let mut s = format!(
+            "{}; its {} goes only to {}",
+            i.sign_in.join("; "),
+            i.secret(),
+            i.hosts.join(" and ")
+        );
+        for file in self.allowed_model_files(i) {
+            s.push_str("; ");
+            s.push_str(file);
+        }
+        s
+    }
+
+    /// The settings and session files a newly allowed tool is read for,
+    /// because those reads are allowed for every tool already.
+    fn allowed_model_files(&self, i: &crate::consent::ReadInfo) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.input.reads.tool_settings {
+            out.extend(i.settings);
+        }
+        if self.input.reads.last_session && self.source() == ModelSource::LastUsed {
+            out.extend(i.session);
+        }
+        out
+    }
+}
+
+mod input;
+mod layout;
+mod scene;
+mod text;
+mod window;
+
+pub use window::{place, PickerWindow, ScreenRect};
+
+#[cfg(test)]
+mod tests;

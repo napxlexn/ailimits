@@ -368,16 +368,11 @@ fn wrap_tip_line(line: &str) -> Vec<TipLine> {
     out
 }
 
-/// Tray-icon ink for the system taskbar's light/dark theme: near-black on a
-/// light taskbar, near-white on a dark one (mirrors the panel's `theme_ink`),
-/// so the indicator stays readable on either. `a` is the alpha — 255 for a
-/// solid fill/digit, ~64 for the faint track ring, ~200 for an inactive dot.
+/// Tray-icon ink for the system taskbar's light/dark theme
+/// (`theme::tray_ink`). `a` is the alpha — 255 for a solid fill/digit, ~64
+/// for the faint track ring, ~200 for an inactive dot.
 fn tray_ink(light: bool, a: u8) -> tiny_skia::Color {
-    if light {
-        color(20, 20, 20, a)
-    } else {
-        color(236, 236, 236, a)
-    }
+    crate::ui::theme::tray_ink(light, a).to_skia_color()
 }
 
 /// A neutral grey dot: the placeholder before the first data arrives.
@@ -763,17 +758,8 @@ pub(crate) const TIP_GAP: i32 = 12;
 /// 246, not 244: 244 was fitted while the shadow still showed through the body
 /// and darkened it. With the box punched out of the shadow the body stands
 /// alone, and needs the extra two counts to land on the same measured value.
-const TIP_FILL_ALPHA: u8 = 246;
-/// The light theme's tooltip is markedly more translucent than the dark one —
-/// measured over grey 128 it reads 232 against the dark theme's 49, and over
-/// white 249. 219 reproduces both; the dark theme's near-opaque 246 came out 12
-/// counts too bright over grey.
-///
-/// Windows' light acrylic is not a plain alpha blend (black 153, grey 232,
-/// white 249 do not lie on a line), so this is fitted to the two backdrops that
-/// actually occur under a tooltip — a light taskbar and light windows — rather
-/// than to a black one, which no tooltip sits on in this theme.
-const TIP_FILL_ALPHA_LIGHT: u8 = 219;
+/// The value, and the light theme's more translucent 219 (Windows' light
+/// acrylic is not a plain alpha blend), live in `theme::tip_colors`.
 /// The bar height that means 100% scaling; the bar is our only DPI signal here.
 const TIP_BASE_BAR_H: f32 = 48.0;
 
@@ -902,12 +888,8 @@ fn paint_tip_box(
     // The light theme casts a much softer shadow: measured -2/-4/-6 at 4..2px
     // out against the dark theme's -4/-7/-10. Reusing the dark ramp made the
     // light tooltip look like it was floating higher than the shell's.
-    let ramp: [(f32, u8); 5] = if light {
-        [(5.0, 1), (4.0, 2), (3.0, 3), (2.0, 4), (1.0, 6)]
-    } else {
-        [(5.0, 4), (4.0, 4), (3.0, 5), (2.0, 6), (1.0, 8)]
-    };
-    for (step, alpha) in ramp {
+    let colors = crate::ui::theme::tip_colors(light);
+    for (step, alpha) in colors.shadow {
         let s = step * scale;
         fill_round_rect(
             pm,
@@ -916,7 +898,11 @@ fn paint_tip_box(
             box_w + s * 2.0,
             box_h + s * 2.0 - 1.0,
             radius + s,
-            color(0, 0, 0, alpha),
+            crate::ui::theme::Color {
+                a: alpha,
+                ..colors.shadow_color
+            }
+            .to_skia_color(),
         );
     }
     // Punch the box out of the shadow before painting the body. Without this
@@ -932,16 +918,17 @@ fn paint_tip_box(
     //
     // LIGHT: a hairline IS present there — a near-white body needs it — so it
     // stays, as a 1px under-fill with the body inset into it.
-    let (body, text_ink) = if light {
-        (
-            color(249, 249, 249, TIP_FILL_ALPHA_LIGHT),
-            color(26, 26, 26, 255),
-        )
-    } else {
-        (color(46, 46, 46, TIP_FILL_ALPHA), color(255, 255, 255, 255))
-    };
-    if light {
-        fill_round_rect(pm, inset, inset, box_w, box_h, radius, color(0, 0, 0, 36));
+    let (body, text_ink) = (colors.body.to_skia_color(), colors.text.to_skia_color());
+    if let Some(hairline) = colors.hairline {
+        fill_round_rect(
+            pm,
+            inset,
+            inset,
+            box_w,
+            box_h,
+            radius,
+            hairline.to_skia_color(),
+        );
         fill_round_rect(
             pm,
             inset + 1.0,

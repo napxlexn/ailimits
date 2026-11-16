@@ -2911,7 +2911,7 @@ mod tests {
 // It sits after the tests on purpose: a section of its own, apart from the
 // widget's drawing above.
 
-use super::picker::{Ink, PickerScene, Shape as PickerShape};
+use super::picker::{Ink, Level, PickerScene, Shape as PickerShape};
 use super::theme::PickerTheme;
 
 /// The glyphs the picker has drawn, rasterized once. The picker's window
@@ -2923,7 +2923,8 @@ pub struct PickerGlyphs(HashMap<fontdue::layout::GlyphRasterConfig, (fontdue::Me
 #[allow(clippy::items_after_test_module)]
 impl Renderer {
     /// Paint the picker into `pixmap`, the window at `scale` (its DPI scale
-    /// factor): the chrome, the list clipped to its viewport, the overlay.
+    /// factor): the chrome, the list clipped to its viewport, the overlay,
+    /// an open question's text clipped to its own, then the top.
     pub fn draw_picker(
         &self,
         pixmap: &mut Pixmap,
@@ -2936,25 +2937,43 @@ impl Renderer {
         for s in &scene.chrome {
             self.picker_shape(pixmap, s, theme, scale, glyphs);
         }
-        let vp = scene.viewport;
+        self.picker_clipped(pixmap, &scene.viewport, &scene.body, theme, scale, glyphs);
+        for s in &scene.overlay {
+            self.picker_shape(pixmap, s, theme, scale, glyphs);
+        }
+        if let Some(vp) = &scene.ask_viewport {
+            self.picker_clipped(pixmap, vp, &scene.ask_body, theme, scale, glyphs);
+        }
+        for s in &scene.top {
+            self.picker_shape(pixmap, s, theme, scale, glyphs);
+        }
+    }
+
+    /// Shapes in `vp`'s own coordinates, drawn into it and nowhere else.
+    fn picker_clipped(
+        &self,
+        pixmap: &mut Pixmap,
+        vp: &Rect,
+        shapes: &[PickerShape],
+        theme: &PickerTheme,
+        scale: f32,
+        glyphs: &mut PickerGlyphs,
+    ) {
         let (vx, vy) = ((vp.x * scale).round(), (vp.y * scale).round());
         let vw = ((vp.x + vp.w) * scale).round() - vx;
         let vh = ((vp.y + vp.h) * scale).round() - vy;
-        if let Some(mut list) = Pixmap::new(vw.max(1.0) as u32, vh.max(1.0) as u32) {
-            for s in &scene.body {
-                self.picker_shape(&mut list, s, theme, scale, glyphs);
+        if let Some(mut clip) = Pixmap::new(vw.max(1.0) as u32, vh.max(1.0) as u32) {
+            for s in shapes {
+                self.picker_shape(&mut clip, s, theme, scale, glyphs);
             }
             pixmap.draw_pixmap(
                 vx as i32,
                 vy as i32,
-                list.as_ref(),
+                clip.as_ref(),
                 &tiny_skia::PixmapPaint::default(),
                 Transform::identity(),
                 None,
             );
-        }
-        for s in &scene.overlay {
-            self.picker_shape(pixmap, s, theme, scale, glyphs);
         }
     }
 
@@ -3057,7 +3076,7 @@ impl Renderer {
                 pb.move_to(cx + d, cy - d);
                 pb.line_to(cx - d, cy + d);
                 if let Some(path) = pb.finish() {
-                    self.picker_line(pm, &path, s, picker_ink(theme, *ink, 1.0));
+                    self.picker_line(pm, &path, s, picker_ink(theme, *ink, Level::Full));
                 }
             }
             PickerShape::Shadow { rect, radius } => {
@@ -3081,8 +3100,17 @@ impl Renderer {
                     let Some(path) = pb.finish() else {
                         continue;
                     };
+                    if alpha == 0 {
+                        continue;
+                    }
                     let mut paint = Paint::default();
-                    paint.set_color(Color::rgba(0, 0, 0, alpha).to_skia_color());
+                    paint.set_color(
+                        Color {
+                            a: alpha,
+                            ..theme.shadow_color
+                        }
+                        .to_skia_color(),
+                    );
                     paint.anti_alias = true;
                     pm.fill_path(
                         &path,
@@ -3216,8 +3244,23 @@ impl Renderer {
     }
 }
 
-/// An ink's colour in the picker theme, its alpha scaled by `alpha`.
-fn picker_ink(theme: &PickerTheme, ink: Ink, alpha: f32) -> Color {
+/// An ink's colour in the picker theme, its alpha scaled by the theme's
+/// factor for `level`.
+fn picker_ink(theme: &PickerTheme, ink: Ink, level: Level) -> Color {
+    let l = &theme.levels;
+    let alpha = match level {
+        Level::Full => 1.0,
+        Level::FieldHover => l.field_hover,
+        Level::Hovered => l.hovered,
+        Level::Pressed => l.pressed,
+        Level::AccentHover => l.accent_hover,
+        Level::AccentPressed => l.accent_pressed,
+        Level::MarkPressed => l.mark_pressed,
+        Level::Disabled => l.disabled,
+        Level::DisabledMark => l.disabled_mark,
+        Level::Placeholder => l.placeholder,
+        Level::Thumb => l.thumb,
+    };
     let c = match ink {
         Ink::Surface => theme.surface,
         Ink::Border => theme.border,
