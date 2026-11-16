@@ -233,8 +233,11 @@ Every read of another tool's file is optional and asked for first:
 
 - **A fresh install reads nothing.** The widget and the tray say "Choose what
   to show", and the picker opens by itself with the tools found on this PC
-  marked (found by whether their folder exists; nothing inside is opened).
-  The first tick of each tool asks once, naming the file and the host.
+  marked (found by whether their folder exists; nothing inside is opened)
+  and their own rows ticked behind one question that names every file it
+  would read and every host. Allow starts them all; Cancel (or closing the
+  window) reads nothing and leaves nothing ticked. Any other tool's first
+  tick asks once, naming the file and the host.
 - **After updating from 0.7.0 or older** nothing stops: the providers that
   were switched on keep reading as before (`sign_in` is filled with them),
   and one window lists every file read and every host contacted, once. A

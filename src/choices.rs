@@ -188,6 +188,18 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 out.provider = Some(provider.clone());
                 out.models = true;
             }
+            // The picker sends one SignIn per tool found instead (each
+            // provider then starts like a ticked one); allowed together
+            // here all the same.
+            ReadKind::FoundTools(ids) => {
+                for provider in ids {
+                    config.allow_sign_in(provider);
+                    if let Some(pc) = config.providers.iter_mut().find(|p| p.id == *provider) {
+                        pc.enabled = true;
+                    }
+                }
+                out.models = true;
+            }
             ReadKind::ToolSettings => {
                 config.reads.tool_settings = true;
                 out.models = true;

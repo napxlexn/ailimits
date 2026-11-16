@@ -125,6 +125,9 @@ impl ModelReader {
 
     /// The model set in the tool's settings file.
     fn configured(&mut self, homes: &Homes, id: &ProviderId) -> Option<ModelInfo> {
+        if *id == ProviderId::Cursor {
+            return self.cursor_configured(homes);
+        }
         let (path, parse) = settings_file(homes, id)?;
         let Some(stamp) = files::stamp(&path) else {
             self.settings.remove(id);
@@ -188,6 +191,38 @@ impl ModelReader {
         );
         info
     }
+
+    /// Cursor's Agent model: one entry of the editor's state database, of
+    /// which only the Agent's model settings are taken (files.rs
+    /// `cursor_agent_model`). Read again only when the database or its
+    /// write-ahead log changed; while Cursor holds a lock, the model found
+    /// before stays and the next cycle asks again.
+    fn cursor_configured(&mut self, homes: &Homes) -> Option<ModelInfo> {
+        let id = ProviderId::Cursor;
+        let path = homes.cursor_db();
+        let Some(stamp) = files::db_stamp(&path) else {
+            self.settings.remove(&id);
+            return None;
+        };
+        if let Some(seen) = self.settings.get(&id) {
+            if seen.path == path && seen.stamp == stamp {
+                return seen.info.clone();
+            }
+        }
+        let info = match files::cursor_agent_model(&path) {
+            Ok(agent) => agent.and_then(|json| settings::cursor(json.as_bytes())),
+            Err(files::Busy) => return self.settings.get(&id).and_then(|s| s.info.clone()),
+        };
+        self.settings.insert(
+            id,
+            Seen {
+                path,
+                stamp,
+                info: info.clone(),
+            },
+        );
+        info
+    }
 }
 
 /// Where the tools keep their files.
@@ -201,6 +236,8 @@ struct Homes {
     grok: PathBuf,
     /// `COPILOT_HOME`, else %USERPROFILE%\.copilot
     copilot: PathBuf,
+    /// %APPDATA%, where the Cursor editor keeps its state.
+    roaming: PathBuf,
 }
 
 impl Homes {
@@ -211,10 +248,19 @@ impl Homes {
             .or_else(dirs::home_dir)
             .filter(|p| p.is_absolute())?;
         let tool = |var: &str, dir: &str| env_dir(var).unwrap_or_else(|| user.join(dir));
+        // A test home stands in for %APPDATA% as well, under its usual place.
+        let roaming = if test_home().is_some() {
+            user.join("AppData").join("Roaming")
+        } else {
+            dirs::config_dir()
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| user.join("AppData").join("Roaming"))
+        };
         Some(Homes {
             codex: tool("CODEX_HOME", ".codex"),
             grok: tool("GROK_HOME", ".grok"),
             copilot: tool("COPILOT_HOME", ".copilot"),
+            roaming,
             user,
         })
     }
@@ -227,7 +273,17 @@ impl Homes {
             codex: root.join(".codex"),
             grok: root.join(".grok"),
             copilot: root.join(".copilot"),
+            roaming: root.join("AppData").join("Roaming"),
         }
+    }
+
+    /// The Cursor editor's state database.
+    fn cursor_db(&self) -> PathBuf {
+        self.roaming
+            .join("Cursor")
+            .join("User")
+            .join("globalStorage")
+            .join("state.vscdb")
     }
 
     fn claude(&self) -> PathBuf {
@@ -239,8 +295,9 @@ impl Homes {
     }
 }
 
-/// A tool's settings file and the parser for it; None for a tool that has
-/// none (Cursor). The files are the ones `consent::READ_INFO` names.
+/// A tool's settings file and the parser for it; None for Cursor, whose
+/// model is in the editor's state database (`cursor_configured`). The files
+/// are the ones `consent::READ_INFO` names.
 fn settings_file(homes: &Homes, id: &ProviderId) -> Option<(PathBuf, SettingsParser)> {
     let file: (PathBuf, SettingsParser) = match id {
         ProviderId::Claude => (homes.claude().join("settings.json"), settings::claude),
@@ -608,18 +665,82 @@ mod tests {
         let homes = Homes::under(root);
         for id in &ALL {
             let told = crate::consent::read_info(id.config_id()).unwrap();
-            match settings_file(&homes, id) {
+            let named = match settings_file(&homes, id) {
                 Some((path, _)) => {
                     let rel = path.strip_prefix(root).unwrap().display().to_string();
-                    let named = format!(r"%USERPROFILE%\{rel}: ");
-                    let text = told.settings.unwrap_or_default();
-                    assert!(text.starts_with(&named), "{id:?}: {text:?} vs {named:?}");
+                    format!(r"%USERPROFILE%\{rel}: ")
                 }
-                None => assert!(told.settings.is_none(), "{id:?}"),
-            }
+                None => {
+                    assert_eq!(*id, ProviderId::Cursor);
+                    let roaming = root.join("AppData").join("Roaming");
+                    let db = homes.cursor_db();
+                    let rel = db.strip_prefix(&roaming).unwrap().display().to_string();
+                    format!(r"%APPDATA%\{rel}: ")
+                }
+            };
+            let text = told.settings.unwrap_or_default();
+            assert!(text.starts_with(&named), "{id:?}: {text:?} vs {named:?}");
             let reads_sessions = matches!(id, ProviderId::Claude | ProviderId::Codex);
             assert_eq!(told.session.is_some(), reads_sessions, "{id:?}");
         }
+    }
+
+    /// Cursor's Agent model, from a database shaped like the editor's: only
+    /// the Agent's settings are taken; read again only after a change; a
+    /// database without the entry, or not a database, gives no model.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cursor_reads_the_agent_model_from_the_editor_database() {
+        use crate::platform::sqlite::test_support::TestDb;
+        let dir = TempDir::new("cursor");
+        let db_path = Homes::under(dir.path()).cursor_db();
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let db = TestDb::create(&db_path);
+        db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);");
+        let key = "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
+        let entry = |composer: &str| {
+            format!(
+                "INSERT INTO ItemTable VALUES ('{key}', '{{\"theme\": \"x\", \"aiSettings\": {{\"modelConfig\": {{\"cmd-k\": {{\"modelName\": \"default\"}}, \"composer\": {composer}}}}}}}');"
+            )
+        };
+        db.exec(&entry(
+            r#"{"modelName": "grok-4.7", "maxMode": false, "selectedModels": [{"modelId": "grok-4.7", "parameters": [{"id": "reasoning_effort", "value": "high"}]}]}"#,
+        ));
+        // The sign-in sits in the same table; it is never what is read.
+        db.exec("INSERT INTO ItemTable VALUES ('cursorAuth/accessToken', 'not-a-token');");
+        let mut r = reader(&dir);
+        let ids = [ProviderId::Cursor];
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert_eq!(m[&ProviderId::Cursor], info("grok-4.7", Some("high")));
+        // Last used: Cursor keeps no sessions, so the chosen model shows.
+        let m = r.read(&reads(true, true), ModelSource::LastUsed, &ids);
+        assert_eq!(m[&ProviderId::Cursor], info("grok-4.7", Some("high")));
+        // Changed in the editor: read again.
+        db.exec(&entry(r#"{"modelName": "default", "selectedModels": []}"#));
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert_eq!(m[&ProviderId::Cursor], info("auto", None));
+        // Settings not allowed: nothing, and nothing kept.
+        assert!(r
+            .read(&reads(false, false), ModelSource::Configured, &ids)
+            .is_empty());
+        assert!(r.settings.is_empty());
+        // No such entry: no model.
+        db.exec(&format!("DELETE FROM ItemTable WHERE key = '{key}';"));
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert!(m.is_empty());
+        // An entry that is not JSON: no model, no error.
+        db.exec(&format!(
+            "INSERT INTO ItemTable VALUES ('{key}', 'not json');"
+        ));
+        let m = r.read(&reads(true, false), ModelSource::Configured, &ids);
+        assert!(m.is_empty());
+        drop(db);
+        // Not a database at all.
+        std::fs::write(&db_path, b"not a database").unwrap();
+        let mut fresh = reader(&dir);
+        assert!(fresh
+            .read(&reads(true, false), ModelSource::Configured, &ids)
+            .is_empty());
     }
 
     /// The labels for prepared homes: every folder under `AILIMITS_PROBE_HOMES`
@@ -755,6 +876,14 @@ mod tests {
                 });
             });
             println!("claude newest session, {len} bytes: the read {real:?}, worst case {worst:?}");
+        }
+        // Cursor's Agent model: one lookup in the editor's database.
+        let db = homes.cursor_db();
+        if db.is_file() {
+            let lookup = best_of(10, || {
+                let _ = files::cursor_agent_model(&db);
+            });
+            println!("cursor agent model lookup: {lookup:?}");
         }
 
         let all = reads(true, true);

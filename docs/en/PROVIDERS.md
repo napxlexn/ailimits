@@ -522,7 +522,7 @@ Each read is asked for first and is off by default:
 | Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
 | Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (a display label: `Claude Sonnet 4.6 (Thinking)`; no separate effort) |
-| Cursor | none | |
+| Cursor (the editor) | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` | one entry, `...persistentStorage.applicationUser`, and of it only `aiSettings.modelConfig.composer`: `modelName`, the `reasoning_effort` parameter |
 
 Shapes verified 2026-11-11 on the owner's PC, key names only:
 
@@ -547,13 +547,31 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
 - Copilot CLI: `model` (`"auto"`); `effortLevel` from its docs, not set there.
 - Antigravity CLI: `model`, stored as the label the CLI shows; it is shown
   as written, never split at its hyphens (`GPT-OSS 120B (Medium)`).
+- Cursor (verified 2026-11-16 on the owner's PC): the editor keeps the
+  model chosen for each place in the entry
+  `src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser`
+  of its state database, under `aiSettings.modelConfig`; the Agent's is
+  `composer`: `{"modelName": "grok-4.7", "maxMode": false,
+  "selectedModels": [{"modelId": "grok-4.7", "parameters": [{"id":
+  "reasoning_effort", "value": "high"}, {"id": "context", "value":
+  "256k"}, ...]}]}`. `"default"` is the model Cursor calls Auto (shown as
+  "Auto"). The database is opened read-only through Windows' own SQLite,
+  as for the sign-in, and SQLite's `json_extract` hands over that one
+  object: the rest of the entry (about 0.5 MB of the editor's settings)
+  and every other entry, the sign-in among them, never leave the database.
+  A Windows SQLite without JSON functions gives the entry whole (read only
+  up to 8 MB) and the object is taken out in the app. Read again only when
+  the database or its `-wal` file changed; one lookup took 1.3 ms. The
+  Cursor CLI keeps its own model in `%USERPROFILE%\.cursor\cli-config.json`
+  (with the account's e-mail beside it); it is not read.
 
 A file with an effort but no model gives the effort alone ("xhigh"), and no
 name to rename.
 
 Never read for labels: `%USERPROFILE%\.claude.json`,
 `%USERPROFILE%\.copilot\config.json`, `command-history-state.json`, any
-sign-in file, the Windows Credential Manager.
+sign-in file, any entry of Cursor's database but the one above, the Windows
+Credential Manager.
 
 ### Last used (`last_session`)
 

@@ -15,6 +15,14 @@
 //   from its docs, not set there.
 // - Antigravity CLI settings.json (.gemini\antigravity-cli): top-level
 //   `model`, stored as the display label ("Claude Sonnet 4.6 (Thinking)").
+// - Cursor (the editor), verified 2026-11-16: the state database's entry
+//   `...persistentStorage.applicationUser` holds `aiSettings.modelConfig`,
+//   one object per place a model is chosen; the Agent's is `composer`:
+//   `{"modelName": "grok-4.7", "maxMode": false, "selectedModels":
+//   [{"modelId": "grok-4.7", "parameters": [{"id": "reasoning_effort",
+//   "value": "high"}, {"id": "context", "value": "256k"}, ...]}]}`;
+//   "default" is the model Cursor calls Auto. Only that object leaves the
+//   database (files.rs `cursor_agent_model`).
 // A file with an effort but no model (Claude Code and Grok CLI as the owner
 // has them: the default model is not written) gives the effort alone, with
 // an empty id.
@@ -133,6 +141,37 @@ pub(super) fn copilot(bytes: &[u8]) -> Option<ModelInfo> {
     found(clean(root.get("model")), clean(root.get("effortLevel")))
 }
 
+/// Cursor's Agent model, from the `composer` object of the editor's model
+/// settings: `modelName` ("default" is Auto, read as "auto" like Copilot's),
+/// and the `reasoning_effort` parameter of that model, when it has one.
+pub(super) fn cursor(composer: &[u8]) -> Option<ModelInfo> {
+    let root: Value = serde_json::from_slice(composer).ok()?;
+    let name = clean(root.get("modelName"))?;
+    let id = if name.eq_ignore_ascii_case("default") {
+        "auto".to_string()
+    } else {
+        name.clone()
+    };
+    let chosen = root
+        .get("selectedModels")
+        .and_then(Value::as_array)
+        .and_then(|models| {
+            models
+                .iter()
+                .find(|m| m.get("modelId").and_then(Value::as_str) == Some(name.as_str()))
+        });
+    let effort = chosen
+        .and_then(|m| m.get("parameters"))
+        .and_then(Value::as_array)
+        .and_then(|params| {
+            params
+                .iter()
+                .find(|p| p.get("id").and_then(Value::as_str) == Some("reasoning_effort"))
+        })
+        .and_then(|p| clean(p.get("value")));
+    Some(ModelInfo { id, effort })
+}
+
 /// Antigravity CLI `settings.json`: `model`, a display label. No effort is
 /// stored apart from the label ("(Thinking)").
 pub(super) fn antigravity(bytes: &[u8]) -> Option<ModelInfo> {
@@ -210,6 +249,11 @@ mod tests {
             assert!(
                 antigravity(bytes).is_none(),
                 "ag {:?}",
+                String::from_utf8_lossy(bytes)
+            );
+            assert!(
+                cursor(bytes).is_none(),
+                "cursor {:?}",
                 String::from_utf8_lossy(bytes)
             );
         }
@@ -306,6 +350,36 @@ mod tests {
         );
         // A top-level `default` is not the model.
         assert_eq!(grok(b"default = \"grok-4.5\"\n"), None);
+    }
+
+    #[test]
+    fn cursor_reads_the_agent_model_and_its_effort() {
+        // The owner's editor, 2026-11-16.
+        let agent = br#"{"modelName": "grok-4.7", "maxMode": false, "selectedModels":
+            [{"modelId": "grok-4.7", "parameters": [{"id": "context", "value": "256k"},
+             {"id": "reasoning_effort", "value": "high"}, {"id": "fast", "value": "false"}]}]}"#;
+        assert_eq!(cursor(agent), info("grok-4.7", Some("high")));
+        // Auto: no effort of its own.
+        let auto = br#"{"modelName": "default", "maxMode": false,
+            "selectedModels": [{"modelId": "default", "parameters": []}]}"#;
+        assert_eq!(cursor(auto), info("auto", None));
+        // The effort of another model in the list is not this one's.
+        let other = br#"{"modelName": "gpt-5.5", "selectedModels":
+            [{"modelId": "grok-4.7", "parameters": [{"id": "reasoning_effort", "value": "high"}]}]}"#;
+        assert_eq!(cursor(other), info("gpt-5.5", None));
+        // Odd shapes: no model, or the model without an effort.
+        for odd in [
+            &br#"{"maxMode": true}"#[..],
+            br#"{"modelName": 4}"#,
+            br#"{"modelName": ""}"#,
+            br#"null"#,
+            br#"[]"#,
+        ] {
+            assert_eq!(cursor(odd), None, "{:?}", String::from_utf8_lossy(odd));
+        }
+        let bad_params = br#"{"modelName": "x", "selectedModels": [{"modelId": "x", "parameters":
+            [{"id": "reasoning_effort", "value": 3}, 5, null]}]}"#;
+        assert_eq!(cursor(bad_params), info("x", None));
     }
 
     #[test]

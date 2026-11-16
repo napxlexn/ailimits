@@ -49,6 +49,10 @@ pub enum PickerMode {
 pub enum ReadKind {
     /// A provider's sign-in (config id).
     SignIn(String),
+    /// The sign-ins of the tools found on this PC (config ids), asked
+    /// together when the welcome opens. Allowing it sends one `SignIn` per
+    /// tool, as ticking each would.
+    FoundTools(Vec<String>),
     /// The tools' settings files (model and effort).
     ToolSettings,
     /// The ends of the newest session files (model last used).
@@ -803,7 +807,49 @@ impl Picker {
         if p.view() == View::Notice {
             p.focus = Some(Target::NoticeOk);
         }
+        p.ask_found_tools();
         p
+    }
+
+    /// The welcome starts from the tools found on this PC: their own rows
+    /// show ticked behind one question naming every file it would read.
+    /// Allow starts them all; Cancel leaves nothing ticked and nothing read,
+    /// and the user ticks what they use. Nothing is read before the answer.
+    fn ask_found_tools(&mut self) {
+        if self.input.mode != PickerMode::Welcome {
+            return;
+        }
+        let ids: Vec<String> = crate::consent::READ_INFO
+            .iter()
+            .filter(|r| self.found(r.id) && !self.active(r.id))
+            .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
+            .map(|r| r.id.to_string())
+            .collect();
+        let Some(first) = ids.first().cloned() else {
+            return;
+        };
+        self.open_question(
+            ReadKind::FoundTools(ids),
+            Vec::new(),
+            Target::Row {
+                row: first,
+                surface: Surface::Widget,
+            },
+        );
+    }
+
+    /// Whether a provider runs: allowed and switched on.
+    fn active(&self, provider: &str) -> bool {
+        self.allowed(provider) && self.enabled(provider)
+    }
+
+    /// Whether the open question is the found tools' and names `provider`.
+    fn asked_found(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        matches!(
+            self.ask.as_ref().map(|a| &a.kind),
+            Some(ReadKind::FoundTools(ids)) if ids.iter().any(|i| i == p)
+        )
     }
 
     /// A new snapshot, after the app applied an action. Focus, hover, scroll,
@@ -1019,9 +1065,12 @@ impl Picker {
     }
 
     /// A row shows as ticked only when it is chosen AND its provider may be
-    /// read: what is not read cannot show, and a fresh install starts with
-    /// nothing ticked.
+    /// read: what is not read cannot show. While the welcome asks about the
+    /// tools found, their own rows show ticked: what Allow will start.
     fn row_on(&self, surface: Surface, row: &RowChoice) -> bool {
+        if row.id == canonical(row.provider) && self.asked_found(row.provider) {
+            return true;
+        }
         let list = match surface {
             Surface::Widget => &self.input.widget_rows,
             Surface::Tooltip => &self.input.tooltip_rows,
@@ -1494,7 +1543,7 @@ impl Picker {
             let mut spans = vec![
                 span("Tick the tools you use.", SIZE_TEXT, Ink::Text, true),
                 span(
-                    " Each one asks once before AI Limits reads its sign-in file; nothing is read until then.",
+                    " Nothing is read until you allow it, once for each tool.",
                     SIZE_TEXT,
                     Ink::Text,
                     false,
@@ -1919,6 +1968,26 @@ impl Picker {
                     format!(
                         "The token stays on this PC{goes}. It is never changed or refreshed. Untick its rows to stop."
                     ),
+                )
+            }
+            ReadKind::FoundTools(ids) => {
+                let list = ids
+                    .iter()
+                    .filter_map(|p| crate::consent::read_info(p))
+                    .map(|i| {
+                        format!(
+                            "{}: {}; its token goes only to {}",
+                            i.tool,
+                            i.sign_in.join("; "),
+                            i.hosts.join(" and ")
+                        )
+                    })
+                    .collect();
+                (
+                    "Show the tools found on this PC?".to_string(),
+                    "To show their limits, AI Limits reads:".to_string(),
+                    list,
+                    "Each token stays on this PC and goes only to the service named with it, to ask for your usage. It is never changed or refreshed. Cancel to tick the tools yourself; untick a tool’s rows to stop.".to_string(),
                 )
             }
             ReadKind::ToolSettings => (
@@ -2431,7 +2500,13 @@ impl Picker {
                     return Vec::new();
                 };
                 self.set_focus(Some(ask.from));
-                let mut out = vec![PickerAction::Allow(ask.kind)];
+                let mut out = match ask.kind {
+                    ReadKind::FoundTools(ids) => ids
+                        .into_iter()
+                        .map(|p| PickerAction::Allow(ReadKind::SignIn(p)))
+                        .collect(),
+                    kind => vec![PickerAction::Allow(kind)],
+                };
                 out.extend(ask.then);
                 out
             }
@@ -3883,22 +3958,80 @@ mod tests {
 
     // ─── Welcome and the update notice ───────────────────────────
 
-    #[test]
-    fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
+    /// The ticks on, by target.
+    fn ticked_targets(p: &Picker) -> Vec<Target> {
+        p.frame()
+            .els
+            .iter()
+            .filter_map(|(_, el)| match el {
+                El::Tick {
+                    on: true, target, ..
+                } => Some(target.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn welcome(found: Vec<&'static str>) -> PickerInput {
         let mut i = input();
         i.mode = PickerMode::Welcome;
         i.reads = Reads::default();
-        i.found = vec!["claude", "codex", "grok"];
-        let mut p = picker(i);
+        i.enabled = Vec::new();
+        i.widget_rows = Vec::new();
+        i.tooltip_rows = Vec::new();
+        i.found = found;
+        i
+    }
+
+    /// The tools found start ticked behind one question; Allow starts each
+    /// of them as a ticked one would, and nothing else.
+    #[test]
+    fn the_welcome_ticks_the_tools_found_and_asks_once_for_all() {
+        let mut p = picker(welcome(vec!["claude", "codex", "grok"]));
+        let text = texts(&p);
+        assert!(text.starts_with(TITLE_WELCOME));
+        assert!(text.contains("Show the tools found on this PC?"));
+        for id in ["claude", "codex", "grok"] {
+            let info = crate::consent::read_info(id).unwrap();
+            let flat = text.replace('\n', " ");
+            assert!(flat.contains(info.tool), "{id}");
+            assert!(flat.contains(info.hosts[0]), "{id}");
+        }
+        // Their own rows, on both surfaces; no extra row, no other tool.
+        let mut on = ticked_targets(&p);
+        on.sort_by_key(|t| format!("{t:?}"));
+        let mut want: Vec<Target> = ["claude", "codex", "grok"]
+            .iter()
+            .flat_map(|id| [row(id, Surface::Widget), row(id, Surface::Tooltip)])
+            .collect();
+        want.sort_by_key(|t| format!("{t:?}"));
+        assert_eq!(on, want);
+        // Enter allows: one SignIn per tool, in the catalogue's order.
+        assert_eq!(
+            key(&mut p, PickerKey::Enter),
+            ["claude", "codex", "grok"].map(|id| PickerAction::Allow(ReadKind::SignIn(id.into())))
+        );
+        assert!(p.ask.is_none());
+    }
+
+    /// Cancel: nothing read, nothing ticked; each tool then asks on its own.
+    #[test]
+    fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
+        let mut p = picker(welcome(vec!["claude", "codex", "grok"]));
+        assert!(click(&mut p, &Target::Cancel).is_empty());
         let text = texts(&p);
         assert!(text.starts_with(TITLE_WELCOME));
         assert!(text.contains("Tick the tools you use."));
         assert_eq!(text.lines().filter(|l| *l == FOUND).count(), 3);
-        assert!(!p
-            .frame()
-            .els
-            .iter()
-            .any(|(_, el)| matches!(el, El::Tick { on: true, .. })));
+        assert!(ticked_targets(&p).is_empty());
+        // No tool found: no question at all.
+        let none = picker(welcome(Vec::new()));
+        assert!(none.ask.is_none());
+        assert!(ticked_targets(&none).is_empty());
+        // Outside the welcome the tools found are never asked about.
+        let mut normal = welcome(vec!["claude"]);
+        normal.mode = PickerMode::Normal;
+        assert!(picker(normal).ask.is_none());
         // The first tick asks for that tool's sign-in.
         click(&mut p, &row("codex", Surface::Widget));
         assert_eq!(
@@ -4205,9 +4338,31 @@ mod tests {
         welcome.mode = PickerMode::Welcome;
         welcome.reads = Reads::default();
         welcome.found = vec!["claude", "codex", "grok"];
+        let mut all_found = welcome.clone();
         let welcome = make(welcome);
         items.push(("welcome-dark".to_string(), draw(&welcome, false, 1.0)));
         items.push(("welcome-light".to_string(), draw(&welcome, true, 1.0)));
+        // Every tool found: the longest question the welcome asks.
+        all_found.found = vec![
+            "claude",
+            "codex",
+            "copilot",
+            "antigravity",
+            "grok",
+            "cursor",
+        ];
+        let all_found = make(all_found);
+        items.push((
+            "welcome-all-found-dark".to_string(),
+            draw(&all_found, false, 1.0),
+        ));
+        // Cancelled: nothing ticked, the tools found still marked.
+        let mut cancelled = all_found;
+        click(&mut cancelled, &Target::Cancel);
+        items.push((
+            "welcome-cancelled-dark".to_string(),
+            draw(&cancelled, false, 1.0),
+        ));
 
         let notice = make(notice());
         items.push(("notice-dark".to_string(), draw(&notice, false, 1.0)));

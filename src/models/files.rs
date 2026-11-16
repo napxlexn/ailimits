@@ -117,6 +117,65 @@ pub(super) fn scan_back<T>(
     }
 }
 
+/// The stamp of a SQLite database with its write-ahead log: in WAL mode a
+/// database takes its writes in `<file>-wal` until a checkpoint, so the
+/// main file alone can look unchanged after a change.
+pub(super) fn db_stamp(path: &Path) -> Option<Stamp> {
+    let db = stamp(path)?;
+    let mut wal = path.as_os_str().to_owned();
+    wal.push("-wal");
+    let wal = stamp(Path::new(&wal));
+    Some(Stamp {
+        modified: db.modified.max(wal.and_then(|w| w.modified)),
+        len: db.len.wrapping_add(wal.map_or(0, |w| w.len)),
+    })
+}
+
+/// The entry of Cursor's state database that holds the editor's AI
+/// settings, the model chosen for each place among them.
+const CURSOR_ITEM: &str =
+    "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
+/// Only the Agent's model settings leave the database: the rest of the
+/// entry (half a megabyte of the editor's settings on the owner's PC) is
+/// never copied out, and no other entry (the sign-in among them) is read.
+const CURSOR_AGENT_QUERY: &str = "SELECT json_extract(CAST(value AS TEXT), \
+     '$.aiSettings.modelConfig.composer') FROM ItemTable WHERE key = ?1";
+/// For a Windows SQLite built without JSON functions: the same entry whole,
+/// read only when at most `CURSOR_ENTRY_CAP`, and the object taken out here.
+const CURSOR_ENTRY_QUERY: &str = "SELECT CAST(value AS TEXT) FROM ItemTable WHERE key = ?1";
+const CURSOR_ENTRY_CAP: usize = 8 * 1024 * 1024;
+
+/// The database held a lock: ask again on the next cycle.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Busy;
+
+/// The Agent's model settings in Cursor's state database, as JSON text:
+/// Ok(None) when there are none (or the database is not one Cursor wrote),
+/// Err(Busy) while Cursor holds a lock. Opened read-only through Windows'
+/// own SQLite (`platform::sqlite`), which never changes the file.
+pub(super) fn cursor_agent_model(path: &Path) -> Result<Option<String>, Busy> {
+    use crate::platform::sqlite::{lookup_texts, SqliteError};
+    let first = |sql: &str| lookup_texts(path, sql, &[CURSOR_ITEM]).map(|mut v| v.pop().flatten());
+    match first(CURSOR_AGENT_QUERY) {
+        Ok(found) => Ok(found),
+        Err(SqliteError::Busy) => Err(Busy),
+        Err(SqliteError::Failed(e)) if e.contains("no such function") => {
+            match first(CURSOR_ENTRY_QUERY) {
+                Ok(Some(entry)) if entry.len() <= CURSOR_ENTRY_CAP => {
+                    Ok(serde_json::from_str::<serde_json::Value>(&entry)
+                        .ok()
+                        .and_then(|v| v.pointer("/aiSettings/modelConfig/composer").cloned())
+                        .filter(|v| !v.is_null())
+                        .map(|v| v.to_string()))
+                }
+                Err(SqliteError::Busy) => Err(Busy),
+                _ => Ok(None),
+            }
+        }
+        Err(_) => Ok(None),
+    }
+}
+
 /// A model id or an effort as text a label can show: a string, trimmed, not
 /// empty, at most 128 bytes, no control characters. Anything else is None.
 pub(super) fn clean(value: Option<&serde_json::Value>) -> Option<String> {

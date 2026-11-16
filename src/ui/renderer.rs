@@ -2163,7 +2163,8 @@ mod tests {
             ProviderId::Grok => ("Grok", Some("Grok 4.7"), Some("high")),
             ProviderId::Antigravity => ("Claude Sonnet", Some("Claude Sonnet 4.6"), None),
             ProviderId::Copilot => ("Auto", None, Some("medium")),
-            ProviderId::Cursor => return None,
+            // The model chosen for its Agent in the editor.
+            ProviderId::Cursor => ("Grok", Some("Grok 4.7"), Some("high")),
         };
         let (m, v, e) = match parts {
             Parts::Full => (true, true, true),

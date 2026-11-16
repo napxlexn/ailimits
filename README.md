@@ -140,10 +140,12 @@ none of the auth sources listed below until you allow it.
 ## Quick start
 
 1. **Run it.** On first launch a welcome window opens (the same one as
-   *Rows and models...* in the menu), with the CLIs you already use marked
-   as found (Claude Code, Codex, `gh`, Antigravity CLI, still-supported
-   Gemini CLI sessions, the Grok CLI). Tick the ones to show; each asks once
-   before it reads that tool's sign-in. For Cursor, right-click,
+   *Rows and models...* in the menu). The tools found on this PC (Claude
+   Code, Codex, `gh`, Antigravity CLI, still-supported Gemini CLI sessions,
+   the Grok CLI, Cursor) are marked and ticked, behind one question that
+   names each sign-in file it would read. *Allow* starts them; *Cancel*
+   reads nothing and lets you tick what you want, each tool asking once.
+   Cursor can also use a sign-in of the app's own: right-click,
    **Providers**, **Cursor**, *Sign in to Cursor...* once. Updating from
    0.7.0 needs nothing: the providers you had keep working, and one window
    lists what is read.

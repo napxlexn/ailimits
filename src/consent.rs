@@ -92,7 +92,9 @@ pub const READ_INFO: &[ReadInfo] = &[
             r"otherwise the editor's %APPDATA%\Cursor\User\globalStorage\state.vscdb",
         ],
         hosts: &["api2.cursor.sh"],
-        settings: None,
+        settings: Some(
+            r"%APPDATA%\Cursor\User\globalStorage\state.vscdb: the model and effort chosen for Agent, nothing else of it",
+        ),
         session: None,
     },
 ];

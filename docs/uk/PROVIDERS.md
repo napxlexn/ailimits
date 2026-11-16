@@ -531,7 +531,7 @@ Grok Bot), не дає метрики. Це метрика session-вікна, �
 | Grok CLI | `%GROK_HOME%\config.toml`, інакше `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
 | Copilot CLI | `%COPILOT_HOME%\settings.json`, інакше `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (підпис для показу: `Claude Sonnet 4.6 (Thinking)`; окремого effort немає) |
-| Cursor | немає | |
+| Cursor (редактор) | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` | один запис, `...persistentStorage.applicationUser`, і з нього лише `aiSettings.modelConfig.composer`: `modelName`, параметр `reasoning_effort` |
 
 Форми звірено 2026-11-11 на ПК власника, лише назви ключів:
 
@@ -558,13 +558,31 @@ Grok Bot), не дає метрики. Це метрика session-вікна, �
 - Antigravity CLI: `model`, збережений як підпис, який показує CLI; він
   показується як записаний, без розбиття за дефісами (`GPT-OSS 120B
   (Medium)`).
+- Cursor (звірено 2026-11-16 на ПК власника): редактор зберігає модель,
+  вибрану для кожного місця, у записі
+  `src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser`
+  своєї бази стану, під `aiSettings.modelConfig`; модель Agent — це
+  `composer`: `{"modelName": "grok-4.7", "maxMode": false,
+  "selectedModels": [{"modelId": "grok-4.7", "parameters": [{"id":
+  "reasoning_effort", "value": "high"}, {"id": "context", "value":
+  "256k"}, ...]}]}`. `"default"` — модель, яку Cursor називає Auto
+  (показується як "Auto"). База відкривається лише для читання через
+  вбудований у Windows SQLite, як і для входу, а `json_extract` самого
+  SQLite віддає лише цей один об'єкт: решта запису (близько 0,5 МБ
+  налаштувань редактора) і всі інші записи, зокрема вхід, із бази не
+  виходять. SQLite у Windows без функцій JSON віддає запис цілим (читається
+  лише до 8 МБ), і об'єкт дістає вже програма. Читається знову лише тоді,
+  коли змінилася база або її файл `-wal`; один запит тривав 1,3 мс. Cursor
+  CLI зберігає свою модель у `%USERPROFILE%\.cursor\cli-config.json` (поруч
+  з e-mail акаунта); цей файл не читається.
 
 Файл з effort, але без моделі, дає сам effort («xhigh»), і назви для
 перейменування тоді немає.
 
 Для підписів ніколи не читаються: `%USERPROFILE%\.claude.json`,
 `%USERPROFILE%\.copilot\config.json`, `command-history-state.json`, жоден
-файл входу, Windows Credential Manager.
+файл входу, жоден запис бази Cursor, крім наведеного вище, Windows
+Credential Manager.
 
 ### Остання використана (`last_session`)
 

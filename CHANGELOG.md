@@ -27,7 +27,10 @@ Notable, user-visible changes. Dates are release dates.
   and Codex CLI, from the end of the newest session ("Last used", read
   back from the end until the model turns up, at most 1 MB); the other
   tools keep showing the configured model. A Claude Code model chosen by
-  its short name (`/model opus`) shows the effort saved for that model. A tool left on its default
+  its short name (`/model opus`) shows the effort saved for that model.
+  Cursor shows the model chosen for its Agent ("Grok 4.7 · high"), taken
+  from the editor's state database as one value; nothing else of it is
+  read. A tool left on its default
   model, which it does not write down, shows its effort alone. Expanded
   rows and the columns layout give the label a line of its own, Medium puts
   it beside the reset (on a line of its own where that leaves too little
@@ -50,7 +53,9 @@ Notable, user-visible changes. Dates are release dates.
   and where a token is sent. A fresh install reads nothing: the widget and
   the tray say "Choose what to show", and the window opens with the tools
   found on this PC marked - found by whether their folder exists, with
-  nothing inside opened. A fresh install also switches every provider off,
+  nothing inside opened - and ticked behind one question that names each
+  file it would read and where each token goes: *Allow* starts them all,
+  *Cancel* reads nothing and leaves the choice to you. A fresh install also switches every provider off,
   so an older version started on the same settings reads nothing either.
   The app's own `config.toml`, if it cannot be read, is set aside as
   `config.toml.corrupt` and counts as a fresh install, since what it allowed
