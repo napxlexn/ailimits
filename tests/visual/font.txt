@@ -1,0 +1,7 @@
+# The font every visual baseline in this folder was recorded with: the first
+# of renderer::FONT_CANDIDATES that loads, and the SHA-256 of its bytes.
+# Every hash depends on it. On a machine that renders with another font,
+# src/ui/visual_baseline.rs skips each group with a visible warning ("font
+# differs, baseline not comparable") instead of failing, and records nothing.
+# Recorded with Segoe UI 5.72 (960076 bytes), Windows 11 build 26300.
+segoeui.ttf 704eada12961a27fd271f7d3b09e2066520e758390c1776744eff430fee30f6e

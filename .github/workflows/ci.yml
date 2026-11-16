@@ -1,38 +1,130 @@
 # Continuous integration: the same gate the project requires on every commit
-# (clippy with warnings denied + the test suite). Runs on pushes to master and
-# on every pull request, so a regression is caught BEFORE a release tag is cut.
+# (formatting, clippy with warnings denied, the test suite), plus the
+# declared minimum Rust version and the production profile. Runs on pushes to
+# master and to feature/* branches, on every pull request, and by hand
+# (workflow_dispatch), so a regression is caught BEFORE a release tag is cut.
+#
+# Every action is pinned to a full commit SHA (the tag it was taken from is in
+# the comment): a moved tag cannot change what runs here.
 name: ci
 
 on:
   push:
-    branches: [master]
+    branches: [master, "feature/**"]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
-          components: clippy
+          toolchain: stable
+          components: clippy, rustfmt
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Formatting
         run: cargo fmt --all -- --check
 
-      - name: Advisories (non-blocking)
-        continue-on-error: true
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --locked -- -D warnings
 
+      # The visual baseline compares rendered pixels; with another Segoe UI
+      # than tests/visual/font.txt records, its groups are skipped with a
+      # warning annotation instead of failing (src/ui/visual_baseline.rs).
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
+
+  # Cargo.toml's rust-version is a promise to people building from source:
+  # check it still holds.
+  msrv:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Read rust-version from Cargo.toml
+        id: msrv
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^rust-version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          if (-not $v) { Write-Error "Cargo.toml declares no rust-version"; exit 1 }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Rust toolchain (minimum)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Check on the minimum toolchain
+        run: cargo check --all-targets --locked
+
+  # The profile users actually get (opt-level z, LTO, panic = abort): a build
+  # that only breaks there would otherwise surface on the release tag.
+  release-build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build (release-min)
+        run: cargo build --profile release-min --locked
+
+  # Known advisories in the dependency tree. Non-blocking: an advisory needs a
+  # decision, not a red build. The tool is cached by its pinned version.
+  audit:
+    runs-on: windows-latest
+    continue-on-error: true
+    env:
+      CARGO_AUDIT_VERSION: 0.23.0
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+
+      - name: Cache cargo-audit
+        id: audit-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-audit.exe
+          key: cargo-audit-${{ runner.os }}-${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Install cargo-audit
+        if: steps.audit-cache.outputs.cache-hit != 'true'
+        run: cargo install cargo-audit --locked --version ${{ env.CARGO_AUDIT_VERSION }}
+
+      - name: Advisories
+        run: cargo audit

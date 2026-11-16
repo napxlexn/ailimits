@@ -1,5 +1,16 @@
-# Installer auto-build on a v* tag push — the installer is attached
-# to the GitHub Release.
+# Release build on a v* tag push: the installer and the portable zip, each
+# with an Ed25519 signature (.sig), attached to a DRAFT GitHub Release.
+#
+# A draft is not `releases/latest`, so nobody's auto-update sees it yet. The
+# owner checks the files (VirusTotal, a quick install) and publishes it by
+# hand: `gh release edit <tag> --draft=false`.
+#
+# Hardening: every action is pinned to a full commit SHA (the tag it was
+# taken from is in the comment); no build cache is restored into a job that
+# can write releases; checkout keeps no token in .git/config, so only the
+# release step ever sees GITHUB_TOKEN; Inno Setup is a pinned version checked
+# against its SHA-256; the signing key only reaches the signing step, and the
+# job fails without it — nothing is ever published unsigned.
 name: release
 
 on:
@@ -9,31 +20,57 @@ on:
 permissions:
   contents: write
 
+env:
+  # Inno Setup, pinned: the official installer from the jrsoftware/issrc
+  # release, signed by Pyrsys B.V. Update both together, from a download
+  # you have checked.
+  INNO_VERSION: 6.7.3
+  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+  INNO_SHA256: 9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732
+
 jobs:
   build-installer:
     runs-on: windows-latest
+    # The signing key is a secret of this environment (or of the repository);
+    # see the notes in tools/release_sign.rs.
+    environment: release
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
 
       - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
-          components: clippy
+          toolchain: stable
+          components: clippy, rustfmt
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # Before any build work: a tag without the signing key would end in an
+      # unsigned release, so it ends here instead.
+      - name: Require the signing key
+        shell: pwsh
+        env:
+          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
+        run: |
+          if (-not $env:AILIMITS_RELEASE_SIGNING_KEY) {
+            Write-Error "The AILIMITS_RELEASE_SIGNING_KEY secret is missing: no release is built unsigned."
+            exit 1
+          }
 
       # A tag must never ship a build that fails the project's own gate.
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
       - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
 
       # Guard against version drift: the tag, Cargo.toml and the installer
       # script must all agree, or CI would build AiLimits-Setup-<old>.exe and
-      # attach it to the <new> release (then the winget URL 404s and the About
-      # version is wrong).
+      # attach it to the <new> release (then the winget URL 404s, the About
+      # version is wrong, and the signature names the wrong file).
       - name: Verify version matches the tag
         shell: pwsh
         run: |
@@ -47,7 +84,7 @@ jobs:
           }
 
       - name: Build (release-min)
-        run: cargo build --profile release-min
+        run: cargo build --profile release-min --locked
 
       # A portable zip alongside the installer: what Scoop installs, and the
       # no-install option generally. The exe is statically linked, so the zip
@@ -63,13 +100,44 @@ jobs:
           Compress-Archive -Path target\portable\* -DestinationPath "target\installer\AiLimits-Portable-$v.zip" -Force
           Get-FileHash "target\installer\AiLimits-Portable-$v.zip" -Algorithm SHA256 | Format-List
 
-      - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+      - name: Install Inno Setup (pinned)
+        shell: pwsh
+        run: |
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup-$env:INNO_VERSION.exe"
+          Invoke-WebRequest -Uri $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash
+          if ($hash -ne $env:INNO_SHA256) {
+            Write-Error "Inno Setup $env:INNO_VERSION download has SHA-256 $hash, expected $env:INNO_SHA256"
+            exit 1
+          }
+          $dir = Join-Path $env:RUNNER_TEMP "inno"
+          $p = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/DIR=`"$dir`"")
+          if ($p.ExitCode -ne 0) { Write-Error "Inno Setup install failed: $($p.ExitCode)"; exit 1 }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Error "no ISCC.exe in $dir"; exit 1 }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Compile installer
+        shell: pwsh
         run: |
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          & $iscc "installer\ailimits.iss"
+          & $env:ISCC "installer\ailimits.iss"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The updater refuses an installer without a valid signature by the key
+      # built into the app (src/updater.rs, RELEASE_KEYS). The tool checks
+      # each signature against those very keys before writing it, so a wrong
+      # secret fails here, not on users' machines.
+      - name: Sign
+        shell: pwsh
+        env:
+          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
+        run: |
+          $files = (Get-ChildItem target/installer/*.exe, target/installer/*.zip).FullName
+          cargo run --locked --quiet --example release-sign -- sign @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo run --locked --quiet --example release-sign -- verify @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # Surface the installer's SHA256 so the winget manifest hash can be
       # filled/verified against the exact published binary without guesswork.
@@ -117,17 +185,23 @@ jobs:
           if (-not $found) { Write-Host "::warning::no CHANGELOG section for $version - falling back to generated notes" }
           "found=$($found.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      - name: Create GitHub Release
+      # A draft: published by hand after VirusTotal (see the top of the file).
+      - name: Create the draft GitHub Release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $assets = (Get-ChildItem target/installer/*.exe, target/installer/*.zip).FullName
+          $assets = (Get-ChildItem target/installer/*.exe, target/installer/*.zip, target/installer/*.sig).FullName
           if ("${{ steps.notes.outputs.found }}" -eq "true") {
-            gh release create "${{ github.ref_name }}" @assets `
+            gh release create "${{ github.ref_name }}" @assets --draft `
               --title "AI Limits ${{ github.ref_name }}" `
               --notes-file release-notes.md
           } else {
-            gh release create "${{ github.ref_name }}" @assets `
+            gh release create "${{ github.ref_name }}" @assets --draft `
               --title "AI Limits ${{ github.ref_name }}" `
               --generate-notes
           }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "### Draft release created`n`nCheck the files (VirusTotal, a quick install), then publish: ``gh release edit ${{ github.ref_name }} --draft=false``" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
