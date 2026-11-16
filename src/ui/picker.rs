@@ -94,6 +94,8 @@ pub enum PickerAction {
 /// A row the picker offers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RowChoice {
+    /// What the row counts, shown on hover; empty for none.
+    pub hint: &'static str,
     /// "claude", "claude.opus".
     pub id: &'static str,
     /// Provider config id.
@@ -119,6 +121,8 @@ pub struct ModelChoice {
     pub automatic: String,
     /// The user's name, if any.
     pub renamed: Option<String>,
+    /// The model the tool uses right now.
+    pub current: bool,
 }
 
 /// Everything the picker shows. A snapshot: the app sends a new one after
@@ -397,11 +401,44 @@ const SOURCE_LAST: &str = "Last used";
 const NAMES: &str = "Model names";
 const NAMES_OFF: &str = "Once Model is on, each model can be renamed here.";
 const NAMES_ON: &str =
-    "Made from the id the tool stores. Type to rename; clear the field to get the automatic name back.";
+    "Made from the id the tool stores. Type to rename; clear the field to get the automatic name back. A model two tools share has one name.";
+const NAMES_HINT: &str = "Your own name for a model, shown everywhere instead of the automatic one. Every model each running tool offers is listed, the one in use marked.";
+const IN_USE: &str = "in use";
+const FOUND_HINT: &str = "Found by its folder on this PC; nothing inside it was opened.";
+const SOURCE_SET_HINT: &str =
+    "The model chosen in each tool's settings, whatever a session is using.";
+const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI session, read from the end of its file. The other tools show the model as set.";
+const ALLOW_ALL: &str = "Allow all";
+const ALLOW_ALL_LEAD: &str = "Allow all also starts the other tools found on this PC:";
 /// Ordinary text for the "room left" estimate: what typing would add.
 const ROOM_SAMPLE: &str = "Sonnet 4.6 Opus Max GPT 5.5 Haiku Grok Fast ";
 
 /// The parts of the model label, as the picker lists them.
+/// One tool in a question about several: its files and where its token goes.
+fn found_entry(i: &crate::consent::ReadInfo) -> String {
+    format!(
+        "{}: {}; its token goes only to {}",
+        i.tool,
+        i.sign_in.join("; "),
+        i.hosts.join(" and ")
+    )
+}
+
+/// What each model part shows, on hover.
+fn part_hint(part: ModelPart) -> &'static str {
+    match part {
+        ModelPart::Model => {
+            "The model the tool uses, by name: Opus, GPT, Grok. Shown on the tool's own row."
+        }
+        ModelPart::Version => {
+            "The model's version beside its name: Opus 5.5, GPT-6.1 Sol. Needs Model."
+        }
+        ModelPart::Effort => {
+            "How hard the model thinks, as the tool calls it. It can show without the model."
+        }
+    }
+}
+
 const PARTS: [(ModelPart, &str, &str); 3] = [
     (ModelPart::Model, "Model", "Opus · GPT · Grok · Auto"),
     (ModelPart::Version, "Version", "5.5 · 6.1 Sol · 4.7"),
@@ -479,9 +516,16 @@ enum Target {
     /// A name field, by model id.
     Field(String),
     Allow,
+    /// The sign-in question's second answer: this tool and every other
+    /// tool found on this PC that is not running yet.
+    AllowAll,
     Cancel,
     NoticeOk,
     NoticeReview,
+    /// Open or close the list of model names.
+    Names,
+    /// Open or close one tool's models in that list (config id).
+    NamesOf(String),
 }
 
 /// Keyboard grid position: (row, column).
@@ -528,6 +572,21 @@ enum El {
         rect: Rect,
         nav: Nav,
     },
+    /// A heading that opens and closes what is under it: "+ Model names".
+    Toggle {
+        target: Target,
+        rect: Rect,
+        label: String,
+        count: String,
+        open: bool,
+        bold: bool,
+        nav: Nav,
+    },
+    /// What a part of the window is, shown while the pointer rests on it.
+    Hint {
+        rect: Rect,
+        text: String,
+    },
 }
 
 impl El {
@@ -545,7 +604,9 @@ impl El {
             El::Radio { rect, .. }
             | El::Field { rect, .. }
             | El::Button { rect, .. }
-            | El::Close { rect, .. } => *rect = m(rect),
+            | El::Close { rect, .. }
+            | El::Toggle { rect, .. }
+            | El::Hint { rect, .. } => *rect = m(rect),
         }
         e
     }
@@ -571,6 +632,9 @@ impl El {
                 target, rect, nav, ..
             }
             | El::Button {
+                target, rect, nav, ..
+            }
+            | El::Toggle {
                 target, rect, nav, ..
             } => Some((target, *rect, *nav)),
             El::Close { rect, nav } => Some((&Target::Close, *rect, *nav)),
@@ -747,6 +811,10 @@ pub struct Picker {
     focus_visible: bool,
     edit: Option<Edit>,
     ask: Option<Ask>,
+    /// Whether the list of model names is open (closed on every opening).
+    names_open: bool,
+    /// The tools whose models are open in that list (config ids).
+    open_names: Vec<String>,
     /// The update notice was answered with Review: the normal picker shows.
     reviewed: bool,
     /// `NoticeDone` was sent.
@@ -769,6 +837,8 @@ struct LayoutKey {
     reviewed: bool,
     /// The edit's model, text and "full" flag: the field's hint follows it.
     edit: Option<(String, String, bool)>,
+    /// What is open in the list of names.
+    names: (bool, Vec<String>),
 }
 
 /// What a point is over.
@@ -797,6 +867,8 @@ impl Picker {
             focus_visible: false,
             edit: None,
             ask: None,
+            names_open: false,
+            open_names: Vec::new(),
             reviewed: false,
             notice_done: false,
             dirty: true,
@@ -828,14 +900,37 @@ impl Picker {
         let Some(first) = ids.first().cloned() else {
             return;
         };
+        let rows = ids.iter().flat_map(|p| Self::own_rows_on(p)).collect();
         self.open_question(
             ReadKind::FoundTools(ids),
-            Vec::new(),
+            rows,
             Target::Row {
                 row: first,
                 surface: Surface::Widget,
             },
         );
+    }
+
+    /// The other tools found on this PC that do not run yet: what Allow
+    /// all starts besides `provider`.
+    fn others_found(&self, provider: &str) -> Vec<String> {
+        let p = canonical(provider);
+        crate::consent::READ_INFO
+            .iter()
+            .filter(|r| r.id != p && self.found(r.id) && !self.active(r.id))
+            .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
+            .map(|r| r.id.to_string())
+            .collect()
+    }
+
+    /// A tool's own row on both surfaces: what a tool started from a
+    /// question shows.
+    fn own_rows_on(provider: &str) -> [PickerAction; 2] {
+        [Surface::Widget, Surface::Tooltip].map(|surface| PickerAction::SetRow {
+            surface,
+            row: provider.to_string(),
+            on: true,
+        })
     }
 
     /// Whether a provider runs: allowed and switched on.
@@ -975,6 +1070,13 @@ impl Picker {
             Hit::Target(t) => Some(t),
             _ => None,
         };
+        let hint = self
+            .pointer
+            .and_then(|(x, y)| self.hint_at(&f, x, y))
+            .and_then(|i| match &f.els[i].1 {
+                El::Hint { rect, text } => Some(self.hint_shapes(&f, rect, text)),
+                _ => None,
+            });
         let mut chrome = Vec::new();
         let mut body = Vec::new();
         let mut overlay = Vec::new();
@@ -1019,6 +1121,8 @@ impl Picker {
                 );
             }
         }
+        // On top of everything: the description the pointer rests on.
+        overlay.extend(hint.into_iter().flatten());
         PickerScene {
             width: f.width,
             height: f.height,
@@ -1322,6 +1426,7 @@ impl Picker {
                 .edit
                 .as_ref()
                 .map(|e| (e.model_id.clone(), e.text.clone(), e.full)),
+            names: (self.names_open, self.open_names.clone()),
         }
     }
 
@@ -1636,6 +1741,10 @@ impl Picker {
             let top = y + ((h - block) / 2.0).round();
             f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
             f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
+            f.els.push(El::Hint {
+                rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
+                text: part_hint(part).to_string(),
+            });
             for (col, (surface, cx)) in SURFACES.iter().enumerate() {
                 f.els.push(El::Tick {
                     target: Target::Part {
@@ -1672,14 +1781,18 @@ impl Picker {
         });
         f.y += lh(SIZE_TEXT) + 4.0;
         let mut x = PAD_X;
-        for (col, (source, label)) in [
-            (ModelSource::Configured, SOURCE_SET),
-            (ModelSource::LastUsed, SOURCE_LAST),
+        for (col, (source, label, hint)) in [
+            (ModelSource::Configured, SOURCE_SET, SOURCE_SET_HINT),
+            (ModelSource::LastUsed, SOURCE_LAST, SOURCE_LAST_HINT),
         ]
         .into_iter()
         .enumerate()
         {
             let w = RADIO + 8.0 + self.adv(label, SIZE_TEXT);
+            f.els.push(El::Hint {
+                rect: rect(x, f.y, w.ceil(), RADIO_H),
+                text: hint.to_string(),
+            });
             f.els.push(El::Radio {
                 target: Target::Source(source),
                 rect: rect(x, f.y, w.ceil(), RADIO_H),
@@ -1693,24 +1806,73 @@ impl Picker {
         f.nav += 1;
         f.y += RADIO_H;
 
-        // Model names.
+        // Model names: closed until opened, then one heading per tool.
         self.flow_sep(f);
-        f.y += 8.0;
-        f.shape(text_shape(PAD_X, f.y, NAMES, SIZE_TEXT, Ink::Text, true));
-        f.y += lh(SIZE_TEXT);
+        f.y += 4.0;
         let models = self.renamable();
-        let note = if models.is_empty() {
-            NAMES_OFF
+        let count = if models.is_empty() {
+            String::new()
         } else {
-            NAMES_ON
+            format!("{} models", models.len())
         };
-        let note = self.wrap(
-            &[span(note, SIZE_NOTE, Ink::Muted, false)],
-            BOX_W - SUB_X - PAD_X,
-        );
-        f.y += f.lines(&note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
-        for mi in models {
-            self.flow_name(f, mi);
+        let h = ROW_H - 6.0;
+        f.els.push(El::Toggle {
+            target: Target::Names,
+            rect: rect(6.0, f.y, BOX_W - 12.0, h),
+            label: NAMES.to_string(),
+            count,
+            open: self.names_open,
+            bold: true,
+            nav: (f.nav, 0),
+        });
+        f.els.push(El::Hint {
+            rect: rect(6.0, f.y, BOX_W - 12.0, h),
+            text: NAMES_HINT.to_string(),
+        });
+        f.nav += 1;
+        f.y += h;
+        if self.names_open {
+            let note = if models.is_empty() {
+                NAMES_OFF
+            } else {
+                NAMES_ON
+            };
+            let note = self.wrap(
+                &[span(note, SIZE_NOTE, Ink::Muted, false)],
+                BOX_W - SUB_X - PAD_X,
+            );
+            f.y += f.lines(&note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+            let mut tools: Vec<&'static str> = Vec::new();
+            for &mi in &models {
+                let p = self.input.models[mi].provider;
+                if !tools.contains(&p) {
+                    tools.push(p);
+                }
+            }
+            for p in tools {
+                let mine: Vec<usize> = models
+                    .iter()
+                    .copied()
+                    .filter(|&mi| self.input.models[mi].provider == p)
+                    .collect();
+                let open = self.open_names.iter().any(|o| o == p);
+                f.els.push(El::Toggle {
+                    target: Target::NamesOf(p.to_string()),
+                    rect: rect(SUB_X - 8.0, f.y, BOX_W - SUB_X + 2.0, h),
+                    label: self.provider_name(p),
+                    count: mine.len().to_string(),
+                    open,
+                    bold: false,
+                    nav: (f.nav, 0),
+                });
+                f.nav += 1;
+                f.y += h;
+                if open {
+                    for mi in mine {
+                        self.flow_name(f, mi);
+                    }
+                }
+            }
         }
         f.y += 10.0;
     }
@@ -1756,6 +1918,12 @@ impl Picker {
             ));
         }
         f.shape(text_shape(x, top, name, SIZE_TEXT, Ink::Text, own));
+        if !row.hint.is_empty() {
+            f.els.push(El::Hint {
+                rect: rect(x, y, LABEL_RIGHT - x, h),
+                text: row.hint.to_string(),
+            });
+        }
         if own && welcome && self.found(row.provider) {
             let bx = (x + self.adv_styled(name, SIZE_TEXT, true) + 8.0).round();
             let bw = (self.adv_styled(FOUND, SIZE_BADGE, true) + 14.0).round();
@@ -1773,6 +1941,10 @@ impl Picker {
                 Ink::Accent,
                 true,
             ));
+            f.els.push(El::Hint {
+                rect: rect(bx, top, bw, lh(SIZE_TEXT)),
+                text: FOUND_HINT.to_string(),
+            });
         }
         f.lines(&note_lines, x, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
         for (col, (surface, cx)) in SURFACES.iter().enumerate() {
@@ -1805,24 +1977,29 @@ impl Picker {
     /// One model's name field: who and which id, the field, the room left.
     fn flow_name(&self, f: &mut Flow, mi: usize) {
         let m = &self.input.models[mi];
-        let width = BOX_W - PAD_X * 2.0;
-        f.y += 6.0;
-        let label = self.wrap(
-            &[
-                span(self.provider_name(m.provider), SIZE_TEXT, Ink::Text, true),
-                span(format!("  {}", m.model_id), SIZE_NOTE, Ink::Muted, false),
-            ],
-            width,
-        );
-        f.y += f.lines(&label, PAD_X, f.y, lh(SIZE_TEXT)) + 4.0;
+        let x = SUB_X + 14.0;
+        let width = BOX_W - PAD_X - x;
+        f.y += 4.0;
+        let mut spans = vec![span(m.model_id.as_str(), SIZE_NOTE, Ink::Muted, false)];
+        if m.current {
+            spans.push(span(format!("  {IN_USE}"), SIZE_NOTE, Ink::Accent, true));
+        }
+        let label = self.wrap(&spans, width);
+        f.y += f.lines(&label, x, f.y, lh(SIZE_NOTE)) + 3.0;
+        let target = Target::Field(m.model_id.clone());
         f.els.push(El::Field {
-            target: Target::Field(m.model_id.clone()),
-            rect: rect(PAD_X, f.y, width, FIELD_H),
+            target: target.clone(),
+            rect: rect(x, f.y, width, FIELD_H),
             model: mi,
             nav: (f.nav, 0),
         });
         f.nav += 1;
         f.y += FIELD_H + 4.0;
+        // How much room is left: for the field being typed in only.
+        if !self.focused(&target) {
+            f.y += 2.0;
+            return;
+        }
         let text = self.field_text(m);
         let full = matches!(&self.edit, Some(e) if e.model_id == m.model_id && e.full);
         let hint = room_text(self.chars_left(text.trim()), text.trim().is_empty());
@@ -1832,7 +2009,7 @@ impl Picker {
             (Ink::Muted, false)
         };
         let hint = self.wrap(&[span(hint, SIZE_NOTE, ink, bold)], width);
-        f.y += f.lines(&hint, PAD_X, f.y, lh(SIZE_NOTE)) + 6.0;
+        f.y += f.lines(&hint, x, f.y, lh(SIZE_NOTE)) + 6.0;
     }
 
     /// The update notice: every file read and every host the tokens go to.
@@ -1974,14 +2151,7 @@ impl Picker {
                 let list = ids
                     .iter()
                     .filter_map(|p| crate::consent::read_info(p))
-                    .map(|i| {
-                        format!(
-                            "{}: {}; its token goes only to {}",
-                            i.tool,
-                            i.sign_in.join("; "),
-                            i.hosts.join(" and ")
-                        )
-                    })
+                    .map(found_entry)
                     .collect();
                 (
                     "Show the tools found on this PC?".to_string(),
@@ -2027,24 +2197,59 @@ impl Picker {
             ));
             f.y += f.lines(&lines, ASK_PAD + 18.0, f.y, lh(SIZE_NOTE)) + 2.0;
         }
+        let others = match &ask.kind {
+            ReadKind::SignIn(p) => self.others_found(p),
+            _ => Vec::new(),
+        };
+        if !others.is_empty() {
+            f.y += 4.0;
+            let l = self.wrap(&[span(ALLOW_ALL_LEAD, SIZE_TEXT, Ink::Text, false)], inner);
+            f.y += f.lines(&l, ASK_PAD, f.y, lh(SIZE_TEXT)) + 4.0;
+            for info in others.iter().filter_map(|p| crate::consent::read_info(p)) {
+                let lines = self.wrap(
+                    &[span(found_entry(info), SIZE_NOTE, Ink::Text, false)],
+                    inner - 18.0,
+                );
+                f.shape(text_shape(
+                    ASK_PAD + 4.0,
+                    f.y,
+                    "•",
+                    SIZE_NOTE,
+                    Ink::Text,
+                    false,
+                ));
+                f.y += f.lines(&lines, ASK_PAD + 18.0, f.y, lh(SIZE_NOTE)) + 2.0;
+            }
+        }
         f.y += 4.0;
         let o = self.wrap(&[span(outro, SIZE_TEXT, Ink::Text, false)], inner);
         f.y += f.lines(&o, ASK_PAD, f.y, lh(SIZE_TEXT)) + 10.0;
         let (aw, cw) = (self.button_w("Allow"), self.button_w("Cancel"));
         let right = BOX_W - ASK_INSET * 2.0 - ASK_PAD;
+        let allow_x = right - cw - 8.0 - aw;
+        if !others.is_empty() {
+            let w = self.button_w(ALLOW_ALL);
+            f.els.push(El::Button {
+                target: Target::AllowAll,
+                rect: rect(allow_x - 8.0 - w, f.y, w, BUTTON_H),
+                label: ALLOW_ALL.into(),
+                primary: false,
+                nav: (0, 0),
+            });
+        }
         f.els.push(El::Button {
             target: Target::Allow,
-            rect: rect(right - cw - 8.0 - aw, f.y, aw, BUTTON_H),
+            rect: rect(allow_x, f.y, aw, BUTTON_H),
             label: "Allow".into(),
             primary: true,
-            nav: (0, 0),
+            nav: (0, 1),
         });
         f.els.push(El::Button {
             target: Target::Cancel,
             rect: rect(right - cw, f.y, cw, BUTTON_H),
             label: "Cancel".into(),
             primary: false,
-            nav: (0, 1),
+            nav: (0, 2),
         });
         f.y += BUTTON_H + 12.0;
         (f.y.ceil(), f.els)
@@ -2279,6 +2484,57 @@ impl Picker {
                     false,
                 ));
             }
+            El::Toggle {
+                target,
+                rect: r,
+                label,
+                count,
+                open,
+                bold,
+                ..
+            } => {
+                if hovered == Some(target) {
+                    out.push(Shape::Fill {
+                        rect: *r,
+                        radius: 4.0,
+                        ink: Ink::Hover,
+                        alpha: if pressed(target) { 2.0 } else { 1.0 },
+                    });
+                }
+                if self.ring(target) {
+                    out.push(Shape::Stroke {
+                        rect: *r,
+                        radius: 6.0,
+                        width: 2.0,
+                        ink: Ink::Text,
+                        alpha: 1.0,
+                    });
+                }
+                let ty = r.y + ((r.h - lh(SIZE_TEXT)) / 2.0).round();
+                let sign = if *open { "\u{2212}" } else { "+" };
+                out.push(text_shape(
+                    r.x + 8.0,
+                    ty,
+                    sign,
+                    SIZE_TEXT,
+                    Ink::Muted,
+                    false,
+                ));
+                let lx = r.x + 22.0;
+                out.push(text_shape(lx, ty, label, SIZE_TEXT, Ink::Text, *bold));
+                if !count.is_empty() {
+                    let cx = (lx + self.adv_styled(label, SIZE_TEXT, *bold) + 8.0).round();
+                    out.push(text_shape(
+                        cx,
+                        r.y + ((r.h - lh(SIZE_NOTE)) / 2.0).round(),
+                        count,
+                        SIZE_NOTE,
+                        Ink::Muted,
+                        false,
+                    ));
+                }
+            }
+            El::Hint { .. } => {}
             El::Close { rect: r, .. } => {
                 let t = Target::Close;
                 if hovered == Some(&t) || self.ring(&t) {
@@ -2309,7 +2565,12 @@ impl Picker {
                 continue;
             };
             // While a question is open only it and the cross answer.
-            if self.ask.is_some() && !matches!(t, Target::Allow | Target::Cancel | Target::Close) {
+            if self.ask.is_some()
+                && !matches!(
+                    t,
+                    Target::Allow | Target::AllowAll | Target::Cancel | Target::Close
+                )
+            {
                 continue;
             }
             if *layer == Layer::Body && !in_list {
@@ -2332,14 +2593,82 @@ impl Picker {
         })
     }
 
-    fn hover_state(&self) -> (Hit, Option<usize>) {
+    fn hover_state(&self) -> (Hit, Option<usize>, Option<usize>) {
         match self.pointer {
             Some((x, y)) => {
                 let f = self.frame();
-                (self.hit(&f, x, y), self.hover_row(&f, x, y))
+                (
+                    self.hit(&f, x, y),
+                    self.hover_row(&f, x, y),
+                    self.hint_at(&f, x, y),
+                )
             }
-            None => (Hit::Nothing, None),
+            None => (Hit::Nothing, None, None),
         }
+    }
+
+    /// The description the pointer rests on: a hint element under it in the
+    /// list, while no question is open and no button is held.
+    fn hint_at(&self, f: &Frame, x: f32, y: f32) -> Option<usize> {
+        if self.ask.is_some() || self.pressed.is_some() || !f.in_list(x, y) {
+            return None;
+        }
+        f.els
+            .iter()
+            .position(|(_, el)| matches!(el, El::Hint { rect, .. } if contains(rect, x, y)))
+    }
+
+    /// A description as a small box under what it describes (above it when
+    /// there is no room below), inside the window.
+    fn hint_shapes(&self, f: &Frame, r: &Rect, text: &str) -> Vec<Shape> {
+        const PAD: f32 = 8.0;
+        const MAX_W: f32 = 260.0;
+        let one_line = self.adv(text, SIZE_NOTE);
+        let inner = one_line.min(MAX_W - PAD * 2.0);
+        let lines = self.wrap(
+            &[span(text, SIZE_NOTE, Ink::Text, false)],
+            inner.ceil() + 1.0,
+        );
+        let w = (inner + PAD * 2.0).ceil();
+        let h = (lines.len() as f32 * lh(SIZE_NOTE) + PAD * 1.5).ceil();
+        let left = f.boxr.x + 8.0;
+        let right = f.boxr.x + f.boxr.w - 8.0;
+        let x = r.x.max(left).min(right - w).round();
+        let below = bottom(r) + 4.0;
+        let y = if below + h <= bottom(&f.boxr) - 8.0 {
+            below
+        } else {
+            (r.y - 4.0 - h).max(f.boxr.y + 8.0)
+        }
+        .round();
+        let boxr = rect(x, y, w, h);
+        let mut out = vec![
+            Shape::Shadow {
+                rect: boxr,
+                radius: 6.0,
+            },
+            Shape::Fill {
+                rect: boxr,
+                radius: 6.0,
+                ink: Ink::Surface,
+                alpha: 1.0,
+            },
+            Shape::Stroke {
+                rect: boxr,
+                radius: 6.0,
+                width: 1.0,
+                ink: Ink::Border,
+                alpha: 1.0,
+            },
+        ];
+        for (i, line) in lines.iter().enumerate() {
+            let ly = y + (PAD * 0.75).round() + i as f32 * lh(SIZE_NOTE);
+            out.extend(
+                line.iter()
+                    .map(|run| run_shape(run, x + PAD, ly, lh(SIZE_NOTE))),
+            );
+        }
+        out
     }
 
     // ─── Pointer ─────────────────────────────────────────────────
@@ -2510,6 +2839,42 @@ impl Picker {
                 out.extend(ask.then);
                 out
             }
+            Target::AllowAll => {
+                let Some(ReadKind::SignIn(p)) = self.ask.as_ref().map(|a| a.kind.clone()) else {
+                    return Vec::new();
+                };
+                let others = self.others_found(&p);
+                let Some(ask) = self.ask.take() else {
+                    return Vec::new();
+                };
+                self.set_focus(Some(ask.from));
+                let mut out: Vec<PickerAction> = std::iter::once(&p)
+                    .chain(&others)
+                    .map(|id| PickerAction::Allow(ReadKind::SignIn(id.clone())))
+                    .collect();
+                // The tick that asked, or (asked from the menu) its own rows.
+                if ask.then.is_empty() {
+                    out.extend(Self::own_rows_on(&p));
+                } else {
+                    out.extend(ask.then);
+                }
+                for o in &others {
+                    out.extend(Self::own_rows_on(o));
+                }
+                out
+            }
+            Target::Names => {
+                self.names_open = !self.names_open;
+                Vec::new()
+            }
+            Target::NamesOf(p) => {
+                if let Some(i) = self.open_names.iter().position(|o| o == p) {
+                    self.open_names.remove(i);
+                } else {
+                    self.open_names.push(p.clone());
+                }
+                Vec::new()
+            }
             Target::Cancel => {
                 if let Some(ask) = self.ask.take() {
                     self.set_focus(Some(ask.from));
@@ -2594,7 +2959,9 @@ impl Picker {
         let mut out: Vec<(Target, Nav, Rect, Layer)> = Vec::new();
         for (layer, el) in &f.els {
             if let Some((t, r, nav)) = el.active() {
-                if self.ask.is_some() && !matches!(t, Target::Allow | Target::Cancel) {
+                if self.ask.is_some()
+                    && !matches!(t, Target::Allow | Target::AllowAll | Target::Cancel)
+                {
                     continue;
                 }
                 out.push((t.clone(), nav, r, *layer));
@@ -2850,7 +3217,9 @@ fn el_rect(el: &El) -> Option<Rect> {
         | El::Radio { rect, .. }
         | El::Field { rect, .. }
         | El::Button { rect, .. }
-        | El::Close { rect, .. } => Some(*rect),
+        | El::Close { rect, .. }
+        | El::Toggle { rect, .. }
+        | El::Hint { rect, .. } => Some(*rect),
         El::Shape(Shape::Text { x, y, size, .. }) => Some(rect(*x, *y, 1.0, lh(*size))),
     }
 }
@@ -3390,6 +3759,7 @@ mod tests {
                 provider: id,
                 name,
                 note: note.into(),
+                hint: "",
                 has_data: true,
             });
             let pid = ProviderId::from_config_id(id).unwrap();
@@ -3399,6 +3769,7 @@ mod tests {
                     provider: id,
                     name: s.names[0],
                     note: s.note.into(),
+                    hint: s.hint,
                     has_data: true,
                 });
             }
@@ -3412,6 +3783,7 @@ mod tests {
             model_id: id.to_string(),
             automatic: auto.to_string(),
             renamed: None,
+            current: true,
         };
         vec![
             m("claude", "claude-opus-5-5", "Opus 5.5"),
@@ -3455,6 +3827,19 @@ mod tests {
         Picker::new(input, mono)
     }
 
+    /// A picker with the list of names open, every tool's models showing.
+    fn opened(input: PickerInput) -> Picker {
+        let mut p = picker(input);
+        p.names_open = true;
+        p.open_names = p
+            .input
+            .models
+            .iter()
+            .map(|m| m.provider.to_string())
+            .collect();
+        p
+    }
+
     fn row(id: &str, surface: Surface) -> Target {
         Target::Row {
             row: id.to_string(),
@@ -3478,7 +3863,8 @@ mod tests {
                 El::Tick { target, cell, .. } => (target.clone(), *cell),
                 El::Radio { target, rect, .. }
                 | El::Field { target, rect, .. }
-                | El::Button { target, rect, .. } => (target.clone(), *rect),
+                | El::Button { target, rect, .. }
+                | El::Toggle { target, rect, .. } => (target.clone(), *rect),
                 El::Close { rect, .. } => (Target::Close, *rect),
                 _ => return None,
             };
@@ -3758,7 +4144,7 @@ mod tests {
 
     #[test]
     fn last_used_asks_for_the_session_tail() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         assert!(click(&mut p, &Target::Source(ModelSource::LastUsed)).is_empty());
         assert_eq!(p.ask.as_ref().unwrap().kind, ReadKind::LastSession);
         assert!(texts(&p).contains("1 MB"), "{}", texts(&p));
@@ -3791,23 +4177,27 @@ mod tests {
 
     #[test]
     fn names_wait_for_the_model() {
-        let text = texts(&picker(input()));
+        let text = texts(&opened(input()));
         assert!(text.contains(NAMES_OFF));
         let mut i = input();
         i.reads.tool_settings = true;
         i.model.widget = vec![ModelPart::Effort];
-        assert!(texts(&picker(i)).contains(NAMES_OFF));
-        let p = picker(with_model());
+        assert!(texts(&opened(i)).contains(NAMES_OFF));
+        let p = opened(with_model());
         let text = texts(&p);
         assert!(text.replace('\n', " ").contains(NAMES_ON));
-        // The placeholder is the automatic name.
+        // The placeholder is the automatic name; the room left shows for
+        // the field being typed in only.
         assert!(text.contains("Opus 5.5  (automatic)"), "{text}");
-        assert!(text.contains("Up to about 10 characters"), "{text}");
+        assert!(!text.contains("Up to about 10 characters"), "{text}");
+        let mut p = p;
+        click(&mut p, &field("claude-opus-5-5"));
+        assert!(texts(&p).contains("Up to about 10 characters"));
     }
 
     #[test]
     fn typing_renames_at_once_and_stops_at_the_limit() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         let id = "claude-opus-5-5";
         click(&mut p, &field(id));
         assert!(p.editing());
@@ -3848,7 +4238,7 @@ mod tests {
 
     #[test]
     fn spaces_never_lead_double_or_trail() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         let id = "claude-opus-5-5";
         click(&mut p, &field(id));
         assert!(typed(&mut p, " ").is_empty());
@@ -3868,7 +4258,7 @@ mod tests {
 
     #[test]
     fn a_paste_is_cut_to_what_fits() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         let id = "gpt-6.1-sol";
         click(&mut p, &field(id));
         let out = p.handle(PickerEvent::Paste("  Claude\nOpus Five  ".into()));
@@ -3878,21 +4268,21 @@ mod tests {
         key(&mut p, PickerKey::Home);
         let out = p.handle(PickerEvent::Paste("XYZ".into()));
         assert!(out.is_empty(), "{out:?}");
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         click(&mut p, &field(id));
         typed(&mut p, "GPT");
         key(&mut p, PickerKey::Home);
         let out = p.handle(PickerEvent::Paste("ABCDEFGHIJ".into()));
         assert_eq!(out, [rename(id, Some("ABCDEFGGPT"))]);
         // A paste with nowhere to go is ignored.
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         assert!(!p.editing());
         assert!(p.handle(PickerEvent::Paste("x".into())).is_empty());
     }
 
     #[test]
     fn a_new_input_keeps_the_edit_focus_and_scroll() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         let id = "claude-opus-5-5";
         click(&mut p, &field(id));
         typed(&mut p, "Opus ");
@@ -3906,7 +4296,10 @@ mod tests {
         assert_eq!(p.edit.as_ref().unwrap().caret, 5);
         assert_eq!(p.focus, Some(field(id)));
         assert_eq!(p.scroll, scroll);
-        // Leaving the field shows the stored name; Tab goes to the next.
+        // Leaving the field shows the stored name; Tab goes to the next
+        // tool's heading, then its field.
+        key(&mut p, PickerKey::Tab);
+        assert_eq!(p.focus, Some(Target::NamesOf("codex".into())));
         key(&mut p, PickerKey::Tab);
         assert_eq!(p.focus, Some(field("gpt-6.1-sol")));
         assert_eq!(field_text(&p, id), "Opus");
@@ -3921,7 +4314,7 @@ mod tests {
 
     #[test]
     fn a_click_places_the_caret() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         let id = "claude-opus-5-5";
         click(&mut p, &field(id));
         typed(&mut p, "Opus");
@@ -4006,12 +4399,136 @@ mod tests {
             .collect();
         want.sort_by_key(|t| format!("{t:?}"));
         assert_eq!(on, want);
-        // Enter allows: one SignIn per tool, in the catalogue's order.
-        assert_eq!(
-            key(&mut p, PickerKey::Enter),
-            ["claude", "codex", "grok"].map(|id| PickerAction::Allow(ReadKind::SignIn(id.into())))
-        );
+        // Enter allows: one SignIn per tool, in the catalogue's order, then
+        // their own rows on both surfaces (shown even where rows were
+        // chosen before).
+        let mut want: Vec<PickerAction> = ["claude", "codex", "grok"]
+            .map(|id| PickerAction::Allow(ReadKind::SignIn(id.into())))
+            .to_vec();
+        for id in ["claude", "codex", "grok"] {
+            want.push(set_row(Surface::Widget, id, true));
+            want.push(set_row(Surface::Tooltip, id, true));
+        }
+        assert_eq!(key(&mut p, PickerKey::Enter), want);
         assert!(p.ask.is_none());
+    }
+
+    /// A tool's question offers Allow all while other tools found on this
+    /// PC are not running; it names their files and starts them all.
+    #[test]
+    fn allow_all_starts_every_tool_found() {
+        let mut i = welcome(vec!["claude", "codex", "grok"]);
+        i.mode = PickerMode::Normal;
+        let mut p = picker(i);
+        click(&mut p, &row("codex", Surface::Widget));
+        assert_eq!(
+            p.ask.as_ref().unwrap().kind,
+            ReadKind::SignIn("codex".into())
+        );
+        let text = texts(&p).replace('\n', " ");
+        assert!(text.contains(ALLOW_ALL_LEAD), "{text}");
+        for id in ["claude", "grok"] {
+            let info = crate::consent::read_info(id).unwrap();
+            assert!(text.contains(info.tool), "{id}");
+            assert!(text.contains(info.hosts[0]), "{id}");
+        }
+        // Enter is still Allow, for this tool only.
+        assert_eq!(p.focus, Some(Target::Allow));
+        let mut want: Vec<PickerAction> = ["codex", "claude", "grok"]
+            .map(|id| PickerAction::Allow(ReadKind::SignIn(id.into())))
+            .to_vec();
+        want.push(set_row(Surface::Widget, "codex", true));
+        for id in ["claude", "grok"] {
+            want.push(set_row(Surface::Widget, id, true));
+            want.push(set_row(Surface::Tooltip, id, true));
+        }
+        assert_eq!(click(&mut p, &Target::AllowAll), want);
+        assert!(p.ask.is_none());
+        // Nothing else found: no Allow all.
+        let mut alone = welcome(vec!["codex"]);
+        alone.mode = PickerMode::Normal;
+        let mut p = picker(alone);
+        click(&mut p, &row("codex", Surface::Widget));
+        assert!(area(&p, &Target::AllowAll).is_none());
+        assert!(!texts(&p).contains(ALLOW_ALL_LEAD));
+        assert!(p.ask.is_some());
+    }
+
+    /// The list of names opens and closes, and each tool's models with it.
+    #[test]
+    fn the_names_open_by_tool() {
+        let mut p = picker(with_model());
+        assert!(area(&p, &field("claude-opus-5-5")).is_none());
+        assert!(area(&p, &Target::NamesOf("claude".into())).is_none());
+        assert!(texts(&p).contains("4 models"));
+        assert!(click(&mut p, &Target::Names).is_empty());
+        assert!(area(&p, &Target::NamesOf("claude".into())).is_some());
+        assert!(area(&p, &field("claude-opus-5-5")).is_none());
+        click(&mut p, &Target::NamesOf("claude".into()));
+        assert!(area(&p, &field("claude-opus-5-5")).is_some());
+        assert!(area(&p, &field("gpt-6.1-sol")).is_none());
+        assert!(texts(&p).contains(IN_USE));
+        // Closed again, a field being edited ends with it.
+        click(&mut p, &field("claude-opus-5-5"));
+        click(&mut p, &Target::NamesOf("claude".into()));
+        assert!(area(&p, &field("claude-opus-5-5")).is_none());
+        assert!(p.edit.is_none());
+        click(&mut p, &Target::Names);
+        assert!(area(&p, &Target::NamesOf("claude".into())).is_none());
+    }
+
+    /// A description shows while the pointer rests on what it describes,
+    /// never over an open question.
+    #[test]
+    fn hover_shows_a_description() {
+        let mut p = picker(with_model());
+        let effort = |p: &Picker| {
+            p.frame()
+                .els
+                .iter()
+                .find_map(|(_, el)| match el {
+                    El::Hint { rect, text } if text == part_hint(ModelPart::Effort) => {
+                        Some((*rect, text.clone()))
+                    }
+                    _ => None,
+                })
+                .expect("the Effort row has a description")
+        };
+        // Scrolled into view first.
+        let (r, _) = effort(&p);
+        let f = p.frame();
+        p.scroll = (f.scroll + (r.y - f.list_top()) - 8.0).max(0.0);
+        p.settle();
+        let (r, text) = effort(&p);
+        let f = p.frame();
+        let first_word = text.split(' ').next().unwrap().to_string();
+        let shown = |p: &Picker| {
+            p.scene()
+                .overlay
+                .iter()
+                .any(|s| matches!(s, Shape::Text { text, .. } if text.starts_with(&first_word)))
+        };
+        assert!(!shown(&p));
+        p.handle(PickerEvent::PointerMove {
+            x: r.x + 4.0,
+            y: r.y + r.h / 2.0,
+        });
+        assert!(p.take_dirty());
+        assert!(shown(&p));
+        p.handle(PickerEvent::PointerLeave);
+        assert!(!shown(&p));
+        // Every extra row describes itself.
+        let hints: Vec<String> = f
+            .els
+            .iter()
+            .filter_map(|(_, el)| match el {
+                El::Hint { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        for sub in crate::rows::SUB_ROWS {
+            assert!(hints.iter().any(|h| h == sub.hint), "{}", sub.id);
+        }
     }
 
     /// Cancel: nothing read, nothing ticked; each tool then asks on its own.
@@ -4131,16 +4648,16 @@ mod tests {
         key(&mut p, PickerKey::BackTab);
         assert_eq!(p.focus, Some(Target::Close));
         // End goes to the last control, scrolled into view: with no model
-        // part on, the source waits and there are no names, so the last is
-        // the Effort tick for the tooltip.
+        // part on, the source waits and the list of names is closed, so the
+        // last is its heading.
         key(&mut p, PickerKey::End);
-        assert_eq!(p.focus, Some(part(ModelPart::Effort, Surface::Tooltip)));
+        assert_eq!(p.focus, Some(Target::Names));
         assert!(p.scroll > 0.0);
     }
 
     #[test]
     fn the_list_scrolls_within_the_work_area() {
-        let mut p = picker(with_model());
+        let mut p = opened(with_model());
         p.set_max_height(300.0);
         let (_, h) = p.window_size();
         assert_eq!(h, 300.0 + MARGIN * 2.0);
@@ -4380,22 +4897,97 @@ mod tests {
         click(&mut ask, &Target::Source(ModelSource::LastUsed));
         items.push(("ask-session-dark".to_string(), draw(&ask, false, 1.0)));
 
-        // The names: one typed (caret, room hint), the others placeholders.
+        // The names, opened: one typed (caret, room hint), the others
+        // placeholders.
+        let open_all = |p: &mut Picker| {
+            p.names_open = true;
+            p.open_names = p
+                .input
+                .models
+                .iter()
+                .map(|m| m.provider.to_string())
+                .collect();
+        };
         let mut names = make(with_model());
+        open_all(&mut names);
         click(&mut names, &field("claude-opus-5-5"));
         typed(&mut names, "My Opus");
         items.push(("name-typed-dark".to_string(), draw(&names, false, 1.0)));
         items.push(("name-typed-light".to_string(), draw(&names, true, 1.0)));
         let mut full = make(with_model());
+        open_all(&mut full);
         click(&mut full, &field("gpt-6.1-sol"));
         full.handle(PickerEvent::Paste("GPT-6.1 Sol Thinking".into()));
         items.push(("name-full-dark".to_string(), draw(&full, false, 1.0)));
         let mut placeholder = make(with_model());
+        open_all(&mut placeholder);
         placeholder.handle(PickerEvent::Wheel { dy: -10_000.0 });
         items.push((
             "name-placeholder-dark".to_string(),
             draw(&placeholder, false, 1.0),
         ));
+        // Closed, as it opens: one line at the bottom.
+        let mut closed = make(with_model());
+        closed.handle(PickerEvent::Wheel { dy: -10_000.0 });
+        items.push(("names-closed-dark".to_string(), draw(&closed, false, 1.0)));
+        // Every model of each tool: the list open, Claude's models shown,
+        // the one in use marked.
+        let mut catalogue = with_model();
+        let mut more: Vec<ModelChoice> = Vec::new();
+        for (provider, ids) in [
+            (
+                "claude",
+                &[
+                    "claude-opus-5-5",
+                    "claude-fable-5-2",
+                    "claude-sonnet-5-5",
+                    "claude-haiku-5-5",
+                ][..],
+            ),
+            (
+                "codex",
+                &["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra"][..],
+            ),
+            ("grok", &["grok-4.7", "grok-4.6"][..]),
+            ("copilot", &["auto", "gpt-5.5"][..]),
+        ] {
+            for (n, id) in ids.iter().enumerate() {
+                let pid = ProviderId::from_config_id(provider).unwrap();
+                more.push(ModelChoice {
+                    provider,
+                    model_id: id.to_string(),
+                    automatic: crate::models::name_parts(id, &pid, None).with_version,
+                    renamed: None,
+                    current: n == 0,
+                });
+            }
+        }
+        catalogue.models = more;
+        let mut catalogue = make(catalogue);
+        catalogue.names_open = true;
+        catalogue.open_names = vec!["claude".into()];
+        catalogue.handle(PickerEvent::Wheel { dy: -10_000.0 });
+        items.push((
+            "names-catalogue-dark".to_string(),
+            draw(&catalogue, false, 1.0),
+        ));
+
+        // A tool's question with other tools found: Allow all.
+        let mut found = super::tests::welcome(vec!["claude", "codex", "grok", "copilot"]);
+        found.mode = PickerMode::Normal;
+        let mut allow_all = make(found);
+        click(&mut allow_all, &row("codex", Surface::Widget));
+        items.push((
+            "ask-allow-all-dark".to_string(),
+            draw(&allow_all, false, 1.0),
+        ));
+
+        // A description under the pointer: the Fable row's.
+        let mut hint = make(with_model());
+        let (x, y) = spot(&mut hint, &row("claude.fable", Surface::Widget));
+        hint.handle(PickerEvent::PointerMove { x: 60.0, y });
+        let _ = x;
+        items.push(("hint-dark".to_string(), draw(&hint, false, 1.0)));
 
         // Scrolled half way, the heads pinned, a row hovered.
         let mut scrolled = make(input());

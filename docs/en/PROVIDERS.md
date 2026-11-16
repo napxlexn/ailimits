@@ -635,6 +635,21 @@ before the first version word (`Opus`, `GPT`), the version adds the rest
 (`tests/fixtures/model-names.tsv`). A name the user types in
 `[ui.model.names]` replaces the automatic one and is split the same way.
 
+Which models the picker offers to rename (a list closed until opened, then
+one heading per tool) is a separate, fixed list per tool
+(`src/models/catalog.rs`), plus the model the tool uses now, always first
+and marked "in use". It names nothing: a model missing from it is named by
+the rule all the same. Sources, 2026-11-13: Claude Code, the ids its
+answers carried in one live call per model (`claude-fable-5-2`,
+`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`); Codex CLI,
+`codex debug models` (the 8 not hidden); Grok CLI,
+`~/.grok/models_cache.json` (4); Antigravity CLI, the labels it writes to
+its settings.json (5); Copilot CLI, the 26 `copilot help config` lists;
+Cursor, Auto only (the editor's list is not in a file read here, and
+`cursor-agent models` needs the CLI signed in). Only the tools that run are
+listed; a model two tools share has one name, so one field, under the
+first.
+
 ## Removed providers and methods
 
 - **Gemini API-key method** — the public Generative Language API exposes no

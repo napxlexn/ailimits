@@ -11,8 +11,10 @@ Notable, user-visible changes. Dates are release dates.
   Tooltip column, so the widget and the panel's tooltip are chosen
   separately. A tick shows at once, with no restart. The window also
   opens by itself on a first start, and from a click on the widget while
-  nothing is chosen yet. With the rows and labels left as they are, the
-  widget, the panel and the tray look exactly as before.
+  nothing is chosen yet. Resting the pointer on a model part, the source
+  of the model, an extra row or a "found on this PC" mark shows what it
+  means. With the rows and labels left as they are, the widget, the panel
+  and the tray look exactly as before.
 - **Extra rows where a provider meters a part on its own.** Claude's Opus,
   Sonnet and Fable weeks (on plans that have them; Fable is the "Current
   week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
@@ -41,7 +43,9 @@ Notable, user-visible changes. Dates are release dates.
 - **Model names you choose.** The automatic name is made from the id the
   tool stores by one rule, with no table of names, so a new model needs no
   update (`claude-opus-5-5` reads "Opus 5.5"). Any model can be renamed in
-  the window. Typing stops where the name would no longer fit the narrowest
+  the window, from a list closed until opened: one heading per running
+  tool with every model it offers, the one in use first and marked.
+  Typing stops where the name would no longer fit the narrowest
   place the widget draws it, so a renamed model shows in full at every
   size. Clearing the field brings the automatic name back.
 
@@ -55,7 +59,9 @@ Notable, user-visible changes. Dates are release dates.
   found on this PC marked - found by whether their folder exists, with
   nothing inside opened - and ticked behind one question that names each
   file it would read and where each token goes: *Allow* starts them all,
-  *Cancel* reads nothing and leaves the choice to you. A fresh install also switches every provider off,
+  *Cancel* reads nothing and leaves the choice to you. Later, a tool's own
+  question offers *Allow all* while other tools found on this PC are not
+  running yet, and names their files too. A fresh install also switches every provider off,
   so an older version started on the same settings reads nothing either.
   The app's own `config.toml`, if it cannot be read, is set aside as
   `config.toml.corrupt` and counts as a fresh install, since what it allowed

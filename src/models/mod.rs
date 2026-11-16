@@ -5,6 +5,7 @@
 // shape means no model, never an error); only the model id and the effort
 // leave a reader, never other contents of the file.
 
+pub mod catalog;
 mod files;
 mod name;
 mod session;

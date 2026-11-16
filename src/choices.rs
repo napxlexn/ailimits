@@ -252,6 +252,7 @@ pub fn picker_input(
             provider: pid.config_id(),
             name: pid.display_name(),
             note: base_note(data),
+            hint: "",
             has_data: data.is_some_and(|d| matches!(d.status, ProviderStatus::Ok)),
         });
         for sub in SUB_ROWS.iter().filter(|s| s.provider == pid) {
@@ -265,27 +266,41 @@ pub fn picker_input(
                 provider: pid.config_id(),
                 name: sub.names[0],
                 note: sub.note.into(),
+                hint: sub.hint,
                 has_data: has,
             });
         }
     }
+    // Every model each running tool offers (models::catalog), the one it
+    // uses now first. Two tools on the same model id share one name: one
+    // field, under the first. An effort with no model (an empty id) has no
+    // name to change.
     let mut model_choices: Vec<ModelChoice> = Vec::new();
-    for pc in &config.providers {
+    for pc in config
+        .providers
+        .iter()
+        .filter(|p| config.provider_active(p))
+    {
         let Some(pid) = ProviderId::from_config_id(&pc.id) else {
             continue;
         };
-        if let Some(info) = models.get(&pid).filter(|info| !info.id.is_empty()) {
-            // Two tools on the same model id share one name: one field. An
-            // effort with no model (an empty id) has no name to change.
-            if model_choices.iter().any(|c| c.model_id == info.id) {
+        let current = models
+            .get(&pid)
+            .map(|info| info.id.as_str())
+            .filter(|id| !id.is_empty());
+        let ids = current
+            .into_iter()
+            .chain(models::catalog::known(&pid).iter().copied());
+        for id in ids {
+            if model_choices.iter().any(|c| c.model_id == id) {
                 continue;
             }
-            let auto = models::name_parts(&info.id, &pid, None).with_version;
             model_choices.push(ModelChoice {
                 provider: pid.config_id(),
-                model_id: info.id.clone(),
-                automatic: auto,
-                renamed: config.ui.model.names.get(&info.id).cloned(),
+                model_id: id.to_string(),
+                automatic: models::name_parts(id, &pid, None).with_version,
+                renamed: config.ui.model.names.get(id).cloned(),
+                current: current == Some(id),
             });
         }
     }
@@ -474,8 +489,23 @@ mod tests {
             );
         }
         let input = picker_input(&config, &[], &models, PickerMode::Normal, &[]);
-        assert_eq!(input.models.len(), 1);
+        let fields = |id: &str| input.models.iter().filter(|m| m.model_id == id).count();
+        assert_eq!(fields("gpt-5"), 1);
+        assert_eq!(input.models[0].model_id, "gpt-5");
         assert_eq!(input.models[0].provider, "codex");
+        // A model both tools offer is one field too, under the first.
+        assert_eq!(fields("gpt-5.6-sol"), 1);
+        let sol = input
+            .models
+            .iter()
+            .find(|m| m.model_id == "gpt-5.6-sol")
+            .unwrap();
+        assert_eq!(sol.provider, "codex");
+        // Copilot keeps the rest of its list.
+        assert!(input
+            .models
+            .iter()
+            .any(|m| m.provider == "copilot" && m.model_id == "auto"));
     }
 
     #[test]
@@ -515,8 +545,17 @@ mod tests {
         assert_eq!(&ids[..3], ["claude", "claude.opus", "claude.sonnet"]);
         assert_eq!(ids.len(), 6 + SUB_ROWS.len());
         assert_eq!(input.widget_rows, ["codex"]);
-        assert_eq!(input.models.len(), 1);
+        // Every model Codex offers, the one in use first and marked.
+        let known = crate::models::catalog::known(&ProviderId::Codex);
+        assert_eq!(input.models.len(), known.len());
+        assert_eq!(input.models[0].model_id, "gpt-6.1-sol");
         assert_eq!(input.models[0].automatic, "GPT-6.1 Sol");
+        assert!(input.models[0].current);
+        assert!(input.models[1..]
+            .iter()
+            .all(|m| !m.current && m.provider == "codex"));
+        // A tool not running offers nothing to rename.
+        assert!(input.models.iter().all(|m| m.provider == "codex"));
         assert_eq!(input.found, ["codex"]);
     }
 }

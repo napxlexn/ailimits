@@ -25,6 +25,8 @@ pub struct SubRow {
     pub names: &'static [&'static str],
     /// What the row is, for the picker.
     pub note: &'static str,
+    /// What the row counts, shown when the pointer rests on it.
+    pub hint: &'static str,
 }
 
 /// Every extra row, in display order within its provider.
@@ -35,6 +37,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         metric: "Opus",
         names: &["Claude · Opus", "Cl · Opus", "Opus"],
         note: "Weekly, a limit of its own",
+        hint: "Claude's separate weekly limit for Opus models, on plans that have one. It fills apart from the weekly limit.",
     },
     SubRow {
         id: "claude.sonnet",
@@ -42,6 +45,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         metric: "Sonnet",
         names: &["Claude · Sonnet", "Cl · Sonnet", "Sonnet"],
         note: "Weekly, a limit of its own",
+        hint: "Claude's separate weekly limit for Sonnet models, on plans that have one. It fills apart from the weekly limit.",
     },
     SubRow {
         id: "claude.fable",
@@ -49,6 +53,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         metric: "Fable",
         names: &["Claude · Fable", "Cl · Fable", "Fable"],
         note: "Weekly, a limit of its own",
+        hint: "Fable's own weekly allowance, a share of the weekly limit: Current week (Fable) in Claude Code's /usage.",
     },
     SubRow {
         id: "antigravity.cg",
@@ -62,6 +67,7 @@ pub const SUB_ROWS: &[SubRow] = &[
             "C+GPT",
         ],
         note: "A weekly pool of its own",
+        hint: "Antigravity's weekly pool for its Claude and GPT models, counted apart from the Gemini models.",
     },
     SubRow {
         id: "grok.build",
@@ -69,6 +75,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         metric: "Build",
         names: &["Grok · Build", "Build"],
         note: "Its share of the weekly limit",
+        hint: "How much of the shared weekly limit Grok Build has used.",
     },
     SubRow {
         id: "cursor.bot",
@@ -76,6 +83,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         metric: "Grok Bot",
         names: &["Cursor · Grok Bot", "Grok Bot", "Bot"],
         note: "Its share of the same limit",
+        hint: "How much of the limit Cursor and Grok share Grok Bot has used.",
     },
 ];
 
