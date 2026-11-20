@@ -29,7 +29,8 @@ const GH_HOST: &str = "github.com";
 /// How long gh's answer stands: a token, or that it has none; and how long a
 /// token the endpoint refused waits before gh is asked again. Spawning
 /// gh.exe is the heaviest periodic operation: at most once per this, also
-/// when it keeps failing.
+/// when it keeps failing, plus one run right away when the endpoint refuses
+/// a token kept from an earlier cycle (see `fetch_with_gh`).
 const GH_TTL: Duration = Duration::from_secs(15 * 60);
 
 /// What `gh auth token --hostname github.com` gave.
@@ -139,8 +140,14 @@ impl CopilotProvider {
     }
 
     /// Usage with gh's token. gh is asked at most once per `GH_TTL`, its
-    /// failures included, and a token the endpoint refused is not sent
-    /// again until then: the row keeps the reason meanwhile.
+    /// failures included, with one exception: when the endpoint refuses
+    /// (401/403) a token kept from an earlier cycle, gh is asked once more
+    /// right away and the request is sent once more with the new token. gh
+    /// 2.103 and newer give expiring tokens that `gh auth token` renews by
+    /// itself, so a kept token can lapse within `GH_TTL`. A token gh gave in
+    /// this same cycle is not asked again: gh has just renewed it if it had
+    /// to. A token refused for good is not sent again until `GH_TTL` has
+    /// passed: the row keeps the reason meanwhile.
     async fn fetch_with_gh(&self) -> ProviderData {
         let now = Instant::now();
         let standing = {
@@ -150,30 +157,56 @@ impl CopilotProvider {
                 .filter(|s| now.saturating_duration_since(s.at) < GH_TTL)
                 .map(|s| s.outcome.clone())
         };
-        let token = match standing {
-            Some(GhOutcome::Token(token)) => token,
+        let (token, kept) = match standing {
+            Some(GhOutcome::Token(token)) => (token, true),
             Some(GhOutcome::Held(status)) => {
                 debug!("copilot: gh's last answer stands; nothing sent");
                 return self.data(status, vec![]);
             }
-            None => match (self.gh)().await {
-                GhToken::Token(token) => {
-                    self.keep_gh(now, GhOutcome::Token(token.clone()));
-                    token
-                }
-                other => {
-                    let status = gh_failure_status(&other);
-                    self.keep_gh(now, GhOutcome::Held(status.clone()));
-                    return self.data(status, vec![]);
-                }
+            None => match self.ask_gh(now).await {
+                Ok(token) => (token, false),
+                Err(status) => return self.data(status, vec![]),
             },
         };
         let (code, data) = self.fetch_via_internal(&token, TokenSource::Gh).await;
-        if code.is_some_and(is_refusal) {
-            // Refused: no new gh run and no request for `GH_TTL`.
-            self.keep_gh(Instant::now(), GhOutcome::Held(data.status.clone()));
+        let Some(code) = code.filter(|c| is_refusal(*c)) else {
+            return data;
+        };
+        // A 404 is an account without Copilot: another token says no more.
+        if kept && matches!(code, 401 | 403) {
+            debug!("copilot: a kept gh token was refused; asking gh once more");
+            let fresh = match self.ask_gh(Instant::now()).await {
+                Ok(fresh) => fresh,
+                Err(status) => return self.data(status, vec![]),
+            };
+            // The same token again is refused already: not sent twice.
+            if fresh != token {
+                let (code, data) = self.fetch_via_internal(&fresh, TokenSource::Gh).await;
+                if code.is_some_and(is_refusal) {
+                    self.keep_gh(Instant::now(), GhOutcome::Held(data.status.clone()));
+                }
+                return data;
+            }
         }
+        // Refused: no new gh run and no request for `GH_TTL`.
+        self.keep_gh(Instant::now(), GhOutcome::Held(data.status.clone()));
         data
+    }
+
+    /// One gh run, its answer kept from `at` for `GH_TTL`: the token, or
+    /// the row's status when gh gave none.
+    async fn ask_gh(&self, at: Instant) -> std::result::Result<String, ProviderStatus> {
+        match (self.gh)().await {
+            GhToken::Token(token) => {
+                self.keep_gh(at, GhOutcome::Token(token.clone()));
+                Ok(token)
+            }
+            other => {
+                let status = gh_failure_status(&other);
+                self.keep_gh(at, GhOutcome::Held(status.clone()));
+                Err(status)
+            }
+        }
     }
 
     fn keep_gh(&self, at: Instant, outcome: GhOutcome) {
@@ -353,11 +386,22 @@ pub fn quota_outcome(code: u16, body: &str, source: TokenSource) -> (ProviderSta
 
 /// Parse quota_snapshots into metrics.
 ///
-/// Schema verified by a manual request on 2026-06-10 (free_limited_copilot plan):
-/// {"copilot_plan": "individual", "quota_reset_date": "...", "quota_snapshots": {
-///   "premium_interactions": {"entitlement": N, "remaining": N, "unlimited": bool, ...},
-///   "chat": {...}, "completions": {...}}}
-/// `remaining` can be negative (overage). Unlimited quotas are skipped.
+/// Schema verified by manual requests on 2026-06-10 (free_limited_copilot
+/// plan) and 2026-11-21 (individual plan, token-based billing):
+/// {"copilot_plan": "individual", "token_based_billing": true,
+///  "quota_reset_date": "2026-12-01",
+///  "quota_reset_date_utc": "2026-12-01T00:00:00.000Z", "quota_snapshots": {
+///   "chat": {"entitlement": 200, "remaining": 199, "quota_remaining": 199.6,
+///            "percent_remaining": 99.8, "has_quota": true, "unlimited": false,
+///            "credits_used": ..., "overage_count": 0, "overage_permitted": bool,
+///            "quota_reset_at": 0, "token_based_billing": true,
+///            "timestamp_utc": "..."},
+///   "completions": {...}, "premium_interactions": {"entitlement": 0,
+///            "has_quota": false, ...}}}
+/// Numbers may be decimals (credit-billed plans): `quota_remaining` (a
+/// float) is preferred to `remaining`, and both are rounded to whole
+/// requests. `remaining` can be negative (overage). Unlimited quotas, and
+/// those with `has_quota: false` or no entitlement, are skipped.
 pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
     let value: serde_json::Value = serde_json::from_str(body)?;
     let snapshots = match value.get("quota_snapshots") {
@@ -365,13 +409,21 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
         _ => return Ok(vec![]),
     };
 
-    // Quota reset date "YYYY-MM-DD", midnight UTC.
+    // The reset: `quota_reset_date_utc` (RFC 3339) when it reads, else
+    // `quota_reset_date` ("YYYY-MM-DD") at midnight UTC.
     let reset_at = value
-        .get("quota_reset_date")
+        .get("quota_reset_date_utc")
         .and_then(|v| v.as_str())
-        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc));
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .or_else(|| {
+            value
+                .get("quota_reset_date")
+                .and_then(|v| v.as_str())
+                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+        });
 
     let mut metrics = Vec::new();
     let mut push_quota = |key: &str, label: &str| {
@@ -379,33 +431,37 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
             Some(s) if s.is_object() => s,
             _ => return,
         };
-        // Unlimited — nothing to chart.
-        if snap
-            .get("unlimited")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
+        let flag = |name: &str| snap.get(name).and_then(|v| v.as_bool());
+        // Unlimited, or no quota on this plan: nothing to chart.
+        if flag("unlimited") == Some(true) || flag("has_quota") == Some(false) {
             return;
         }
-        let entitlement = snap.get("entitlement").and_then(|v| v.as_u64());
-        let remaining = snap.get("remaining").and_then(|v| v.as_i64());
-        if let (Some(limit), Some(remaining)) = (entitlement, remaining) {
-            if limit == 0 {
-                return;
-            }
-            // remaining < 0 = overage → `used` clamps to the limit in the UI.
-            let used = (limit as i64 - remaining).max(0) as u64;
-            metrics.push(Metric {
-                label: label.to_string(),
-                used,
-                limit: Some(limit),
-                unit: MetricUnit::Requests,
-                reset_at,
-                window: MetricWindow::Session,
-                unified_pool: false,
-                extra_only: false,
-            });
+        let number = |name: &str| {
+            snap.get(name)
+                .and_then(|v| v.as_f64())
+                .filter(|n| n.is_finite())
+        };
+        let entitlement = number("entitlement");
+        let remaining = number("quota_remaining").or_else(|| number("remaining"));
+        let (Some(entitlement), Some(remaining)) = (entitlement, remaining) else {
+            return;
+        };
+        if entitlement <= 0.0 {
+            return;
         }
+        let limit = entitlement.round().max(1.0);
+        // remaining < 0 = overage → `used` clamps to the limit in the UI.
+        let used = (entitlement - remaining).max(0.0).round();
+        metrics.push(Metric {
+            label: label.to_string(),
+            used: used as u64,
+            limit: Some(limit as u64),
+            unit: MetricUnit::Requests,
+            reset_at,
+            window: MetricWindow::Session,
+            unified_pool: false,
+            extra_only: false,
+        });
     };
 
     // Order matters: the first metric drives the progress bar.
@@ -448,6 +504,23 @@ mod tests {
         (gh, runs)
     }
 
+    /// A stand-in for gh that counts its runs and gives `answers` in order,
+    /// the last one repeating.
+    fn gh_answering(answers: Vec<GhToken>) -> (GhRunner, Arc<AtomicUsize>) {
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counter = runs.clone();
+        let gh: GhRunner = Arc::new(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let answer = answers[n.min(answers.len() - 1)].clone();
+            Box::pin(async move { answer })
+        });
+        (gh, runs)
+    }
+
+    fn token(t: &str) -> GhToken {
+        GhToken::Token(t.to_string())
+    }
+
     fn status_of(data: &ProviderData) -> String {
         format!("{:?}", data.status)
     }
@@ -485,8 +558,9 @@ mod tests {
         }
     }
 
-    /// A token the endpoint refuses (an account without Copilot) is neither
-    /// sent again nor asked of gh again for 15 minutes; the row says why.
+    /// A token gh has just given that the endpoint refuses (an account
+    /// without Copilot) is neither sent again nor asked of gh again for 15
+    /// minutes; the row says why.
     #[tokio::test]
     async fn a_refused_gh_token_waits_fifteen_minutes() {
         for (code, words) in [
@@ -541,6 +615,98 @@ mod tests {
         assert_eq!(seen[0].auth.as_deref(), Some("token gh-token"));
     }
 
+    /// A kept token that lapsed (gh 2.103+ gives expiring tokens and renews
+    /// them in `gh auth token`): refused with 401 or 403, gh is asked once
+    /// more right away and the request is sent once more in the same cycle
+    /// with the new token, which is then kept.
+    #[tokio::test]
+    async fn a_refused_kept_gh_token_is_asked_of_gh_once_more() {
+        for code in [401, 403] {
+            let server = TestServer::start();
+            server.route(
+                "/copilot_internal/user",
+                vec![
+                    Reply::ok(QUOTA_BODY),
+                    Reply::status(code),
+                    Reply::ok(QUOTA_BODY),
+                ],
+            );
+            let (gh, runs) = gh_answering(vec![token("old"), token("new")]);
+            let p = CopilotProvider::for_test(config(true), &server.base, None, gh);
+            for _ in 0..4 {
+                let data = p.fetch().await.unwrap();
+                assert!(matches!(data.status, ProviderStatus::Ok), "{code}");
+            }
+            assert_eq!(runs.load(Ordering::SeqCst), 2, "{code}");
+            let auth: Vec<Option<String>> = server.seen().into_iter().map(|s| s.auth).collect();
+            let sent = |t: &str| Some(format!("token {t}"));
+            // One request per cycle, and one more in the cycle of the refusal.
+            assert_eq!(
+                auth,
+                [
+                    sent("old"),
+                    sent("old"),
+                    sent("new"),
+                    sent("new"),
+                    sent("new")
+                ],
+                "{code}"
+            );
+        }
+    }
+
+    /// The new token refused as well: the 15-minute wait, with no further
+    /// gh run or request. gh giving the same token again sends nothing more;
+    /// gh giving none now holds its own reason.
+    #[tokio::test]
+    async fn a_second_refusal_waits_fifteen_minutes() {
+        let cases: [(Vec<GhToken>, usize, &str); 3] = [
+            (vec![token("old"), token("new")], 3, "gh token rejected"),
+            (vec![token("old")], 2, "gh token rejected"),
+            (vec![token("old"), GhToken::NotSignedIn], 2, "NotConfigured"),
+        ];
+        for (answers, requests, words) in cases {
+            let server = TestServer::start();
+            server.route(
+                "/copilot_internal/user",
+                vec![Reply::ok(QUOTA_BODY), Reply::status(401)],
+            );
+            let (gh, runs) = gh_answering(answers);
+            let p = CopilotProvider::for_test(config(true), &server.base, None, gh);
+            assert!(matches!(
+                p.fetch().await.unwrap().status,
+                ProviderStatus::Ok
+            ));
+            for _ in 0..4 {
+                let status = match p.fetch().await.unwrap().status {
+                    ProviderStatus::NetworkError(m) => m,
+                    other => format!("{other:?}"),
+                };
+                assert_eq!(status, words);
+            }
+            assert_eq!(runs.load(Ordering::SeqCst), 2, "{words}");
+            assert_eq!(server.count("/copilot_internal/user"), requests, "{words}");
+        }
+    }
+
+    /// A kept token answered 404 (an account without Copilot): no extra gh
+    /// run, the 15-minute wait at once.
+    #[tokio::test]
+    async fn a_kept_gh_token_without_copilot_is_not_asked_again() {
+        let server = TestServer::start();
+        server.route(
+            "/copilot_internal/user",
+            vec![Reply::ok(QUOTA_BODY), Reply::status(404)],
+        );
+        let (gh, runs) = gh_answering(vec![token("old"), token("new")]);
+        let p = CopilotProvider::for_test(config(true), &server.base, None, gh);
+        for _ in 0..4 {
+            let _ = p.fetch().await.unwrap();
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(server.count("/copilot_internal/user"), 2);
+    }
+
     /// A pasted PAT goes first, and gh is never run for it.
     #[tokio::test]
     async fn a_pasted_pat_needs_no_gh() {
@@ -571,6 +737,86 @@ mod tests {
             ProviderStatus::Ok
         ));
         assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    /// The answer verified live on 2026-11-21: an individual plan with
+    /// token-based billing (ids and the login replaced by placeholders).
+    /// Premium has no quota on it and is skipped; the fractional
+    /// `quota_remaining` is the one read.
+    #[test]
+    fn the_token_based_billing_answer_parses() {
+        let body = r#"{"login": "someone", "analytics_tracking_id": "...",
+            "copilot_plan": "individual", "token_based_billing": true,
+            "quota_reset_date": "2026-12-01",
+            "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
+            "quota_snapshots": {
+              "chat": {"entitlement": 200, "remaining": 199, "quota_remaining": 199.6,
+                "percent_remaining": 99.8, "has_quota": true, "unlimited": false,
+                "credits_used": 0.4, "overage_count": 0, "overage_permitted": false,
+                "quota_reset_at": 0, "token_based_billing": true,
+                "timestamp_utc": "2026-11-21T00:00:00.000Z", "quota_id": "..."},
+              "completions": {"entitlement": 2000, "remaining": 1980,
+                "quota_remaining": 1979.5, "percent_remaining": 98.975,
+                "has_quota": true, "unlimited": false, "credits_used": 20.5,
+                "overage_count": 0, "overage_permitted": false, "quota_reset_at": 0,
+                "token_based_billing": true, "timestamp_utc": "2026-11-21T00:00:00.000Z",
+                "quota_id": "..."},
+              "premium_interactions": {"entitlement": 0, "remaining": 0,
+                "quota_remaining": 0.0, "percent_remaining": 0.0, "has_quota": false,
+                "unlimited": false, "credits_used": 0, "overage_count": 0,
+                "overage_permitted": false, "quota_reset_at": 0,
+                "token_based_billing": true, "timestamp_utc": "2026-11-21T00:00:00.000Z",
+                "quota_id": "..."}}}"#;
+        let metrics = parse_copilot_quotas(body).unwrap();
+        let got: Vec<(&str, u64, Option<u64>)> = metrics
+            .iter()
+            .map(|m| (m.label.as_str(), m.used, m.limit))
+            .collect();
+        // 200 - 199.6 = 0.4 and 2000 - 1979.5 = 20.5, in whole requests.
+        assert_eq!(
+            got,
+            [("Chat", 0, Some(200)), ("Completions", 21, Some(2000))]
+        );
+        let reset = DateTime::parse_from_rfc3339("2026-12-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert!(metrics.iter().all(|m| m.reset_at == Some(reset)));
+        assert!(metrics
+            .iter()
+            .all(|m| matches!(m.unit, MetricUnit::Requests)));
+        let (status, _) = quota_outcome(200, body, TokenSource::Gh);
+        assert!(matches!(status, ProviderStatus::Ok));
+    }
+
+    /// Credit-billed plans may count in decimals: a decimal entitlement
+    /// reads, overage still counts past the limit, and a snapshot with
+    /// `has_quota: false`, no entitlement or no number at all is skipped.
+    #[test]
+    fn decimal_quotas_are_rounded_and_empty_ones_skipped() {
+        let body = r#"{"quota_reset_date": "2099-01-01", "quota_snapshots": {
+            "premium_interactions": {"entitlement": 300.0, "quota_remaining": 120.4,
+                "remaining": 120, "has_quota": true, "unlimited": false},
+            "chat": {"entitlement": 49.6, "remaining": -10.5},
+            "completions": {"entitlement": 2000, "remaining": 5, "has_quota": false}}}"#;
+        let metrics = parse_copilot_quotas(body).unwrap();
+        let got: Vec<(&str, u64, Option<u64>)> = metrics
+            .iter()
+            .map(|m| (m.label.as_str(), m.used, m.limit))
+            .collect();
+        // 300 - 120.4 = 179.6; 49.6 + 10.5 = 60.1, over the limit of 50.
+        assert_eq!(got, [("Premium", 180, Some(300)), ("Chat", 60, Some(50))]);
+        for empty in [
+            r#"{"quota_snapshots": {"chat": {"entitlement": 0.0, "quota_remaining": 0.0}}}"#,
+            r#"{"quota_snapshots": {"chat": {"entitlement": -5, "remaining": 0}}}"#,
+            r#"{"quota_snapshots": {"chat": {"entitlement": "200", "remaining": 1}}}"#,
+            r#"{"quota_snapshots": {"chat": {"entitlement": 200}}}"#,
+            r#"{"quota_snapshots": {"chat": {"entitlement": 200, "remaining": 1, "has_quota": false}}}"#,
+        ] {
+            assert!(parse_copilot_quotas(empty).unwrap().is_empty(), "{empty}");
+        }
+        // A tiny decimal entitlement still has a limit to chart against.
+        let tiny = r#"{"quota_snapshots": {"chat": {"entitlement": 0.3, "quota_remaining": 0.1}}}"#;
+        assert_eq!(parse_copilot_quotas(tiny).unwrap()[0].limit, Some(1));
     }
 
     #[test]

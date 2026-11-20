@@ -24,9 +24,9 @@ env:
   # Inno Setup, pinned: the official installer from the jrsoftware/issrc
   # release, signed by Pyrsys B.V. Update both together, from a download
   # you have checked.
-  INNO_VERSION: 6.7.3
-  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
-  INNO_SHA256: 9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732
+  INNO_VERSION: 6.7.4
+  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+  INNO_SHA256: A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C
 
 jobs:
   build-installer:
@@ -35,7 +35,7 @@ jobs:
     # see the notes in tools/release_sign.rs.
     environment: release
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 

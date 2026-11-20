@@ -213,6 +213,16 @@ impl Picker {
                 }
                 vec![act]
             }
+            Target::Tip(part, place) => {
+                if !self.tip_enabled(*part, *place) {
+                    return Vec::new();
+                }
+                vec![PickerAction::SetTip {
+                    part: *part,
+                    place: *place,
+                    on: !self.tip_on(*part, *place),
+                }]
+            }
             Target::Source(source) => {
                 if !self.any_part_on() || self.source() == *source {
                     return Vec::new();

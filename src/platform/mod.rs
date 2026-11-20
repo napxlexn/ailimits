@@ -6,6 +6,8 @@ mod win;
 mod win_uia;
 
 // Read-only lookups in other apps' SQLite databases (winsqlite3.dll).
+#[cfg(target_os = "windows")]
+pub mod menu_hover;
 pub mod sqlite;
 pub mod taskbar_geom;
 

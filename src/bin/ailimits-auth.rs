@@ -250,8 +250,8 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
     };
     println!("gh CLI sign-in for github.com (Copilot): {gh}");
 
-    // Antigravity (Google): the Credential Manager session first, then the
-    // legacy Gemini CLI file — the same order the provider tries.
+    // Antigravity (Google): the Credential Manager session, the provider's
+    // one source (the legacy Gemini CLI file is no longer read).
     let keyring = if !allowed("antigravity") {
         NOT_ALLOWED
     } else if ailimits::providers::antigravity::keyring_token_present() {
@@ -260,10 +260,6 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
         "no (run Antigravity once)"
     };
     println!("Antigravity keyring (gemini:antigravity): {keyring}");
-    println!(
-        "legacy Gemini CLI oauth_creds.json: {}",
-        presence(&paths.gemini_oauth_creds())
-    );
 
     // Grok CLI login (in GROK_HOME when it is set): the same session rules
     // as the provider. Only the expiry is shown, never the token.

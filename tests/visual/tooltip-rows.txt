@@ -1,16 +1,20 @@
 # Visual baseline 'tooltip-rows': name, size, FNV-1a of the RGBA pixels.
 # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
-every-40-dark 289x176 5a7b9d955e9b6bdd
-every-40-light 289x176 ae1b4a4150c911e9
-every-48-dark 336x212 f4440fb3491b9ce7
-every-48-light 336x212 a174d89a7e834c7d
-every-72-dark 489x323 8a1abf56dd2d6fa4
-every-72-light 489x323 970f0c89f3b22497
+every-40-dark 250x176 56492df98cf5a870
+every-40-light 250x176 deb73cb2a1da1bf7
+every-48-dark 291x212 523004e2883aa6aa
+every-48-light 291x212 b44f4ae18900daae
+every-72-dark 425x323 6e27468438a89219
+every-72-light 425x323 229594b9e175439e
 first-install-48-dark 214x42 3d2e95899ac5e74b
 first-install-48-light 214x42 31b813ed77a9ef78
-mix-48-dark 275x110 88d30dfdc915b323
-mix-48-light 275x110 f9d2af40e492f5eb
-unlabelled-48-dark 186x76 18a0b44a109c67da
-unlabelled-48-light 186x76 559bb00fc0f64568
-wrap-48-dark 397x76 899e7b72f684770b
-wrap-48-light 397x76 539ad3ae65f1502d
+mix-48-dark 210x110 e787bf762dc74353
+mix-48-light 210x110 fb8b18b6aa220d25
+mix-reset-48-dark 274x110 091729709c4cbbfe
+mix-reset-48-light 274x110 1678ef7d72133fd1
+unlabelled-48-dark 142x76 cf67765ba1ae9874
+unlabelled-48-light 142x76 5e4413082399a644
+unlabelled-reset-only-48-dark 150x76 ebcfbd92a9e7989f
+unlabelled-reset-only-48-light 150x76 3fb33e9c3489b064
+wrap-48-dark 397x76 dc7c9b1475333454
+wrap-48-light 397x76 cd20755c1985243f

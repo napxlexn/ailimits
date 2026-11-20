@@ -16,7 +16,8 @@
 // - Grok CLI config.toml: `[models] default_reasoning_effort` (`default`,
 //   the model, from the CLI's own docs: user-guide/05-configuration.md).
 // - Copilot CLI settings.json: top-level `model` ("auto"); `effortLevel`
-//   from its docs, not set there.
+//   from its docs, not set there. GitHub documents the file as JSONC:
+//   comments and trailing commas are read past.
 // - Antigravity CLI settings.json (.gemini\antigravity-cli): top-level
 //   `model`, stored as the display label ("Claude Sonnet 4.6 (Thinking)").
 // - Cursor (the editor), verified 2026-11-16: the state database's entry
@@ -157,10 +158,79 @@ pub(super) fn grok(bytes: &[u8]) -> Option<ModelInfo> {
     )
 }
 
-/// Copilot CLI `settings.json`: `model`, `effortLevel`.
+/// Copilot CLI `settings.json`: `model`, `effortLevel`. GitHub documents the
+/// file as JSON with comments, so comments and trailing commas are allowed.
 pub(super) fn copilot(bytes: &[u8]) -> Option<ModelInfo> {
-    let root: Value = serde_json::from_slice(bytes).ok()?;
+    let root: Value = serde_json::from_slice(&jsonc_to_json(bytes)).ok()?;
     found(clean(root.get("model")), clean(root.get("effortLevel")))
+}
+
+/// JSON with comments (JSONC) made plain JSON: a `//` comment to the end of
+/// its line and a `/* */` comment, outside strings, become a space, and a
+/// comma with nothing but whitespace or comments before a closing `}` or `]`
+/// goes. Every other byte, strings included, is kept as it is, so a file
+/// that is broken stays broken for the JSON parser. Only ASCII bytes are
+/// looked at, which never occur inside a UTF-8 sequence.
+fn jsonc_to_json(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    // Where the last comma sits in `out` while only whitespace and comments
+    // followed it: a trailing one if a `}` or `]` comes next.
+    let mut comma: Option<usize> = None;
+    let mut in_string = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_string {
+            out.push(b);
+            match b {
+                // An escape: the next byte is the string's, whatever it is.
+                b'\\' => {
+                    if let Some(&next) = bytes.get(i + 1) {
+                        out.push(next);
+                        i += 1;
+                    }
+                }
+                b'"' => in_string = false,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        match (b, bytes.get(i + 1)) {
+            (b'/', Some(b'/')) => {
+                // The newline that ends it stays.
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                out.push(b' ');
+                continue;
+            }
+            (b'/', Some(b'*')) => {
+                // Unclosed: the rest of the file is the comment.
+                i = bytes[i + 2..]
+                    .windows(2)
+                    .position(|w| w == b"*/")
+                    .map_or(bytes.len(), |at| i + 2 + at + 2);
+                out.push(b' ');
+                continue;
+            }
+            (b'}' | b']', _) => {
+                if let Some(at) = comma.take() {
+                    out[at] = b' ';
+                }
+            }
+            (b',', _) => comma = Some(out.len()),
+            (b'"', _) => {
+                comma = None;
+                in_string = true;
+            }
+            (b, _) if b.is_ascii_whitespace() => {}
+            _ => comma = None,
+        }
+        out.push(b);
+        i += 1;
+    }
+    out
 }
 
 /// Cursor's Agent model, from the `composer` object of the editor's model
@@ -494,5 +564,54 @@ mod tests {
             ),
             info("Claude Sonnet 4.6 (Thinking)", None)
         );
+    }
+
+    /// The Copilot CLI's settings.json is JSON with comments: line and
+    /// block comments and trailing commas are read past, while the same
+    /// characters inside a string are the string's.
+    #[test]
+    fn copilot_reads_json_with_comments() {
+        let file = b"{\r\n  // The model for new sessions.\r\n  \"model\": \"gpt-5.5\", // chosen with /model\r\n  /* effort,\r\n     from its docs */\r\n  \"effortLevel\": \"high\",\r\n  \"trustedFolders\": [\"C:\\\\work\", \"D:\\\\x\",],\r\n  \"banner\": \"https://example.invalid/a // b /* c */\",\r\n}\r\n";
+        assert_eq!(copilot(file), info("gpt-5.5", Some("high")));
+        // A string that keeps comment marks and escaped quotes as they are.
+        let odd = br#"{"model": "a \"//\" b /* c */", /* x */ "effortLevel": "low" /* y */ ,}"#;
+        assert_eq!(copilot(odd), info(r#"a "//" b /* c */"#, Some("low")));
+        // A comment right after the comma still leaves it trailing.
+        assert_eq!(
+            copilot(b"{\"model\": \"auto\", // last\n}"),
+            info("auto", None)
+        );
+        // Non-ASCII text in a comment or a string passes untouched.
+        assert_eq!(
+            copilot("{/* café, naïve */ \"model\": \"gpt-5.5 ü\"}".as_bytes()),
+            info("gpt-5.5 ü", None)
+        );
+        // Still broken: an unclosed block comment or string, a stray comma,
+        // a comment that would join two values.
+        for broken in [
+            &b"{\"model\": \"auto\" /* open"[..],
+            b"{\"model\": \"auto",
+            b"{\"model\": \"auto\",,}",
+            b"{\"model\": 1/**/2}",
+            b"// only a comment",
+        ] {
+            assert_eq!(
+                copilot(broken),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(broken)
+            );
+        }
+    }
+
+    #[test]
+    fn jsonc_becomes_plain_json() {
+        let plain = |s: &str| String::from_utf8(jsonc_to_json(s.as_bytes())).unwrap();
+        assert_eq!(plain(r#"{"a": [1, 2,], }"#), r#"{"a": [1, 2 ]  }"#);
+        assert_eq!(plain("[1 /* x */, 2] // y"), "[1  , 2]  ");
+        assert_eq!(plain(r#""a,]" , ]"#), r#""a,]"   ]"#);
+        // Plain JSON is unchanged.
+        let json = r#"{"model": "x", "n": [1, {"k": "v"}], "s": "\\"}"#;
+        assert_eq!(plain(json), json);
     }
 }

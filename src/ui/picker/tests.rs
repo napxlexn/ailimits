@@ -94,6 +94,8 @@ fn input() -> PickerInput {
         // Untouched: the first two that run.
         taskbar_rows: vec!["claude".into(), "codex".into()],
         model: UiModel::default(),
+        tip: UiNumbers::default(),
+        panel: UiNumbers::PERCENT_ONLY,
         reads: Reads {
             sign_in: base.iter().map(|s| s.to_string()).collect(),
             ..Reads::default()
@@ -691,6 +693,8 @@ fn escape_the_cross_and_a_click_outside_close() {
 // ─── Welcome and the update notice ───────────────────────────
 
 /// The ticks on, by target.
+/// What is ticked of what can be chosen to show: not the tooltip's
+/// Percent, on by default as a setting of every tooltip row.
 fn ticked_targets(p: &Picker) -> Vec<Target> {
     p.frame()
         .els
@@ -698,7 +702,7 @@ fn ticked_targets(p: &Picker) -> Vec<Target> {
         .filter_map(|(_, el)| match el {
             El::Tick {
                 on: true, target, ..
-            } => Some(target.clone()),
+            } if !matches!(target, Target::Tip(..)) => Some(target.clone()),
             _ => None,
         })
         .collect()
@@ -1338,6 +1342,49 @@ fn a_fresh_install_asks_about_the_tools_found() {
     assert_eq!(ask.picked, ["claude", "codex"]);
 }
 
+// ─── The tooltip's percent and reset time ────────────────────
+
+/// Percent and Reset time have a tick in the Tooltip column and one in
+/// the Taskbar column, none for the widget, which always shows both. The
+/// tooltip starts with both, the panel with the percentage alone; the last
+/// one on in a column cannot be unticked.
+#[test]
+fn the_tooltip_and_the_panel_choose_their_percent_and_reset_time() {
+    use crate::config::schema::{NumbersOn, TipPart, UiNumbers};
+    let tip = |part| Target::Tip(part, NumbersOn::Tooltip);
+    let panel = |part| Target::Tip(part, NumbersOn::Panel);
+    let set = |part, place, on| PickerAction::SetTip { part, place, on };
+    let mut p = picker(input());
+    let text = texts(&p);
+    assert!(
+        text.contains("Percent") && text.contains("Reset time"),
+        "{text}"
+    );
+    assert!(ticked(&p, &tip(TipPart::Percent)) && ticked(&p, &tip(TipPart::Reset)));
+    assert!(ticked(&p, &panel(TipPart::Percent)) && !ticked(&p, &panel(TipPart::Reset)));
+    assert!(!usable(&p, &panel(TipPart::Percent)));
+    assert_eq!(
+        click(&mut p, &tip(TipPart::Reset)),
+        [set(TipPart::Reset, NumbersOn::Tooltip, false)]
+    );
+    assert_eq!(
+        click(&mut p, &panel(TipPart::Reset)),
+        [set(TipPart::Reset, NumbersOn::Panel, true)]
+    );
+    let mut i = input();
+    i.tip = UiNumbers::PERCENT_ONLY;
+    let mut p = picker(i);
+    assert!(!usable(&p, &tip(TipPart::Percent)));
+    assert!(click(&mut p, &tip(TipPart::Percent)).is_empty());
+    // The ticks sit in their columns.
+    let (_, t) = area(&p, &tip(TipPart::Reset)).unwrap();
+    let (_, effort) = area(&p, &part(ModelPart::Effort, Surface::Tooltip)).unwrap();
+    assert_eq!(t.x, effort.x);
+    let (_, k) = area(&p, &panel(TipPart::Reset)).unwrap();
+    let (_, claude) = area(&p, &Target::Taskbar("claude".into())).unwrap();
+    assert_eq!(k.x, claude.x);
+}
+
 // ─── Taskbar ─────────────────────────────────────────────────
 
 fn taskbar(id: &str) -> Target {
@@ -1767,6 +1814,58 @@ fn the_question_keeps_its_buttons_in_any_height() {
     }
 }
 
+/// Antigravity's read says what it may cost before it is allowed, wherever
+/// it is asked for or listed: its own question, the welcome, Allow all and
+/// the update notice; no other tool's question carries it. Its question
+/// keeps its buttons and its last line in any height.
+#[test]
+fn antigravity_says_what_its_read_may_cost() {
+    let risk = crate::consent::ANTIGRAVITY_RISK;
+    let says = |p: &Picker| {
+        let words = texts(p).split_whitespace().collect::<Vec<_>>().join(" ");
+        words.contains(risk)
+    };
+    let mut not_yet = input();
+    not_yet.reads.sign_in.retain(|s| s != "antigravity");
+    // Its own question, from a tick.
+    let mut p = picker(not_yet.clone());
+    click(&mut p, &row("antigravity", Surface::Widget));
+    assert_eq!(
+        p.ask.as_ref().unwrap().question,
+        Question::Read(ReadKind::SignIn("antigravity".into()))
+    );
+    assert!(says(&p), "{}", texts(&p));
+    // Another tool's question does not.
+    let mut i = input();
+    i.reads.sign_in.retain(|s| s != "claude");
+    let mut other = picker(i);
+    click(&mut other, &row("claude", Surface::Widget));
+    assert!(other.ask.is_some());
+    assert!(!texts(&other).contains("suspended"));
+    // The welcome's entry, Allow all's list and the update notice.
+    assert!(says(&picker(welcome(vec!["claude", "antigravity"]))));
+    let mut i = welcome(vec!["claude", "codex", "antigravity"]);
+    i.mode = PickerMode::Normal;
+    let mut all = picker(i);
+    click(&mut all, &row("codex", Surface::Widget));
+    assert!(area(&all, &Target::AllowAll).is_some());
+    assert!(says(&all));
+    assert!(says(&picker(notice())));
+    // With the real font, in every height the welcome is checked in.
+    let renderer = Rc::new(Renderer::new().expect("a system font"));
+    let r = renderer.clone();
+    let mut p = Picker::new(not_yet, move |t, s| r.text_width(t, s));
+    click(&mut p, &row("antigravity", Surface::Widget));
+    let mut heights: Vec<f32> = vec![300.0, 350.0, 400.0, 450.0, 500.0, 560.0];
+    for scale in [1.25, 1.5, 1.75, 2.0] {
+        heights.push(max_box_height((0, 0, 1280, 680), scale));
+    }
+    for h in heights {
+        p.set_max_height(h);
+        check_question(&mut p, None, &format!("antigravity, {h} px"));
+    }
+}
+
 fn check_question(p: &mut Picker, draw: Option<(&Renderer, f32)>, what: &str) {
     let inside = |a: &Rect, b: &Rect| {
         a.x >= b.x - 0.01
@@ -1924,6 +2023,14 @@ fn visual_baseline_picker() {
     click(&mut ask, &row("cursor", Surface::Widget));
     ask.focus_visible = true;
     items.push(("ask-sign-in-dark".to_string(), draw(&ask, false, 1.0)));
+    // Antigravity's question, with what its read may cost.
+    let mut ask = make({
+        let mut i = input();
+        i.reads.sign_in.retain(|s| s != "antigravity");
+        i
+    });
+    click(&mut ask, &row("antigravity", Surface::Widget));
+    items.push(("ask-risk-dark".to_string(), draw(&ask, false, 1.0)));
     let mut ask = make(input());
     click(&mut ask, &part(ModelPart::Model, Surface::Widget));
     items.push(("ask-settings-light".to_string(), draw(&ask, true, 1.0)));

@@ -354,8 +354,39 @@ impl Picker {
             }
         }
 
-        // Model, version, effort.
+        // What each tooltip row shows, then the model, version, effort.
         self.flow_sep(f);
+        for (part, label, note, hint) in TIP_PARTS {
+            let notes = self.wrap(
+                &[span(note, SIZE_NOTE, Ink::Muted, false)],
+                LABEL_RIGHT - PAD_X,
+            );
+            let block = lh(SIZE_TEXT) + notes.len() as f32 * lh(SIZE_NOTE);
+            let h = (block + 8.0).max(ROW_H);
+            let y = f.y;
+            f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
+            let top = y + ((h - block) / 2.0).round();
+            f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
+            f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
+            f.els.push(El::Hint {
+                rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
+                text: hint.to_string(),
+            });
+            for (col, place, cx) in [
+                (1, NumbersOn::Tooltip, COL_TOOLTIP),
+                (2, NumbersOn::Panel, COL_TASKBAR),
+            ] {
+                f.els.push(El::Tick {
+                    target: Target::Tip(part, place),
+                    cell: rect(cx - COL_W / 2.0, y, COL_W, h),
+                    on: self.tip_on(part, place),
+                    enabled: self.tip_enabled(part, place),
+                    nav: (f.nav, col),
+                });
+            }
+            f.nav += 1;
+            f.y += h;
+        }
         for (part, label, note) in PARTS {
             let notes = self.wrap(
                 &[span(note, SIZE_NOTE, Ink::Muted, false)],
@@ -743,6 +774,9 @@ impl Picker {
                     spans.push(span(s, SIZE_NOTE, Ink::Text, false));
                 }
             }
+            if let Some(risk) = info.risk {
+                spans.push(span(format!(". {risk}"), SIZE_TEXT, Ink::Text, false));
+            }
             self.flow_item(f, &spans, width);
         }
         f.y += 4.0;
@@ -881,6 +915,18 @@ impl Picker {
         f.y += f.lines(&l, ASK_PAD, f.y, lh(SIZE_TEXT)) + 4.0;
         for file in files {
             self.flow_bullet(&mut f, &file, inner);
+        }
+        // What reading this tool's sign-in may cost, before it is allowed.
+        let risk = match &ask.question {
+            Question::Read(ReadKind::SignIn(p)) => {
+                crate::consent::read_info(p).and_then(|i| i.risk)
+            }
+            _ => None,
+        };
+        if let Some(risk) = risk {
+            f.y += 4.0;
+            let r = self.wrap(&[span(risk, SIZE_TEXT, Ink::Text, false)], inner);
+            f.y += f.lines(&r, ASK_PAD, f.y, lh(SIZE_TEXT)) + 2.0;
         }
         if ask.question == Question::Found {
             for id in &ask.tools {

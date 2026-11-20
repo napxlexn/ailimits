@@ -163,7 +163,7 @@ none of the auth sources listed below until you allow it.
 1. **Run it.** On first launch a welcome window opens (the same one as
    *Rows and models...* in the menu). Its question lists the tools found on
    this PC (Claude Code, Codex CLI, the Copilot CLI or GitHub CLI,
-   Antigravity or the older Gemini CLI, the Grok CLI, Cursor), each with a
+   Antigravity, the Grok CLI, Cursor), each with a
    tick, and names every file it would read and where each token goes.
    Tools found by a folder of their own start ticked; GitHub CLI alone (for
    Copilot) or `.gemini` alone (for Antigravity) is listed unticked.
@@ -179,7 +179,10 @@ none of the auth sources listed below until you allow it.
    pins it.
 3. **Set the look.** Right-click for detail level (Compact, Medium, Expanded),
    bar layout (vertical or horizontal), palette, opacity, brightness and
-   saturation. The animations above show each one. *Rows and models...*
+   saturation. The animations above show each one. Resting the pointer on
+   one of these items shows it on the widget, the panel and the tray icon
+   before you click; leaving the menu without a click puts it back.
+   *Rows and models...*
    picks the rows the widget and the panel's tooltip show (extra rows such as
    Claude's Opus week included) and an optional label with the model in use:
    model, version, effort.
@@ -203,7 +206,7 @@ your machine, strictly read-only and only once you allow each one:
 | Claude | `%USERPROFILE%\.claude\.credentials.json` (Claude Code OAuth token) | run [Claude Code](https://claude.com/claude-code) at least once |
 | Codex | `%USERPROFILE%\.codex\auth.json` (Codex CLI token; in `CODEX_HOME` when it is set) | run `codex login` once |
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
-| Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | run Antigravity CLI once, or use a still-supported Gemini CLI flow |
+| Antigravity | Windows Credential Manager target `gemini:antigravity` | run Antigravity CLI once |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
 | Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`): Cursor's own sign-in page opens in the browser; ~60-day session |
 
@@ -224,14 +227,17 @@ are absolute paths.
 | **Claude** | ~8 hours after your last Claude Code session (the token's real lifetime) | shows the last value greyed, with its age |
 | **Codex** | while you actively use Codex CLI (its token is shorter-lived) | the last value greyed, with its age |
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
-| **Antigravity** | while Antigravity CLI refreshes its keyring token, or a supported Gemini CLI flow refreshes `oauth_creds.json` | the last value greyed, with its age |
+| **Antigravity** | while Antigravity CLI refreshes its keyring token | the last value greyed, with its age |
 | **Grok** | up to ~6 hours after your last Grok CLI session (the token's real lifetime) | the last value greyed, with its age |
 | **Cursor** | about 60 days after you sign in (the session's lifetime) | the last value greyed, and `sign in to Cursor again` |
 
 Google stopped serving Gemini CLI requests for individual, Google AI Pro, and
 Google AI Ultra users on June 18, 2026. Those users are expected to migrate to
-Antigravity CLI; the widget reads Antigravity's Windows Credential Manager
-token before trying the legacy Gemini CLI file.
+Antigravity CLI; the widget reads only Antigravity's Windows Credential
+Manager token, and no longer the legacy Gemini CLI file. Google has suspended
+some accounts for using Antigravity's sign-in outside Antigravity. The widget
+only reads your quota, once per update, but the risk is yours: the question
+that asks to read Antigravity's sign-in says so.
 
 **Claude has a server-side limit on how often it can be read.** Anthropic
 rate-limits the usage endpoint (HTTP 429, `Retry-After: 0`, verified
@@ -252,7 +258,7 @@ depend on CLI activity. What each option actually gives you:
 
 | Provider | Manual option | Where to get it | Shows the same as the subscription? |
 |---|---|---|---|
-| **Copilot** | Personal Access Token, can be set to never expire | github.com/settings/tokens, *Generate new token* | Yes. This is the set-and-forget option. |
+| **Copilot** | A fine-grained Personal Access Token with the *Copilot Requests* permission (GitHub documents classic `ghp_` tokens as not supported for Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Yes. It works without gh, until the expiry you set. |
 | **Claude** | API key | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | No. It shows your API account rate limits, not your Pro or Max subscription usage. |
 | **Codex** | None | No separate stable token exists. The usage token is the same short-lived OAuth token. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
@@ -318,7 +324,8 @@ readout stays visible. Right-click → **Indicator**:
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
   providers in the widget's order, or the two ticked in the Taskbar column of
-  *Rows and models* (a value that has stopped updating, or an
+  *Rows and models*, with their percentage, the time until their limit
+  resets, or both (a value that has stopped updating, or an
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
   taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with

@@ -13,6 +13,9 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          timers, shutdown
    ├── app/menu.rs            menu actions: toggles, keys and usage tokens,
    │                          the Cursor sign-in
+   ├── app/menu_preview.rs    the look item under the pointer shown on the
+   │                          widget, the panel and the tray before a click;
+   │                          back as it was when the menu closes without one
    ├── app/flow.rs            re-layout, tray and panel sync, opening the
    │                          picker (also quietly, for the welcome), its actions
    ├── app/provider_set.rs    builds the providers; rebuilds one only when its
@@ -64,6 +67,9 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── hooks.rs               the user's commands on usage events (cmd.exe /D /S /C)
    ├── platform/taskbar_geom.rs  pure placement/fallback rules for the panel
    │                          (testable, no Win32 calls)
+   ├── platform/menu_hover.rs what the context menu highlights (WM_MENUSELECT
+   │                          through a subclass of the menu's owner) and
+   │                          whether it closed with a click; no hook, no timer
    ├── platform/sqlite.rs     read-only lookups in another app's SQLite
    │                          database (Cursor's state.vscdb) via winsqlite3
    ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save,
@@ -175,8 +181,8 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   (Cursor's plan hourly, Grok Bot only while its row is chosen, the session
   refresh near its expiry, Antigravity's project once a session, the
   per-model fallback only after an unusable summary, a refused usage token
-  paused 30 minutes, gh at most every 15 minutes) are listed in
-  PROVIDERS.md, "Requests per cycle".
+  paused 30 minutes, gh at most every 15 minutes and once more right after
+  a kept token is refused) are listed in PROVIDERS.md, "Requests per cycle".
 - **The Windows proxy without the registry in the CLI.** reqwest's
   `system-proxy` feature would add registry imports and a crate to
   `ailimits-auth.exe`, so `providers/proxy.rs` reads the three Internet
@@ -341,7 +347,7 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   (`updater::unfinished_update_note`, marked `told`).
 - **The release pipeline** (`.github/workflows/release.yml`, on a `v*` tag):
   every action pinned to a commit SHA, checkout without a persisted token,
-  no build cache in the job that writes releases, Inno Setup 6.7.3 pinned by
+  no build cache in the job that writes releases, Inno Setup 6.7.4 pinned by
   SHA-256. It fails before building when the signing secret is missing, runs
   fmt, clippy and the tests, checks that the tag, `Cargo.toml` and
   `installer/ailimits.iss` agree, builds the installer and the portable zip,

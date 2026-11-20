@@ -17,11 +17,14 @@
 // tracked event-driven via SetWinEventHook (UserEvent::TaskbarMoved) — it
 // slides away with the bar.
 
-use crate::config::schema::IndicatorKind;
+use crate::config::schema::{IndicatorKind, UiNumbers};
 use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
 use crate::rows::RowView;
-use crate::ui::tray::{draw_digits_fit, fill_round_rect, provider_pct};
+use crate::ui::tray::{
+    countdown_changes_in, countdown_compact, draw_digits_fit, draw_text_like_digits,
+    fill_round_rect, own_reset, provider_pct,
+};
 use anyhow::{Context as AnyhowContext, Result};
 use std::rc::Rc;
 use tao::window::{Window, WindowId};
@@ -74,14 +77,51 @@ fn first_two(providers: &[ProviderData]) -> Vec<&ProviderData> {
 }
 
 /// What the panel's picture depends on, for skipping no-op redraws: per
-/// painted row, the integer percent and whether the value is aged (not
-/// live). Only the first two providers are painted, so nobody further down
-/// the list can ask for a repaint; a row turning stale or fresh does.
-fn drawn_state(providers: &[ProviderData]) -> Vec<(Option<u8>, bool)> {
+/// painted row, the integer percent, whether the value is aged (not live)
+/// and, while the panel shows reset times, the time as drawn. Only the
+/// first two providers are painted, so nobody further down the list can ask
+/// for a repaint; a row turning stale or fresh does.
+fn drawn_state(providers: &[ProviderData], numbers: &UiNumbers) -> Vec<DrawnRow> {
     first_two(providers)
         .into_iter()
-        .map(|d| (provider_pct(d).map(|p| p.round() as u8), d.is_aged()))
+        .map(|d| {
+            (
+                provider_pct(d).map(|p| p.round() as u8),
+                d.is_aged(),
+                numbers.reset.then(|| countdown_of(d)),
+            )
+        })
         .collect()
+}
+
+/// One painted row's state (`drawn_state`).
+type DrawnRow = (Option<u8>, bool, Option<String>);
+
+/// A row's countdown as the panel draws it: "2h14", or a dash when its
+/// headline window's reset is not known.
+fn countdown_of(data: &ProviderData) -> String {
+    match own_reset(data) {
+        Some(t) => countdown_compact(t.signed_duration_since(chrono::Utc::now()).num_seconds()),
+        None => NO_TIME.to_string(),
+    }
+}
+
+/// What a row with no known reset shows where its time would be.
+const NO_TIME: &str = "\u{2013}";
+
+/// When the earliest countdown on the panel next reads differently, while
+/// it shows any: the moment to repaint it. Each row's own reset; none when
+/// no time is drawn.
+fn next_countdown_tick(top: &[&ProviderData], numbers: &UiNumbers) -> Option<std::time::Instant> {
+    if !numbers.reset {
+        return None;
+    }
+    let now = chrono::Utc::now();
+    top.iter()
+        .filter_map(|d| own_reset(d))
+        .map(|t| countdown_changes_in(t.signed_duration_since(now).num_seconds()))
+        .min()
+        .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s.max(1) as u64))
 }
 
 /// Premultiplied RGBA (tiny-skia) → premultiplied BGRA (top-down) for
@@ -107,9 +147,21 @@ fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
 /// Paint the rows into the panel's pixmap: the layout lying down (rows of
 /// "percent + bar" across, digits sized from the height) or standing up
 /// (a stack of percent-over-bar, digits sized from the width), in the given
-/// ink over the transparent fill — dimmed for a row that is not live. Free of
-/// the window so a test can look.
-fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color, track: Color) {
+/// ink over the transparent fill — dimmed for a row that is not live. With
+/// the reset time asked for (`numbers`), the time takes the bar's place
+/// beside the percent ("25%  2h14"), or the percent's place before the bar
+/// when the percent is left out ("2h14 ▬▬"); the panel keeps its size. Free
+/// of the window so a test can look.
+fn paint_rows(
+    pm: &mut Pixmap,
+    vertical: bool,
+    top: &[&ProviderData],
+    fg: Color,
+    track: Color,
+    numbers: &UiNumbers,
+) {
+    let both = numbers.percent && numbers.reset;
+    let time_only = !numbers.percent && numbers.reset;
     let (fw, fh) = (pm.width() as f32, pm.height() as f32);
     let label_of = |data: &ProviderData| match provider_pct(data) {
         Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
@@ -142,7 +194,7 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         let digit_h = fw * 0.225;
         let bar_h = digit_h * 0.50;
         let under = digit_h * 0.35;
-        let row_h = digit_h + under + bar_h;
+        let row_h = digit_h + under + if both { digit_h * 0.85 } else { bar_h };
         let row_gap = digit_h * 0.6;
         let block_h = n * row_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
@@ -151,8 +203,30 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         for (i, data) in top.iter().enumerate() {
             let ry = top0 + i as f32 * (row_h + row_gap);
             let ink = ink_of(data);
-            draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, ink);
-            bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h, ink);
+            if time_only {
+                let t = countdown_of(data);
+                draw_text_like_digits(pm, &t, pad_x, ry, inner, digit_h, false, ink);
+            } else {
+                draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, ink);
+            }
+            if both {
+                // The time where the bar was, a little smaller, so percent
+                // and time read as one provider's pair.
+                let t = countdown_of(data);
+                let small = digit_h * 0.85;
+                draw_text_like_digits(
+                    pm,
+                    &t,
+                    pad_x,
+                    ry + digit_h + under,
+                    inner,
+                    small,
+                    false,
+                    ink,
+                );
+            } else {
+                bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h, ink);
+            }
         }
     } else {
         // Digit ink height matched to the taskbar clock: the user tuned it
@@ -174,16 +248,36 @@ fn paint_rows(pm: &mut Pixmap, vertical: bool, top: &[&ProviderData], fg: Color,
         for (i, data) in top.iter().enumerate() {
             let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
             let ink = ink_of(data);
-            draw_digits_fit(
-                pm,
-                &label_of(data),
-                pad_x,
-                cy - digit_h / 2.0,
-                num_w,
-                digit_h,
-                ink,
-            );
-            bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h, ink);
+            if time_only {
+                let t = countdown_of(data);
+                draw_text_like_digits(
+                    pm,
+                    &t,
+                    pad_x,
+                    cy - digit_h / 2.0,
+                    num_w,
+                    digit_h,
+                    false,
+                    ink,
+                );
+            } else {
+                draw_digits_fit(
+                    pm,
+                    &label_of(data),
+                    pad_x,
+                    cy - digit_h / 2.0,
+                    num_w,
+                    digit_h,
+                    ink,
+                );
+            }
+            if both {
+                // The time takes the bar's place, from where the bar began.
+                let t = countdown_of(data);
+                draw_text_like_digits(pm, &t, bx, cy - digit_h / 2.0, bar_w, digit_h, true, ink);
+            } else {
+                bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h, ink);
+            }
         }
     }
 }
@@ -194,7 +288,14 @@ pub struct TaskbarPanel {
     mode: IndicatorKind,
     /// Last drawn state per painted row (`drawn_state`), to skip no-op
     /// redraws.
-    last: Vec<(Option<u8>, bool)>,
+    last: Vec<DrawnRow>,
+    /// What each row shows: the percentage, the reset time, or both
+    /// (`[ui.panel]`).
+    numbers: UiNumbers,
+    /// When the countdown on the panel next reads differently, while it
+    /// shows one and is in sight: the event loop wakes then and repaints
+    /// (`redraw`, which asks the shell nothing). None otherwise.
+    next_tick: Option<std::time::Instant>,
     size: (u32, u32),
     /// Current screen placement, or None while hidden (taskbar slid away).
     rect: Option<(i32, i32, u32, u32)>,
@@ -281,6 +382,8 @@ impl TaskbarPanel {
             pixmap,
             mode: IndicatorKind::Off,
             last: Vec::new(),
+            numbers: UiNumbers::panel_default(),
+            next_tick: None,
             size: (INIT_W, INIT_H),
             rect: None,
             suppressed: false,
@@ -353,13 +456,29 @@ impl TaskbarPanel {
         }
     }
 
+    /// What each row shows (`[ui.panel]`); repainted when it changed.
+    pub fn set_numbers(&mut self, numbers: UiNumbers, providers: &[ProviderData]) {
+        if self.numbers == numbers {
+            return;
+        }
+        self.numbers = numbers;
+        self.next_tick = None;
+        self.update(providers, true);
+    }
+
+    /// When the countdown on the panel next reads differently, if it shows
+    /// one: the event loop's deadline for `redraw`.
+    pub fn next_tick(&self) -> Option<std::time::Instant> {
+        self.next_tick
+    }
+
     /// Periodic upkeep + redraw-on-change. Call on every provider update.
     pub fn update(&mut self, providers: &[ProviderData], force: bool) {
         if !Self::is_panel_mode(self.mode) || self.suppressed {
             return;
         }
         self.reposition();
-        let state = drawn_state(providers);
+        let state = drawn_state(providers, &self.numbers);
         if force || state != self.last {
             self.last = state;
             self.redraw(providers);
@@ -372,7 +491,12 @@ impl TaskbarPanel {
     /// config; one row per line, with model labels, once extra rows or labels
     /// are on (`tray::tooltip_lines`). Idempotent while shown; no-op if the
     /// panel is hidden (no rect). Called from the overlay's CursorEntered.
-    pub fn show_tooltip(&mut self, rows: &[RowView], first_install: bool) {
+    pub fn show_tooltip(
+        &mut self,
+        rows: &[RowView],
+        first_install: bool,
+        tip: &crate::config::schema::UiNumbers,
+    ) {
         #[cfg(target_os = "windows")]
         {
             if self.tip_shown || self.tip_hwnd == 0 {
@@ -381,7 +505,7 @@ impl TaskbarPanel {
             let Some((px, py, pw, _ph)) = self.rect else {
                 return;
             };
-            let lines = crate::ui::tray::tooltip_lines(rows, first_install);
+            let lines = crate::ui::tray::tooltip_lines(rows, first_install, tip);
             let light = crate::platform::system_uses_light_theme();
             // The tooltip is sized from the BAR's thickness, which is the
             // only DPI signal here - not from the panel's height, which is
@@ -601,6 +725,7 @@ impl TaskbarPanel {
     }
 
     fn hide(&mut self) {
+        self.next_tick = None;
         self.hide_tooltip();
         #[cfg(target_os = "windows")]
         crate::platform::hide_window(self.hwnd());
@@ -784,7 +909,9 @@ impl TaskbarPanel {
         // reached the panel.
         pm.fill(hit_fill());
 
-        paint_rows(pm, self.edge.vertical(), &first_two(providers), fg, track);
+        let top = first_two(providers);
+        paint_rows(pm, self.edge.vertical(), &top, fg, track, &self.numbers);
+        self.next_tick = next_countdown_tick(&top, &self.numbers);
 
         let data = self.pixmap.data();
         let mut bgra = vec![0u8; data.len()];
@@ -846,12 +973,80 @@ mod tests {
                 ] {
                     let mut pm = Pixmap::new(w, h).unwrap();
                     pm.fill(hit_fill());
-                    paint_rows(&mut pm, vertical, &first_two(&providers), fg, track);
+                    paint_rows(
+                        &mut pm,
+                        vertical,
+                        &first_two(&providers),
+                        fg,
+                        track,
+                        &UiNumbers::panel_default(),
+                    );
                     items.push((format!("{set}-{sname}-{ink}"), pm));
                 }
             }
         }
         vb::check("panel", items);
+    }
+
+    /// The panel with the reset time: beside the percent in the bar's
+    /// place, or alone before the bar; every fixture set, lying down and
+    /// standing up, dark and light. Not pinned: the default panel is the
+    /// pinned "panel" group above.
+    #[test]
+    fn visual_baseline_panel_numbers() {
+        use crate::ui::visual_baseline as vb;
+        let both = UiNumbers::default();
+        let time_only = UiNumbers {
+            percent: false,
+            reset: true,
+        };
+        let mut items = Vec::new();
+        for light in [false, true] {
+            let (fg, track) = theme_ink(light);
+            let ink = if light { "light" } else { "dark" };
+            for (set, providers) in vb::sets() {
+                for (mode, numbers) in [("both", both), ("time", time_only)] {
+                    for (sname, w, h, vertical) in [
+                        ("bottom-100", 100, 48, false),
+                        ("bottom-150", 150, 72, false),
+                        ("side-100", 62, 96, true),
+                    ] {
+                        let mut pm = Pixmap::new(w, h).unwrap();
+                        pm.fill(hit_fill());
+                        paint_rows(
+                            &mut pm,
+                            vertical,
+                            &first_two(&providers),
+                            fg,
+                            track,
+                            &numbers,
+                        );
+                        items.push((format!("{mode}-{set}-{sname}-{ink}"), pm));
+                    }
+                }
+            }
+        }
+        vb::check("panel-numbers", items);
+    }
+
+    /// With the reset time shown, the drawn time is part of what a repaint
+    /// depends on, and the panel knows when it next reads differently;
+    /// without it, neither.
+    #[test]
+    fn the_countdown_asks_for_a_repaint_only_when_shown() {
+        let providers = crate::ui::visual_baseline::typical();
+        let top = first_two(&providers);
+        let percent = UiNumbers::panel_default();
+        assert!(drawn_state(&providers, &percent)
+            .iter()
+            .all(|r| r.2.is_none()));
+        assert_eq!(next_countdown_tick(&top, &percent), None);
+        let both = UiNumbers::default();
+        let state = drawn_state(&providers, &both);
+        assert!(state.iter().all(|r| r.2.is_some()), "{state:?}");
+        let tick = next_countdown_tick(&top, &both).expect("a time is shown");
+        let wait = tick.saturating_duration_since(std::time::Instant::now());
+        assert!(wait <= std::time::Duration::from_secs(3600), "{wait:?}");
     }
 
     fn data(id: ProviderId, pct: u64) -> ProviderData {
@@ -902,7 +1097,14 @@ mod tests {
                 for scale in [1, 2] {
                     let mut pm = Pixmap::new(w * scale, h * scale).unwrap();
                     pm.fill(color(bar.0, bar.1, bar.2, 255));
-                    paint_rows(&mut pm, vertical, &top, fg, track);
+                    paint_rows(
+                        &mut pm,
+                        vertical,
+                        &top,
+                        fg,
+                        track,
+                        &UiNumbers::panel_default(),
+                    );
                     let at = if scale == 1 {
                         String::new()
                     } else {
@@ -952,7 +1154,7 @@ mod tests {
             let (fg, track) = theme_ink(light);
             let mut pm = Pixmap::new(119, 48).unwrap();
             pm.fill(color(bar.0, bar.1, bar.2, 255));
-            paint_rows(&mut pm, false, &top, fg, track);
+            paint_rows(&mut pm, false, &top, fg, track, &UiNumbers::panel_default());
             let lum = |x: u32, y: u32| luminance(pm.pixel(x, y).unwrap());
             let back = lum(0, 0);
             // The strongest digit ink in each row: the digits take the left
@@ -993,7 +1195,10 @@ mod tests {
     fn the_redraw_cache_follows_staleness_of_the_painted_rows_only() {
         let live = [data(ProviderId::Claude, 40), data(ProviderId::Codex, 10)];
         let gone_stale = [data(ProviderId::Claude, 40), stale(ProviderId::Codex, 10)];
-        assert_ne!(drawn_state(&live), drawn_state(&gone_stale));
+        assert_ne!(
+            drawn_state(&live, &UiNumbers::panel_default()),
+            drawn_state(&gone_stale, &UiNumbers::panel_default())
+        );
         let estimated = [
             data(ProviderId::Claude, 40),
             ProviderData {
@@ -1001,16 +1206,25 @@ mod tests {
                 ..data(ProviderId::Codex, 10)
             },
         ];
-        assert_ne!(drawn_state(&live), drawn_state(&estimated));
+        assert_ne!(
+            drawn_state(&live, &UiNumbers::panel_default()),
+            drawn_state(&estimated, &UiNumbers::panel_default())
+        );
         assert_eq!(
-            drawn_state(&live),
-            vec![(Some(40), false), (Some(10), false)]
+            drawn_state(&live, &UiNumbers::panel_default()),
+            vec![(Some(40), false, None), (Some(10), false, None)]
         );
 
         let third = |d: ProviderData| [live[0].clone(), live[1].clone(), d];
         assert_eq!(
-            drawn_state(&third(data(ProviderId::Copilot, 5))),
-            drawn_state(&third(stale(ProviderId::Copilot, 90)))
+            drawn_state(
+                &third(data(ProviderId::Copilot, 5)),
+                &UiNumbers::panel_default()
+            ),
+            drawn_state(
+                &third(stale(ProviderId::Copilot, 90)),
+                &UiNumbers::panel_default()
+            )
         );
     }
 
@@ -1024,7 +1238,7 @@ mod tests {
         let (fg, track) = theme_ink(false);
         let mut pm = Pixmap::new(48, 64).unwrap();
         pm.fill(color(0, 0, 0, 255));
-        paint_rows(&mut pm, true, &top, fg, track);
+        paint_rows(&mut pm, true, &top, fg, track, &UiNumbers::panel_default());
         // rows with ink, top to bottom; a bar is a run of lit rows after a
         // gap below the digits
         let lit: Vec<bool> = (0..64)

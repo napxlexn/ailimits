@@ -1,13 +1,15 @@
 // providers/antigravity.rs — Antigravity provider (Google's Gemini successor)
 // for Code Assist quota. See docs/en/PROVIDERS.md, section "Antigravity".
 //
-// Mechanism: read the Antigravity OAuth token from Windows Credential Manager, then fall back to the legacy Gemini CLI file.
+// Mechanism: read the Antigravity OAuth token from Windows Credential Manager.
+// The legacy Gemini CLI file is no longer read: Google stopped serving
+// individual, AI Pro and Ultra accounts through Gemini CLI on 2026-06-18.
 
 use super::{
     clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
     ProviderData, ProviderId, ProviderStatus,
 };
-use crate::config::{paths::ToolPaths, schema::ProviderConfig};
+use crate::config::schema::ProviderConfig;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -85,13 +87,12 @@ enum Quota {
     Models,
 }
 
-/// What the Antigravity token sources hold for the widget.
+/// What Antigravity's sign-in holds for the widget.
 pub enum AntigravityLogin {
-    /// No token anywhere: Antigravity (or the Gemini CLI) was never signed
-    /// in here, or was signed out.
+    /// No token: Antigravity was never signed in here, or was signed out.
     Missing,
-    /// A token exists, but none is usable: every one is past its expiry (or
-    /// states none). Only Antigravity may refresh it, so the widget waits.
+    /// A token exists, but it is not usable: past its expiry (or states
+    /// none). Only Antigravity may refresh it, so the widget waits.
     Expired,
     /// A usable access token.
     Token(String),
@@ -302,8 +303,8 @@ impl AntigravityProvider {
     }
 
     async fn fetch_via_subscription(&self) -> Result<ProviderData> {
-        // Both sources are Antigravity's (and the older Gemini CLI's): only
-        // when the user allowed reading them.
+        // The sign-in is Antigravity's: only when the user allowed reading
+        // it.
         if !self.config.tool_files {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
@@ -418,66 +419,12 @@ impl Provider for AntigravityProvider {
     }
 }
 
-/// Read the Antigravity login: the keyring first, then the legacy Gemini CLI
-/// file (only read when the keyring holds no usable token).
+/// Read the Antigravity login: its Credential Manager entry, the one source.
+/// The legacy Gemini CLI file (`.gemini\oauth_creds.json`) is not read:
+/// Google no longer serves individual, AI Pro or Ultra accounts through
+/// Gemini CLI (2026-06-18), and Antigravity keeps its sign-in in the keyring.
 async fn read_antigravity_login() -> Result<AntigravityLogin> {
-    let keyring = read_antigravity_keyring_login();
-    if let Ok(AntigravityLogin::Token(token)) = keyring {
-        return Ok(AntigravityLogin::Token(token));
-    }
-    combine_logins(keyring, read_legacy_gemini_login().await)
-}
-
-/// One login from the two sources. A usable token wins; otherwise an expired
-/// one says the account was signed in here (an honest "token expired", the
-/// last data kept); an unreadable source is an error unless the other one
-/// says more; only with neither is the login missing.
-pub fn combine_logins(
-    keyring: Result<AntigravityLogin>,
-    legacy: Result<AntigravityLogin>,
-) -> Result<AntigravityLogin> {
-    use AntigravityLogin::{Expired, Missing, Token};
-    match (keyring, legacy) {
-        (Ok(Token(token)), _) | (_, Ok(Token(token))) => Ok(Token(token)),
-        (Ok(Expired), _) | (_, Ok(Expired)) => Ok(Expired),
-        (Err(e), _) | (_, Err(e)) => Err(e),
-        (Ok(Missing), Ok(Missing)) => Ok(Missing),
-    }
-}
-
-/// Read the legacy Gemini CLI login. A missing file is `Missing`, and so is
-/// a machine without an absolute home folder: nothing is read relative to
-/// the working directory.
-async fn read_legacy_gemini_login() -> Result<AntigravityLogin> {
-    let Some(path) = ToolPaths::from_env().map(|p| p.gemini_oauth_creds()) else {
-        return Ok(AntigravityLogin::Missing);
-    };
-    if !path.exists() {
-        return Ok(AntigravityLogin::Missing);
-    }
-    let content = tokio::fs::read_to_string(&path).await?;
-    parse_gemini_oauth_creds(&content, Utc::now())
-}
-
-/// Parse the legacy Gemini CLI `oauth_creds.json`:
-/// {"access_token": "...", "expiry_date": <ms epoch>, ...}.
-pub fn parse_gemini_oauth_creds(body: &str, now: DateTime<Utc>) -> Result<AntigravityLogin> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
-    let Some(token) = value
-        .get("access_token")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    else {
-        return Ok(AntigravityLogin::Missing);
-    };
-    let expiry_ms = value
-        .get("expiry_date")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(0);
-    if expiry_ms <= now.timestamp_millis() {
-        return Ok(AntigravityLogin::Expired);
-    }
-    Ok(AntigravityLogin::Token(token.to_string()))
+    read_antigravity_keyring_login()
 }
 
 /// Read Antigravity's keyring login. No secret is `Missing`.

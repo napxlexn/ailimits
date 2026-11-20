@@ -24,6 +24,8 @@ mod flow;
 #[cfg(target_os = "windows")]
 mod indicator;
 mod menu;
+#[cfg(target_os = "windows")]
+mod menu_preview;
 mod model_job;
 mod provider_set;
 mod widget;
@@ -134,6 +136,11 @@ pub enum UserEvent {
     /// The app was started again while running (`main.rs`): show the
     /// widget, so the second start visibly does something.
     ShowWidget,
+    /// The tray icon's menu (opened by tray-icon, with the event loop free)
+    /// highlighted an item or closed: handled as any event, so a look shown
+    /// resizes the widget with the loop's own events held back.
+    #[cfg(target_os = "windows")]
+    MenuHover(crate::platform::menu_hover::MenuHover),
 }
 
 /// Tray interactions we care about.
@@ -412,6 +419,17 @@ struct App {
     panel: TaskbarPanel,
     #[cfg(target_os = "windows")]
     indicator: indicator::Indicator,
+    /// The context menu asked for by a right-click on this window (the
+    /// widget's or the panel's): opened once the event is handled, so the
+    /// look items it highlights can be shown while it is open.
+    #[cfg(target_os = "windows")]
+    menu_request: Option<isize>,
+    /// The open menu's look shown under the pointer (app/menu_preview.rs).
+    #[cfg(target_os = "windows")]
+    menu_preview: Option<menu_preview::MenuPreview>,
+    /// The look from before the menu, while its click is on the way.
+    #[cfg(target_os = "windows")]
+    look_base: Option<menu_preview::Look>,
 
     // ── The picker: open only while in use ──
     found_tools: Vec<&'static str>,
@@ -676,6 +694,7 @@ pub fn run() -> Result<()> {
     #[cfg(target_os = "windows")]
     crate::platform::register_fullscreen_watch();
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
+    panel.set_numbers(config.ui.panel, &visible_data(&config, &display));
     #[cfg(target_os = "windows")]
     let indicator = indicator::Indicator::new();
 
@@ -732,6 +751,12 @@ pub fn run() -> Result<()> {
         panel,
         #[cfg(target_os = "windows")]
         indicator,
+        #[cfg(target_os = "windows")]
+        menu_request: None,
+        #[cfg(target_os = "windows")]
+        menu_preview: None,
+        #[cfg(target_os = "windows")]
+        look_base: None,
         found_tools: Vec::new(),
         picker_mode,
         menu_asked: None,
@@ -758,8 +783,49 @@ pub fn run() -> Result<()> {
 
     info!("AI Limits Widget ready");
 
-    // 11. The event loop — never returns.
-    event_loop.run(move |event, target, control_flow| app.handle(event, target, control_flow));
+    // 11. The event loop — never returns. The app is shared with the
+    // context menu's watcher (platform::menu_hover), which shows a look item
+    // while the menu's own loop runs; a right-click's menu is opened once the
+    // event that asked for it is handled, with the app free.
+    let app = Rc::new(std::cell::RefCell::new(app));
+    #[cfg(target_os = "windows")]
+    {
+        use muda::ContextMenu as _;
+        let root = app.borrow().menu.menu.hpopupmenu();
+        let weak = Rc::downgrade(&app);
+        let proxy = proxy.clone();
+        crate::platform::menu_hover::set_handler(root, move |ev| {
+            // The widget's or the panel's menu runs inside the loop's own
+            // handler, which holds every window event back: the look is
+            // painted at once, from here. The tray icon's menu runs with the
+            // loop free, where a resize would call the handler again from
+            // inside this one: it goes as an event.
+            if !crate::platform::menu_hover::showing() {
+                return proxy.send_event(UserEvent::MenuHover(ev)).is_ok();
+            }
+            let Some(app) = weak.upgrade() else {
+                return true;
+            };
+            let Ok(mut app) = app.try_borrow_mut() else {
+                return false;
+            };
+            app.on_menu_hover(ev);
+            true
+        });
+    }
+    event_loop.run(move |event, target, control_flow| {
+        app.borrow_mut().handle(event, target, control_flow);
+        #[cfg(target_os = "windows")]
+        {
+            let request = app.borrow_mut().menu_request.take();
+            if let Some(hwnd) = request {
+                let menu = app.borrow().menu.menu.clone();
+                // SAFETY: the widget's or the panel's window, alive with the
+                // app on this thread.
+                unsafe { crate::platform::menu_hover::show(&menu, hwnd) };
+            }
+        }
+    });
 }
 
 #[cfg(test)]

@@ -42,7 +42,12 @@ impl App {
         // Sleep until the soonest timer, or until the next event.
         #[cfg(target_os = "windows")]
         {
-            *control_flow = match self.indicator.next_wake() {
+            // The panel's countdown, while it shows one, is one more timer.
+            let wake = [self.indicator.next_wake(), self.panel.next_tick()]
+                .into_iter()
+                .flatten()
+                .min();
+            *control_flow = match wake {
                 Some(t) => ControlFlow::WaitUntil(t),
                 None => ControlFlow::Wait,
             };
@@ -129,6 +134,11 @@ impl App {
     #[cfg(target_os = "windows")]
     fn on_timers(&mut self) {
         let now = std::time::Instant::now();
+        // The countdown on the panel reads differently now: repaint it, and
+        // nothing else (no placement query).
+        if self.panel.next_tick().is_some_and(|t| now >= t) {
+            self.panel.redraw(&self.visible());
+        }
         if let Some(t) = self.indicator.recheck_at {
             if now >= t {
                 self.indicator.recheck_at = None;
@@ -181,6 +191,7 @@ impl App {
                 self.panel.show_tooltip(
                     &surface_rows(&self.config, &self.display, Surface::Tooltip, &self.models),
                     rows::nothing_chosen(&self.config),
+                    &self.config.ui.tooltip,
                 );
             }
         }
@@ -202,14 +213,10 @@ impl App {
                 button: MouseButton::Right,
                 ..
             } => {
+                // Opened once this event is handled (app.rs, the loop).
                 #[cfg(target_os = "windows")]
                 {
-                    use muda::ContextMenu as _;
-                    unsafe {
-                        self.menu
-                            .menu
-                            .show_context_menu_for_hwnd(self.panel.hwnd(), None);
-                    }
+                    self.menu_request = Some(self.panel.hwnd());
                 }
             }
             // Our own hover tooltip: arm the system hover delay on
@@ -345,15 +352,11 @@ impl App {
                 }
                 (ElementState::Pressed, MouseButton::Right) => {
                     // The native context menu at the cursor.
+                    // Opened once this event is handled (app.rs, the loop).
                     #[cfg(target_os = "windows")]
                     {
-                        use muda::ContextMenu as _;
                         use tao::platform::windows::WindowExtWindows;
-                        unsafe {
-                            self.menu
-                                .menu
-                                .show_context_menu_for_hwnd(self.window.hwnd() as _, None);
-                        }
+                        self.menu_request = Some(self.window.hwnd() as _);
                     }
                 }
                 _ => {}
@@ -363,7 +366,7 @@ impl App {
         }
     }
 
-    fn redraw_widget(&mut self) {
+    pub(super) fn redraw_widget(&mut self) {
         // Render only the visible providers, as the widget's rows.
         let visible = surface_rows(&self.config, &self.display, Surface::Widget, &self.models);
         self.renderer.draw(
@@ -408,6 +411,8 @@ impl App {
         control_flow: &mut ControlFlow,
     ) {
         match event {
+            #[cfg(target_os = "windows")]
+            UserEvent::MenuHover(ev) => self.on_menu_hover(ev),
             UserEvent::Command(cmd) => match cmd {
                 AppCommand::UpdateProvider { data, serial } => {
                     self.on_provider_update(data, serial, target)
@@ -760,7 +765,11 @@ impl App {
 
     fn shut_down(&mut self) {
         if let Some(saver) = self.saver_at_exit.take() {
-            saver.shutdown(self.config.clone(), self.runtime.handle());
+            #[cfg(target_os = "windows")]
+            let config = self.config_to_save();
+            #[cfg(not(target_os = "windows"))]
+            let config = self.config.clone();
+            saver.shutdown(config, self.runtime.handle());
         }
         // The cache file catches up on the last fetch times; the alert book
         // has nothing left in flight but is waited for.

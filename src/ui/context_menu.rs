@@ -20,6 +20,16 @@ const SATURATION_STEPS: &[u8] = &[0, 25, 50, 75, 100];
 /// Update interval steps, seconds: 1 / 5 / 15 / 30 min.
 const INTERVAL_STEPS: &[u64] = &[60, 300, 900, 1800];
 
+/// The submenus whose items change only how the widget, the panel and the
+/// tray icon look: the item the pointer rests on is shown before a click
+/// (`ContextMenu::look_action`). Their titles name them.
+const WIDTH_TITLE: &str = "Width";
+const FLOW_TITLE: &str = "Arrangement";
+const PALETTE_TITLE: &str = "Palette";
+const OPACITY_TITLE: &str = "Background opacity";
+const BRIGHTNESS_TITLE: &str = "Brightness";
+const SATURATION_TITLE: &str = "Saturation";
+
 /// Menu actions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MenuAction {
@@ -129,6 +139,59 @@ fn indicator_matches(config_kind: IndicatorKind, item_kind: IndicatorKind) -> bo
     canon(config_kind) == canon(item_kind)
 }
 
+/// Whether an action changes only how the widget, the panel and the tray
+/// icon look: nothing is read, started or moved, and nothing but the look
+/// is saved. Such an item shows itself while the pointer rests on it.
+pub fn is_look(action: &MenuAction) -> bool {
+    matches!(
+        action,
+        MenuAction::SetDetail(_)
+            | MenuAction::SetLayout(_)
+            | MenuAction::SetWidthScale(_)
+            | MenuAction::SetColumnFlow(_)
+            | MenuAction::ToggleForecast
+            | MenuAction::SetPalette(_)
+            | MenuAction::ToggleMonochrome
+            | MenuAction::SetOpacity(_)
+            | MenuAction::SetBrightness(_)
+            | MenuAction::SetSaturation(_)
+    )
+}
+
+/// Apply a look action (`is_look`) to the config: what a click does to it,
+/// and what the item shows while the pointer rests on it. Returns false,
+/// changing nothing, for any other action.
+pub fn look(config: &mut Config, action: &MenuAction) -> bool {
+    match action {
+        MenuAction::SetDetail(d) => config.ui.detail = d.clone(),
+        MenuAction::SetLayout(l) => config.ui.layout = l.clone(),
+        MenuAction::SetWidthScale(w) => config.ui.width_scale = *w,
+        MenuAction::SetColumnFlow(f) => config.ui.column_flow = *f,
+        MenuAction::ToggleForecast => config.ui.show_forecast = !config.ui.show_forecast,
+        MenuAction::SetPalette(p) => {
+            // Picking a palette leaves monochrome.
+            config.ui.palette = p.clone();
+            config.ui.monochrome = false;
+        }
+        MenuAction::ToggleMonochrome => config.ui.monochrome = !config.ui.monochrome,
+        MenuAction::SetOpacity(pct) => {
+            config.window.opacity = (*pct as f32 / 100.0).clamp(0.10, 0.85);
+        }
+        MenuAction::SetBrightness(v) => config.ui.brightness = *v,
+        MenuAction::SetSaturation(v) => config.ui.saturation = *v,
+        _ => return false,
+    }
+    true
+}
+
+/// The id of the item of `items` labelled `text`.
+fn labelled<T>(items: &[(CheckMenuItem, T)], text: &str) -> Option<muda::MenuId> {
+    items
+        .iter()
+        .find(|(item, _)| item.text() == text)
+        .map(|(item, _)| item.id().clone())
+}
+
 /// The full context menu: view, behavior, appearance, providers, actions.
 pub struct ContextMenu {
     pub menu: Menu,
@@ -197,7 +260,7 @@ impl ContextMenu {
 
         // Width steps. Only the rows layout can be narrowed: the columns
         // layouts size themselves from the provider count.
-        let width_submenu = Submenu::new("Width", true);
+        let width_submenu = Submenu::new(WIDTH_TITLE, true);
         let width_items: Vec<(CheckMenuItem, WidthScale)> = [
             ("100%", WidthScale::Full),
             ("75%", WidthScale::ThreeQuarters),
@@ -218,7 +281,7 @@ impl ContextMenu {
         // Column arrangement. The mirror image of Width: it only means
         // something when the bars are vertical, and it flips the widget's own
         // orientation rather than its size.
-        let flow_submenu = Submenu::new("Arrangement", true);
+        let flow_submenu = Submenu::new(FLOW_TITLE, true);
         let flow_items: Vec<(CheckMenuItem, ColumnFlow)> = [
             ("In a row", ColumnFlow::Row),
             ("In a column", ColumnFlow::Column),
@@ -302,7 +365,7 @@ impl ContextMenu {
             CheckMenuItem::new("Automatic updates", true, config.general.auto_update, None);
 
         // "Palette" submenu: monochrome + 8 colored palettes.
-        let palette_submenu = Submenu::new("Palette", true);
+        let palette_submenu = Submenu::new(PALETTE_TITLE, true);
         let monochrome_item = CheckMenuItem::new("Monochrome", true, ui.monochrome, None);
         palette_submenu.append(&monochrome_item)?;
         palette_submenu.append(&PredefinedMenuItem::separator())?;
@@ -345,11 +408,11 @@ impl ContextMenu {
         };
         let opacity_now = (config.window.opacity * 100.0).round() as u8;
         let (opacity_submenu, opacity_items) =
-            step_submenu("Background opacity", OPACITY_STEPS, opacity_now)?;
+            step_submenu(OPACITY_TITLE, OPACITY_STEPS, opacity_now)?;
         let (brightness_submenu, brightness_items) =
-            step_submenu("Brightness", BRIGHTNESS_STEPS, ui.brightness)?;
+            step_submenu(BRIGHTNESS_TITLE, BRIGHTNESS_STEPS, ui.brightness)?;
         let (saturation_submenu, saturation_items) =
-            step_submenu("Saturation", SATURATION_STEPS, ui.saturation)?;
+            step_submenu(SATURATION_TITLE, SATURATION_STEPS, ui.saturation)?;
 
         // Update interval submenu: 1 / 5 / 15 / 30 min.
         let interval_submenu = Submenu::new("Update interval", true);
@@ -538,6 +601,29 @@ impl ContextMenu {
         if let Some(item) = &self.cursor_sign_out_item {
             item.set_enabled(signed_in);
         }
+    }
+
+    /// The look action (`is_look`) of the item the pointer or the keyboard
+    /// rests on: `group` is the title of the submenu it is in (None at the
+    /// top level), `text` its label as the menu shows it. None for any
+    /// other item.
+    pub fn look_action(&self, group: Option<&str>, text: &str) -> Option<MenuAction> {
+        let toggle = |item: &CheckMenuItem| (item.text() == text).then(|| item.id().clone());
+        let id = match group {
+            None => labelled(&self.detail_items, text)
+                .or_else(|| labelled(&self.layout_items, text))
+                .or_else(|| toggle(&self.forecast_item)),
+            Some(WIDTH_TITLE) => labelled(&self.width_items, text),
+            Some(FLOW_TITLE) => labelled(&self.flow_items, text),
+            Some(PALETTE_TITLE) => {
+                toggle(&self.monochrome_item).or_else(|| labelled(&self.palette_items, text))
+            }
+            Some(OPACITY_TITLE) => labelled(&self.opacity_items, text),
+            Some(BRIGHTNESS_TITLE) => labelled(&self.brightness_items, text),
+            Some(SATURATION_TITLE) => labelled(&self.saturation_items, text),
+            Some(_) => None,
+        }?;
+        self.action_for(&id).filter(is_look)
     }
 
     /// Map a menu event id to an action.
@@ -737,5 +823,94 @@ impl ContextMenu {
             item.set_checked(active);
         }
         self.pin_item.set_checked(pinned);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each item that only changes the look is found by its submenu's title
+    /// and its label, as the menu reports them; the same label under
+    /// another title is another item; nothing else is a look item.
+    #[test]
+    fn the_look_items_are_found_by_title_and_label() {
+        let menu = ContextMenu::new(&Config::default(), false).unwrap();
+        let act = |group: Option<&str>, text: &str| menu.look_action(group, text);
+        assert_eq!(
+            act(None, "Compact"),
+            Some(MenuAction::SetDetail(DetailLevel::Compact))
+        );
+        assert_eq!(
+            act(None, "Vertical"),
+            Some(MenuAction::SetLayout(Layout::Horizontal))
+        );
+        assert_eq!(act(None, "Forecast"), Some(MenuAction::ToggleForecast));
+        assert_eq!(
+            act(Some(WIDTH_TITLE), "50%"),
+            Some(MenuAction::SetWidthScale(WidthScale::Half))
+        );
+        assert_eq!(
+            act(Some(OPACITY_TITLE), "50%"),
+            Some(MenuAction::SetOpacity(50))
+        );
+        assert_eq!(
+            act(Some(BRIGHTNESS_TITLE), "60%"),
+            Some(MenuAction::SetBrightness(60))
+        );
+        assert_eq!(
+            act(Some(SATURATION_TITLE), "25%"),
+            Some(MenuAction::SetSaturation(25))
+        );
+        assert_eq!(
+            act(Some(PALETTE_TITLE), "Ocean"),
+            Some(MenuAction::SetPalette(Palette::Ocean))
+        );
+        assert_eq!(
+            act(Some(PALETTE_TITLE), "Monochrome"),
+            Some(MenuAction::ToggleMonochrome)
+        );
+        assert_eq!(
+            act(Some(FLOW_TITLE), "In a column"),
+            Some(MenuAction::SetColumnFlow(ColumnFlow::Column))
+        );
+        // Not look items: they move, start or read something.
+        assert_eq!(act(None, "Lock position"), None);
+        assert_eq!(act(None, "Always on top"), None);
+        assert_eq!(act(None, "Automatic updates"), None);
+        assert_eq!(act(Some("Indicator"), "Tray icon"), None);
+        assert_eq!(act(Some("Update interval"), "5 min"), None);
+        assert_eq!(act(Some("Providers"), "Enabled"), None);
+        // A label of one submenu under another's title.
+        assert_eq!(act(Some(OPACITY_TITLE), "Ocean"), None);
+        assert_eq!(act(None, "50%"), None);
+    }
+
+    /// A look action changes the config as its click does, and nothing
+    /// else: every other action leaves it untouched.
+    #[test]
+    fn a_look_changes_only_the_look() {
+        let mut config = Config::default();
+        assert!(look(&mut config, &MenuAction::SetOpacity(50)));
+        assert!((config.window.opacity - 0.50).abs() < 1e-6);
+        assert!(look(&mut config, &MenuAction::SetOpacity(100)));
+        assert!((config.window.opacity - 0.85).abs() < 1e-6);
+        config.ui.monochrome = true;
+        assert!(look(&mut config, &MenuAction::SetPalette(Palette::Rose)));
+        assert!(!config.ui.monochrome && config.ui.palette == Palette::Rose);
+        let before = config.clone();
+        for action in [
+            MenuAction::ToggleLock,
+            MenuAction::TogglePin,
+            MenuAction::SetIndicator(IndicatorKind::Off),
+            MenuAction::SetUpdateInterval(300),
+            MenuAction::ToggleAutoUpdate,
+            MenuAction::OpenPicker,
+            MenuAction::Quit,
+        ] {
+            assert!(!is_look(&action));
+            assert!(!look(&mut config, &action));
+        }
+        assert_eq!(config, before);
     }
 }

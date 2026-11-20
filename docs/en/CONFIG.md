@@ -124,6 +124,8 @@ show_forecast = false
 # meters it on its own: claude.opus, claude.sonnet, claude.fable (weekly,
 # on plans that have them), antigravity.cg (the Claude and GPT pool), grok.build,
 # cursor.bot (Grok Bot; Cursor asks for it only while this row is chosen).
+# Once a provider has answered, the window offers only the extra rows it
+# reports (and those chosen already, to be unticked); before that, all.
 # The widget and the tooltip are chosen separately; the taskbar panel and
 # the tray icon keep one entry per provider. Unknown ids are ignored and
 # kept. Rows chosen that have no data yet leave the widget saying "Nothing
@@ -168,6 +170,44 @@ source  = "configured"
 [ui.model.names]
 "claude-opus-5-5" = "Opus 5.5"
 "copilot:auto" = "Auto"
+
+# What each row of the taskbar panel's tooltip shows besides its name
+# (menu: Rows and models..., Percent and Reset time, Tooltip column): the
+# percentage, the time left until the limit the row shows resets
+# ("Claude 25% · 2h 14min"), or one of them alone ("Claude 2h 14min").
+# Never neither. Written only once changed; without it, both. With the
+# percentage alone and no model labels or extra rows, the tooltip is one
+# line, as in 0.7.0; otherwise it has one row per line. The widget always shows both; the tray
+# icon's own tooltip always says the percentages.
+[ui.tooltip]
+percent = false
+reset   = true
+
+# What each row of the taskbar panel shows (menu: Rows and models...,
+# Percent and Reset time, Taskbar column): the percentage with its bar (as
+# in 0.7.0), the time left until the limit the row shows resets in the
+# bar's place ("25%  2h14"), or the time alone before the bar ("2h14 ▬▬").
+# Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the row's own
+# reset is not known. Never neither. Written only once changed; without
+# it, the percentage alone. The panel keeps its size either way; while it
+# shows a time it repaints when the time next reads differently (once a
+# minute, once an hour past a day), and asks the shell nothing for it.
+[ui.panel]
+percent = true
+reset   = true
+
+# What each row of the taskbar panel shows (menu: Rows and models...,
+# Percent and Reset time, Taskbar column): the percentage with its bar (as
+# in 0.7.0), the time left until the limit the row shows resets in the
+# bar's place ("25%  2h14"), or the time alone before the bar ("2h14 ▬▬").
+# Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the row's own
+# reset is not known. Never neither. Written only once changed; without
+# it, the percentage alone. The panel keeps its size either way; while it
+# shows a time it repaints when the time next reads differently (once a
+# minute, once an hour past a day), and asks the shell nothing for it.
+[ui.panel]
+percent = true
+reset   = true
 
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"
@@ -374,8 +414,9 @@ Every read of another tool's file is optional and asked for first:
 - **`ailimits-auth status`** is a diagnostic you run yourself. It changes
   nothing: it never creates, renames or writes `config.toml`. It reads
   another tool's sign-in only where the widget may (`[reads] sign_in`), and
-  otherwise prints "found (not read: ...)". Codex's `auth.json` and the
-  legacy Gemini `oauth_creds.json` are only checked for existence; gh is
+  otherwise prints "found (not read: ...)". Codex's `auth.json` is only
+  checked for existence (the legacy Gemini `oauth_creds.json` is no longer
+  looked at); gh is
   asked for github.com only (`gh auth token --hostname github.com`, 10 s
   time-out, its output discarded); of Cursor only the widget's own session
   is shown. It prints each provider's read mode and the `[reads]` state, and

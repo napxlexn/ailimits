@@ -22,7 +22,7 @@ Notable, user-visible changes. Dates are release dates.
   Usage page shows, read with the Grok CLI's own login
   (`%USERPROFILE%\.grok\auth.json`, or in `GROK_HOME`) and never refreshed:
   the CLI refreshes it whenever it runs. A product's share of the limit
-  (Grok Build) can be a row of its own.
+  (Grok Build) can be a row of its own. Asked for in #1 by KritBlade.
 - **Cursor.** The subscription's included usage, labelled with the plan,
   from the dashboard service the editor itself calls. Cursor has a sign-in
   of the app's own: right-click, **Providers**, **Cursor**, *Sign in to
@@ -57,8 +57,11 @@ Notable, user-visible changes. Dates are release dates.
   Sonnet and Fable weeks (on plans that have them; Fable is the "Current
   week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
   pool, Grok Build and Cursor's Grok Bot can each be a row of their own,
-  under their provider. A row the provider is not reporting can still be
-  ticked; it appears once the provider reports it. An extra row's numbers
+  under their provider. Once a provider has answered, the window offers only
+  the rows it reports, so a plan without an Opus or Sonnet week of its own
+  (where they count toward the weekly limit) lists Fable alone; a row chosen
+  earlier stays listed so it can be unticked, and Grok Bot, asked for only
+  while chosen, is always offered. An extra row's numbers
   never become its provider's headline, reset or alert, and a reset of its
   own never greys the provider's row. The taskbar panel and the tray icon
   keep one entry per provider.
@@ -107,6 +110,30 @@ Notable, user-visible changes. Dates are release dates.
   (PAC) is not followed, and a network that inspects TLS with its own root
   certificate is not trusted: its rows say so ("untrusted certificate,
   retrying").
+- **The taskbar panel can show when a limit resets.** The same Percent and
+  Reset time ticks, in the Taskbar column of *Rows and models*, decide what
+  each of the panel's two rows shows: the percentage with its bar, as
+  before and by default; the time left until the limit resets in the bar's
+  place ("25%  2h14"); or the time alone before the bar ("2h14 ▬▬"). The
+  time is the shown window's own reset, compact like the clock beside it,
+  and a dash when it is not known. The panel keeps its size, and the time is
+  repainted only when it reads differently. Asked for in #2 by JCauz.
+- **The tooltip's percentage and reset time, chosen.** Two ticks in *Rows
+  and models*, Percent and Reset time, decide what each row of the taskbar
+  panel's tooltip shows: the percentage, the time left until the limit it
+  shows resets ("Claude 25% · 2h 14min"), or either alone ("Claude 2h
+  14min"). By default both: the tooltip gives each provider a line of its
+  own with when it resets, where 0.7.0 had one line of percentages (untick
+  Reset time to get that line back). The time no longer depends on a model
+  label or an extra row being shown.
+- **The context menu shows a look before you click it.** Resting the
+  pointer (or the keyboard) on a detail level, a layout, a width, the
+  arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or
+  a saturation shows it at once on the widget, the taskbar panel and the
+  tray icon; a click keeps it, and closing the menu without one puts back
+  what was there. Nothing is saved until the click. The menu stays Windows'
+  own: the item highlighted is read from the menu's messages to its own
+  window, with no hook and no timer, and nothing runs while no menu is open.
 - **A crash leaves a trace.** `%APPDATA%\AiLimits\crash.log` gets one line
   per crash: the time, the version, the thread and the place in the code,
   never the crash message's text. A start that fails says so in a message
@@ -170,7 +197,20 @@ Notable, user-visible changes. Dates are release dates.
   asks for its project once a session and its second quota endpoint only
   after an unusable answer, never after a rate limit, a server error or no
   answer; a stored usage token the server refused is not sent again for 30
-  minutes; `gh` runs at most once every 15 minutes, failures included.
+  minutes; `gh` runs at most once every 15 minutes, failures included, and
+  once more right away when GitHub refuses the token it gave earlier: gh
+  2.103 and newer sign in with expiring tokens that `gh auth token` renews,
+  so the usage is asked again with the new token in the same update.
+- **Antigravity says what its read may cost.** Before Antigravity's
+  sign-in is read, its question (and the welcome, *Allow all* and the
+  update notice) says that Google has suspended some accounts for using
+  Antigravity's sign-in outside Antigravity: AI Limits only reads the quota,
+  once per update, but the risk is yours.
+- **Copilot reads the newer usage answer.** Plans billed in AI Credits
+  (GitHub's usage-based billing since June 2026) may count in decimals; a
+  quota with nothing in it (`has_quota: false`) is left out. The Copilot
+  CLI's `settings.json` may hold comments and trailing commas, as GitHub
+  documents it; the model label reads past them.
 - **A threshold alert comes once per limit window.** The toast and the
   `on_threshold` hook fire when usage reaches the threshold, and again only
   after the window resets, or after usage fell 5 points or more below the
@@ -203,6 +243,15 @@ Notable, user-visible changes. Dates are release dates.
   (or after the idle pause) that got no answer at all is tried again after
   20 seconds rather than 2 minutes.
 - **Building from source needs Rust 1.90** or newer.
+
+### Removed
+
+- **The older Gemini CLI's sign-in is no longer read for Antigravity.**
+  `%USERPROFILE%\.gemini\oauth_creds.json` was a fallback when Antigravity's
+  own sign-in (Windows Credential Manager, `gemini:antigravity`) had no
+  usable token. Google stopped serving individual, Google AI Pro and Ultra
+  accounts through Gemini CLI on June 18, 2026; run Antigravity once instead.
+  The `.gemini` folder still marks Antigravity as possibly installed.
 
 ### Fixed
 
@@ -251,6 +300,11 @@ Notable, user-visible changes. Dates are release dates.
   widget may. `set`, `remove`, `set-usage-token` and `login` refuse a config
   they cannot read instead of replacing it.
 - **The TLS libraries are updated** for the October 2026 advisories.
+- **Libraries brought up to date** (the menu, tray, drawing, settings-file
+  and Windows-binding crates among them; the installer is built with Inno
+  Setup 6.7.4). The import table, the look and the minimum Rust version are
+  unchanged. The `cargo audit` ignore list is trimmed to what still applies
+  (#4, zyl71).
 
 ### Going back to 0.7.0
 

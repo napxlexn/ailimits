@@ -14,7 +14,7 @@
 // integer % changes, to stay at ~0% idle CPU. The icon carries the widget's
 // context menu; a left-click toggles the overlay.
 
-use crate::config::schema::IndicatorKind;
+use crate::config::schema::{IndicatorKind, UiNumbers};
 use crate::providers::{ProviderData, ProviderStatus};
 use crate::rows::{ModelLabel, RowView};
 use crate::ui::theme::{ComputedTheme, UsageLevel};
@@ -215,6 +215,14 @@ fn build_icon(menu: &muda::Menu, tooltip: &str) -> Result<TrayIcon> {
         .with_icon(neutral_icon(crate::platform::system_uses_light_theme())?)
         .build()
         .map_err(|e| anyhow::anyhow!("tray build: {e}"))
+        .inspect(|icon| {
+            // tray-icon opens the menu itself: its window is watched so the
+            // look item under the pointer shows (platform::menu_hover).
+            #[cfg(target_os = "windows")]
+            crate::platform::menu_hover::watch(icon.window_handle() as isize);
+            #[cfg(not(target_os = "windows"))]
+            let _ = icon;
+        })
 }
 
 /// A provider's primary % if its data is usable.
@@ -285,13 +293,22 @@ pub(crate) struct TipLine {
 }
 
 /// What the panel's drawn tooltip says, line by line: the tooltip's rows
-/// (`rows::visible_rows`, Surface::Tooltip). While every row is a provider's
-/// own with no model label (the default config) it is today's single line,
-/// the same text as the tray's. Otherwise one row per line, "Claude 25%
-/// (2h 14min) · Opus 5.5 · xhigh", the label complete (the tooltip has no
-/// width limit), a line wider than `TIP_WRAP_PX` wrapped at a " · ".
-pub(crate) fn tooltip_lines(rows: &[RowView], first_install: bool) -> Vec<TipLine> {
-    if rows.iter().all(|r| !r.is_extra() && r.model.is_none()) {
+/// (`rows::visible_rows`, Surface::Tooltip), each with what `tip` asks for.
+/// While every row is a provider's own with no model label and only the
+/// percentage is asked for it is the single line of 0.7.0, the same text as
+/// the tray's (and so it is with no rows at all). Otherwise, as by default,
+/// one row per line: "Claude 25%",
+/// "Claude 2h 14min" or "Claude 25% · 2h 14min" (the time left until the
+/// reset of the number the row shows), then the model label complete (the
+/// tooltip has no width limit), a line wider than `TIP_WRAP_PX` wrapped at
+/// a " · ". A row with nothing to say keeps the no-data dot.
+pub(crate) fn tooltip_lines(
+    rows: &[RowView],
+    first_install: bool,
+    tip: &UiNumbers,
+) -> Vec<TipLine> {
+    let plain = tip.percent && !tip.reset;
+    if rows.is_empty() || plain && rows.iter().all(|r| !r.is_extra() && r.model.is_none()) {
         return vec![TipLine {
             text: summary(rows.iter().map(|r| &r.data), first_install),
             indent: false,
@@ -300,16 +317,19 @@ pub(crate) fn tooltip_lines(rows: &[RowView], first_install: bool) -> Vec<TipLin
     let now = chrono::Utc::now();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let mut line = match provider_pct(&row.data) {
-            Some(p) => format!("{} {}%", row.name(), p.round() as u32),
-            None => format!("{} •", row.name()),
-        };
-        if let Some(reset) = row.data.headline_reset() {
+        let mut line = row.name().to_string();
+        let pct = provider_pct(&row.data).filter(|_| tip.percent);
+        let reset = own_reset(&row.data).filter(|_| tip.reset);
+        match pct {
+            Some(p) => line.push_str(&format!(" {}%", p.round() as u32)),
+            // The percentage asked for and not known, or nothing known.
+            None if tip.percent || reset.is_none() => line.push_str(" •"),
+            None => {}
+        }
+        if let Some(reset) = reset {
             let secs = reset.signed_duration_since(now).num_seconds();
-            line.push_str(&format!(
-                " ({})",
-                crate::ui::renderer::format_duration(secs)
-            ));
+            line.push_str(if pct.is_some() { " · " } else { " " });
+            line.push_str(&crate::ui::renderer::format_duration(secs));
         }
         if let Some(label) = row.model.as_ref().and_then(ModelLabel::full) {
             // After the no-data dot the label follows with a space: "Grok •
@@ -680,10 +700,22 @@ pub(crate) fn draw_digits_fit(
     let Some((tl, min_x, max_x, min_y, max_y)) = digits_bounds(font, text, size) else {
         return;
     };
-    let glyphs = tl.glyphs();
     let off_x = x + (w - (max_x - min_x)) / 2.0 - min_x;
     let off_y = y + (h - (max_y - min_y)) / 2.0 - min_y;
+    blit_glyphs(pm, font, &tl, off_x, off_y, c);
+}
 
+/// Source-over a laid-out text onto the pixmap at an offset, in `c`; the
+/// ink's own alpha scales the coverage.
+fn blit_glyphs(
+    pm: &mut Pixmap,
+    font: &fontdue::Font,
+    tl: &fontdue::layout::Layout,
+    off_x: f32,
+    off_y: f32,
+    c: tiny_skia::Color,
+) {
+    let glyphs = tl.glyphs();
     let (cr, cg, cb) = (
         (c.red() * 255.0) as u32,
         (c.green() * 255.0) as u32,
@@ -717,6 +749,108 @@ pub(crate) fn draw_digits_fit(
             data[idx + 3] = (a + data[idx + 3] as u32 * inv / 255).min(255) as u8;
         }
     }
+}
+
+/// The reference ink a countdown is sized and placed by: `draw_digits_fit`
+/// fits the whole ink of "25%" to its band, and the % reaches a little past
+/// the digits, so text sized by this string gets the percent's own digit
+/// size and baseline.
+const DIGIT_REF: &str = "0%";
+
+/// Draw `text` with its digits as tall as a percent drawn by
+/// `draw_digits_fit` in a band `digit_h` tall at `y`, on the same baseline,
+/// whatever letters it carries ("2h14" has an ascender digits lack):
+/// centred in [x, x + w], or from `x` when `left`, and shrunk about the
+/// band's middle when wider than `w`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_text_like_digits(
+    pm: &mut Pixmap,
+    text: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    digit_h: f32,
+    left: bool,
+    c: tiny_skia::Color,
+) {
+    let Some(font) = font() else {
+        return;
+    };
+    let size_for = |dh: f32| {
+        digits_bounds(font, DIGIT_REF, 100.0).map(|(_, _, _, y0, y1)| 100.0 * dh / (y1 - y0))
+    };
+    let Some(mut size) = size_for(digit_h) else {
+        return;
+    };
+    let mut top = y;
+    let Some((_, x0, x1, _, _)) = digits_bounds(font, text, size) else {
+        return;
+    };
+    if x1 - x0 > w && w > 0.0 {
+        let k = w / (x1 - x0);
+        size *= k;
+        top = y + digit_h * (1.0 - k) / 2.0;
+    }
+    let (Some((tl, x0, x1, _, _)), Some((_, _, _, ry0, ry1))) = (
+        digits_bounds(font, text, size),
+        digits_bounds(font, DIGIT_REF, size),
+    ) else {
+        return;
+    };
+    let ink_w = x1 - x0;
+    let start = if left { x } else { x + (w - ink_w) / 2.0 };
+    // Where draw_digits_fit puts the reference ink: centred in the band.
+    let band = size_for(digit_h).map_or(digit_h, |full| digit_h * size / full);
+    let ref_top = top + (band - (ry1 - ry0)) / 2.0;
+    blit_glyphs(pm, font, &tl, start - x0, ref_top - ry0, c);
+}
+
+/// When the limit a row shows resets: its headline window's own reset, in
+/// the future. Never another window's (`ProviderData::headline_reset` falls
+/// back to the nearest reset of any window, which would put a weekly's
+/// "3d 4h" beside a session's "0%"). None without a usable percentage.
+pub(crate) fn own_reset(data: &ProviderData) -> Option<chrono::DateTime<chrono::Utc>> {
+    provider_pct(data)?;
+    data.headline_metric()?
+        .reset_at
+        .filter(|t| *t > chrono::Utc::now())
+}
+
+const MIN: i64 = 60;
+const HOUR: i64 = 3600;
+const DAY: i64 = 86_400;
+
+/// The taskbar panel's countdown, compact like the clock beside it:
+/// "3d4h", "2h14", "12m", "<1m".
+pub(crate) fn countdown_compact(secs: i64) -> String {
+    let (d, h, m) = (secs / DAY, secs % DAY / HOUR, secs % HOUR / MIN);
+    if d > 0 {
+        if h > 0 {
+            format!("{d}d{h}h")
+        } else {
+            format!("{d}d")
+        }
+    } else if h > 0 {
+        format!("{h}h{m:02}")
+    } else if m > 0 {
+        format!("{m}m")
+    } else {
+        "<1m".into()
+    }
+}
+
+/// Seconds until `countdown_compact(secs)` reads differently: the next hour
+/// while it counts days, the next minute while it counts hours or minutes,
+/// the reset itself below a minute. At least one second.
+pub(crate) fn countdown_changes_in(secs: i64) -> i64 {
+    let step = if secs >= DAY {
+        HOUR
+    } else if secs >= MIN {
+        MIN
+    } else {
+        return secs.max(0) + 1;
+    };
+    secs % step + 1
 }
 
 /// Shell tooltip metrics at 100% scaling, in pixels. Windows draws its own
@@ -1532,7 +1666,7 @@ mod tests {
     fn the_default_tooltip_is_todays_single_line() {
         let providers = crate::ui::visual_baseline::typical();
         let rows = tip_rows(&Config::default(), &providers);
-        let lines = tooltip_lines(&rows, false);
+        let lines = tooltip_lines(&rows, false, &UiNumbers::PERCENT_ONLY);
         assert_eq!(
             lines,
             [TipLine {
@@ -1546,7 +1680,11 @@ mod tests {
         // Rows unticked from the tooltip still make one plain line.
         let mut config = Config::default();
         config.ui.rows.tooltip = Some(vec!["codex".into(), "grok".into()]);
-        let lines = tooltip_lines(&tip_rows(&config, &providers), false);
+        let lines = tooltip_lines(
+            &tip_rows(&config, &providers),
+            false,
+            &UiNumbers::PERCENT_ONLY,
+        );
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].text, "Codex 48%  ·  Grok 12%");
     }
@@ -1562,17 +1700,128 @@ mod tests {
         ]);
         let mut rows = tip_rows(&config, &providers);
         rows[0].model = Some(opus(Some("xhigh")));
-        let lines = tooltip_lines(&rows, false);
-        let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        let texts = |tip: &UiNumbers| -> Vec<String> {
+            let lines = tooltip_lines(&rows, false, tip);
+            assert!(lines.iter().all(|l| !l.indent));
+            lines.into_iter().map(|l| l.text).collect()
+        };
+        // The percentage alone: no time.
         assert_eq!(
-            texts,
+            texts(&UiNumbers::PERCENT_ONLY),
             [
-                "Claude 25% (2h 14min) · Opus 5.5 · xhigh",
-                "Codex 48% (4h 51min)",
-                "Antigravity · Claude and GPT 64% (5d 0h)",
+                "Claude 25% · Opus 5.5 · xhigh",
+                "Codex 48%",
+                "Antigravity · Claude and GPT 64%",
             ]
         );
-        assert!(lines.iter().all(|l| !l.indent));
+        // Both: the time left until the reset of the number shown.
+        let both = UiNumbers::default();
+        assert_eq!(
+            texts(&both),
+            [
+                "Claude 25% · 2h 14min · Opus 5.5 · xhigh",
+                "Codex 48% · 4h 51min",
+                "Antigravity · Claude and GPT 64% · 5d 0h",
+            ]
+        );
+        // The time alone.
+        let reset = UiNumbers {
+            percent: false,
+            reset: true,
+        };
+        assert_eq!(
+            texts(&reset),
+            [
+                "Claude 2h 14min · Opus 5.5 · xhigh",
+                "Codex 4h 51min",
+                "Antigravity · Claude and GPT 5d 0h",
+            ]
+        );
+    }
+
+    /// The time asked for gives one row per line even with providers' own
+    /// rows alone and no label; with the percentage left out, a row whose
+    /// reset is not known keeps the no-data dot.
+    #[test]
+    fn the_reset_time_alone_or_with_the_percentage() {
+        let providers = crate::ui::visual_baseline::typical();
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(vec!["claude".into(), "codex".into()]);
+        let mut rows = tip_rows(&config, &providers);
+        let reset = UiNumbers {
+            percent: false,
+            reset: true,
+        };
+        let texts: Vec<String> = tooltip_lines(&rows, false, &reset)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(texts, ["Claude 2h 14min", "Codex 4h 51min"]);
+        for m in &mut rows[1].data.metrics {
+            m.reset_at = None;
+        }
+        let texts: Vec<String> = tooltip_lines(&rows, false, &reset)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(texts, ["Claude 2h 14min", "Codex •"]);
+        let both = UiNumbers {
+            percent: true,
+            reset: true,
+        };
+        let texts: Vec<String> = tooltip_lines(&rows, false, &both)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(texts, ["Claude 25% · 2h 14min", "Codex 48%"]);
+    }
+
+    /// By default each provider has a line of its own, with how much is
+    /// used and when that resets; nothing chosen yet still says what to do.
+    #[test]
+    fn by_default_each_row_says_its_percent_and_reset_time() {
+        let providers = crate::ui::visual_baseline::typical();
+        let mut config = Config::default();
+        config.ui.rows.tooltip = Some(vec!["claude".into(), "codex".into()]);
+        let rows = tip_rows(&config, &providers);
+        let texts: Vec<String> = tooltip_lines(&rows, false, &config.ui.tooltip)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(texts, ["Claude 25% · 2h 14min", "Codex 48% · 4h 51min"]);
+        assert_eq!(
+            tooltip_lines(&[], true, &config.ui.tooltip)[0].text,
+            "AI Limits: choose what to show"
+        );
+    }
+
+    /// The panel's countdown reads like the clock beside it, and changes
+    /// on the next hour while it counts days, on the next minute below.
+    #[test]
+    fn the_compact_countdown_and_when_it_changes() {
+        assert_eq!(countdown_compact(3 * 86_400 + 4 * 3600 + 59), "3d4h");
+        assert_eq!(countdown_compact(2 * 86_400 + 30), "2d");
+        assert_eq!(countdown_compact(2 * 3600 + 14 * 60 + 5), "2h14");
+        assert_eq!(countdown_compact(3600 + 5 * 60), "1h05");
+        assert_eq!(countdown_compact(12 * 60 + 59), "12m");
+        assert_eq!(countdown_compact(59), "<1m");
+        assert_eq!(countdown_changes_in(2 * 3600 + 14 * 60 + 5), 6);
+        assert_eq!(countdown_changes_in(2 * 3600 + 14 * 60), 1);
+        assert_eq!(countdown_changes_in(3 * 86_400 + 4 * 3600 + 59), 60);
+        assert_eq!(countdown_changes_in(59), 60);
+        assert_eq!(countdown_changes_in(0), 1);
+    }
+
+    /// A row's time is its headline window's own reset: a session that has
+    /// not started says nothing rather than borrow the weekly's.
+    #[test]
+    fn a_row_tells_its_own_reset_never_another_windows() {
+        let providers = crate::ui::visual_baseline::typical();
+        let mut claude = providers[0].clone();
+        assert!(own_reset(&claude).is_some());
+        claude.metrics[0].reset_at = None;
+        assert!(claude.next_reset().is_some(), "the weekly still has one");
+        assert_eq!(own_reset(&claude), None);
     }
 
     /// A row without a number keeps its dot, and its label follows the dot
@@ -1586,7 +1835,7 @@ mod tests {
         rows[0].data.status = ProviderStatus::NetworkError("token expired".into());
         rows[0].data.metrics.clear();
         rows[0].model = Some(opus(Some("xhigh")));
-        let texts: Vec<String> = tooltip_lines(&rows, false)
+        let texts: Vec<String> = tooltip_lines(&rows, false, &UiNumbers::PERCENT_ONLY)
             .into_iter()
             .map(|l| l.text)
             .collect();
@@ -1606,7 +1855,7 @@ mod tests {
         assert_eq!(tooltip(&[], true), "AI Limits: choose what to show");
         // Before anything is chosen the panel's tooltip says the same.
         assert_eq!(
-            tooltip_lines(&[], true)[0].text,
+            tooltip_lines(&[], true, &UiNumbers::default())[0].text,
             "AI Limits: choose what to show"
         );
     }
@@ -1728,10 +1977,30 @@ mod tests {
         let mut items = Vec::new();
         for light in [false, true] {
             let ink = if light { "light" } else { "dark" };
+            let mut add_with =
+                |name: &str, rows: &[RowView], first: bool, bar: f32, tip: UiNumbers| {
+                    let lines = tooltip_lines(rows, first, &tip);
+                    let pm = render_tooltip_lines(&lines, bar, light);
+                    items.push((format!("{name}-{bar}-{ink}"), pm));
+                };
+            let both = UiNumbers {
+                percent: true,
+                reset: true,
+            };
+            let reset_only = UiNumbers {
+                percent: false,
+                reset: true,
+            };
+            add_with("mix-reset", &mix, false, 48.0, both);
+            add_with(
+                "unlabelled-reset-only",
+                &unlabelled,
+                false,
+                48.0,
+                reset_only,
+            );
             let mut add = |name: &str, rows: &[RowView], first: bool, bar: f32| {
-                let lines = tooltip_lines(rows, first);
-                let pm = render_tooltip_lines(&lines, bar, light);
-                items.push((format!("{name}-{bar}-{ink}"), pm));
+                add_with(name, rows, first, bar, UiNumbers::PERCENT_ONLY)
             };
             add("mix", &mix, false, 48.0);
             for bar in [40.0, 48.0, 72.0] {

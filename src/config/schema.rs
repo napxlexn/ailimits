@@ -224,8 +224,7 @@ fn default_providers() -> Vec<ProviderConfig> {
         base("codex", true, AuthMethod::Subscription, "", 80),
         // Copilot — subscription via the gh CLI token or a PAT.
         base("copilot", true, AuthMethod::Subscription, "", 85),
-        // Antigravity (the Gemini successor) — keyring token first, then the
-        // legacy Gemini CLI file.
+        // Antigravity (the Gemini successor) — its keyring token.
         base("antigravity", true, AuthMethod::Subscription, "", 80),
         // Grok — SuperGrok subscription via the Grok CLI's auth.json.
         base("grok", true, AuthMethod::Subscription, "", 80),
@@ -338,6 +337,18 @@ pub struct UIConfig {
     /// The model, version and effort labels. Absent: none shown.
     #[serde(default, skip_serializing_if = "UiModel::is_default")]
     pub model: UiModel,
+    /// What each row of the panel's tooltip shows: its percentage, the time
+    /// left until its reset, or both. Absent: both.
+    #[serde(default, skip_serializing_if = "UiNumbers::is_default")]
+    pub tooltip: UiNumbers,
+    /// What each row of the taskbar panel shows: the percentage (with its
+    /// bar), the time left until the reset, or both. Absent: the percentage
+    /// alone, the panel of 0.7.0.
+    #[serde(
+        default = "UiNumbers::panel_default",
+        skip_serializing_if = "UiNumbers::is_panel_default"
+    )]
+    pub panel: UiNumbers,
 }
 
 impl Default for UIConfig {
@@ -354,6 +365,8 @@ impl Default for UIConfig {
             show_forecast: false,
             rows: UiRows::default(),
             model: UiModel::default(),
+            tooltip: UiNumbers::default(),
+            panel: UiNumbers::panel_default(),
         }
     }
 }
@@ -421,6 +434,88 @@ impl UiModel {
 pub enum Surface {
     Widget,
     Tooltip,
+}
+
+/// What each row shows besides its name, on the panel's tooltip
+/// (`UIConfig::tooltip`) or on the taskbar panel itself (`UIConfig::panel`):
+/// the percentage, the time left until it resets, or both; never neither
+/// (the picker keeps one on). The tray icon's own tooltip always says the
+/// percentages; the widget always shows both.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiNumbers {
+    #[serde(default = "default_true")]
+    pub percent: bool,
+    #[serde(default = "default_true")]
+    pub reset: bool,
+}
+
+/// Both, the owner's choice (2026-11-20): each row says how much is used
+/// and when it resets.
+impl Default for UiNumbers {
+    fn default() -> Self {
+        Self {
+            percent: true,
+            reset: true,
+        }
+    }
+}
+
+impl UiNumbers {
+    /// The percentage alone: the tooltip's one line of 0.7.0.
+    pub const PERCENT_ONLY: Self = Self {
+        percent: true,
+        reset: false,
+    };
+}
+
+impl UiNumbers {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The panel's default: the percentage alone, as in 0.7.0.
+    pub fn panel_default() -> Self {
+        Self::PERCENT_ONLY
+    }
+
+    fn is_panel_default(&self) -> bool {
+        *self == Self::PERCENT_ONLY
+    }
+
+    /// Whether `part` is on.
+    pub fn shows(&self, part: TipPart) -> bool {
+        match part {
+            TipPart::Percent => self.percent,
+            TipPart::Reset => self.reset,
+        }
+    }
+
+    /// Turn `part` on or off; the last one on stays on.
+    pub fn set(&mut self, part: TipPart, on: bool) {
+        let mut next = *self;
+        match part {
+            TipPart::Percent => next.percent = on,
+            TipPart::Reset => next.reset = on,
+        }
+        if next.percent || next.reset {
+            *self = next;
+        }
+    }
+}
+
+/// One thing a tooltip or panel row can show (`UiNumbers`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipPart {
+    Percent,
+    Reset,
+}
+
+/// Where a `UiNumbers` choice applies: the panel's tooltip or the taskbar
+/// panel itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumbersOn {
+    Tooltip,
+    Panel,
 }
 
 /// One part of a model label: "Opus" (model), "5.5" (version, shown only

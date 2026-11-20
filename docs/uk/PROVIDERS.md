@@ -63,8 +63,13 @@
   пробується одразу). 429, 5xx, невідоме тіло чи відсутність відповіді
   завершують цикл без другого запиту.
 - **Copilot**: `gh auth token --hostname github.com` не частіше разу на 15
-  хвилин, разом із невдачами; токен gh, який сервер відхилив (401, 403,
-  404), не надсилається повторно 15 хвилин.
+  хвилин, разом із невдачами, плюс один запуск одразу, коли сервер
+  відхиляє (401/403) токен gh, збережений з попереднього циклу: gh 2.103.0
+  і новіші дають токени з терміном дії, які `gh auth token` сам оновлює.
+  Тоді запит надсилається ще раз, із новим токеном (але не тоді, коли gh
+  знову дає той самий). Токен, який gh дав у цьому ж циклі, повторно не
+  питають. Токен gh, який сервер відхилив (401, 403, 404), зокрема й
+  новий, не надсилається повторно 15 хвилин.
 
 ## Мережа
 
@@ -227,7 +232,12 @@ auth.json → `NetworkError("auth.json unreadable")`. Джерел немає в
 
 Джерела токена, по черзі:
 
-1. **PAT** — мітка `copilot_pat` (меню: *Paste PAT from clipboard*; CLI: `set copilot`).
+1. **PAT** — мітка `copilot_pat` (меню: *Paste PAT from clipboard*; CLI:
+   `set copilot`). За документацією GitHub класичні PAT (`ghp_...`) не
+   підтримуються для Copilot CLI; fine-grained PAT (`github_pat_...`)
+   потребує дозволу *Copilot Requests*. Чи відповідає
+   `copilot_internal/user` на fine-grained PAT, живим запитом ще не
+   звірено.
 2. **gh CLI** — `gh auth token --hostname github.com` (ніколи не інший
    хост, тож вхід GitHub Enterprise чи `GH_HOST` не потрапляє на
    github.com), запускається з `CREATE_NO_WINDOW` із System32 і
@@ -235,15 +245,23 @@ auth.json → `NetworkError("auth.json unreadable")`. Джерел немає в
    Відповідь gh діє 15 хвилин, разом із невдачами: gh не встановлено чи
    ніхто не ввійшов на github.com → рядок прихований (`NotConfigured`), і gh
    питають знову через 15 хвилин; gh не відповів вчасно →
-   `"gh timed out, retrying"`. Токен, який сервер відхилив, теж не
-   надсилається ці 15 хвилин.
+   `"gh timed out, retrying"`. Один виняток: коли сервер відхиляє (401/403)
+   токен, збережений з попереднього циклу, gh питають ще раз одразу (gh
+   2.103.0 і новіші дають токени з терміном дії й оновлюють їх у
+   `gh auth token`), і запит надсилається ще раз із новим токеном; якщо gh
+   знову дає той самий токен або жодного, більше нічого не надсилається.
+   Токен, який сервер відхилив, зокрема й новий, не надсилається 15
+   хвилин.
 
-Endpoint (звірено 2026-06-10; той самий, що в розширень Copilot):
+Endpoint (звірено 2026-06-10 і 2026-11-21; той самий, що в розширень
+Copilot):
 
 ```
 GET https://api.github.com/copilot_internal/user
 Authorization: token <token>
 ```
+
+Звірено 2026-06-10 (безкоштовний план):
 
 ```json
 {"copilot_plan": "individual", "quota_reset_date": "2026-07-01",
@@ -253,9 +271,34 @@ Authorization: token <token>
    "completions": {"entitlement": 2000, "remaining": 2000}}}
 ```
 
-→ метрики `Premium`, `Chat`, `Completions` (used = entitlement − remaining;
-від'ємний `remaining` = перевитрата; `unlimited`-квоти пропускаються).
-`quota_reset_date` → скидання опівночі UTC. Незнайома схема або тіло не в
+Звірено 2026-11-21 (план individual з token-based billing; кожна квота має
+ті самі поля):
+
+```json
+{"copilot_plan": "individual", "token_based_billing": true,
+ "quota_reset_date": "2026-12-01",
+ "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
+ "quota_snapshots": {
+   "chat": {"entitlement": 200, "remaining": 199, "quota_remaining": 199.6,
+            "percent_remaining": 99.8, "has_quota": true, "unlimited": false,
+            "credits_used": ..., "overage_count": 0, "overage_permitted": false,
+            "quota_reset_at": 0, "token_based_billing": true,
+            "timestamp_utc": "..."},
+   "completions": {"entitlement": 2000, ...},
+   "premium_interactions": {"entitlement": 0, "has_quota": false, ...}}}
+```
+
+У червні 2026 року GitHub перевів Copilot на оплату за використання в AI
+Credits (`token_based_billing`). Сторонні джерела пишуть, що платні плани з
+кредитами можуть віддавати дробові entitlement; живим запитом це не
+звірено.
+
+→ метрики `Premium`, `Chat`, `Completions`, саме в такому порядку (used =
+entitlement − remaining; `quota_remaining`, дробове, має перевагу над
+`remaining`; дробові числа округлюються до цілих запитів; від'ємний
+`remaining` = перевитрата). Квоти з `unlimited`, з `has_quota: false` або
+без entitlement пропускаються. `quota_reset_date_utc`, інакше
+`quota_reset_date` опівночі UTC → скидання. Незнайома схема або тіло не в
 JSON → `NetworkError("unrecognized Copilot schema")`. Відмова читається за
 тим, звідки токен. Токен gh: 404 → `"no Copilot on this account"`, 401 →
 `"gh token rejected"`, 403 → `"no Copilot access"` (рядок показує слова;
@@ -275,34 +318,37 @@ CLI-токени — короткоживучі OAuth access tokens; CLI-вла�
 |---|---|---|
 | Claude | ~8 год access token (звірено), оновлює Claude Code при використанні | ~8 год після останнього сеансу Claude Code, далі fallback/сірий |
 | Codex | короткоживучий, оновлює Codex CLI при кожному запуску | лише поки Codex CLI активно використовується |
-| Copilot | gh сам керує своїм токеном | нескінченно, поки залогінений у gh |
-| Antigravity | keyring token, потім legacy token Gemini CLI | лише поки одне з цих джерел оновлюється, далі fallback/сірий |
+| Copilot | gh сам керує своїм токеном; від gh 2.103.0 (2026-10-21) це OAuth-токен із терміном дії, який `gh auth token` сам оновлює | нескінченно, поки залогінений у gh |
+| Antigravity | keyring token, який оновлює Antigravity | лише поки Antigravity його оновлює, далі fallback/сірий |
 | Grok | ~6 год access token (звірено), оновлює Grok CLI при використанні | до ~6 год після останнього сеансу Grok CLI, далі fallback/сірий |
 | Cursor | власний сеанс віджета: JWT на ~60 днів, віджет оновлює його в останній тиждень (чи це його подовжує, ще не звірено) | доки сеанс не завершиться, далі сірий із "sign in to Cursor again" |
 
 Команди штибу `gh auth token` («вивести/оновити токен») у Codex чи Claude
 CLI **немає** (звірено з офіційною auth-докою OpenAI Codex). Єдиний
-CLI-керований refresh — це `gh auth token` у Copilot. Для облікових даних,
+CLI-керований refresh — це `gh auth token` у Copilot: від gh 2.103.0
+(2026-10-21) gh входить OAuth-токенами з терміном дії й сам оновлює токен у
+`gh auth token`, зберігаючи його у власному сховищі, тож gh лишається
+залогіненим. Тому токен, збережений віджетом, може протухнути протягом
+його 15 хвилин; відмова в ньому ще раз питає gh (див. Запити за цикл).
+Для облікових даних,
 що не залежать від активності CLI, офіційна рекомендація (і ручний шлях
 віджета) — API ключ / PAT; мітки див. у CONFIG.md.
 
 ## Antigravity (підписка Code Assist)
 
-Джерела токена, по черзі:
+Джерело токена, єдине:
 
 1. **Antigravity CLI** — Windows Credential Manager target
    `gemini:antigravity` → JSON `token.access_token` (READ-ONLY; пропускається,
    коли `token.expiry` в минулому).
-2. **Legacy Gemini CLI** — `%USERPROFILE%\.gemini\oauth_creds.json` →
-   `access_token` (READ-ONLY; пропускається, коли `expiry_date` в минулому).
-3. Токен є, але всі прострочені → `NetworkError("token expired")`: останні
+2. Токен є, але прострочений → `NetworkError("token expired")`: останні
    дані лишаються, сірі, з давністю, доки Antigravity не оновить токен
    (підказка додає "run Antigravity"). Так задумано (d6abbde): прострочений
    токен робить рядок сірим, а не ховає його. Облікові дані, які не вдається
-   прочитати → `NetworkError("credentials unreadable")`. Токена немає ніде →
+   прочитати → `NetworkError("credentials unreadable")`. Токена немає →
    `NotConfigured` (рядок ховається).
 
-Обидва джерела читаються лише тоді, коли це дозволяє `[reads] sign_in`.
+Запис читається лише тоді, коли це дозволяє `[reads] sign_in`.
 
 Станом на 18 червня 2026 року Google припинив обслуговувати запити Gemini CLI
 і IDE-розширень Gemini Code Assist для Gemini Code Assist for individuals,
@@ -311,7 +357,19 @@ Code Assist Standard/Enterprise і платних Gemini / Gemini Enterprise Age
 Platform API-key flows. Для individual-користувачів шлях міграції —
 Antigravity CLI; Antigravity зберігає session tokens у OS keyring (системному
 сховищі ключів). На Windows поточний Antigravity CLI зберігає consumer-сеанс
-під `gemini:antigravity`.
+під `gemini:antigravity`. Тому застарілий файл Gemini CLI
+`%USERPROFILE%\.gemini\oauth_creds.json`, запасне джерело до 0.7.1, більше
+не читається. Тека `.gemini` лишається слабкою ознакою того, що Antigravity
+може бути встановлено (Antigravity CLI живе в `.gemini\antigravity-cli`);
+перевіряється лише її наявність.
+
+**Ризик для акаунта.** Google заблокував деякі акаунти за використання
+входу Antigravity поза Antigravity. Кожне місце, що питає про це читання чи
+перелічує його, каже про це до дозволу: власне запитання Antigravity,
+вітання, *Allow all* і повідомлення після оновлення
+(`consent::ANTIGRAVITY_RISK`): "Google has suspended some accounts for using
+Antigravity's sign-in outside Antigravity. AI Limits only reads your quota,
+once per update, but the risk is yours."
 
 Квота — ланцюжок джерел (усі звірені наживо 2026-08-01):
 
@@ -346,6 +404,12 @@ Antigravity CLI; Antigravity зберігає session tokens у OS keyring (си
    означають нуль залишку. Одна група `All Models` — це дефолтний вигляд
    без project id, і вона відкидається. Ці пули — загальні ліміти
    Antigravity, тож фіксуються як long-window метрики.
+   **Треба звірити живим запитом:** власна документація Google про
+   `/usage` описує п'ятигодинний і тижневий ліміт на кожну групу моделей,
+   а парсер позначає кожен bucket як довге вікно (`MetricWindow::Long`),
+   хоч би що казало його поле `window`. Чи повертає зведення п'ятигодинний
+   bucket поруч із тижневим і що тоді пише `window`, ще не звірено; доти
+   парсер не змінюється.
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; витрачена модель
    пропускає `remainingFraction` і лишає `resetTime`), на тому самому хості.
    Питають лише тоді, коли зведення не дало нічого придатного: 200 з
@@ -654,7 +718,7 @@ once this row is ticked". На звіреному акаунті Grok, Cursor і
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `ANTHROPIC_MODEL` (таблиця `env` самого файлу, інакше оточення, яке бачить програма), інакше `model`; effort `modelSettings.<model>.effortLevel`, інакше той, що в найновішої моделі родини псевдоніма, інакше `effortLevel` верхнього рівня |
 | Codex CLI | `%CODEX_HOME%\config.toml`, інакше `%USERPROFILE%\.codex\config.toml` | `model`, `model_reasoning_effort` верхнього рівня; з `profile = "x"` верхнього рівня спершу ті, що в `[profiles.x]` |
 | Grok CLI | `%GROK_HOME%\config.toml`, інакше `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
-| Copilot CLI | `%COPILOT_HOME%\settings.json`, інакше `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
+| Copilot CLI | `%COPILOT_HOME%\settings.json`, інакше `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` (JSON із коментарями: коментарі й кінцеві коми дозволені) |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (підпис для показу: `Claude Sonnet 4.6 (Thinking)`; окремого effort немає) |
 | Cursor (редактор) | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` | один запис, `...persistentStorage.applicationUser`, і з нього лише `aiSettings.modelConfig.composer`: `modelName`, параметр `reasoning_effort` |
 
@@ -687,7 +751,8 @@ once this row is ticked". На звіреному акаунті Grok, Cursor і
   власної документації CLI (`user-guide/05-configuration.md`), там його не
   задано (вбудована типова модель CLI: підпис — сам effort).
 - Copilot CLI: `model` (`"auto"`); `effortLevel` — з його документації, там
-  не задано.
+  не задано. GitHub документує файл як JSON із коментарями (JSONC):
+  коментарі `//` і `/* */` поза рядками та кінцеві коми пропускаються.
 - Antigravity CLI: `model`, збережений як підпис, який показує CLI; він
   показується як записаний, без розбиття за дефісами (`GPT-OSS 120B
   (Medium)`).
@@ -840,8 +905,13 @@ CLI — підписи, які він пише у свій settings.json (5); Co
 - **Gemini через API-ключ** — публічний Generative Language API не віддає
   rate-limit даних (лише бінарні 200/429), тож початковий key-провайдер
   Gemini було видалено. ПОТОЧНИЙ Antigravity-провайдер (секція вище) натомість
-  читає OAuth-токени Antigravity / legacy Gemini CLI і питає quota-endpoint
-  Code Assist, який повертає реальне використання по моделях.
+  читає OAuth-токен Antigravity і питає quota-endpoint Code Assist, який
+  повертає реальне використання по моделях.
+- **Legacy-вхід Gemini CLI** — `%USERPROFILE%\.gemini\oauth_creds.json`
+  (`access_token`, `expiry_date` у мілісекундах epoch) був запасним
+  джерелом Antigravity до 0.7.1. Видалено: Google припинив обслуговувати
+  акаунти individual, Google AI Pro і Google AI Ultra через Gemini CLI
+  2026-06-18.
 - **Codex API-key probe** (платний запит chat/completions заради заголовків)
   і **Copilot Billing API** — видалені; підписочні endpoint'и дають строго
   більше даних безкоштовно. Відновлюються з git history.

@@ -165,7 +165,7 @@ winget install --id 9P2B0J1VWPWH --source msstore
 1. **Запусти.** При першому старті відкривається вікно привітання (те саме,
    що *Rows and models...* у меню). Його запитання перелічує знайдені на
    цьому ПК інструменти (Claude Code, Codex CLI, Copilot CLI чи GitHub CLI,
-   Antigravity чи старіший Gemini CLI, Grok CLI, Cursor), кожен із
+   Antigravity, Grok CLI, Cursor), кожен із
    галочкою, і називає кожен файл, який буде прочитано, і куди йде кожен
    токен. Інструменти, знайдені за власною текою, відмічені одразу; сам
    GitHub CLI (для Copilot) чи сама `.gemini` (для Antigravity) показані без
@@ -181,6 +181,8 @@ winget install --id 9P2B0J1VWPWH --source msstore
 3. **Обери вигляд.** ПКМ → рівень деталізації (Compact / Medium / Expanded),
    орієнтація смужок (Vertical / Horizontal), палітра (монохром або 8 кольорів),
    прозорість, яскравість і насиченість. Усе це показано на анімаціях вище.
+   Досить навести курсор на такий пункт, і віджет, панель та іконка трею
+   одразу його показують; закриєш меню без кліку, і все повернеться.
    *Rows and models...* вибирає рядки, які показують віджет і підказка панелі
    (зокрема додаткові, як-от тиждень Opus у Claude), і необов'язковий підпис
    моделі, якою ти користуєшся: модель, версія, effort.
@@ -205,7 +207,7 @@ winget install --id 9P2B0J1VWPWH --source msstore
 | Claude | `%USERPROFILE%\.claude\.credentials.json` (OAuth-токен Claude Code) | запустити [Claude Code](https://claude.com/claude-code) хоч раз |
 | Codex | `%USERPROFILE%\.codex\auth.json` (токен Codex CLI; у `CODEX_HOME`, коли її задано) | один раз `codex login` |
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | один раз `gh auth login` |
-| Antigravity | Windows Credential Manager target `gemini:antigravity`; fallback `%USERPROFILE%\.gemini\oauth_creds.json` | запустити Antigravity CLI хоч раз або мати ще підтриманий Gemini CLI flow |
+| Antigravity | Windows Credential Manager target `gemini:antigravity` | запустити Antigravity CLI хоч раз |
 | Grok | `%USERPROFILE%\.grok\auth.json` (логін Grok CLI; у `GROK_HOME`, коли її задано) | один раз запустити `grok` і залогінитись (підписка SuperGrok) |
 | Cursor | власний сеанс віджета у Windows Credential Manager (`cursor_session`); нічого з редактора Cursor для цього не читається | Один раз увійти в Cursor із меню (або `ailimits-auth login cursor`): у браузері відкривається власна сторінка входу Cursor; сеанс на ~60 днів |
 
@@ -226,14 +228,17 @@ winget install --id 9P2B0J1VWPWH --source msstore
 | **Claude** | ~8 годин після останнього сеансу в Claude Code (реальний час життя токена) | останнє значення сірим, із давністю |
 | **Codex** | поки активно користуєшся Codex CLI (його токен коротший) | останнє значення сірим, із давністю |
 | **Copilot** | Нескінченно. gh тримає токен свіжим, поки ти залогінений. | |
-| **Antigravity** | поки Antigravity CLI оновлює keyring token або підтриманий Gemini CLI flow оновлює `oauth_creds.json` | останнє значення сірим, із давністю |
+| **Antigravity** | поки Antigravity CLI оновлює keyring token | останнє значення сірим, із давністю |
 | **Grok** | до ~6 годин після останнього сеансу в Grok CLI (реальний час життя токена) | останнє значення сірим, із давністю |
 | **Cursor** | близько 60 днів після входу (час життя сеансу) | останнє значення сірим і `sign in to Cursor again` |
 
 Google припинив обслуговувати Gemini CLI для individual, Google AI Pro і
 Google AI Ultra користувачів 18 червня 2026 року. Шлях міграції для них це
-Antigravity CLI; віджет читає token Antigravity із Windows Credential Manager
-перед fallback (відкатом) до legacy-файлу Gemini CLI.
+Antigravity CLI; віджет читає лише token Antigravity із Windows Credential
+Manager, а legacy-файл Gemini CLI більше не читає. Google заблокував деякі
+акаунти за використання входу Antigravity поза Antigravity. Віджет лише
+читає твою квоту, раз за оновлення, але ризик твій: запитання, що просить
+дозволу читати вхід Antigravity, про це каже.
 
 **У Claude є серверна стеля свіжості:** Anthropic обмежує usage-endpoint
 (HTTP 429, `Retry-After: 0`, перевірено 2026-07-09), а per-token бакет
@@ -254,7 +259,7 @@ Antigravity CLI; віджет читає token Antigravity із Windows Credenti
 
 | Провайдер | Ручний варіант | Звідки взяти | Показує те саме, що підписка? |
 |---|---|---|---|
-| **Copilot** | Personal Access Token, можна безстроковий | github.com/settings/tokens, *Generate new token* | Так. Це варіант «постав і забудь». |
+| **Copilot** | Fine-grained Personal Access Token із дозволом *Copilot Requests* (за документацією GitHub класичні токени `ghp_` не підтримуються для Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Так. Працює без gh, до терміну, який ти задаси. |
 | **Claude** | API ключ | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | Ні. Це ліміти твого API-акаунта, а не підписки Pro чи Max. |
 | **Codex** | Немає | Окремого стабільного токена не існує. Usage-токен це той самий короткоживучий OAuth. | |
 | **Antigravity** | Немає | Квота прив'язана до OAuth-токена, який оновлює Antigravity CLI, і окремого ключа з тими самими цифрами не існує. | |
@@ -321,7 +326,8 @@ Saturation, Forecast (burn-rate «~час до ліміту», вимкнени�
   прямокутника, лише цифри розміру годинника й смужки поверх таскбару.
   Монохромний, слідує світлій і темній темі системи, показує перші два
   провайдери в порядку віджета або два, відмічені в колонці Taskbar вікна
-  *Rows and models* (значення, яке перестало оновлюватись, чи
+  *Rows and models*, з відсотком, часом до скидання ліміту або обома
+  (значення, яке перестало оновлюватись, чи
   оцінка `≈` малюється блідіше, як віджет робить його сірим) і стежить за
   таскбаром, коли той рухається
   (авто-приховування, зміна роздільності, ширина трея). При наведенні дає

@@ -62,8 +62,13 @@ requests, exactly:
   once). A 429, a 5xx, an unknown body or no answer ends the cycle with no
   second request.
 - **Copilot**: `gh auth token --hostname github.com` at most once every 15
-  minutes, its failures included; a gh token the server refused (401, 403,
-  404) is not sent again for 15 minutes.
+  minutes, its failures included, plus one run right away when the server
+  refuses (401/403) a gh token kept from an earlier cycle: gh 2.103.0 and
+  newer give expiring tokens that `gh auth token` renews by itself. The
+  request is then sent once more, with the new token (not when gh gives the
+  same one again). A token gh gave in the same cycle is not asked again. A
+  gh token the server refused (401, 403, 404), the new one included, is not
+  sent again for 15 minutes.
 
 ## Network
 
@@ -223,22 +228,34 @@ kept): `AuthError("usage token rejected")`. An unreadable auth.json →
 
 Token sources, in order:
 
-1. **PAT** — label `copilot_pat` (menu: *Paste PAT from clipboard*; CLI: `set copilot`).
+1. **PAT** — label `copilot_pat` (menu: *Paste PAT from clipboard*; CLI:
+   `set copilot`). GitHub documents classic PATs (`ghp_...`) as not
+   supported for Copilot CLI; a fine-grained PAT (`github_pat_...`) needs
+   the *Copilot Requests* permission. Whether `copilot_internal/user`
+   answers a fine-grained PAT is not verified with a live request yet.
 2. **gh CLI** — `gh auth token --hostname github.com` (never another host,
    so a GitHub Enterprise sign-in or `GH_HOST` is not sent to github.com),
    spawned with `CREATE_NO_WINDOW` from System32, killed after 15 s; only
    when `[reads] sign_in` allows it. gh's answer stands for 15 minutes, its
    failures included: gh not installed or nobody signed in to github.com →
    the row is hidden (`NotConfigured`) and gh is asked again in 15 minutes;
-   gh timing out → `"gh timed out, retrying"`. A token the server refused is
-   not sent again for those 15 minutes either.
+   gh timing out → `"gh timed out, retrying"`. One exception: when the
+   server refuses (401/403) a token kept from an earlier cycle, gh is asked
+   once more right away (gh 2.103.0 and newer give expiring tokens and
+   renew them in `gh auth token`), and the request is sent once more with
+   the new token; gh giving the same token again, or none, sends nothing
+   more. A token the server refused, the new one included, is not sent
+   again for 15 minutes.
 
-Endpoint (verified 2026-06-10; the same one the Copilot extensions use):
+Endpoint (verified 2026-06-10 and 2026-11-21; the same one the Copilot
+extensions use):
 
 ```
 GET https://api.github.com/copilot_internal/user
 Authorization: token <token>
 ```
+
+Verified 2026-06-10 (free plan):
 
 ```json
 {"copilot_plan": "individual", "quota_reset_date": "2026-07-01",
@@ -248,9 +265,33 @@ Authorization: token <token>
    "completions": {"entitlement": 2000, "remaining": 2000}}}
 ```
 
-→ metrics `Premium`, `Chat`, `Completions` (used = entitlement − remaining;
-negative `remaining` = overage; `unlimited` snapshots are skipped).
-`quota_reset_date` → reset at midnight UTC. An unknown schema or a body that
+Verified 2026-11-21 (individual plan with token-based billing; every
+snapshot carries the same fields):
+
+```json
+{"copilot_plan": "individual", "token_based_billing": true,
+ "quota_reset_date": "2026-12-01",
+ "quota_reset_date_utc": "2026-12-01T00:00:00.000Z",
+ "quota_snapshots": {
+   "chat": {"entitlement": 200, "remaining": 199, "quota_remaining": 199.6,
+            "percent_remaining": 99.8, "has_quota": true, "unlimited": false,
+            "credits_used": ..., "overage_count": 0, "overage_permitted": false,
+            "quota_reset_at": 0, "token_based_billing": true,
+            "timestamp_utc": "..."},
+   "completions": {"entitlement": 2000, ...},
+   "premium_interactions": {"entitlement": 0, "has_quota": false, ...}}}
+```
+
+In June 2026 GitHub moved Copilot to usage-based billing in AI Credits
+(`token_based_billing`). Third-party sources say paid credit-billed plans
+may report decimal entitlements; that is not verified live.
+
+→ metrics `Premium`, `Chat`, `Completions`, in that order (used =
+entitlement − remaining; `quota_remaining`, a decimal, is preferred to
+`remaining`; decimal numbers are rounded to whole requests; negative
+`remaining` = overage). Snapshots that are `unlimited`, have
+`has_quota: false` or no entitlement are skipped. `quota_reset_date_utc`,
+else `quota_reset_date` at midnight UTC → the reset. An unknown schema or a body that
 is not JSON → `NetworkError("unrecognized Copilot schema")`. A refusal reads
 by where the token came from. gh's token: 404 → `"no Copilot on this
 account"`, 401 → `"gh token rejected"`, 403 → `"no Copilot access"` (the row
@@ -270,34 +311,36 @@ client's refresh invalidated the others). Consequences:
 |---|---|---|
 | Claude | ~8h access token (verified), refreshed by Claude Code on use | ~8h after the last Claude Code session, then fallback/grey |
 | Codex | short-lived, refreshed by Codex CLI on each run | only while Codex CLI is in active use |
-| Copilot | gh manages its own token | indefinite while logged into gh |
-| Antigravity | keyring token, then the legacy Gemini CLI token | only while one of those sources is refreshed, then fallback/grey |
+| Copilot | gh manages its own token; since gh 2.103.0 (2026-10-21) an expiring OAuth token that `gh auth token` renews by itself | indefinite while logged into gh |
+| Antigravity | the keyring token, refreshed by Antigravity | only while Antigravity refreshes it, then fallback/grey |
 | Grok | ~6h access token (verified), refreshed by the Grok CLI on use | up to ~6h after the last Grok CLI session, then fallback/grey |
 | Cursor | the widget's own session: a ~60-day JWT, refreshed by the widget in its last week (whether that extends it is not verified yet) | until the session ends, then grey with "sign in to Cursor again" |
 
 There is no `gh auth token`-style "print/refresh the token" command for the
 Codex or Claude CLIs (verified against the OpenAI Codex auth docs). The only
-CLI-driven refresh path is Copilot's `gh auth token`. For a credential that
+CLI-driven refresh path is Copilot's `gh auth token`: since gh 2.103.0
+(2026-10-21) gh signs in with expiring OAuth tokens and renews one in
+`gh auth token` itself, keeping it in its own store, so gh stays signed in.
+A token the widget kept can therefore lapse within its 15 minutes; a refusal
+of it asks gh once more (see Requests per cycle). For a credential that
 does not depend on CLI activity, the official recommendation (and the
 widget's manual path) is an API key / PAT — see CONFIG.md for the labels.
 
 ## Antigravity (Code Assist subscription)
 
-Token sources, in order:
+Token source, the only one:
 
 1. **Antigravity CLI** — Windows Credential Manager target
    `gemini:antigravity` → JSON `token.access_token` (READ-ONLY; skipped when
    `token.expiry` is in the past).
-2. **Legacy Gemini CLI** — `%USERPROFILE%\.gemini\oauth_creds.json` →
-   `access_token` (READ-ONLY; skipped when `expiry_date` is in the past).
-3. A token exists but every one is expired → `NetworkError("token expired")`:
+2. A token exists but it is expired → `NetworkError("token expired")`:
    the last data stays, greyed with its age, until Antigravity refreshes the
    token (the hover adds "run Antigravity"). This is deliberate (d6abbde): an
    expired token greys the row rather than hiding it. A credential that
-   cannot be read → `NetworkError("credentials unreadable")`. No token
-   anywhere → `NotConfigured` (the row is hidden).
+   cannot be read → `NetworkError("credentials unreadable")`. No token →
+   `NotConfigured` (the row is hidden).
 
-Both sources are read only when `[reads] sign_in` allows it.
+The entry is read only when `[reads] sign_in` allows it.
 
 As of June 18, 2026, Google stopped serving Gemini CLI and Gemini Code Assist
 IDE-extension requests for Gemini Code Assist for individuals, Google AI Pro,
@@ -305,7 +348,19 @@ and Google AI Ultra. Gemini CLI remains supported for Gemini Code Assist
 Standard/Enterprise and paid Gemini / Gemini Enterprise Agent Platform API-key
 flows. Individual users are expected to migrate to Antigravity CLI; Antigravity
 stores session tokens in the OS keyring. On Windows, current Antigravity CLI
-stores the consumer session under `gemini:antigravity`.
+stores the consumer session under `gemini:antigravity`. The legacy Gemini CLI
+file `%USERPROFILE%\.gemini\oauth_creds.json`, a fallback until 0.7.1, is
+therefore no longer read. The `.gemini` folder stays a weak sign that
+Antigravity may be installed (the Antigravity CLI lives in
+`.gemini\antigravity-cli`); only its existence is checked.
+
+**Account risk.** Google has suspended some accounts for using
+Antigravity's sign-in outside Antigravity. Every place that asks for or lists
+this read says so before it is allowed: Antigravity's own question, the
+welcome, *Allow all* and the update notice (`consent::ANTIGRAVITY_RISK`):
+"Google has suspended some accounts for using Antigravity's sign-in outside
+Antigravity. AI Limits only reads your quota, once per update, but the risk
+is yours."
 
 Quota is a chain of sources (all verified live 2026-08-01):
 
@@ -338,6 +393,12 @@ Quota is a chain of sources (all verified live 2026-08-01):
    only `resetTime` — both mean zero remaining. A single `All Models` group is
    the project-less default view and is refused. These pools are Antigravity's
    general limits, so they are recorded as long-window metrics.
+   **To be verified with a live request:** Google's own `/usage` docs
+   describe a five-hour and a weekly limit per model group, while the parser
+   marks every bucket as a long window (`MetricWindow::Long`), whatever its
+   `window` says. Whether the summary returns a five-hour bucket beside the
+   weekly one, and how its `window` reads, is not verified yet; the parser
+   is unchanged until it is.
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; a spent model omits
    `remainingFraction` and keeps `resetTime`), on the same host. Asked only
    when the summary gave nothing usable: a 200 with an unknown or empty body,
@@ -641,7 +702,7 @@ nothing.
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `ANTHROPIC_MODEL` (the file's `env` table, else the environment the app sees), else `model`; effort `modelSettings.<model>.effortLevel`, else that of the newest model of an alias's family, else the top-level `effortLevel` |
 | Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort`; with a top-level `profile = "x"`, those of `[profiles.x]` first |
 | Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
-| Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` |
+| Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` (JSON with comments: comments and trailing commas are allowed) |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (a display label: `Claude Sonnet 4.6 (Thinking)`; no separate effort) |
 | Cursor (the editor) | `%APPDATA%\Cursor\User\globalStorage\state.vscdb` | one entry, `...persistentStorage.applicationUser`, and of it only `aiSettings.modelConfig.composer`: `modelName`, the `reasoning_effort` parameter |
 
@@ -673,6 +734,8 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   is from the CLI's own docs (`user-guide/05-configuration.md`) and was not
   set there (the CLI's built-in default: the label is the effort alone).
 - Copilot CLI: `model` (`"auto"`); `effortLevel` from its docs, not set there.
+  GitHub documents the file as JSON with comments (JSONC): `//` and `/* */`
+  comments outside strings and trailing commas are read past.
 - Antigravity CLI: `model`, stored as the label the CLI shows; it is shown
   as written, never split at its hyphens (`GPT-OSS 120B (Medium)`).
 - Cursor (verified 2026-11-16 on the owner's PC): the editor keeps the
@@ -819,8 +882,13 @@ picker and the widget agree.
 - **Gemini API-key method** — the public Generative Language API exposes no
   rate-limit data (binary 200/429 only), so the original key-based Gemini
   provider was removed. The CURRENT Antigravity provider (section above) instead
-  reads Antigravity / legacy Gemini CLI OAuth tokens and queries the Code Assist
-  quota endpoint, which does return real per-model usage.
+  reads Antigravity's OAuth token and queries the Code Assist quota endpoint,
+  which does return real per-model usage.
+- **Legacy Gemini CLI sign-in** — `%USERPROFILE%\.gemini\oauth_creds.json`
+  (`access_token`, `expiry_date` in epoch milliseconds) was Antigravity's
+  fallback source until 0.7.1. Removed: Google stopped serving individual,
+  Google AI Pro and Google AI Ultra accounts through Gemini CLI on
+  2026-06-18.
 - **Codex API-key probe** (paid chat/completions request for headers) and
   **Copilot Billing API** — removed; the subscription endpoints provide
   strictly more data for free. Recoverable from git history.

@@ -26,9 +26,16 @@ impl App {
         target: &EventLoopWindowTarget<UserEvent>,
         control_flow: &mut ControlFlow,
     ) {
+        // A look shown while the menu was open was left on screen for its
+        // click: the click applies to what was there before the menu.
+        #[cfg(target_os = "windows")]
+        self.take_look_base();
         let Some(action) = self.menu.action_for(&id) else {
             return;
         };
+        // What a look item does to the config is one function, the one its
+        // preview uses (`context_menu::look`); the arms below repaint and save.
+        crate::ui::context_menu::look(&mut self.config, &action);
         match action {
             MenuAction::OpenPicker => self.open_picker(target, None, true),
             MenuAction::Quit => *control_flow = ControlFlow::Exit,
@@ -75,7 +82,6 @@ impl App {
                 self.save_config();
             }
             MenuAction::ToggleForecast => {
-                self.config.ui.show_forecast = !self.config.ui.show_forecast;
                 self.menu.sync(&self.config, self.win_state.pinned);
                 self.save_config();
                 self.window.request_redraw();
@@ -105,49 +111,21 @@ impl App {
             MenuAction::RemoveUsageToken(pid) => self.remove_usage_token(pid),
             MenuAction::SignInCursor => self.sign_in_cursor(),
             MenuAction::SignOutCursor => self.sign_out_cursor(),
-            MenuAction::SetDetail(d) => {
-                self.config.ui.detail = d;
+            MenuAction::SetDetail(_)
+            | MenuAction::SetLayout(_)
+            | MenuAction::SetWidthScale(_)
+            | MenuAction::SetColumnFlow(_) => {
                 self.relayout();
                 self.save_config();
             }
-            MenuAction::SetLayout(l) => {
-                self.config.ui.layout = l;
-                self.relayout();
-                self.save_config();
-            }
-            MenuAction::SetWidthScale(w) => {
-                self.config.ui.width_scale = w;
-                self.relayout();
-                self.save_config();
-            }
-            MenuAction::SetColumnFlow(f) => {
-                self.config.ui.column_flow = f;
-                self.relayout();
-                self.save_config();
-            }
-            MenuAction::SetPalette(p) => {
-                // Picking a palette disables monochrome.
-                self.config.ui.palette = p;
-                self.config.ui.monochrome = false;
-                self.colours_changed();
-            }
-            MenuAction::ToggleMonochrome => {
-                self.config.ui.monochrome = !self.config.ui.monochrome;
-                self.colours_changed();
-            }
-            MenuAction::SetOpacity(pct) => {
-                self.config.window.opacity = (pct as f32 / 100.0).clamp(0.10, 0.85);
+            MenuAction::SetPalette(_)
+            | MenuAction::ToggleMonochrome
+            | MenuAction::SetBrightness(_)
+            | MenuAction::SetSaturation(_) => self.colours_changed(),
+            MenuAction::SetOpacity(_) => {
                 self.menu.sync(&self.config, self.win_state.pinned);
                 self.save_config();
                 self.window.request_redraw();
-            }
-            MenuAction::SetBrightness(v) => {
-                self.config.ui.brightness = v;
-                self.colours_changed();
-            }
-            MenuAction::SetSaturation(v) => {
-                self.config.ui.saturation = v;
-                self.colours_changed();
             }
             MenuAction::SetUpdateInterval(secs) => {
                 self.config.general.update_interval_secs = secs;

@@ -22,6 +22,9 @@ use super::cache::FileJob;
 impl App {
     /// Queue the config for the background writer.
     pub(super) fn save_config(&self) {
+        #[cfg(target_os = "windows")]
+        self.config_saves.save(self.config_to_save());
+        #[cfg(not(target_os = "windows"))]
         self.config_saves.save(self.config.clone());
     }
 
@@ -270,6 +273,8 @@ impl App {
             self.save_config();
             self.relayout();
             self.sync_tray();
+            let visible = self.visible();
+            self.panel.set_numbers(self.config.ui.panel, &visible);
             self.panel.update(&self.visible(), true);
             self.menu.sync(&self.config, self.win_state.pinned);
             self.window.request_redraw();

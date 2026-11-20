@@ -26,7 +26,9 @@
 // - window.rs: `PickerWindow`, placement, the Windows settings followed;
 // - tests.rs.
 
-use crate::config::schema::{ModelPart, ModelSource, Reads, Surface, UiModel};
+use crate::config::schema::{
+    ModelPart, ModelSource, NumbersOn, Reads, Surface, TipPart, UiModel, UiNumbers,
+};
 use crate::ui::layout::Rect;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -74,6 +76,13 @@ pub enum PickerAction {
         on: bool,
     },
     SetSource(ModelSource),
+    /// Show or hide the percentage or the reset time on each row of the
+    /// panel's tooltip; the last one on stays on (`UiNumbers::set`).
+    SetTip {
+        part: TipPart,
+        place: NumbersOn,
+        on: bool,
+    },
     /// Show or hide a provider ("claude") on the taskbar panel and the tray
     /// icon (the Taskbar column): at most `rows::TASKBAR_MAX` at a time,
     /// which the picker holds to.
@@ -159,6 +168,10 @@ pub struct PickerInput {
     /// (`rows::taskbar_ticked`: untouched, the first two that run).
     pub taskbar_rows: Vec<String>,
     pub model: UiModel,
+    /// What each tooltip row shows: the percentage, the reset time, or both.
+    pub tip: UiNumbers,
+    /// The same for each row of the taskbar panel.
+    pub panel: UiNumbers,
     pub reads: Reads,
     /// Providers switched on in the config (the Providers menu).
     pub enabled: Vec<&'static str>,
@@ -510,6 +523,24 @@ fn count_of(n: usize, one: &str) -> String {
     }
 }
 
+/// What each row of the panel's tooltip can show besides its name, with a
+/// sample and what it says on hover. Only the tooltip chooses: the widget
+/// always shows both.
+const TIP_PARTS: [(TipPart, &str, &str, &str); 2] = [
+    (
+        TipPart::Percent,
+        "Percent",
+        "16% · 40%",
+        "How much of the limit is used, as a number. The widget always shows it; untick it to leave it out of the tooltip or the taskbar panel.",
+    ),
+    (
+        TipPart::Reset,
+        "Reset time",
+        "2h 14min · 4d 3h",
+        "How long until the limit the row shows resets. The widget always shows it; tick it to see it in the tooltip or on the taskbar panel too. On the panel it takes the bar's place beside the percentage.",
+    ),
+];
+
 /// What each model part shows, on hover.
 fn part_hint(part: ModelPart) -> &'static str {
     match part {
@@ -606,6 +637,8 @@ enum Target {
         surface: Surface,
     },
     Source(ModelSource),
+    /// A Percent or Reset time tick: in the Tooltip or the Taskbar column.
+    Tip(TipPart, NumbersOn),
     /// A name field: the key its name is kept under, and the tool it is
     /// listed under (a shared model has a field under each tool).
     Field {
@@ -1476,6 +1509,26 @@ impl Picker {
 
     /// A part shows as ticked only with the settings files allowed; the
     /// version only with the model.
+    fn numbers(&self, place: NumbersOn) -> UiNumbers {
+        match place {
+            NumbersOn::Tooltip => self.input.tip,
+            NumbersOn::Panel => self.input.panel,
+        }
+    }
+
+    /// Whether the tooltip or the panel shows `part`.
+    fn tip_on(&self, part: TipPart, place: NumbersOn) -> bool {
+        self.numbers(place).shows(part)
+    }
+
+    /// Whether a `part` tick can be used: not the last one on there.
+    fn tip_enabled(&self, part: TipPart, place: NumbersOn) -> bool {
+        let now = self.numbers(place);
+        let mut next = now;
+        next.set(part, !now.shows(part));
+        next != now
+    }
+
     fn part_on(&self, surface: Surface, part: ModelPart) -> bool {
         let parts = self.input.model.parts(surface);
         self.input.reads.tool_settings
@@ -1539,8 +1592,9 @@ impl Picker {
     }
 
     /// One tool in the welcome's question or in Allow all's list: its files
-    /// and where its token goes, and the settings and session files already
-    /// allowed for every tool, which apply to it too.
+    /// and where its token goes, the settings and session files already
+    /// allowed for every tool, which apply to it too, and what reading its
+    /// sign-in may cost (`ReadInfo::risk`).
     fn found_entry(&self, i: &crate::consent::ReadInfo) -> String {
         let mut s = format!(
             "{}; its {} goes only to {}",
@@ -1551,6 +1605,10 @@ impl Picker {
         for file in self.allowed_model_files(i) {
             s.push_str("; ");
             s.push_str(file);
+        }
+        if let Some(risk) = i.risk {
+            s.push_str(". ");
+            s.push_str(risk);
         }
         s
     }

@@ -2,7 +2,7 @@
 // to the config. Pure: no window, no files; app.rs applies the result to the
 // surfaces and saves the config.
 
-use crate::config::schema::{Config, ModelPart, ModelSource, PendingNotice, Surface};
+use crate::config::schema::{Config, ModelPart, ModelSource, NumbersOn, PendingNotice, Surface};
 use crate::models::{self, Models};
 use crate::providers::{ProviderData, ProviderId, ProviderStatus};
 use crate::rows::{self, SUB_ROWS};
@@ -290,6 +290,15 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
             }
             out.models = true;
         }
+        PickerAction::SetTip { part, place, on } => {
+            let numbers = match place {
+                NumbersOn::Tooltip => &mut config.ui.tooltip,
+                NumbersOn::Panel => &mut config.ui.panel,
+            };
+            let before = *numbers;
+            numbers.set(*part, *on);
+            out.changed = *numbers != before;
+        }
         PickerAction::SetSource(source) => {
             config.ui.model.source = *source;
             // Back to the tools' settings: the sessions are not read any
@@ -412,6 +421,18 @@ pub(crate) fn picker_input_with(
             // missing from an answer that never asked for it: it says when
             // it is asked for instead.
             let unasked = sub.on_request && !crate::rows::row_wanted(config, sub.id);
+            // A limit the provider, having answered, does not report is one
+            // this plan does not have (Claude's Opus and Sonnet weeks exist
+            // only on some plans): its row is not offered. One chosen
+            // earlier stays, so it can be unticked; one asked for only
+            // while chosen cannot be reported before it is. Before the first
+            // answer every row is offered: what the plan has is not known.
+            let chosen = [Surface::Widget, Surface::Tooltip]
+                .iter()
+                .any(|&s| crate::rows::row_chosen(config, s, sub.id));
+            if ok && !has && !sub.on_request && !chosen {
+                continue;
+            }
             rows_out.push(RowChoice {
                 id: sub.id,
                 provider: pid.config_id(),
@@ -437,6 +458,8 @@ pub(crate) fn picker_input_with(
             .map(String::from)
             .collect(),
         model: config.ui.model.clone(),
+        tip: config.ui.tooltip,
+        panel: config.ui.panel,
         reads: config.reads.clone(),
         enabled: config
             .providers
@@ -588,6 +611,140 @@ mod tests {
         let a = apply(&mut config, &taskbar("grok", true));
         assert_eq!(a.provider.as_deref(), Some("grok"));
         assert_eq!(rows::taskbar_ticked(&config), ["claude", "grok"]);
+    }
+
+    /// An extra row is offered only while its provider, having answered,
+    /// reports it: a plan without an Opus or Sonnet week lists Fable alone.
+    /// A row chosen earlier stays (to be unticked), a row asked for only
+    /// while chosen stays, and before the first answer every row is there.
+    #[test]
+    fn only_the_limits_a_plan_reports_are_offered() {
+        use crate::providers::{Metric, MetricUnit, MetricWindow};
+        let metric = |label: &str| Metric {
+            label: label.to_string(),
+            used: 10,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: None,
+            window: MetricWindow::Long,
+            unified_pool: false,
+            extra_only: false,
+        };
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        config.allow_app_sign_in("cursor");
+        let data = |id: ProviderId, labels: &[&str]| ProviderData {
+            id,
+            status: ProviderStatus::Ok,
+            metrics: labels.iter().map(|l| metric(l)).collect(),
+            updated_at: chrono::Utc::now(),
+            received_at: None,
+        };
+        let display = [
+            data(ProviderId::Claude, &["Session", "Weekly", "Fable"]),
+            data(ProviderId::Cursor, &["Included"]),
+        ];
+        let offered = |config: &Config, display: &[ProviderData]| -> Vec<&'static str> {
+            picker_input_with(
+                config,
+                display,
+                &Models::new(),
+                PickerMode::Normal,
+                &[],
+                |_| true,
+            )
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .filter(|id| id.starts_with("claude") || id.starts_with("cursor"))
+            .collect()
+        };
+        assert_eq!(
+            offered(&config, &display),
+            ["claude", "claude.fable", "cursor", "cursor.bot"]
+        );
+        // Chosen before: still there, to be unticked.
+        config.ui.rows.tooltip = Some(vec!["claude".into(), "claude.opus".into()]);
+        assert_eq!(
+            offered(&config, &display),
+            [
+                "claude",
+                "claude.opus",
+                "claude.fable",
+                "cursor",
+                "cursor.bot"
+            ]
+        );
+        // No answer yet: what the plan has is not known.
+        config.ui.rows.tooltip = None;
+        assert_eq!(
+            offered(&config, &[]),
+            [
+                "claude",
+                "claude.opus",
+                "claude.sonnet",
+                "claude.fable",
+                "cursor",
+                "cursor.bot"
+            ]
+        );
+    }
+
+    /// The tooltip's Percent and Reset time: untouched, both and nothing
+    /// written; either can go, never both.
+    #[test]
+    fn the_tooltip_shows_the_percent_the_reset_time_or_both() {
+        use crate::config::schema::{TipPart, UiNumbers};
+        let tip = |part, on| PickerAction::SetTip {
+            part,
+            place: NumbersOn::Tooltip,
+            on,
+        };
+        let mut config = Config::default();
+        assert!(config.ui.tooltip.percent && config.ui.tooltip.reset);
+        assert!(!toml::to_string(&config).unwrap().contains("[ui.tooltip]"));
+        assert!(apply(&mut config, &tip(TipPart::Reset, false)).changed);
+        assert_eq!(config.ui.tooltip, UiNumbers::PERCENT_ONLY);
+        // The percentage alone: it cannot go.
+        assert!(!apply(&mut config, &tip(TipPart::Percent, false)).changed);
+        assert!(apply(&mut config, &tip(TipPart::Reset, true)).changed);
+        assert!(apply(&mut config, &tip(TipPart::Percent, false)).changed);
+        // The reset time alone: it cannot go.
+        assert!(!apply(&mut config, &tip(TipPart::Reset, false)).changed);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("[ui.tooltip]"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.ui.tooltip, config.ui.tooltip);
+        // A file without the section, as 0.7.0 wrote it, reads as both.
+        let old: Config = toml::from_str("[ui]\nmonochrome = true\n").unwrap();
+        assert_eq!(old.ui.tooltip, UiNumbers::default());
+        assert_eq!(old.ui.panel, UiNumbers::PERCENT_ONLY);
+    }
+
+    /// The taskbar panel's own choice: untouched, the percentage alone (the
+    /// panel of 0.7.0) and nothing written; the reset time added, or alone.
+    #[test]
+    fn the_panel_shows_the_percent_the_reset_time_or_both() {
+        use crate::config::schema::{TipPart, UiNumbers};
+        let set = |part, on| PickerAction::SetTip {
+            part,
+            place: NumbersOn::Panel,
+            on,
+        };
+        let mut config = Config::default();
+        assert_eq!(config.ui.panel, UiNumbers::PERCENT_ONLY);
+        assert!(!toml::to_string(&config).unwrap().contains("[ui.panel]"));
+        assert!(!apply(&mut config, &set(TipPart::Percent, false)).changed);
+        assert!(apply(&mut config, &set(TipPart::Reset, true)).changed);
+        assert_eq!(config.ui.panel, UiNumbers::default());
+        // The tooltip's choice is its own.
+        assert_eq!(config.ui.tooltip, UiNumbers::default());
+        assert!(apply(&mut config, &set(TipPart::Percent, false)).changed);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("[ui.panel]"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.ui.panel, config.ui.panel);
+        assert!(!back.ui.panel.percent && back.ui.panel.reset);
     }
 
     #[test]
@@ -976,7 +1133,25 @@ mod tests {
         );
         let row = |id: &str| input.rows.iter().find(|r| r.id == id).unwrap().clone();
         assert!(!row("claude.opus").provider_ok);
-        assert!(row("grok.build").provider_ok && !row("grok.build").has_data);
+        // Grok answered without its Build share: not offered...
+        assert!(!input.rows.iter().any(|r| r.id == "grok.build"));
+        // ...unless chosen earlier: then it is missing, and says so.
+        let mut chosen = config.clone();
+        chosen.ui.rows.widget = Some(vec!["grok".into(), "grok.build".into()]);
+        let with_build = picker_input_with(
+            &chosen,
+            &display,
+            &Models::new(),
+            PickerMode::Normal,
+            &[],
+            |_| true,
+        );
+        let build = with_build
+            .rows
+            .iter()
+            .find(|r| r.id == "grok.build")
+            .unwrap();
+        assert!(build.provider_ok && !build.has_data);
         assert_eq!(
             row("cursor").note,
             "Sign in from the menu: Providers > Cursor"

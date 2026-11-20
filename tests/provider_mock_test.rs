@@ -460,67 +460,6 @@ fn antigravity_keyring_token_reports_an_expired_token_as_expired() {
 }
 
 #[test]
-fn antigravity_legacy_gemini_creds_classify_like_the_keyring() {
-    use ailimits::providers::antigravity::{parse_gemini_oauth_creds, AntigravityLogin};
-    use chrono::TimeZone;
-
-    let now = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
-    let live = r#"{"access_token":"tok-live","expiry_date":4102444800000}"#;
-    assert!(matches!(
-        parse_gemini_oauth_creds(live, now).unwrap(),
-        AntigravityLogin::Token(ref t) if t == "tok-live"
-    ));
-    let expired = r#"{"access_token":"tok-old","expiry_date":1759104000000}"#;
-    assert!(matches!(
-        parse_gemini_oauth_creds(expired, now).unwrap(),
-        AntigravityLogin::Expired
-    ));
-    assert!(matches!(
-        parse_gemini_oauth_creds(r#"{"refresh_token":"r"}"#, now).unwrap(),
-        AntigravityLogin::Missing
-    ));
-    assert!(parse_gemini_oauth_creds("{\"half", now).is_err());
-}
-
-#[test]
-fn antigravity_logins_combine_to_the_most_telling_state() {
-    use ailimits::providers::antigravity::{combine_logins, AntigravityLogin};
-    use AntigravityLogin::{Expired, Missing, Token};
-
-    let unreadable = || Err(anyhow::anyhow!("unreadable"));
-    let token = || Ok(Token("tok".to_string()));
-
-    // A usable token from either source wins.
-    assert!(matches!(combine_logins(token(), Ok(Expired)), Ok(Token(_))));
-    assert!(matches!(combine_logins(Ok(Expired), token()), Ok(Token(_))));
-    assert!(matches!(
-        combine_logins(unreadable(), token()),
-        Ok(Token(_))
-    ));
-    // An expired login is not a missing one, whichever source holds it.
-    assert!(matches!(
-        combine_logins(Ok(Expired), Ok(Missing)),
-        Ok(Expired)
-    ));
-    assert!(matches!(
-        combine_logins(Ok(Missing), Ok(Expired)),
-        Ok(Expired)
-    ));
-    assert!(matches!(
-        combine_logins(unreadable(), Ok(Expired)),
-        Ok(Expired)
-    ));
-    // An unreadable source alone is an error, never "not set up".
-    assert!(combine_logins(unreadable(), Ok(Missing)).is_err());
-    assert!(combine_logins(Ok(Missing), unreadable()).is_err());
-    // Neither source: the row stays hidden.
-    assert!(matches!(
-        combine_logins(Ok(Missing), Ok(Missing)),
-        Ok(Missing)
-    ));
-}
-
-#[test]
 fn antigravity_login_debug_print_never_shows_the_token() {
     use ailimits::providers::antigravity::AntigravityLogin;
 

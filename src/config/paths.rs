@@ -191,13 +191,10 @@ impl ToolPaths {
     }
 
     /// %USERPROFILE%\.gemini (Gemini CLI, and the Antigravity CLI under it).
+    /// Only a sign that Antigravity may be installed: the older Gemini CLI's
+    /// sign-in in it is not read.
     pub fn gemini_dir(&self) -> PathBuf {
         self.user.join(".gemini")
-    }
-
-    /// The older Gemini CLI's sign-in: `.gemini\oauth_creds.json`.
-    pub fn gemini_oauth_creds(&self) -> PathBuf {
-        self.gemini_dir().join("oauth_creds.json")
     }
 
     /// The Antigravity CLI's folder: `.gemini\antigravity-cli`.
@@ -330,10 +327,6 @@ mod tests {
             Some(home.join(r".copilot\settings.json"))
         );
         assert_eq!(
-            p.gemini_oauth_creds(),
-            home.join(r".gemini\oauth_creds.json")
-        );
-        assert_eq!(
             p.antigravity_cli_settings(),
             home.join(r".gemini\antigravity-cli\settings.json")
         );
@@ -433,7 +426,7 @@ mod tests {
             p.claude_projects(),
             p.gh_config_dir(),
             p.antigravity_app_dir(),
-            p.gemini_oauth_creds(),
+            p.gemini_dir(),
             p.antigravity_cli_settings(),
             p.cursor_state_db(),
         ];
@@ -492,7 +485,6 @@ mod tests {
             ("claude", p.claude_credentials()),
             ("codex", p.codex_auth().unwrap()),
             ("grok", p.grok_auth().unwrap()),
-            ("antigravity", p.gemini_oauth_creds()),
         ] {
             let told = crate::consent::read_info(id).unwrap();
             let named = as_told(file);

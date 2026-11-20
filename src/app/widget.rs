@@ -16,7 +16,8 @@ pub(super) fn apply_windows_glass(window: &tao::window::Window) {
     use tao::platform::windows::WindowExtWindows;
     use windows::Win32::Foundation::HWND as WinHwnd;
     use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
-    use windows_sys::Win32::Foundation::{BOOL, HWND};
+    use windows_sys::core::BOOL;
+    use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
 
     #[repr(C)]
@@ -180,6 +181,28 @@ pub(super) fn apply_ui_change(
     menu: &ContextMenu,
     shape: &layout::Shape,
 ) {
+    apply_ui_layout(
+        config, win_layout, theme, pixmap, surface, window, win_state, shape,
+    );
+    menu.sync(config, win_state.pinned);
+    window.request_redraw();
+}
+
+/// `apply_ui_change` without touching the menu or asking for a repaint:
+/// the layout, the theme, the window's size and the surfaces, the widget
+/// held inside its work area. A look shown while the menu is open uses it
+/// (the menu's ticks stay as they are, and the widget is painted at once).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn apply_ui_layout(
+    config: &Config,
+    win_layout: &mut layout::WindowLayout,
+    theme: &mut ComputedTheme,
+    pixmap: &mut tiny_skia::Pixmap,
+    surface: &mut softbuffer::Surface<Rc<tao::window::Window>, Rc<tao::window::Window>>,
+    window: &Rc<tao::window::Window>,
+    win_state: &mut WindowState,
+    shape: &layout::Shape,
+) {
     *win_layout = layout::compute(
         &config.ui.layout,
         &config.ui.detail,
@@ -219,7 +242,4 @@ pub(super) fn apply_ui_change(
             }
         }
     }
-
-    menu.sync(config, win_state.pinned);
-    window.request_redraw();
 }

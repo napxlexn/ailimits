@@ -31,7 +31,16 @@ pub struct ReadInfo {
     pub settings: Option<&'static str>,
     /// The session files read for the model last used, if the tool has them.
     pub session: Option<&'static str>,
+    /// What reading this sign-in may cost the user, said wherever its read
+    /// is asked for or listed (the question, the welcome, Allow all, the
+    /// update notice), if anything.
+    pub risk: Option<&'static str>,
 }
+
+/// The risk of reading Antigravity's sign-in. Google has suspended accounts
+/// whose Antigravity sign-in was used by other apps; the widget sends only
+/// the quota requests, but the user decides.
+pub const ANTIGRAVITY_RISK: &str = "Google has suspended some accounts for using Antigravity's sign-in outside Antigravity. AI Limits only reads your quota, once per update, but the risk is yours.";
 
 impl ReadInfo {
     /// What the sign-in is called in a sentence: the tool's token, or the
@@ -56,6 +65,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         pages: &[],
         settings: Some(r"%USERPROFILE%\.claude\settings.json: model, effortLevel"),
         session: Some(r"%USERPROFILE%\.claude\projects\...\*.jsonl (the end of the newest)"),
+        risk: None,
     },
     ReadInfo {
         id: "codex",
@@ -70,6 +80,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         session: Some(
             r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest; in CODEX_HOME when it is set)",
         ),
+        risk: None,
     },
     ReadInfo {
         id: "copilot",
@@ -85,15 +96,13 @@ pub const READ_INFO: &[ReadInfo] = &[
             r"%USERPROFILE%\.copilot\settings.json: model, effortLevel (in COPILOT_HOME when it is set)",
         ),
         session: None,
+        risk: None,
     },
     ReadInfo {
         id: "antigravity",
         tool: "Antigravity",
         tool_sign_in: true,
-        sign_in: &[
-            "its sign-in in Windows Credential Manager (gemini:antigravity)",
-            r"otherwise %USERPROFILE%\.gemini\oauth_creds.json (older Gemini CLI)",
-        ],
+        sign_in: &["its sign-in in Windows Credential Manager (gemini:antigravity)"],
         hosts: &[
             "cloudcode-pa.googleapis.com",
             "daily-cloudcode-pa.googleapis.com",
@@ -101,6 +110,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         pages: &[],
         settings: Some(r"%USERPROFILE%\.gemini\antigravity-cli\settings.json: model"),
         session: None,
+        risk: Some(ANTIGRAVITY_RISK),
     },
     ReadInfo {
         id: "grok",
@@ -113,6 +123,7 @@ pub const READ_INFO: &[ReadInfo] = &[
             r"%USERPROFILE%\.grok\config.toml: [models] default, default_reasoning_effort (in GROK_HOME when it is set)",
         ),
         session: None,
+        risk: None,
     },
     ReadInfo {
         id: "cursor",
@@ -128,6 +139,7 @@ pub const READ_INFO: &[ReadInfo] = &[
             r"%APPDATA%\Cursor\User\globalStorage\state.vscdb: the model and effort chosen for Agent, nothing else of it",
         ),
         session: None,
+        risk: None,
     },
 ];
 
@@ -493,6 +505,23 @@ mod tests {
         assert!(found_hint("copilot", true).starts_with("Found by its folder"));
     }
 
+    /// Antigravity's question says what its read may cost, plainly; no other
+    /// tool carries such a note.
+    #[test]
+    fn antigravity_carries_its_risk_note() {
+        let risk = read_info("antigravity").unwrap().risk.unwrap();
+        assert_eq!(risk, ANTIGRAVITY_RISK);
+        for words in ["suspended", "outside Antigravity", "the risk is yours"] {
+            assert!(risk.contains(words), "{words}");
+        }
+        assert!(risk.is_ascii(), "English, plain ASCII");
+        assert_eq!(read_info("gemini").unwrap().risk, Some(ANTIGRAVITY_RISK));
+        assert!(READ_INFO
+            .iter()
+            .filter(|r| r.id != "antigravity")
+            .all(|r| r.risk.is_none()));
+    }
+
     /// A relative tool home is never used, nor the default folder in its
     /// place: that tool is not looked for at all (config/paths.rs).
     #[test]
@@ -540,8 +569,12 @@ mod tests {
             .iter()
             .filter(|r| r.id != "cursor")
             .all(|r| r.tool_sign_in && r.secret() == "token"));
-        // Antigravity names the Credential Manager entry it reads.
-        assert!(read_info("antigravity").unwrap().sign_in[0].contains("gemini:antigravity"));
+        // Antigravity names the Credential Manager entry it reads, and only
+        // that: the older Gemini CLI's file is no longer read.
+        let ag = read_info("antigravity").unwrap();
+        assert_eq!(ag.sign_in.len(), 1);
+        assert!(ag.sign_in[0].contains("gemini:antigravity"));
+        assert!(!ag.sign_in.join(" ").contains("oauth_creds"));
         // Codex follows CODEX_HOME for its sign-in too.
         assert!(read_info("codex").unwrap().sign_in[0].contains("CODEX_HOME"));
     }

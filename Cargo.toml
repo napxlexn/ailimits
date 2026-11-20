@@ -34,15 +34,18 @@ path = "tools/release_sign.rs"
 [dependencies]
 # --- Window and UI ---
 # Cross-platform event loop and windows.
-tao = { version = "0.37", features = ["rwh_06"] }
+# Held at 0.37.0: from 0.37.1 on, set_visible(true) on a window built with
+# with_focused(false) takes the focus (the picker's open_quietly would steal
+# the keyboard), and 0.37.3 adds the import imm32!ImmSetCandidateWindow.
+tao = { version = "=0.37.0", features = ["rwh_06"] }
 # Native context menu.
-muda = "0.20"
+muda = "0.21"
 # System tray icon (same tauri ecosystem as muda/tao — minimal added weight).
-tray-icon = "0.25"
+tray-icon = "0.26"
 # CPU rendering into the window.
 softbuffer = "0.4"
 # 2D vector graphics.
-tiny-skia = "0.11"
+tiny-skia = "0.12"
 # Text rendering.
 fontdue = "0.9"
 
@@ -62,7 +65,7 @@ ring = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # TOML config format.
-toml = "0.8"
+toml = "1"
 
 # --- Secret storage ---
 # Windows Credential Manager for keys and tokens.
@@ -84,7 +87,7 @@ async-trait = "0.1"
 
 # --- System paths ---
 # Cross-platform paths: config_dir, home_dir.
-dirs = "5"
+dirs = "7"
 
 # --- Auth CLI ---
 # Hidden key input in the terminal.
@@ -100,7 +103,7 @@ arboard = { version = "3", default-features = false }
 # --- Windows-specific ---
 [target.'cfg(target_os = "windows")'.dependencies]
 # Low-level blur accent: controllable alpha, independent of the DWM backdrop.
-windows-sys = { version = "0.59.0", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security_Credentials",
     "Win32_System_LibraryLoader",
