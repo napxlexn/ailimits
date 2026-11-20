@@ -317,7 +317,8 @@ readout stays visible. Right-click → **Indicator**:
 - **Panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
-  providers in the widget's order (a value that has stopped updating, or an
+  providers in the widget's order, or the two ticked in the Taskbar column of
+  *Rows and models* (a value that has stopped updating, or an
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
   taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with

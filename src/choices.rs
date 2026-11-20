@@ -83,6 +83,39 @@ fn has_any_row(config: &Config, provider: &str) -> bool {
     [Surface::Widget, Surface::Tooltip]
         .iter()
         .any(|&surface| ids.iter().any(|id| rows::row_chosen(config, surface, id)))
+        || rows::on_taskbar(config, pid.config_id())
+}
+
+/// Put a provider on the taskbar panel and the tray icon or take it off,
+/// spelling the default (the first two that run) out the first time. The
+/// list keeps the widget's order and at most `rows::TASKBAR_MAX`; the last
+/// one is never taken off (nothing left would mean the default again, ticks
+/// jumping back), and a provider that would make one too many is refused.
+/// Whether anything changed.
+fn set_taskbar(config: &mut Config, provider: &str, on: bool) -> bool {
+    let mut list: Vec<String> = rows::taskbar_ticked(config)
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let had = list.iter().any(|p| p == provider);
+    if had == on {
+        return false;
+    }
+    if on {
+        if list.len() >= rows::TASKBAR_MAX {
+            return false;
+        }
+        list.push(provider.to_string());
+    } else {
+        if list.len() <= 1 {
+            return false;
+        }
+        list.retain(|p| p != provider);
+    }
+    let order = catalogue(config);
+    list.sort_by_key(|p| order.iter().position(|o| o == p).unwrap_or(usize::MAX));
+    config.ui.rows.taskbar = Some(list);
+    true
 }
 
 /// A provider switched on from outside the picker (the Providers menu, a
@@ -208,6 +241,28 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
             if !*on && allowed && !has_any_row(config, &provider) {
                 config.revoke(&provider);
                 out.provider = Some(provider);
+            }
+            out.models = out.provider.is_some();
+        }
+        PickerAction::SetTaskbar { provider, on } => {
+            if *on {
+                if let Some(pc) = config.providers.iter_mut().find(|p| p.id == *provider) {
+                    if !pc.enabled {
+                        pc.enabled = true;
+                        out.provider = Some(provider.clone());
+                    }
+                }
+            }
+            if !set_taskbar(config, provider, *on) && out.provider.is_none() {
+                out.changed = false;
+                return out;
+            }
+            // Off the taskbar with no row of it left anywhere: done with it,
+            // as an unticked row (`SetRow`).
+            let allowed = config.sign_in_allowed(provider) || config.app_sign_in_allowed(provider);
+            if !*on && allowed && !has_any_row(config, provider) {
+                config.revoke(provider);
+                out.provider = Some(provider.clone());
             }
             out.models = out.provider.is_some();
         }
@@ -377,6 +432,10 @@ pub(crate) fn picker_input_with(
         rows: rows_out,
         widget_rows: resolved_rows(config, Surface::Widget),
         tooltip_rows: resolved_rows(config, Surface::Tooltip),
+        taskbar_rows: rows::taskbar_ticked(config)
+            .into_iter()
+            .map(String::from)
+            .collect(),
         model: config.ui.model.clone(),
         reads: config.reads.clone(),
         enabled: config
@@ -462,6 +521,73 @@ mod tests {
 
     fn input(config: &Config, models: &Models, found: &[&'static str]) -> PickerInput {
         picker_input_with(config, &[], models, PickerMode::Normal, found, |_| true)
+    }
+
+    fn taskbar(id: &str, on: bool) -> PickerAction {
+        PickerAction::SetTaskbar {
+            provider: id.to_string(),
+            on,
+        }
+    }
+
+    /// The Taskbar column: untouched, no `taskbar` line in the file and
+    /// the first two that run ticked. A change spells the choice out in
+    /// the widget's order, at most two, never none. A provider left only
+    /// on the taskbar keeps its sign-in; taken off there too, it stops.
+    #[test]
+    fn the_taskbar_choice_is_spelled_out_and_held_to_two() {
+        let mut config = Config::default();
+        for id in ["claude", "codex", "grok"] {
+            config.allow_sign_in(id);
+        }
+        assert_eq!(rows::taskbar_ticked(&config), ["claude", "codex"]);
+        assert!(!toml::to_string(&config).unwrap().contains("taskbar"));
+        // Two ticked: a third is refused, nothing written.
+        assert!(!apply(&mut config, &taskbar("grok", true)).changed);
+        assert!(config.ui.rows.taskbar.is_none());
+        apply(&mut config, &taskbar("codex", false));
+        assert_eq!(config.ui.rows.taskbar, Some(vec!["claude".to_string()]));
+        // Codex keeps running: its widget and tooltip rows are still on.
+        assert!(config.sign_in_allowed("codex"));
+        apply(&mut config, &taskbar("grok", true));
+        apply(&mut config, &taskbar("claude", false));
+        assert_eq!(rows::taskbar_ticked(&config), ["grok"]);
+        // The last one stays.
+        assert!(!apply(&mut config, &taskbar("grok", false)).changed);
+        apply(&mut config, &taskbar("claude", true));
+        // The widget's order, whatever the order of the clicks.
+        assert_eq!(
+            config.ui.rows.taskbar,
+            Some(vec!["claude".to_string(), "grok".to_string()])
+        );
+        assert!(toml::to_string(&config).unwrap().contains("taskbar"));
+        // Grok only on the taskbar: it keeps running.
+        apply(&mut config, &row(Surface::Widget, "grok", false));
+        apply(&mut config, &row(Surface::Tooltip, "grok", false));
+        assert!(config.sign_in_allowed("grok"));
+        // Off the taskbar too: done with it.
+        apply(&mut config, &taskbar("grok", false));
+        assert!(!config.sign_in_allowed("grok"));
+        assert_eq!(rows::taskbar_ticked(&config), ["claude"]);
+    }
+
+    /// A tool switched off in the menu but allowed: a Taskbar tick
+    /// switches it back on, as a row's tick does.
+    #[test]
+    fn a_taskbar_tick_switches_an_allowed_tool_back_on() {
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        config.allow_sign_in("grok");
+        config
+            .providers
+            .iter_mut()
+            .find(|p| p.id == "grok")
+            .unwrap()
+            .enabled = false;
+        assert_eq!(rows::taskbar_ticked(&config), ["claude"]);
+        let a = apply(&mut config, &taskbar("grok", true));
+        assert_eq!(a.provider.as_deref(), Some("grok"));
+        assert_eq!(rows::taskbar_ticked(&config), ["claude", "grok"]);
     }
 
     #[test]

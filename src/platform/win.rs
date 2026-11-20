@@ -445,6 +445,65 @@ pub fn ensure_on_screen(x: i32, y: i32) -> (i32, i32) {
     }
 }
 
+/// The work area of the monitor nearest a screen point with an auto-hidden
+/// taskbar's band taken off as well (`taskbar_geom::clear_of_bars`), as
+/// (left, top, right, bottom): where a window of the app's own may open
+/// without the bar sliding over it. None if the monitor query fails.
+///
+/// The shell is asked which bar auto-hides on each edge of that monitor
+/// (`ABM_GETAUTOHIDEBAREX`, through `SHAppBarMessage`, which the app calls
+/// already); the bar's own rectangle gives its thickness, slid out or not.
+pub fn safe_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    use crate::platform::taskbar_geom::{clear_of_bars, thickness, Edge};
+    use windows::Win32::Foundation::{HWND, POINT, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::Shell::{
+        SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(mon, &mut mi).as_bool() {
+            return None;
+        }
+        let (m, w) = (mi.rcMonitor, mi.rcWork);
+        let mut hidden = Vec::new();
+        for (abe, edge) in [
+            (ABE_BOTTOM, Edge::Bottom),
+            (ABE_TOP, Edge::Top),
+            (ABE_LEFT, Edge::Left),
+            (ABE_RIGHT, Edge::Right),
+        ] {
+            let mut abd = APPBARDATA {
+                cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+                uEdge: abe,
+                rc: m,
+                ..Default::default()
+            };
+            let bar = SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut abd);
+            if bar == 0 {
+                continue;
+            }
+            let mut r = RECT::default();
+            if GetWindowRect(HWND(bar as _), &mut r).is_ok() {
+                let th = thickness(edge, (r.left, r.top, r.right, r.bottom));
+                hidden.push((edge, th));
+            }
+        }
+        Some(clear_of_bars(
+            (w.left, w.top, w.right, w.bottom),
+            (m.left, m.top, m.right, m.bottom),
+            &hidden,
+        ))
+    }
+}
+
 /// Work area (the monitor minus the taskbar — `rcWork`) of the monitor nearest a
 /// screen point, as (left, top, right, bottom). None if the query fails. Drives
 /// the Shift-drag edge magnet so the widget docks against the usable edge,

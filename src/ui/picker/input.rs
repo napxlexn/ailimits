@@ -160,6 +160,22 @@ impl Picker {
                 }
                 vec![act]
             }
+            Target::Taskbar(provider) => {
+                if !self.taskbar_enabled(provider) {
+                    return Vec::new();
+                }
+                let on = self.taskbar_on(provider);
+                let act = PickerAction::SetTaskbar {
+                    provider: provider.clone(),
+                    on: !on,
+                };
+                if !on && !self.allowed(provider) {
+                    let kind = ReadKind::SignIn(canonical(provider).to_string());
+                    self.open_question(kind, vec![act], t.clone());
+                    return Vec::new();
+                }
+                vec![act]
+            }
             Target::Part { part, surface } => {
                 if !self.part_enabled(*surface, *part) {
                     return Vec::new();

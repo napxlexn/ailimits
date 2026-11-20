@@ -38,7 +38,11 @@ Notable, user-visible changes. Dates are release dates.
 - **Rows and models, a window of its own.** Right-click, *Rows and
   models...*: every row there is in one list, with a Widget column and a
   Tooltip column, so the widget and the panel's tooltip are chosen
-  separately. A tick shows at once, with no restart. The window also
+  separately, and a Taskbar column for the two providers the taskbar panel
+  and the tray icon show (untouched, they show what they did in 0.7.0: the
+  panel the first two, the tray rings the two busiest). A tick shows at
+  once, with no restart. The window opens clear of the taskbar, also of an
+  auto-hidden one that would slide over it. The window also
   opens by itself on a first start, and from a click on the widget while
   nothing is chosen yet ("Choose what to show"), or while the rows chosen
   have no data yet ("Nothing to show yet"). Resting the pointer on a model
@@ -83,7 +87,8 @@ Notable, user-visible changes. Dates are release dates.
 - **Model names you choose.** The automatic name is made from the id the
   tool stores by one rule, with no table of names, so a new model needs no
   update (`claude-opus-5-5` reads "Opus 5.5"). Any model can be renamed in
-  the window, from a list closed until opened: one heading per running
+  the window, also before Model is ticked (the list then says where the
+  names show), from a list closed until opened: one heading per running
   tool, with the models it is known to offer and the one in use first and
   marked. A model several tools share has one name and a field under each
   of them ("shared with ..."); a tool's own router (`auto`) is named per
@@ -121,8 +126,9 @@ Notable, user-visible changes. Dates are release dates.
   for Copilot, `.gemini` for Antigravity) is listed unticked. *Allow* starts
   the ticked ones, *Cancel* reads nothing and leaves the choice to you.
   Later, a tool's own question offers *Allow all* while other tools found
-  by their own folder are not running yet; it never starts one switched off
-  in the Providers menu. The welcome and the update notice take no keyboard
+  by their own folder have not been allowed yet, and switches them on; a
+  tool you allowed and then switched off in the Providers menu is left
+  alone. The welcome and the update notice take no keyboard
   focus, so a stray Enter allows nothing, keep their buttons in view at any
   size and scaling, and wait while a fullscreen app is in front. A fresh
   install also switches every provider off, so an older version started on

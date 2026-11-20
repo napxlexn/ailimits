@@ -51,6 +51,8 @@ update_interval_secs = 60
 # theme; the rest stay in the tooltip. Tracks the taskbar's auto-hide and
 # tray width event-driven, no polling. "bars" — legacy tray icon;
 # "off" — nothing. Supersedes the legacy show_tray_icon flag (ignored).
+# Which providers the panel and the tray icon show can be chosen:
+# [ui.rows] taskbar below.
 indicator = "tray"
 # Automatic updates (menu: Automatic updates). Only a copy our installer put
 # on disk updates itself; a Store, Scoop, portable or self-built copy never
@@ -126,9 +128,17 @@ show_forecast = false
 # the tray icon keep one entry per provider. Unknown ids are ignored and
 # kept. Rows chosen that have no data yet leave the widget saying "Nothing
 # to show yet"; a click opens the window.
+# taskbar: the providers the taskbar panel and the tray icon show (the
+# window's Taskbar column), at most two, in the widget's order. Written
+# only once chosen; without it they show what they always did (the panel
+# the first two running providers, the tray rings the two busiest), and
+# the window ticks the first two. When none of those listed runs, the first
+# two that run show. A provider kept here keeps running though none of its
+# widget or tooltip rows is ticked.
 [ui.rows]
 widget  = ["claude", "claude.opus", "codex"]
 tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
+taskbar = ["claude", "grok"]
 
 # Model labels (menu: Rows and models...). Parts per surface: "model",
 # "version" (only with "model"), "effort" (may go alone). Empty: no label.
@@ -316,10 +326,12 @@ Every read of another tool's file is optional and asked for first:
   PC". Allow starts the ticked tools only, and is inactive with none ticked;
   Cancel reads nothing and leaves the choice to you.
 - **Any other tool's first tick asks once**, naming the file and the host.
-  While other tools found on this PC by a folder of their own are not running
-  yet, that question offers *Allow all*: it starts only those, and never a
-  tool switched off in the Providers menu or one already allowed. It is not
-  offered in a window where the welcome's question was already answered.
+  While other tools found on this PC by a folder of their own have not been
+  allowed yet, that question offers *Allow all*: it starts those too and
+  switches them on, as a fresh install and an update leave every unused
+  provider switched off. A tool you allowed and then switched off in the
+  Providers menu keeps its consent and is left alone. It is not offered in
+  a window where the welcome's question was already answered.
 - **The welcome and the update notice open quietly.** They take no keyboard
   focus, so Enter or Space allows nothing until Tab or an arrow key moves to
   a button. They wait while a fullscreen window (a game, a video, a browser

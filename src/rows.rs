@@ -352,6 +352,52 @@ fn extra_row_data(data: &ProviderData, metric: &Metric) -> ProviderData {
     aged
 }
 
+/// The most providers the taskbar panel draws, and so the most the
+/// picker's Taskbar column lets the user tick.
+pub const TASKBAR_MAX: usize = 2;
+
+/// The providers ticked in the picker's Taskbar column, by config id, in
+/// the widget's order: those chosen (`ui.rows.taskbar`) that run, at most
+/// `TASKBAR_MAX`. Untouched, or when none of those chosen runs, the first
+/// two that run: what the panel draws by itself.
+pub fn taskbar_ticked(config: &Config) -> Vec<&'static str> {
+    let running: Vec<&'static str> = config
+        .providers
+        .iter()
+        .filter(|p| config.provider_active(p))
+        .filter_map(|p| ProviderId::from_config_id(&p.id).map(|id| id.config_id()))
+        .collect();
+    let first = || running.iter().copied().take(TASKBAR_MAX).collect();
+    match &config.ui.rows.taskbar {
+        None => first(),
+        Some(list) => {
+            let chosen: Vec<&'static str> = running
+                .iter()
+                .copied()
+                .filter(|id| list.iter().any(|p| p == id))
+                .take(TASKBAR_MAX)
+                .collect();
+            if chosen.is_empty() {
+                first()
+            } else {
+                chosen
+            }
+        }
+    }
+}
+
+/// Whether the user chose the providers of the taskbar panel and the tray
+/// icon, and `provider` is one of them: it is still in use there, so its
+/// sign-in stays allowed though no widget or tooltip row of it is ticked.
+pub fn on_taskbar(config: &Config, provider: &str) -> bool {
+    config
+        .ui
+        .rows
+        .taskbar
+        .as_ref()
+        .is_some_and(|list| list.iter().any(|p| p == provider))
+}
+
 /// Whether no provider may run yet: a fresh install before the first tick,
 /// or everything switched off. The widget and the tray then say "Choose what
 /// to show" instead of looking empty.

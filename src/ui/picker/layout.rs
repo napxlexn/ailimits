@@ -302,8 +302,10 @@ impl Picker {
         // The column heads, pinned to the top while the list scrolls.
         let heads: Vec<Shape> = SURFACES
             .iter()
-            .zip(["Widget", "Tooltip"])
-            .map(|((_, cx), label)| {
+            .map(|(_, cx)| *cx)
+            .chain([COL_TASKBAR])
+            .zip(["Widget", "Tooltip", TASKBAR])
+            .map(|(cx, label)| {
                 let w = self.adv(label, SIZE_NOTE);
                 text_shape(
                     (cx - w / 2.0).round(),
@@ -477,6 +479,13 @@ impl Picker {
                 BOX_W - SUB_X - PAD_X,
             );
             f.y += f.lines(&note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+            if !models.is_empty() && !self.model_on() {
+                let note = self.wrap(
+                    &[span(NAMES_WHERE, SIZE_NOTE, Ink::Accent, false)],
+                    BOX_W - SUB_X - PAD_X,
+                );
+                f.y += f.lines(&note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+            }
             let mut tools: Vec<&'static str> = Vec::new();
             for &mi in &models {
                 let p = self.input.models[mi].provider;
@@ -595,6 +604,29 @@ impl Picker {
                 on: self.row_on(*surface, row),
                 enabled: true,
                 nav: (f.nav, col as u32),
+            });
+        }
+        // The taskbar panel and the tray icon show providers, not extra
+        // rows: a provider's own row has the third tick.
+        if own {
+            let cell = rect(COL_TASKBAR - COL_W / 2.0, y, COL_W, h);
+            let on = self.taskbar_on(row.provider);
+            let enabled = self.taskbar_enabled(row.provider);
+            f.els.push(El::Tick {
+                target: Target::Taskbar(canonical(row.provider).to_string()),
+                cell,
+                on,
+                enabled,
+                nav: (f.nav, SURFACES.len() as u32),
+            });
+            let hint = match (enabled, on) {
+                (true, _) => TASKBAR_HINT,
+                (false, true) => TASKBAR_LAST,
+                (false, false) => TASKBAR_FULL,
+            };
+            f.els.push(El::Hint {
+                rect: cell,
+                text: hint.to_string(),
             });
         }
         f.nav += 1;

@@ -150,7 +150,9 @@ impl PickerWindow {
             .monitor_from_point(cx as f64, cy as f64)
             .map_or(1.0, |m| m.scale_factor());
         let zoom = system::text_scale();
-        let work = crate::platform::work_area_at(cx, cy);
+        // An auto-hidden taskbar's band is kept clear too: the bar slides
+        // in over whatever sits there.
+        let work = crate::platform::safe_area_at(cx, cy);
         let measure = renderer.clone();
         let mut picker = Picker::new(input, move |t, s| measure.text_width(t, s));
         if let Some(w) = work {

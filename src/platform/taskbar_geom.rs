@@ -192,9 +192,64 @@ pub fn is_shell_surface(class: &str) -> bool {
     )
 }
 
+/// The part of a monitor's work area that no taskbar covers, even one
+/// that slides in: an auto-hidden bar reserves nothing in the work area
+/// (Windows hands the whole monitor out) yet comes over it on a hover, so
+/// its band is taken off too. `hidden` is each auto-hidden bar on this
+/// monitor, by its edge and thickness. A bar that is always shown is in the
+/// work area already. What would leave nothing keeps the work area.
+pub fn clear_of_bars(work: Rect, mon: Rect, hidden: &[(Edge, i32)]) -> Rect {
+    let (mut l, mut t, mut r, mut b) = work;
+    for &(edge, th) in hidden {
+        let th = th.max(0);
+        match edge {
+            Edge::Bottom => b = b.min(mon.3 - th),
+            Edge::Top => t = t.max(mon.1 + th),
+            Edge::Left => l = l.max(mon.0 + th),
+            Edge::Right => r = r.min(mon.2 - th),
+        }
+    }
+    if r - l < 1 || b - t < 1 {
+        return work;
+    }
+    (l, t, r, b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An auto-hidden bar takes its band off the work area, whatever edge
+    /// it is on; a bar always shown is in the work area already, and a
+    /// band as big as the monitor leaves the work area as it was.
+    #[test]
+    fn an_auto_hidden_bar_takes_its_band_off_the_work_area() {
+        let mon = (0, 0, 3440, 1440);
+        // Auto-hide: the work area is the whole monitor.
+        assert_eq!(
+            clear_of_bars(mon, mon, &[(Edge::Bottom, 48)]),
+            (0, 0, 3440, 1392)
+        );
+        assert_eq!(
+            clear_of_bars(mon, mon, &[(Edge::Top, 48)]),
+            (0, 48, 3440, 1440)
+        );
+        assert_eq!(
+            clear_of_bars(mon, mon, &[(Edge::Left, 60)]),
+            (60, 0, 3440, 1440)
+        );
+        let right = (3440, 0, 6000, 1440);
+        assert_eq!(
+            clear_of_bars(right, right, &[(Edge::Right, 60)]),
+            (3440, 0, 5940, 1440)
+        );
+        // Always shown: rcWork has it out already, nothing more goes.
+        let work = (0, 0, 3440, 1392);
+        assert_eq!(clear_of_bars(work, mon, &[]), work);
+        assert_eq!(clear_of_bars(work, mon, &[(Edge::Bottom, 48)]), work);
+        // Nonsense leaves the work area alone.
+        assert_eq!(clear_of_bars(mon, mon, &[(Edge::Bottom, 5000)]), mon);
+    }
 
     #[test]
     fn only_a_window_over_the_whole_monitor_is_fullscreen() {

@@ -74,6 +74,13 @@ pub enum PickerAction {
         on: bool,
     },
     SetSource(ModelSource),
+    /// Show or hide a provider ("claude") on the taskbar panel and the tray
+    /// icon (the Taskbar column): at most `rows::TASKBAR_MAX` at a time,
+    /// which the picker holds to.
+    SetTaskbar {
+        provider: String,
+        on: bool,
+    },
     /// Rename a model by the key its name is kept under (`ModelChoice::key`);
     /// None brings the automatic name back. The picker has already held the
     /// name to `crate::rows::name_fits`.
@@ -148,6 +155,9 @@ pub struct PickerInput {
     /// default is spelled out).
     pub widget_rows: Vec<String>,
     pub tooltip_rows: Vec<String>,
+    /// The providers ticked for the taskbar panel and the tray icon
+    /// (`rows::taskbar_ticked`: untouched, the first two that run).
+    pub taskbar_rows: Vec<String>,
     pub model: UiModel,
     pub reads: Reads,
     /// Providers switched on in the config (the Providers menu).
@@ -379,8 +389,9 @@ impl PickerScene {
 
 // ─── Layout constants (logical pixels) ───────────────────────────
 
-/// The box's width. The mock's `.rpk` is 320 to 390 wide.
-const BOX_W: f32 = 380.0;
+/// The box's width: the mock's `.rpk` (320 to 390 wide), one tick column
+/// (Taskbar) wider, so the labels keep their room.
+const BOX_W: f32 = 434.0;
 /// Room around the box for its shadow. A press there is a click outside.
 pub const MARGIN: f32 = 12.0;
 /// The tallest the box grows; beyond it the list scrolls.
@@ -391,9 +402,10 @@ const HEADER_H: f32 = 42.0;
 /// The notice's button row.
 const FOOTER_H: f32 = 50.0;
 const PAD_X: f32 = 14.0;
-/// The Widget and Tooltip columns.
+/// The Widget, Tooltip and Taskbar columns.
 const COL_W: f32 = 54.0;
-const COL_TOOLTIP: f32 = BOX_W - PAD_X - COL_W / 2.0;
+const COL_TASKBAR: f32 = BOX_W - PAD_X - COL_W / 2.0;
+const COL_TOOLTIP: f32 = COL_TASKBAR - COL_W;
 const COL_WIDGET: f32 = COL_TOOLTIP - COL_W;
 /// Where a row's label must end, before the Widget column.
 const LABEL_RIGHT: f32 = COL_WIDGET - COL_W / 2.0 - 6.0;
@@ -469,9 +481,13 @@ const MODEL_SHOWN: &str = "Model shown";
 const SOURCE_SET: &str = "As set in the tool";
 const SOURCE_LAST: &str = "Last used";
 const NAMES: &str = "Model names";
-const NAMES_OFF: &str = "Once Model is on, each model can be renamed here.";
+const NAMES_OFF: &str = "Once a tool runs, its models are listed here to rename.";
 const NAMES_ON: &str =
-    "Made from the id the tool stores. Type to rename; clear the field to get the automatic name back. A model two tools share has one name.";
+    "Made from the id the tool stores. Click a field and type to rename; clear it to get the automatic name back. A model two tools share has one name.";
+/// Under the names while Model is not ticked anywhere: a name can be
+/// given already, and this says where it will show.
+const NAMES_WHERE: &str =
+    "Your names show where Model is ticked: tick Model above, in the Widget or Tooltip column, to see them.";
 const NAMES_HINT: &str = "Your own name for a model, shown everywhere instead of the automatic one. Listed are the models each running tool is known to offer and the one it uses now, marked in use.";
 const IN_USE: &str = "in use";
 const SOURCE_SET_HINT: &str =
@@ -523,6 +539,13 @@ const SURFACES: [(Surface, f32); 2] = [
     (Surface::Widget, COL_WIDGET),
     (Surface::Tooltip, COL_TOOLTIP),
 ];
+
+/// The Taskbar column: which providers the taskbar panel and the tray icon
+/// show. Its head, and what its ticks say on hover.
+const TASKBAR: &str = "Taskbar";
+const TASKBAR_HINT: &str = "Show on the taskbar panel and the tray icon. They have room for two; untouched, the first two shown in the widget.";
+const TASKBAR_FULL: &str = "The taskbar panel has room for two: untick one first.";
+const TASKBAR_LAST: &str = "At least one shows on the taskbar. To hide the panel or the icon, choose Off under Indicator in the menu.";
 
 /// What the hint under a name field says: the room left for ordinary text.
 fn room_text(chars_left: usize, empty: bool) -> String {
@@ -602,6 +625,8 @@ enum Target {
     Names,
     /// Open or close one tool's models in that list (config id).
     NamesOf(String),
+    /// A provider's tick in the Taskbar column (config id).
+    Taskbar(String),
 }
 
 /// Keyboard grid position: (row, column).
@@ -1147,9 +1172,11 @@ impl Picker {
     /// (GitHub CLI for Copilot, `.gemini` for Antigravity). Their own rows
     /// show ticked behind it as its ticks go. Allow starts the tools ticked;
     /// Cancel leaves nothing ticked and nothing read, and the user ticks
-    /// what they use. Nothing is read before the answer. A tool switched
-    /// off in the Providers menu, or allowed already, is not asked about;
-    /// with nothing found surely, nothing is asked and the rows are only
+    /// what they use. Nothing is read before the answer. A tool allowed
+    /// already is not asked about (one the user switched off in the
+    /// Providers menu keeps its consent, so it is left alone too); a fresh
+    /// install has every provider switched off and is asked all the same.
+    /// With nothing found surely, nothing is asked and the rows are only
     /// marked.
     fn ask_found_tools(&mut self) {
         if self.input.mode != PickerMode::Welcome {
@@ -1157,7 +1184,7 @@ impl Picker {
         }
         let tools: Vec<String> = crate::consent::READ_INFO
             .iter()
-            .filter(|r| self.found(r.id) && self.enabled(r.id) && !self.allowed(r.id))
+            .filter(|r| self.found(r.id) && !self.allowed(r.id))
             .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
             .map(|r| r.id.to_string())
             .collect();
@@ -1181,8 +1208,11 @@ impl Picker {
     }
 
     /// The other tools found on this PC by a folder of their own that are
-    /// neither allowed yet nor switched off in the Providers menu: what
-    /// Allow all starts besides `provider`. Nothing once the welcome's
+    /// not allowed yet: what Allow all starts (and switches on) besides
+    /// `provider`. Never allowed is also how a provider switched off in the
+    /// menu looks on a fresh install or after an update, so that is not a
+    /// reason to leave one out; one the user switched off after allowing it
+    /// keeps its consent and is left alone. Nothing once the welcome's
     /// question was answered.
     fn others_found(&self, provider: &str) -> Vec<String> {
         if self.found_answered {
@@ -1192,11 +1222,7 @@ impl Picker {
         crate::consent::READ_INFO
             .iter()
             .filter(|r| {
-                r.id != p
-                    && self.found(r.id)
-                    && !self.found_weakly(r.id)
-                    && self.enabled(r.id)
-                    && !self.allowed(r.id)
+                r.id != p && self.found(r.id) && !self.found_weakly(r.id) && !self.allowed(r.id)
             })
             .filter(|r| self.input.rows.iter().any(|row| row.id == r.id))
             .map(|r| r.id.to_string())
@@ -1404,6 +1430,23 @@ impl Picker {
         self.input.enabled.iter().any(|e| canonical(e) == p)
     }
 
+    /// Whether a provider is ticked in the Taskbar column.
+    fn taskbar_on(&self, provider: &str) -> bool {
+        let p = canonical(provider);
+        self.input.taskbar_rows.iter().any(|t| canonical(t) == p)
+    }
+
+    /// Whether its Taskbar tick can be used: not the last one ticked, and
+    /// not one too many (the panel has room for `rows::TASKBAR_MAX`).
+    fn taskbar_enabled(&self, provider: &str) -> bool {
+        let n = self.input.taskbar_rows.len();
+        if self.taskbar_on(provider) {
+            n > 1
+        } else {
+            n < crate::rows::TASKBAR_MAX
+        }
+    }
+
     fn found(&self, provider: &str) -> bool {
         let p = canonical(provider);
         self.input.found.iter().any(|e| canonical(e) == p)
@@ -1464,10 +1507,11 @@ impl Picker {
     }
 
     /// The models offered for renaming: those of providers that may be read.
+    /// The models that can be named: every model of each tool that runs.
+    /// Naming reads nothing (the list is the catalogue's, with the one in
+    /// use when the settings are read), so it does not wait for Model to be
+    /// ticked; `NAMES_WHERE` says where the names show until it is.
     fn renamable(&self) -> Vec<usize> {
-        if !(self.model_on() && self.input.reads.tool_settings) {
-            return Vec::new();
-        }
         (0..self.input.models.len())
             .filter(|&i| self.allowed(self.input.models[i].provider))
             .collect()

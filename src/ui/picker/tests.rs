@@ -91,6 +91,8 @@ fn input() -> PickerInput {
         rows: rows(),
         widget_rows: base.iter().map(|s| s.to_string()).collect(),
         tooltip_rows: tooltip,
+        // Untouched: the first two that run.
+        taskbar_rows: vec!["claude".into(), "codex".into()],
         model: UiModel::default(),
         reads: Reads {
             sign_in: base.iter().map(|s| s.to_string()).collect(),
@@ -492,17 +494,37 @@ fn the_source_waits_for_a_part() {
 
 // ─── Model names ─────────────────────────────────────────────
 
+/// A model can be named before Model is ticked anywhere: the list is
+/// the catalogue's and reads nothing. Until Model shows, a line says
+/// where the names will. With no tool running there is nothing to name.
 #[test]
-fn names_wait_for_the_model() {
-    let text = texts(&opened(input()));
+fn names_can_be_given_before_the_model_shows() {
+    let mut nothing = input();
+    nothing.reads = Reads::default();
+    let text = texts(&opened(nothing));
     assert!(text.contains(NAMES_OFF));
+    assert!(!text.replace('\n', " ").contains(NAMES_WHERE));
+    // Effort alone, as many users have it: the fields are there, and the
+    // line says to tick Model.
     let mut i = input();
     i.reads.tool_settings = true;
     i.model.widget = vec![ModelPart::Effort];
-    assert!(texts(&opened(i)).contains(NAMES_OFF));
+    let mut p = opened(i);
+    let text = texts(&p).replace('\n', " ");
+    assert!(text.contains(NAMES_ON), "{text}");
+    assert!(text.contains(NAMES_WHERE), "{text}");
+    assert!(area(&p, &field("claude-opus-5-5")).is_some());
+    click(&mut p, &field("claude-opus-5-5"));
+    assert!(p.editing());
+    assert_eq!(
+        typed(&mut p, "Opus"),
+        [rename("claude-opus-5-5", Some("Opus"))]
+    );
+    // Model ticked: the line goes.
     let p = opened(with_model());
     let text = texts(&p);
     assert!(text.replace('\n', " ").contains(NAMES_ON));
+    assert!(!text.replace('\n', " ").contains(NAMES_WHERE));
     // The placeholder is the automatic name; the room left shows for
     // the field being typed in only.
     assert!(text.contains("Opus 5.5  (automatic)"), "{text}");
@@ -686,10 +708,12 @@ fn welcome(found: Vec<&'static str>) -> PickerInput {
     let mut i = input();
     i.mode = PickerMode::Welcome;
     i.reads = Reads::default();
-    // A fresh install: every provider switched on, none allowed.
-    i.enabled = ALL.to_vec();
+    // A fresh install: every provider switched off, none allowed
+    // (`storage::settle_reads`).
+    i.enabled = Vec::new();
     i.widget_rows = Vec::new();
     i.tooltip_rows = Vec::new();
+    i.taskbar_rows = Vec::new();
     i.found = found;
     i
 }
@@ -1247,31 +1271,44 @@ fn a_tool_found_by_a_related_folder_starts_unticked() {
     assert!(area(&p, &Target::AllowAll).is_none());
 }
 
-/// Allow all never starts a tool switched off in the Providers menu, and
-/// the welcome never asks about one; once the welcome's question was
-/// answered, Allow all is not offered while the window stays open.
+/// Allow all starts every other tool found that was never allowed, also
+/// one switched off in the Providers menu (a fresh install and an update
+/// leave every unused provider off), and switches it on; a tool the user
+/// allowed and then switched off keeps its consent and is left alone.
+/// Once the welcome's question was answered, Allow all is not offered
+/// while the window stays open.
 #[test]
-fn allow_all_leaves_out_what_was_switched_off_or_declined() {
+fn allow_all_starts_the_tools_never_allowed_and_leaves_the_rest() {
     let mut i = welcome(vec!["claude", "codex", "grok"]);
     i.mode = PickerMode::Normal;
-    i.enabled.retain(|p| *p != "grok");
+    // As after an update: Claude and Codex were in use, the rest is off.
+    i.enabled = vec!["claude", "codex"];
+    i.reads.sign_in = vec!["claude".into(), "codex".into()];
+    // Nothing else found that is not allowed yet: nothing more to offer.
+    i.found = vec!["claude", "codex"];
     let mut p = picker(i.clone());
-    click(&mut p, &row("codex", Surface::Widget));
+    click(&mut p, &row("cursor", Surface::Widget));
+    assert!(p.ask.is_some());
+    assert!(area(&p, &Target::AllowAll).is_none());
+    i.found = vec!["claude", "codex", "grok", "cursor"];
+    let mut p = picker(i.clone());
+    click(&mut p, &row("cursor", Surface::Widget));
+    assert!(texts(&p).contains(ALLOW_ALL_LEAD));
     let out = click(&mut p, &Target::AllowAll);
-    assert!(out.contains(&allow("claude")));
-    assert!(!out.contains(&allow("grok")));
-    assert!(!out
-        .iter()
-        .any(|a| matches!(a, PickerAction::SetRow { row, .. } if row == "grok")));
+    assert!(out.contains(&allow("cursor")));
+    assert!(out.contains(&allow("grok")));
+    assert!(!out.contains(&allow("claude")) && !out.contains(&allow("codex")));
+    assert!(out.contains(&set_row(Surface::Widget, "grok", true)));
     // Allowed and switched off: the menu says so, not Allow all.
-    i.reads.sign_in = vec!["grok".into()];
+    i.reads.sign_in.push("grok".into());
     let mut p = picker(i);
-    click(&mut p, &row("codex", Surface::Widget));
-    assert!(!click(&mut p, &Target::AllowAll).contains(&allow("grok")));
-    // The welcome asks about switched-on tools only.
-    let mut w = welcome(vec!["claude", "grok"]);
-    w.enabled.retain(|p| *p != "grok");
-    assert_eq!(picker(w).ask.unwrap().tools, ["claude"]);
+    click(&mut p, &row("cursor", Surface::Widget));
+    assert!(area(&p, &Target::AllowAll).is_none());
+    // The welcome asks about every tool found that is not allowed, though
+    // a fresh install has them all switched off.
+    let w = welcome(vec!["claude", "grok"]);
+    assert!(w.enabled.is_empty());
+    assert_eq!(picker(w).ask.unwrap().tools, ["claude", "grok"]);
     // Cancel in the welcome: no Allow all after it.
     let mut p = picker(welcome(vec!["claude", "codex", "grok"]));
     click(&mut p, &Target::Cancel);
@@ -1279,6 +1316,87 @@ fn allow_all_leaves_out_what_was_switched_off_or_declined() {
     assert!(p.ask.is_some());
     assert!(area(&p, &Target::AllowAll).is_none());
     assert!(!texts(&p).contains(ALLOW_ALL_LEAD));
+}
+
+/// The welcome a real fresh install opens with: built from
+/// `Config::fresh_install()` as the app builds it, not from a hand-made
+/// input, it asks about the tools found.
+#[test]
+fn a_fresh_install_asks_about_the_tools_found() {
+    let config = crate::config::schema::Config::fresh_install();
+    let input = crate::choices::picker_input_with(
+        &config,
+        &[],
+        &crate::models::Models::default(),
+        PickerMode::Welcome,
+        &["claude", "codex", "grok"],
+        |id| id != "grok",
+    );
+    let p = picker(input);
+    let ask = p.ask.as_ref().expect("the welcome asks");
+    assert_eq!(ask.tools, ["claude", "codex", "grok"]);
+    assert_eq!(ask.picked, ["claude", "codex"]);
+}
+
+// ─── Taskbar ─────────────────────────────────────────────────
+
+fn taskbar(id: &str) -> Target {
+    Target::Taskbar(id.to_string())
+}
+
+fn set_taskbar(id: &str, on: bool) -> PickerAction {
+    PickerAction::SetTaskbar {
+        provider: id.to_string(),
+        on,
+    }
+}
+
+/// Whether a tick is laid out and can be used.
+fn usable(p: &Picker, t: &Target) -> bool {
+    p.frame()
+        .els
+        .iter()
+        .any(|(_, el)| matches!(el, El::Tick { target, enabled: true, .. } if target == t))
+}
+
+/// The Taskbar column: a tick on each provider's own row (none on its
+/// extra rows), the first two that run ticked until the user chooses,
+/// room for two, and never none.
+#[test]
+fn the_taskbar_column_holds_two_providers() {
+    let mut p = picker(input());
+    assert!(texts(&p).contains(TASKBAR));
+    assert!(ticked(&p, &taskbar("claude")) && ticked(&p, &taskbar("codex")));
+    assert!(area(&p, &taskbar("claude.opus")).is_none());
+    // Two ticked: a third waits, and says why on hover.
+    assert!(!usable(&p, &taskbar("grok")));
+    assert!(click(&mut p, &taskbar("grok")).is_empty());
+    let (x, y) = spot(&mut p, &taskbar("grok"));
+    p.handle(PickerEvent::PointerMove { x, y });
+    let shown = texts(&p).replace('\n', " ");
+    assert!(shown.contains(TASKBAR_FULL), "{shown}");
+    // Untick one, then the other tool can be ticked.
+    assert_eq!(
+        click(&mut p, &taskbar("codex")),
+        [set_taskbar("codex", false)]
+    );
+    let mut i = input();
+    i.taskbar_rows = vec!["claude".into()];
+    let mut p = picker(i);
+    assert_eq!(click(&mut p, &taskbar("grok")), [set_taskbar("grok", true)]);
+    // The last one stays: nothing would mean the default again.
+    assert!(!usable(&p, &taskbar("claude")));
+    assert!(click(&mut p, &taskbar("claude")).is_empty());
+    // A tool not allowed yet asks first; Allow starts it on the taskbar.
+    let mut i = input();
+    i.taskbar_rows = vec!["claude".into()];
+    let mut p = picker(i);
+    assert!(click(&mut p, &taskbar("cursor")).is_empty());
+    assert!(p.ask.is_some());
+    assert_eq!(
+        click(&mut p, &Target::Allow),
+        [allow("cursor"), set_taskbar("cursor", true)]
+    );
 }
 
 /// The welcome and the notice may open by themselves while the user
@@ -1898,6 +2016,29 @@ fn visual_baseline_picker() {
     items.push((
         "ask-allow-all-dark".to_string(),
         draw(&allow_all, false, 1.0),
+    ));
+
+    // The Taskbar column chosen: Claude and Grok, Codex's tick waiting,
+    // its description under the pointer.
+    let mut chosen = input();
+    chosen.taskbar_rows = vec!["claude".into(), "grok".into()];
+    let mut chosen = make(chosen);
+    let (x, y) = spot(&mut chosen, &Target::Taskbar("codex".into()));
+    chosen.handle(PickerEvent::PointerMove { x, y });
+    items.push(("taskbar-chosen-dark".to_string(), draw(&chosen, false, 1.0)));
+
+    // Model names with Effort alone shown: the fields are there, and a
+    // line says where the names show.
+    let mut i = input();
+    i.reads.tool_settings = true;
+    i.model.widget = vec![ModelPart::Effort];
+    let mut effort_only = make(i);
+    effort_only.names_open = true;
+    effort_only.open_names = vec!["claude".into()];
+    effort_only.handle(PickerEvent::Wheel { dy: -10_000.0 });
+    items.push((
+        "names-effort-only-dark".to_string(),
+        draw(&effort_only, false, 1.0),
     ));
 
     // A description under the pointer: the Fable row's.

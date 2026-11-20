@@ -182,10 +182,23 @@ fn active_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
 
 /// `active_data` aged for display, for the surfaces that show one entry per
 /// provider (the tray icon, the taskbar panel): a window whose reset has
-/// provably passed is shown as ≈0%.
+/// provably passed is shown as ≈0%. Once the user chose which providers
+/// those show (the picker's Taskbar column, `rows::taskbar_ticked`), only
+/// those; untouched, every running one, as always.
 fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
+    let chosen = config
+        .ui
+        .rows
+        .taskbar
+        .is_some()
+        .then(|| rows::taskbar_ticked(config));
     active_data(config, display)
         .iter()
+        .filter(|d| {
+            chosen
+                .as_ref()
+                .is_none_or(|ids| ids.contains(&d.id.config_id()))
+        })
         .map(ProviderData::aged_for_display)
         .collect()
 }
@@ -781,6 +794,37 @@ mod tests {
         let mut config = Config::default();
         config.allow_sign_in("claude");
         config
+    }
+
+    /// The taskbar panel and the tray icon get every running provider until
+    /// the user chooses in the Taskbar column; then those chosen that run,
+    /// and the first two that run when none of those chosen does.
+    #[test]
+    fn the_taskbar_shows_the_providers_chosen_for_it() {
+        let mut config = Config::default();
+        for id in ["claude", "codex", "grok"] {
+            config.allow_sign_in(id);
+        }
+        let one = |id: ProviderId| ProviderData {
+            id,
+            ..claude(vec![metric("Session", 40, Some(120), false)])
+        };
+        let display = [
+            one(ProviderId::Claude),
+            one(ProviderId::Codex),
+            one(ProviderId::Grok),
+        ];
+        let ids = |config: &Config| -> Vec<&'static str> {
+            visible_data(config, &display)
+                .iter()
+                .map(|d| d.id.config_id())
+                .collect()
+        };
+        assert_eq!(ids(&config), ["claude", "codex", "grok"]);
+        config.ui.rows.taskbar = Some(vec!["grok".into(), "claude".into()]);
+        assert_eq!(ids(&config), ["claude", "grok"]);
+        config.ui.rows.taskbar = Some(vec!["cursor".into()]);
+        assert_eq!(ids(&config), ["claude", "codex"]);
     }
 
     /// The widget's and the tooltip's rows are built from the data as the

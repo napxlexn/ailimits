@@ -127,6 +127,22 @@ pub fn work_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
+/// The work area of the monitor nearest a screen point, an auto-hidden
+/// taskbar's band taken off too: where a window of the app's own (the
+/// picker) opens without the bar sliding over it. None on non-Windows /
+/// query failure.
+pub fn safe_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+    #[cfg(target_os = "windows")]
+    {
+        win::safe_area_at(x, y)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (x, y);
+        None
+    }
+}
+
 /// Whether a Shift key is held (gates the edge magnet). False on non-Windows.
 pub fn shift_held() -> bool {
     #[cfg(target_os = "windows")]
