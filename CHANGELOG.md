@@ -323,6 +323,8 @@ Notable, user-visible changes. Dates are release dates.
   (or after the idle pause) that got no answer at all is tried again after
   20 seconds rather than 2 minutes.
 - **Building from source needs Rust 1.90** or newer.
+- **chrono, no longer maintained, is replaced by jiff**; nothing a user sees
+  changes.
 - **No raw keyboard and mouse input.** The app uses none, but the window
   library registered every keyboard and mouse for it: a wake-up per mouse
   move while a window of AI Limits was in front, and a pattern that

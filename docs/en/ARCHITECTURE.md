@@ -78,6 +78,8 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          SHA-256 + Ed25519 signature check, silent install
    │                          (menu: Automatic updates)
    ├── hooks.rs               the user's commands on usage events (cmd.exe /D /S /C)
+   ├── utc.rs                 instants in UTC (jiff, no time zones) and the
+   │                          exact text they are read from and written in
    ├── platform/taskbar_geom.rs  pure placement/fallback rules for the panel
    │                          (testable, no Win32 calls)
    ├── platform/menu_hover.rs what the context menu highlights (WM_MENUSELECT
