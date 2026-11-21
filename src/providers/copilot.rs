@@ -8,7 +8,7 @@ use super::{
     status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData,
     ProviderId, ProviderStatus, SecretSource,
 };
-use crate::config::schema::ProviderConfig;
+use crate::config::schema::{AuthMethod, ProviderConfig};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -284,12 +284,18 @@ impl Provider for CopilotProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        // Token: PAT from Credential Manager, or gh's token, which is asked
-        // of `gh` only when the user allowed it.
-        let data = match (self.pat)() {
-            Some(pat) => self.fetch_via_internal(&pat, TokenSource::Pat).await.1,
-            None if self.config.tool_files => self.fetch_with_gh().await,
-            None => self.data(ProviderStatus::NotConfigured, vec![]),
+        // The source the user chose, and only that one: the token they
+        // pasted (Credential Manager), or gh's token, asked of `gh` only
+        // when the user allowed it.
+        let data = if self.config.auth_method == AuthMethod::ApiKey {
+            match (self.pat)() {
+                Some(pat) => self.fetch_via_internal(&pat, TokenSource::Pat).await.1,
+                None => self.data(ProviderStatus::NotConfigured, vec![]),
+            }
+        } else if self.config.tool_files {
+            self.fetch_with_gh().await
+        } else {
+            self.data(ProviderStatus::NotConfigured, vec![])
         };
         Ok(data)
     }
@@ -351,6 +357,15 @@ async fn gh_cli_token() -> GhToken {
 /// message the row shows as it is (the hover adds "check gh auth") — the
 /// user gave no key. A 404 is an account without Copilot, whatever the
 /// token: GitHub answers 404 for an account the endpoint knows nothing of.
+/// Whether an answer carries the quota snapshots the parser knows, though
+/// every one may be skipped.
+fn has_quota_snapshots(body: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("quota_snapshots").map(|s| s.is_object()))
+        .unwrap_or(false)
+}
+
 pub fn quota_outcome(code: u16, body: &str, source: TokenSource) -> (ProviderStatus, Vec<Metric>) {
     // The internal API schema changed — an honest signal.
     let unrecognized = || {
@@ -363,6 +378,9 @@ pub fn quota_outcome(code: u16, body: &str, source: TokenSource) -> (ProviderSta
     match (code, source) {
         (200, _) => match parse_copilot_quotas(body) {
             Ok(metrics) if !metrics.is_empty() => (ProviderStatus::Ok, metrics),
+            // Every quota the plan has is unlimited or not there: the
+            // schema is known, there is just nothing to count.
+            Ok(_) if has_quota_snapshots(body) => words("no limited quota"),
             Ok(_) => unrecognized(),
             Err(e) => {
                 // serde names a position in the body, never its content.
@@ -707,16 +725,32 @@ mod tests {
         assert_eq!(server.count("/copilot_internal/user"), 2);
     }
 
-    /// A pasted PAT goes first, and gh is never run for it.
+    /// The token the user pasted, chosen: gh is never run for it. GitHub
+    /// CLI's chosen: a stored token is never sent.
     #[tokio::test]
-    async fn a_pasted_pat_needs_no_gh() {
+    async fn the_source_chosen_is_the_only_one() {
         let server = TestServer::start();
         server.route("/copilot_internal/user", vec![Reply::status(401)]);
         let (gh, runs) = counting_gh(GhToken::Token("gh-token".into()));
-        let p = CopilotProvider::for_test(config(true), &server.base, Some("pat"), gh);
+        let pat_config = ProviderConfig {
+            auth_method: crate::config::schema::AuthMethod::ApiKey,
+            ..config(true)
+        };
+        let p = CopilotProvider::for_test(pat_config, &server.base, Some("pat"), gh);
         let data = p.fetch().await.unwrap();
         assert!(matches!(&data.status, ProviderStatus::AuthError(_)));
         assert_eq!(runs.load(Ordering::SeqCst), 0);
+        let server2 = TestServer::start();
+        server2.route("/copilot_internal/user", vec![Reply::ok(QUOTA_BODY)]);
+        let (gh, runs) = counting_gh(GhToken::Token("gh-token".into()));
+        let p2 = CopilotProvider::for_test(config(true), &server2.base, Some("pat"), gh);
+        assert!(matches!(
+            p2.fetch().await.unwrap().status,
+            ProviderStatus::Ok
+        ));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        let auths: Vec<_> = server2.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(auths, ["token gh-token"]);
     }
 
     #[tokio::test]

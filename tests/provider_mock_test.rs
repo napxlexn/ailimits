@@ -545,7 +545,7 @@ fn hover_reason_explains_stale_rows_only() {
     // No stored error (e.g. cache-loaded after a restart) → generic cause.
     assert_eq!(
         hover_reason(&stale(ProviderId::Antigravity), &errors).as_deref(),
-        Some("no fresh data — run Antigravity")
+        Some("no fresh data — run agy")
     );
 
     // Fresh data → no reason; hover keeps its weekly-metric meaning.

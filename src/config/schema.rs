@@ -699,9 +699,14 @@ pub enum PanelDisplay {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
+    /// The tool's own sign-in (Claude Code, Codex CLI, GitHub CLI, ...).
     #[default]
     Subscription,
+    /// A key of the user's own: Claude's API key, Copilot's token.
     ApiKey,
+    /// A usage token the user pasted (Claude, Codex). An older version
+    /// reads it as Subscription.
+    UsageToken,
 }
 
 // ─── Default values ───────────────────────────────────────────────

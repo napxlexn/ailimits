@@ -335,10 +335,12 @@ impl OwnSession {
         self.expires_at.is_some_and(|exp| exp <= now)
     }
 
-    /// Within `REFRESH_WITHIN_DAYS` of its expiry, or past it.
+    /// Within `REFRESH_WITHIN_DAYS` of its expiry, and not past it: an
+    /// expired session is not renewed (the row asks to sign in again), so
+    /// no request goes out for it day after day.
     pub fn near_expiry(&self, now: DateTime<Utc>) -> bool {
         self.expires_at
-            .is_some_and(|exp| exp - now <= Duration::days(REFRESH_WITHIN_DAYS))
+            .is_some_and(|exp| exp > now && exp - now <= Duration::days(REFRESH_WITHIN_DAYS))
     }
 
     /// Near its expiry, and no refresh attempt in the last
@@ -760,9 +762,10 @@ mod tests {
         let now = at(2026, 11, 10);
         // Far from its expiry: nothing to do.
         assert!(!session(Some(now + Duration::days(50))).needs_refresh(now));
-        // Within a week of it, or past it.
+        // Within a week of it; past it, never again.
         assert!(session(Some(now + Duration::days(6))).needs_refresh(now));
-        assert!(session(Some(now - Duration::days(1))).needs_refresh(now));
+        assert!(!session(Some(now - Duration::days(1))).needs_refresh(now));
+        assert!(!session(Some(now)).needs_refresh(now));
         // No expiry stated: the server judges it.
         assert!(!session(None).needs_refresh(now));
 

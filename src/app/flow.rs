@@ -146,6 +146,7 @@ impl App {
             &self.models,
             self.picker_mode,
             &self.found_tools,
+            &self.sign_in_view(),
         )
     }
 
@@ -238,6 +239,11 @@ impl App {
         let lone = actions.len() == 1;
         let mut changed = false;
         for action in actions {
+            // The Sign-in block's actions reach the Credential Manager, the
+            // clipboard and the browser (app/sign_in.rs).
+            if self.on_sign_in_action(&action) {
+                continue;
+            }
             let done = crate::choices::apply(&mut self.config, &action);
             match &action {
                 PickerAction::NoticeDone => self.picker_mode = PickerMode::Normal,

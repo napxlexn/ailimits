@@ -181,34 +181,49 @@ impl ClaudeProvider {
     ///
     /// (A statusline.jsonl snapshot used to sit between 1 and 2. Claude Code
     /// stopped writing that file in 2026; the reader went with 0.7.0.)
-    async fn fetch_via_subscription(&self) -> Result<ProviderData> {
+    async fn fetch_via_subscription(&self, use_usage_token: bool) -> Result<ProviderData> {
         let credentials_path = self.credentials.clone();
-        let usage_token = (self.usage_token)();
+        // The source the user chose, and only that one: the usage token they
+        // pasted, or Claude Code's own sign-in.
+        let usage_token = if use_usage_token {
+            (self.usage_token)()
+        } else {
+            None
+        };
         // The token sources this machine has; stats-cache holds no limits and
         // does not count.
-        // Claude Code's file only when the user allowed reading it; the
-        // stored usage token is the app's own.
-        let tool_files = self.config.tool_files;
+        // Claude Code's file only when the user allowed reading it and chose
+        // it; the stored usage token is the app's own.
+        let tool_files = self.config.tool_files && !use_usage_token;
         let mut chain = ChainOutcome {
             usage_token: usage_token.is_some(),
             credentials_file: tool_files && credentials_path.as_ref().is_some_and(|p| p.exists()),
             ..ChainOutcome::default()
         };
 
-        // 0. Manual usage token: a minimal read-only usage request.
-        // Refused → fall back to Claude Code's token.
+        // 0. The usage token the user pasted, when it is the source chosen:
+        // a minimal read-only usage request. A refusal is said as one; a
+        // token refused lately is not sent again (`REFUSED_TOKEN_PAUSE`).
         if let Some(token) = usage_token {
-            if self.refused.paused(&token) {
+            let refused = if self.refused.paused(&token) {
                 debug!("the stored Claude usage token was refused lately; not sent");
+                true
             } else {
                 match self.fetch_via_oauth(&token, &mut chain).await {
                     Ok(data) => return Ok(data),
                     Err(Miss::Refused) => {
                         self.refused.note(&token);
-                        warn!("stored Claude usage token was refused, falling back");
+                        warn!("the stored Claude usage token was refused");
+                        true
                     }
                     Err(Miss::Other) => return Ok(self.data(chain.status(), vec![])),
                 }
+            };
+            if refused {
+                return Ok(self.data(
+                    ProviderStatus::AuthError("usage token rejected".to_string()),
+                    vec![],
+                ));
             }
         }
 
@@ -568,17 +583,13 @@ impl Provider for ClaudeProvider {
         let data = match self.config.auth_method {
             AuthMethod::ApiKey => match self.get_api_key() {
                 Some(key) => self.fetch_via_api_key(&key).await?,
-                None => ProviderData {
-                    id: self.id(),
-                    status: ProviderStatus::AuthError(
-                        "API key not found in Credential Manager".to_string(),
-                    ),
-                    metrics: vec![],
-                    updated_at: Utc::now(),
-                    received_at: Some(std::time::Instant::now()),
-                },
+                // The API key chosen and none stored: nothing to read, and
+                // no "check the key" for a key never given. The Sign-in
+                // block says none is stored.
+                None => self.data(ProviderStatus::NotConfigured, vec![]),
             },
-            AuthMethod::Subscription => self.fetch_via_subscription().await?,
+            AuthMethod::Subscription => self.fetch_via_subscription(false).await?,
+            AuthMethod::UsageToken => self.fetch_via_subscription(true).await?,
         };
         Ok(data)
     }
@@ -602,6 +613,14 @@ mod tests {
         }
     }
 
+    /// The usage token the user pasted as the source chosen.
+    fn token_config(tool_files: bool) -> ProviderConfig {
+        ProviderConfig {
+            auth_method: AuthMethod::UsageToken,
+            ..config(tool_files)
+        }
+    }
+
     const USAGE_BODY: &str = r#"{"five_hour": {"utilization": 25.0, "resets_at": "2099-01-01T00:00:00Z"}, "seven_day": {"utilization": 34.0, "resets_at": "2099-01-05T00:00:00Z"}}"#;
 
     /// A Claude Code folder holding a made-up, unexpired sign-in.
@@ -621,8 +640,10 @@ mod tests {
         }
     }
 
-    /// A refused stored usage token costs one extra request, once: for the
-    /// next half hour each cycle sends only Claude Code's token.
+    /// The source chosen, and only that one: a refused pasted token says
+    /// so and is not sent again for half an hour; Claude Code's sign-in,
+    /// though there, is not its stand-in. The tool's sign-in chosen, a
+    /// stored token is never sent.
     #[tokio::test]
     async fn a_refused_usage_token_is_left_out_for_half_an_hour() {
         let server = TestServer::start();
@@ -632,39 +653,57 @@ mod tests {
         );
         let home = claude_code_home();
         let p = ClaudeProvider::for_test(
-            config(true),
+            token_config(true),
             &server.base,
             Some("stored-token"),
             Some(home.path()),
         );
-
-        let first = p.fetch().await.unwrap();
-        assert!(matches!(first.status, ProviderStatus::Ok));
-        let second = p.fetch().await.unwrap();
-        assert!(matches!(second.status, ProviderStatus::Ok));
-
+        for _ in 0..2 {
+            let data = p.fetch().await.unwrap();
+            assert_eq!(message(&data), "usage token rejected");
+        }
         let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
         assert_eq!(
             auths,
-            ["Bearer stored-token", "Bearer cc-token", "Bearer cc-token"],
-            "the refused token is not sent on the second cycle"
+            ["Bearer stored-token"],
+            "no stand-in, and the refused token is not sent on the second cycle"
         );
+        // The tool's sign-in chosen: the stored token stays unsent.
+        let server2 = TestServer::start();
+        server2.route("/api/oauth/usage", vec![Reply::ok(USAGE_BODY)]);
+        let p2 = ClaudeProvider::for_test(
+            config(true),
+            &server2.base,
+            Some("stored-token"),
+            Some(home.path()),
+        );
+        assert!(matches!(
+            p2.fetch().await.unwrap().status,
+            ProviderStatus::Ok
+        ));
+        let auths: Vec<_> = server2.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(auths, ["Bearer cc-token"]);
         // After the pause it is tried again; another token at once.
         let later = Instant::now() + REFUSED_TOKEN_PAUSE;
         assert!(!p.refused.paused_at("stored-token", later));
         assert!(!p.refused.paused("pasted-anew"));
     }
 
-    /// Only a refused usage token and no Claude Code sign-in: the row stays
-    /// an honest "token expired" without a request each cycle.
+    /// A refused usage token keeps its row, saying so, without a request
+    /// each cycle.
     #[tokio::test]
     async fn a_refused_usage_token_alone_keeps_its_row_without_requests() {
         let server = TestServer::start();
         server.route("/api/oauth/usage", vec![Reply::status(403)]);
-        let p = ClaudeProvider::for_test(config(false), &server.base, Some("stored-token"), None);
+        let p = ClaudeProvider::for_test(
+            token_config(false),
+            &server.base,
+            Some("stored-token"),
+            None,
+        );
         for _ in 0..3 {
             let data = p.fetch().await.unwrap();
-            assert_eq!(message(&data), "token expired");
+            assert_eq!(message(&data), "usage token rejected");
         }
         assert_eq!(server.count("/api/oauth/usage"), 1);
     }
@@ -676,13 +715,13 @@ mod tests {
         for code in [500, 502, 503, 529] {
             let server = TestServer::start();
             server.route("/api/oauth/usage", vec![Reply::status(code)]);
-            let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
+            let p = ClaudeProvider::for_test(token_config(false), &server.base, Some("t"), None);
             let data = p.fetch().await.unwrap();
             assert_eq!(message(&data), format!("HTTP {code}, retrying"));
         }
         let server = TestServer::start();
         server.route("/api/oauth/usage", vec![Reply::status(429)]);
-        let p = ClaudeProvider::for_test(config(false), &server.base, Some("t"), None);
+        let p = ClaudeProvider::for_test(token_config(false), &server.base, Some("t"), None);
         assert_eq!(message(&p.fetch().await.unwrap()), "rate-limited, retrying");
     }
 

@@ -555,7 +555,7 @@ const TITLE_WELCOME: &str = "Welcome to AI Limits";
 const TITLE_NOTICE: &str = "What AI Limits reads";
 const FOUND: &str = "found on this PC";
 const ONE_LIMIT: &str = "One limit for every model";
-const OFF_IN_MENU: &str = "Off in the Providers menu";
+const OFF_IN_MENU: &str = "Switched off: tick a row to switch it on";
 const NOT_REPORTED: &str = "Not reported right now; shows once it is";
 const READ_NOTE: &str =
     "Read from each running tool's own settings file; asked before the first read.";

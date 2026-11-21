@@ -1006,7 +1006,7 @@ impl Picker {
                 "Read the tools' settings files?".to_string(),
                 "To show the model, its version and effort, AI Limits reads these values from each tool's own settings file:".to_string(),
                 files(|i| i.settings),
-                "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one set up from the menu or with a pasted key. Untick Model, Version and Effort to stop.".to_string(),
+                "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one signed in with a pasted key or token. Untick Model, Version and Effort to stop.".to_string(),
             ),
             Question::Read(ReadKind::LastSession) => (
                 "Read the end of your newest session?".to_string(),

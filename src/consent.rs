@@ -87,8 +87,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "GitHub Copilot",
         tool_sign_in: true,
         sign_in: &[
-            "a token you paste (kept in Windows Credential Manager)",
-            "otherwise the token GitHub CLI keeps for github.com (gh auth token --hostname github.com)",
+            "the token GitHub CLI keeps for github.com (gh auth token --hostname github.com)",
         ],
         hosts: &["api.github.com"],
         pages: &[],
@@ -130,7 +129,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "Cursor",
         tool_sign_in: false,
         sign_in: &[
-            "no file of Cursor's: you sign in from the menu (Providers > Cursor > Sign in to Cursor...) on Cursor's own sign-in page, cursor.com",
+            "no file of Cursor's: you sign in from Rows and models (Cursor, Sign-in, Sign in to Cursor...) on Cursor's own sign-in page, cursor.com",
             "the app signs in as the Cursor editor's client and keeps that session in Windows Credential Manager (ailimits/cursor_session)",
         ],
         hosts: &["api2.cursor.sh"],

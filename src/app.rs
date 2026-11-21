@@ -28,6 +28,7 @@ mod menu;
 mod menu_preview;
 mod model_job;
 mod provider_set;
+mod sign_in;
 mod widget;
 
 use crate::{
@@ -41,10 +42,7 @@ use crate::{
         trend::Trend,
     },
     notifications::{alerts::AlertBook, toast::ToastNotifier},
-    providers::{
-        cursor::session::{self as cursor_session, SignInOutcome},
-        ProviderData, ProviderId, ProviderStatus,
-    },
+    providers::{cursor::session::SignInOutcome, ProviderData, ProviderId, ProviderStatus},
     rows::{self, RowView},
     ui::{
         context_menu::ContextMenu,
@@ -92,7 +90,7 @@ pub enum AppCommand {
     /// that checked it: only the provider and the outcome come back.
     UsageToken {
         pid: String,
-        outcome: menu::TokenOutcome,
+        outcome: sign_in::TokenOutcome,
         /// Which paste it answers: one replaced by a later paste or a
         /// removal is not acted on.
         ticket: u64,
@@ -415,6 +413,9 @@ struct App {
     /// A pasted usage token being checked, if one is: a second paste
     /// replaces it.
     usage_token_check: Option<(u64, tokio::task::JoinHandle<()>)>,
+    /// What the picker's Sign-in blocks show besides the config
+    /// (app/sign_in.rs).
+    sign_in: crate::choices::SignInState,
     tray: Tray,
     panel: TaskbarPanel,
     #[cfg(target_os = "windows")]
@@ -640,7 +641,6 @@ pub fn run() -> Result<()> {
     // 9. The context menu: events → proxy.
     let menu = ContextMenu::new(&config, config.window.pinned)?;
     // One Credential Manager read: is there a Cursor session to sign out of.
-    menu.set_cursor_signed_in(cursor_session::is_stored());
     // A Store, Scoop, portable or self-built copy is updated through its own
     // channel: the Auto-update item would do nothing there, so it goes.
     if !updater::self_update_supported() {
@@ -747,6 +747,7 @@ pub fn run() -> Result<()> {
         menu,
         cursor_sign_in: None,
         usage_token_check: None,
+        sign_in: Default::default(),
         tray,
         panel,
         #[cfg(target_os = "windows")]
@@ -763,6 +764,10 @@ pub fn run() -> Result<()> {
         picker: None,
         auto_open_waiting: false,
     };
+
+    // Which keys and tokens of the app's own are stored, where Cursor's
+    // sign-in stands; a source left to the old order settled.
+    app.init_sign_in_state();
 
     // On a fresh install the picker opens by itself as the welcome, after
     // the update that added [reads] as the one-time notice - unless a

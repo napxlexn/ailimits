@@ -1334,6 +1334,11 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
     if cause.contains("run ") || cause.starts_with("sign in") || cause.ends_with(", retrying") {
         return Some(cause);
     }
+    // A key or token the user pasted: running the tool would not mend it.
+    let own = ["usage token", "API key", "has no Copilot access"];
+    if own.iter().any(|w| cause.contains(w)) {
+        return Some(format!("{cause} — paste a new one in Rows and models"));
+    }
     let action = match data.id {
         ProviderId::Claude => "run Claude Code",
         ProviderId::Codex => "run Codex CLI",
@@ -1342,7 +1347,7 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         // its own.
         ProviderId::Antigravity => "run agy",
         ProviderId::Grok => "run Grok CLI",
-        // The menu's "Sign in to Cursor..." mends every Cursor session.
+        // Its Sign-in in Rows and models mends every Cursor session.
         ProviderId::Cursor => "sign in to Cursor",
     };
     Some(format!("{cause} — {action}"))

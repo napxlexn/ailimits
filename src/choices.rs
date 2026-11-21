@@ -6,7 +6,10 @@ use crate::config::schema::{Config, ModelPart, ModelSource, NumbersOn, PendingNo
 use crate::models::{self, Models};
 use crate::providers::{ProviderData, ProviderId, ProviderStatus};
 use crate::rows::{self, SUB_ROWS};
-use crate::ui::picker::{ModelChoice, PickerAction, PickerInput, PickerMode, ReadKind, RowChoice};
+use crate::ui::picker::{
+    CursorState, ModelChoice, PickerAction, PickerInput, PickerMode, ReadKind, RowChoice,
+    SignInChoice, SignInSource, SourceId,
+};
 use std::collections::BTreeMap;
 
 /// Every row id there is, in display order: each provider of the config in
@@ -361,7 +364,7 @@ fn base_note(
     match data.map(|d| &d.status) {
         Some(ProviderStatus::Ok) => "Today's row".into(),
         Some(ProviderStatus::NotConfigured) if runs => match pid {
-            ProviderId::Cursor => "Sign in from the menu: Providers > Cursor".into(),
+            ProviderId::Cursor => "Not signed in: open its Sign-in below".into(),
             _ => "No sign-in found on this PC".into(),
         },
         Some(status) => crate::ui::renderer::error_words(status)
@@ -382,15 +385,18 @@ pub fn picker_input(
     models: &Models,
     mode: PickerMode,
     found: &[&'static str],
+    sign_in: &SignInState,
 ) -> PickerInput {
-    picker_input_with(
+    let mut input = picker_input_with(
         config,
         display,
         models,
         mode,
         found,
         crate::consent::found_surely,
-    )
+    );
+    input.sign_in = sign_in_choices(config, display, sign_in);
+    input
 }
 
 /// `picker_input`, with whether a tool found was found surely (by a folder
@@ -480,6 +486,198 @@ pub(crate) fn picker_input_with(
         models: model_choices(config, models),
         sign_in: Vec::new(),
     }
+}
+
+/// What the app knows of the sign-ins besides the config: which of its own
+/// keys and tokens are stored, where Cursor's sign-in stands, and what the
+/// last sign-in action of each provider came to.
+#[derive(Debug, Clone, Default)]
+pub struct SignInState {
+    /// Credential Manager labels of the app's own keys and tokens that are
+    /// stored (`providers::key_label_for`, `usage_token_label_for`).
+    pub stored: Vec<&'static str>,
+    pub cursor: Option<CursorState>,
+    /// By config id.
+    pub notes: BTreeMap<&'static str, String>,
+}
+
+/// The sources a provider's sign-in can come from, in the window's order.
+pub fn sign_in_sources(provider: &str) -> &'static [SourceId] {
+    match provider {
+        "claude" => &[SourceId::Tool, SourceId::UsageToken, SourceId::Key],
+        "codex" => &[SourceId::Tool, SourceId::UsageToken],
+        "copilot" => &[SourceId::Tool, SourceId::Key],
+        _ => &[],
+    }
+}
+
+/// The source a provider's config says it uses.
+pub fn source_of(method: &crate::config::schema::AuthMethod) -> SourceId {
+    use crate::config::schema::AuthMethod;
+    match method {
+        AuthMethod::Subscription => SourceId::Tool,
+        AuthMethod::ApiKey => SourceId::Key,
+        AuthMethod::UsageToken => SourceId::UsageToken,
+    }
+}
+
+/// The config's method for a source.
+pub fn method_of(source: SourceId) -> crate::config::schema::AuthMethod {
+    use crate::config::schema::AuthMethod;
+    match source {
+        SourceId::Tool => AuthMethod::Subscription,
+        SourceId::Key => AuthMethod::ApiKey,
+        SourceId::UsageToken => AuthMethod::UsageToken,
+    }
+}
+
+/// The Credential Manager label a pasted secret of `source` is kept under.
+pub fn secret_label(provider: &str, source: SourceId) -> Option<&'static str> {
+    match source {
+        SourceId::Tool => None,
+        SourceId::Key => crate::providers::key_label_for(provider),
+        SourceId::UsageToken => crate::providers::usage_token_label_for(provider),
+    }
+}
+
+/// A source's name in the window: its radio, and the closed line.
+fn source_names(provider: &str, source: SourceId) -> (&'static str, &'static str) {
+    match (provider, source) {
+        ("claude", SourceId::Tool) => ("Claude Code's sign-in", "Claude Code"),
+        ("codex", SourceId::Tool) => ("Codex CLI's sign-in", "Codex CLI"),
+        ("copilot", SourceId::Tool) => ("GitHub CLI's sign-in", "GitHub CLI"),
+        ("antigravity", _) => ("Antigravity CLI's sign-in", "Antigravity CLI"),
+        ("grok", _) => ("Grok CLI's sign-in", "Grok CLI"),
+        (_, SourceId::UsageToken) => ("A usage token you paste", "Your usage token"),
+        ("copilot", SourceId::Key) => ("A fine-grained token you paste", "Your token"),
+        (_, SourceId::Key) => ("An API key you paste", "Your API key"),
+        (_, SourceId::Tool) => ("The tool's sign-in", "The tool"),
+    }
+}
+
+/// How a provider's last answer went, in a few words for the closed line.
+fn how_it_went(data: Option<&ProviderData>) -> std::borrow::Cow<'static, str> {
+    match data.map(|d| &d.status) {
+        Some(ProviderStatus::Ok) | Some(ProviderStatus::Estimated) => "works".into(),
+        Some(ProviderStatus::NotConfigured) => "no sign-in found".into(),
+        Some(ProviderStatus::Loading) | None => "checking".into(),
+        Some(status) => crate::ui::renderer::error_words(status)
+            .filter(|w| !w.trim().is_empty())
+            .unwrap_or_else(|| "not working".into()),
+    }
+}
+
+/// Each provider's sign-in, as the window shows it under its rows: where it
+/// comes from, the sources to choose from, what is read and where its token
+/// goes (the consent texts, `consent::READ_INFO`), and the actions.
+pub fn sign_in_choices(
+    config: &Config,
+    display: &[ProviderData],
+    state: &SignInState,
+) -> Vec<SignInChoice> {
+    let mut out = Vec::new();
+    for pc in &config.providers {
+        let Some(pid) = ProviderId::from_config_id(&pc.id) else {
+            continue;
+        };
+        let id = pid.config_id();
+        let Some(info) = crate::consent::read_info(id) else {
+            continue;
+        };
+        let data = display.iter().find(|d| d.id == pid);
+        let hosts = info.hosts.join(" and ");
+        let allowed = config.sign_in_allowed(id) || config.app_sign_in_allowed(id);
+        let runs = config.provider_active(pc);
+        let note = state.notes.get(id).cloned();
+        if id == "cursor" {
+            let cursor = state.cursor.unwrap_or(CursorState::SignedOut);
+            let summary = match cursor {
+                CursorState::Waiting => "Waiting for the browser".to_string(),
+                CursorState::SignedOut => "Not signed in".to_string(),
+                CursorState::SignedIn if runs => format!("Signed in \u{b7} {}", how_it_went(data)),
+                CursorState::SignedIn => "Signed in".to_string(),
+            };
+            out.push(SignInChoice {
+                provider: id,
+                summary,
+                sources: Vec::new(),
+                detail: format!(
+                    "Signs in to Cursor on its own page ({}) in your browser, as the Cursor editor does, and keeps that session in Windows Credential Manager; it goes only to {hosts}. Nothing of the editor's own sign-in is read.",
+                    info.pages.join(", ")
+                ),
+                paste: None,
+                stored: false,
+                note,
+                cursor: Some(cursor),
+            });
+            continue;
+        }
+        let choices = sign_in_sources(id);
+        let chosen = if choices.is_empty() {
+            SourceId::Tool
+        } else {
+            let s = source_of(&pc.auth_method);
+            if choices.contains(&s) {
+                s
+            } else {
+                SourceId::Tool
+            }
+        };
+        let label = secret_label(id, chosen);
+        let stored = label.is_some_and(|l| state.stored.contains(&l));
+        let (_, short) = source_names(id, chosen);
+        let summary = if !allowed {
+            "Not allowed yet".to_string()
+        } else if label.is_some() && !stored {
+            format!("{short} \u{b7} none stored")
+        } else if !runs {
+            format!("{short} \u{b7} off")
+        } else {
+            format!("{short} \u{b7} {}", how_it_went(data))
+        };
+        let detail = match (chosen, label) {
+            (SourceId::Tool, _) if id == "codex" => format!(
+                "Reads {}; its {} goes only to {hosts}. Codex CLI keeps it there unless its cli_auth_credentials_store is \"keyring\" or \"auto\": then paste a usage token instead.",
+                info.sign_in.join("; "),
+                info.secret()
+            ),
+            (SourceId::Tool, _) | (_, None) => format!(
+                "Reads {}; its {} goes only to {hosts}.",
+                info.sign_in.join("; "),
+                info.secret()
+            ),
+            (SourceId::Key, Some(l)) if id == "copilot" => format!(
+                "Kept in Windows Credential Manager ({l}); it goes only to {hosts}. A fine-grained token needs the Copilot Requests permission."
+            ),
+            (_, Some(l)) => format!(
+                "Kept in Windows Credential Manager ({l}); it goes only to {hosts}."
+            ),
+        };
+        let paste = match chosen {
+            SourceId::Tool => None,
+            SourceId::UsageToken => Some("Paste token from clipboard"),
+            SourceId::Key if id == "copilot" => Some("Paste token from clipboard"),
+            SourceId::Key => Some("Paste key from clipboard"),
+        };
+        out.push(SignInChoice {
+            provider: id,
+            summary,
+            sources: choices
+                .iter()
+                .map(|&s| SignInSource {
+                    id: s,
+                    label: source_names(id, s).0,
+                    on: s == chosen,
+                })
+                .collect(),
+            detail,
+            paste,
+            stored,
+            note,
+            cursor: None,
+        });
+    }
+    out
 }
 
 /// The models each running tool is known to offer (models::catalog), the
@@ -754,6 +952,71 @@ mod tests {
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.ui.panel, config.ui.panel);
         assert!(!back.ui.panel.percent && back.ui.panel.reset);
+    }
+
+    /// The sign-in under each provider: the source the config names, what
+    /// it reads (the consent text) and where its token goes; a pasted
+    /// source says whether anything is stored and offers its actions.
+    #[test]
+    fn each_provider_says_where_its_sign_in_comes_from() {
+        use crate::config::schema::AuthMethod;
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        config.allow_sign_in("codex");
+        config.allow_app_sign_in("copilot");
+        if let Some(pc) = config.providers.iter_mut().find(|p| p.id == "copilot") {
+            pc.auth_method = AuthMethod::ApiKey;
+        }
+        let ok = |id| ProviderData {
+            id,
+            status: ProviderStatus::Ok,
+            metrics: Vec::new(),
+            updated_at: chrono::Utc::now(),
+            received_at: None,
+        };
+        let display = [ok(ProviderId::Claude), ok(ProviderId::Copilot)];
+        let mut state = SignInState {
+            stored: vec!["copilot_pat"],
+            ..SignInState::default()
+        };
+        let all = sign_in_choices(&config, &display, &state);
+        let of = |id: &str| all.iter().find(|s| s.provider == id).unwrap().clone();
+        let claude = of("claude");
+        assert_eq!(claude.summary, "Claude Code \u{b7} works");
+        assert_eq!(claude.sources.len(), 3);
+        assert!(claude.sources[0].on && claude.sources[0].id == SourceId::Tool);
+        assert!(
+            claude.detail.contains(".credentials.json"),
+            "{}",
+            claude.detail
+        );
+        assert!(claude.detail.contains("api.anthropic.com"));
+        assert_eq!(claude.paste, None);
+        let codex = of("codex");
+        assert_eq!(codex.summary, "Codex CLI \u{b7} checking");
+        let copilot = of("copilot");
+        assert_eq!(copilot.summary, "Your token \u{b7} works");
+        assert!(copilot.stored);
+        assert!(copilot.detail.contains("copilot_pat"));
+        assert_eq!(copilot.paste, Some("Paste token from clipboard"));
+        assert_eq!(of("grok").summary, "Not allowed yet");
+        assert!(of("grok").sources.is_empty());
+        assert_eq!(of("cursor").summary, "Not signed in");
+        assert_eq!(of("cursor").cursor, Some(CursorState::SignedOut));
+        // Nothing stored yet for the source chosen.
+        state.stored.clear();
+        state.notes.insert("copilot", "Removed.".into());
+        let copilot = sign_in_choices(&config, &display, &state)
+            .into_iter()
+            .find(|s| s.provider == "copilot")
+            .unwrap();
+        assert_eq!(copilot.summary, "Your token \u{b7} none stored");
+        assert!(!copilot.stored);
+        assert_eq!(copilot.note.as_deref(), Some("Removed."));
+        // Sources and methods map both ways.
+        for s in [SourceId::Tool, SourceId::Key, SourceId::UsageToken] {
+            assert_eq!(source_of(&method_of(s)), s);
+        }
     }
 
     #[test]
@@ -1161,10 +1424,7 @@ mod tests {
             .find(|r| r.id == "grok.build")
             .unwrap();
         assert!(build.provider_ok && !build.has_data);
-        assert_eq!(
-            row("cursor").note,
-            "Sign in from the menu: Providers > Cursor"
-        );
+        assert_eq!(row("cursor").note, "Not signed in: open its Sign-in below");
         assert_eq!(row("codex").note, "No sign-in found on this PC");
         // Grok Bot is asked for only once its row is ticked: until then it
         // says so, and is not called missing.

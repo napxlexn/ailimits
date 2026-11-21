@@ -304,8 +304,13 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
             .is_some();
     let reset_at = period_end.or_else(|| config.get("billingPeriodEnd").and_then(rfc3339));
 
-    let used = match config.get("creditUsagePercent").and_then(number) {
-        Some(pct) => percent(pct),
+    let used = match config.get("creditUsagePercent") {
+        Some(v) => match number(v) {
+            Some(pct) => percent(pct),
+            // There, but not a number this parser knows: no number is made
+            // up for it (the row says the schema is unrecognized).
+            None => return Ok(Vec::new()),
+        },
         // The encoder's omitted zero — trusted only beside a real period.
         None if period_known => 0,
         None => return Ok(Vec::new()),

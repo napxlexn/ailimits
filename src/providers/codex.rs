@@ -13,7 +13,10 @@ use super::{
     keyring_secret, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
     ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
 };
-use crate::config::{paths::ToolPaths, schema::ProviderConfig};
+use crate::config::{
+    paths::ToolPaths,
+    schema::{AuthMethod, ProviderConfig},
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -84,7 +87,7 @@ impl CodexProvider {
 
     /// ChatGPT subscription usage. The CLI token is read-only: Codex CLI
     /// refreshes it itself, the widget must never rotate it.
-    async fn fetch_via_subscription(&self) -> ProviderData {
+    async fn fetch_via_subscription(&self, use_usage_token: bool) -> ProviderData {
         // 1. Manual usage token, if stored. Refused → fall through to
         // auth.json, keeping the reason for when nothing stands behind it;
         // a token refused lately is not sent again (`REFUSED_TOKEN_PAUSE`).
@@ -92,7 +95,7 @@ impl CodexProvider {
         // request that got no answer says nothing about the token — the
         // CLI's would go to the same host. One usage request per cycle.
         let mut usage_token_failure = None;
-        if let Some(token) = (self.usage_token)() {
+        if let Some(token) = (self.usage_token)().filter(|_| use_usage_token) {
             let refused = ProviderStatus::AuthError("usage token rejected".to_string());
             if self.refused.paused(&token) {
                 debug!("the stored Codex usage token was refused lately; not sent");
@@ -110,6 +113,11 @@ impl CodexProvider {
                     }
                 }
             }
+        }
+
+        // The usage token alone was chosen: Codex CLI's file is not read.
+        if use_usage_token {
+            return self.data(status_without_cli_token(usage_token_failure, false), vec![]);
         }
 
         // 2. Codex CLI token, only when the user allowed reading it.
@@ -228,7 +236,9 @@ impl Provider for CodexProvider {
         if !self.config.enabled {
             return Ok(self.data(ProviderStatus::NotConfigured, vec![]));
         }
-        Ok(self.fetch_via_subscription().await)
+        // The source the user chose, and only that one.
+        let use_usage_token = self.config.auth_method == AuthMethod::UsageToken;
+        Ok(self.fetch_via_subscription(use_usage_token).await)
     }
 }
 
@@ -350,6 +360,10 @@ mod tests {
         }
     }
 
+    /// The source chosen, and only that one: a refused pasted token says
+    /// so and is not sent again for half an hour; Codex CLI's sign-in,
+    /// though there, is not its stand-in. Codex CLI's chosen, a stored
+    /// token is never sent.
     #[tokio::test]
     async fn a_refused_usage_token_is_left_out_for_half_an_hour() {
         let server = TestServer::start();
@@ -358,28 +372,35 @@ mod tests {
             vec![Reply::status(401), Reply::ok(USAGE_BODY)],
         );
         let home = codex_home();
+        let token_config = ProviderConfig {
+            auth_method: AuthMethod::UsageToken,
+            ..config(true)
+        };
         let p = CodexProvider::for_test(
-            config(true),
+            token_config,
             &server.base,
             Some("stored-token"),
             Some(home.path().join("auth.json")),
         );
         for _ in 0..3 {
-            assert!(matches!(
-                p.fetch().await.unwrap().status,
-                ProviderStatus::Ok
-            ));
+            assert_eq!(message(&p.fetch().await.unwrap()), "usage token rejected");
         }
         let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
-        assert_eq!(
-            auths,
-            [
-                "Bearer stored-token",
-                "Bearer cli-token",
-                "Bearer cli-token",
-                "Bearer cli-token"
-            ]
+        assert_eq!(auths, ["Bearer stored-token"]);
+        let server2 = TestServer::start();
+        server2.route("/backend-api/wham/usage", vec![Reply::ok(USAGE_BODY)]);
+        let p2 = CodexProvider::for_test(
+            config(true),
+            &server2.base,
+            Some("stored-token"),
+            Some(home.path().join("auth.json")),
         );
+        assert!(matches!(
+            p2.fetch().await.unwrap().status,
+            ProviderStatus::Ok
+        ));
+        let auths: Vec<_> = server2.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(auths, ["Bearer cli-token"]);
     }
 
     #[tokio::test]

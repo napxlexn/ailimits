@@ -5,8 +5,7 @@
 // CLIPBOARD (a native menu has no text input).
 
 use crate::config::schema::{
-    AuthMethod, ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay,
-    WidthScale,
+    ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay, WidthScale,
 };
 use anyhow::Result;
 use muda::{CheckMenuItem, IconMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -62,22 +61,6 @@ pub enum MenuAction {
     SetSaturation(u8),
     /// Update interval, seconds.
     SetUpdateInterval(u64),
-    /// Enable/disable a provider.
-    ToggleProvider(String),
-    /// Provider auth method.
-    SetAuthMethod(String, AuthMethod),
-    /// Paste an API key / PAT from the clipboard.
-    PasteKey(String),
-    /// Remove the API key / PAT.
-    RemoveKey(String),
-    /// Paste a manual usage token from the clipboard (claude, codex).
-    PasteUsageToken(String),
-    /// Remove the manual usage token.
-    RemoveUsageToken(String),
-    /// Sign the widget in to Cursor in the browser (its own session).
-    SignInCursor,
-    /// Forget the widget's own Cursor session.
-    SignOutCursor,
     /// Open the project's GitHub page in the browser.
     OpenProjectPage,
     /// Open the "Rows and models" picker.
@@ -213,18 +196,7 @@ pub struct ContextMenu {
     brightness_items: Vec<(CheckMenuItem, u8)>,
     saturation_items: Vec<(CheckMenuItem, u8)>,
     interval_items: Vec<(CheckMenuItem, u64)>,
-    /// Per-provider enable toggles.
-    provider_toggles: Vec<(CheckMenuItem, String)>,
     picker_item: MenuItem,
-    /// Auth method choice: only Claude has options.
-    auth_method_items: Vec<(CheckMenuItem, String, AuthMethod)>,
-    paste_key_items: Vec<(MenuItem, String)>,
-    remove_key_items: Vec<(MenuItem, String)>,
-    paste_usage_items: Vec<(MenuItem, String)>,
-    remove_usage_items: Vec<(MenuItem, String)>,
-    /// Cursor's own sign-in and sign-out; None without a Cursor entry.
-    cursor_sign_in_item: Option<MenuItem>,
-    cursor_sign_out_item: Option<MenuItem>,
     quit_item: MenuItem,
     /// The version line; opens the project page.
     version_item: IconMenuItem,
@@ -429,90 +401,6 @@ impl ContextMenu {
             interval_items.push((item, secs));
         }
 
-        // "Providers" submenu with authorization.
-        let providers_submenu = Submenu::new("Providers", true);
-        let mut provider_toggles = Vec::new();
-        let mut auth_method_items = Vec::new();
-        let mut paste_key_items = Vec::new();
-        let mut remove_key_items = Vec::new();
-        let mut paste_usage_items = Vec::new();
-        let mut remove_usage_items = Vec::new();
-        let mut cursor_sign_in_item = None;
-        let mut cursor_sign_out_item = None;
-
-        for pc in &config.providers {
-            let display = crate::providers::ProviderId::from_config_id(&pc.id)
-                .map(|p| p.display_name())
-                .unwrap_or("?");
-            let sub = Submenu::new(display, true);
-
-            let toggle = CheckMenuItem::new("Enabled", true, config.provider_active(pc), None);
-            sub.append(&toggle)?;
-            provider_toggles.push((toggle, pc.id.clone()));
-
-            // Method choice — Claude only: subscription or API key.
-            // Codex and Copilot are subscription-only.
-            if pc.id == "claude" {
-                sub.append(&PredefinedMenuItem::separator())?;
-                let sub_item = CheckMenuItem::new(
-                    "Claude Code subscription",
-                    true,
-                    pc.auth_method == AuthMethod::Subscription,
-                    None,
-                );
-                let key_item =
-                    CheckMenuItem::new("API key", true, pc.auth_method == AuthMethod::ApiKey, None);
-                sub.append(&sub_item)?;
-                sub.append(&key_item)?;
-                auth_method_items.push((sub_item, pc.id.clone(), AuthMethod::Subscription));
-                auth_method_items.push((key_item, pc.id.clone(), AuthMethod::ApiKey));
-            }
-
-            // Keys — only where they exist: Claude (API key), Copilot (PAT).
-            if crate::providers::key_label_for(&pc.id).is_some() {
-                sub.append(&PredefinedMenuItem::separator())?;
-                let paste_label = if pc.id == "copilot" {
-                    // The PAT is optional: without it the gh CLI token is used.
-                    "Paste PAT from clipboard (optional)"
-                } else {
-                    "Paste API key from clipboard"
-                };
-                let paste = MenuItem::new(paste_label, true, None);
-                let remove = MenuItem::new("Remove key", true, None);
-                sub.append(&paste)?;
-                sub.append(&remove)?;
-                paste_key_items.push((paste, pc.id.clone()));
-                remove_key_items.push((remove, pc.id.clone()));
-            }
-
-            // Manual usage tokens — Claude and Codex: an alternative to the
-            // auto-detected CLI tokens.
-            if crate::providers::usage_token_label_for(&pc.id).is_some() {
-                sub.append(&PredefinedMenuItem::separator())?;
-                let paste = MenuItem::new("Paste usage token from clipboard", true, None);
-                let remove = MenuItem::new("Remove usage token", true, None);
-                sub.append(&paste)?;
-                sub.append(&remove)?;
-                paste_usage_items.push((paste, pc.id.clone()));
-                remove_usage_items.push((remove, pc.id.clone()));
-            }
-
-            // Cursor: the widget signs in by itself, in the browser. Signing
-            // in again replaces the session (another account, or one Cursor
-            // ended); sign-out is greyed while there is none.
-            if pc.id == "cursor" {
-                sub.append(&PredefinedMenuItem::separator())?;
-                let sign_in = MenuItem::new("Sign in to Cursor...", true, None);
-                let sign_out = MenuItem::new("Sign out of Cursor", false, None);
-                sub.append(&sign_in)?;
-                sub.append(&sign_out)?;
-                cursor_sign_in_item = Some(sign_in);
-                cursor_sign_out_item = Some(sign_out);
-            }
-
-            providers_submenu.append(&sub)?;
-        }
-
         let picker_item = MenuItem::new("Rows and models...", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
         // The version line doubles as the way to the project. The words stay
@@ -549,7 +437,6 @@ impl ContextMenu {
         menu.append(&interval_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&picker_item)?;
-        menu.append(&providers_submenu)?;
         menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&quit_item)?;
         menu.append(&version_item)?;
@@ -572,15 +459,7 @@ impl ContextMenu {
             brightness_items,
             saturation_items,
             interval_items,
-            provider_toggles,
             picker_item,
-            auth_method_items,
-            paste_key_items,
-            remove_key_items,
-            paste_usage_items,
-            remove_usage_items,
-            cursor_sign_in_item,
-            cursor_sign_out_item,
             quit_item,
             version_item,
         })
@@ -592,14 +471,6 @@ impl ContextMenu {
     pub fn remove_auto_update(&self) {
         if let Err(e) = self.menu.remove(&self.auto_update_item) {
             tracing::warn!("the Automatic updates item stayed in the menu: {e}");
-        }
-    }
-
-    /// Whether a Cursor session of the widget's own is kept: sign-out is
-    /// offered only then.
-    pub fn set_cursor_signed_in(&self, signed_in: bool) {
-        if let Some(item) = &self.cursor_sign_out_item {
-            item.set_enabled(signed_in);
         }
     }
 
@@ -695,50 +566,6 @@ impl ContextMenu {
         if *event_id == self.auto_update_item.id() {
             return Some(MenuAction::ToggleAutoUpdate);
         }
-        for (item, id) in &self.provider_toggles {
-            if *event_id == item.id() {
-                return Some(MenuAction::ToggleProvider(id.clone()));
-            }
-        }
-        for (item, id, method) in &self.auth_method_items {
-            if *event_id == item.id() {
-                return Some(MenuAction::SetAuthMethod(id.clone(), method.clone()));
-            }
-        }
-        for (item, id) in &self.paste_key_items {
-            if *event_id == item.id() {
-                return Some(MenuAction::PasteKey(id.clone()));
-            }
-        }
-        for (item, id) in &self.remove_key_items {
-            if *event_id == item.id() {
-                return Some(MenuAction::RemoveKey(id.clone()));
-            }
-        }
-        for (item, id) in &self.paste_usage_items {
-            if *event_id == item.id() {
-                return Some(MenuAction::PasteUsageToken(id.clone()));
-            }
-        }
-        for (item, id) in &self.remove_usage_items {
-            if *event_id == item.id() {
-                return Some(MenuAction::RemoveUsageToken(id.clone()));
-            }
-        }
-        if self
-            .cursor_sign_in_item
-            .as_ref()
-            .is_some_and(|item| *event_id == item.id())
-        {
-            return Some(MenuAction::SignInCursor);
-        }
-        if self
-            .cursor_sign_out_item
-            .as_ref()
-            .is_some_and(|item| *event_id == item.id())
-        {
-            return Some(MenuAction::SignOutCursor);
-        }
         if *event_id == self.pin_item.id() {
             Some(MenuAction::TogglePin)
         } else if *event_id == self.quit_item.id() {
@@ -804,24 +631,6 @@ impl ContextMenu {
         self.forecast_item.set_checked(config.ui.show_forecast);
         self.auto_update_item
             .set_checked(config.general.auto_update);
-        // Ticked only while the provider actually runs: switched on AND
-        // allowed to read its sign-in.
-        for (item, id) in &self.provider_toggles {
-            let active = config
-                .providers
-                .iter()
-                .find(|p| p.id == *id)
-                .is_some_and(|p| config.provider_active(p));
-            item.set_checked(active);
-        }
-        for (item, id, method) in &self.auth_method_items {
-            let active = config
-                .providers
-                .iter()
-                .find(|p| p.id == *id)
-                .is_some_and(|p| p.auth_method == *method);
-            item.set_checked(active);
-        }
         self.pin_item.set_checked(pinned);
     }
 }
@@ -880,7 +689,6 @@ mod tests {
         assert_eq!(act(None, "Automatic updates"), None);
         assert_eq!(act(Some("Indicator"), "Tray icon"), None);
         assert_eq!(act(Some("Update interval"), "5 min"), None);
-        assert_eq!(act(Some("Providers"), "Enabled"), None);
         // A label of one submenu under another's title.
         assert_eq!(act(Some(OPACITY_TITLE), "Ocean"), None);
         assert_eq!(act(None, "50%"), None);
