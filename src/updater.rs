@@ -867,17 +867,32 @@ fn inno_install_location() -> Option<PathBuf> {
 }
 
 /// Whether the running exe lives inside the directory our installer manages.
-/// Decided by canonicalized paths, so the registry's trailing backslash and
-/// any case difference do not matter. Pure on its inputs for testability.
+/// Decided by absolute paths compared without case, a `\\?\` prefix or a
+/// trailing separator, so the registry's trailing backslash and any case
+/// difference do not matter. Not by `canonicalize`: since Rust 1.100 that
+/// brings GetLogicalDrives and QueryDosDeviceW into the exe (the
+/// least-antivirus-risk rule), and a junction it would resolve can only
+/// make this answer no, which only keeps the copy from updating itself.
+/// Pure on its inputs for testability.
 fn exe_is_inside(current_exe: Option<&Path>, install_dir: Option<&Path>) -> bool {
     let (Some(exe), Some(dir)) = (current_exe, install_dir) else {
         return false;
     };
-    let (Ok(exe), Ok(dir)) = (exe.canonicalize(), dir.canonicalize()) else {
+    let (Ok(exe), Ok(dir)) = (std::path::absolute(exe), std::path::absolute(dir)) else {
         // A location that cannot be resolved cannot be trusted to upgrade.
         return false;
     };
-    exe.parent() == Some(dir.as_path())
+    exe.parent().is_some_and(|parent| same_dir(parent, &dir))
+}
+
+/// Two directories named alike, as Windows compares them.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        let s = p.to_string_lossy().replace('/', "\\");
+        let s = s.strip_prefix(r"\\?\").unwrap_or(&s);
+        s.trim_end_matches('\\').to_lowercase()
+    };
+    norm(a) == norm(b)
 }
 
 #[cfg(target_os = "windows")]
@@ -1119,6 +1134,23 @@ mod tests {
         assert!(exe_is_inside(
             Some(exe.as_path()),
             Some(std::path::Path::new(&reg_style))
+        ));
+        // Another case, the long-path prefix: the same directory.
+        let upper = reg_style.to_uppercase();
+        assert!(exe_is_inside(
+            Some(exe.as_path()),
+            Some(std::path::Path::new(&upper))
+        ));
+        let prefixed = format!(r"\\?\{}", dir.display());
+        assert!(exe_is_inside(
+            Some(exe.as_path()),
+            Some(std::path::Path::new(&prefixed))
+        ));
+        // A directory whose name only starts the same is another one.
+        let longer = format!("{}x", dir.display());
+        assert!(!exe_is_inside(
+            Some(exe.as_path()),
+            Some(std::path::Path::new(&longer))
         ));
         let _ = std::fs::remove_file(&exe);
     }
