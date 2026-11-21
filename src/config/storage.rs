@@ -77,11 +77,22 @@ pub enum LoadProblem {
 
 /// What is said when lines of config.toml were left out: where, never what.
 pub fn left_out_message(lines: &[usize]) -> String {
-    let list = lines
-        .iter()
-        .map(|l| l.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
+    // Runs of lines as ranges: "5, 12-15".
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let mut j = i;
+        while j + 1 < lines.len() && lines[j + 1] == lines[j] + 1 {
+            j += 1;
+        }
+        parts.push(if i == j {
+            lines[i].to_string()
+        } else {
+            format!("{}-{}", lines[i], lines[j])
+        });
+        i = j + 1;
+    }
+    let list = parts.join(", ");
     let which = if lines.len() == 1 {
         format!("line {list} does not read and is left out")
     } else {
@@ -305,8 +316,8 @@ fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize
                 };
                 let (line, _) = line_and_column(&text, span.start);
                 match without_line(&text, line) {
-                    Some(next) if left_out.len() < MAX_LEFT_OUT => {
-                        left_out.push(line);
+                    Some((next, lines)) if left_out.len() < MAX_LEFT_OUT => {
+                        left_out.extend(lines);
                         text = next;
                     }
                     _ => return Err(first),
@@ -331,21 +342,43 @@ fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize
 /// `text` with its `line` (1-based) commented out, when that line is a
 /// `key = value` line; None for a table header, a comment, a blank line or
 /// the inside of a multi-line value. Line numbers stay as they were.
-fn without_line(text: &str, line: usize) -> Option<String> {
+///
+/// A table header that does not read (a table written twice, a header
+/// left unclosed) takes its table with it: the header and every line up to
+/// the next header are commented out, so its keys never land in the table
+/// above. Returns the new text and the lines left out.
+fn without_line(text: &str, line: usize) -> Option<(String, Vec<usize>)> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let target = lines.get(line.checked_sub(1)?)?;
     let t = target.trim_start();
-    if t.is_empty() || t.starts_with('[') || t.starts_with('#') || !t.contains('=') {
+    let gone: Vec<usize> = if t.starts_with('[') {
+        let is_header = |l: &str| l.trim_start().starts_with('[');
+        let end = lines[line..]
+            .iter()
+            .position(|l| is_header(l))
+            .map_or(lines.len(), |k| line + k);
+        (line..=end)
+            .filter(|n| {
+                let l = lines[n - 1].trim_start();
+                !l.is_empty() && !l.starts_with('#')
+            })
+            .collect()
+    } else if t.is_empty() || t.starts_with('#') || !t.contains('=') {
+        return None;
+    } else {
+        vec![line]
+    };
+    if gone.is_empty() {
         return None;
     }
-    let mut out = String::with_capacity(text.len() + 1);
+    let mut out = String::with_capacity(text.len() + gone.len());
     for (i, l) in lines.iter().enumerate() {
-        if i + 1 == line {
+        if gone.contains(&(i + 1)) {
             out.push('#');
         }
         out.push_str(l);
     }
-    Some(out)
+    Some((out, gone))
 }
 
 /// Where in the config a TOML error is, never what: toml's own message
@@ -1155,6 +1188,23 @@ mod tests {
     use super::*;
     use crate::config::schema::{ModelPart, PendingNotice};
 
+    /// Text no line-by-line repair makes readable: more broken lines than
+    /// are ever left out.
+    const BROKEN: &str = "a = =\nb = =\nc = =\nd = =\ne = =\nf = =\ng = =\nh = =\ni = =\n";
+
+    /// A table written twice (a recipe pasted under the one already there)
+    /// costs that second table only: its keys never land in another table,
+    /// and the rest of the file is used.
+    #[test]
+    fn a_table_written_twice_costs_only_that_table() {
+        let text = "[ui]\npalette = \"ocean\"\n\n[ui]\npalette = \"rose\"\nbrightness = 50\n\n[window]\nopacity = 0.5\n\n[reads]\nsign_in = []\n";
+        let (config, _, gone) = parse_keeping(text.as_bytes()).expect("used");
+        assert_eq!(gone, [4, 5, 6]);
+        assert_eq!(config.ui.palette, crate::config::schema::Palette::Ocean);
+        assert_eq!(config.window.opacity, 0.5);
+        assert!(left_out_message(&gone).contains("lines 4-6"));
+    }
+
     /// A value of the wrong type, a typo or a missing value costs its line:
     /// the rest of the file is used, the line is named. A broken header
     /// still makes the file not understood.
@@ -1176,7 +1226,9 @@ mod tests {
             message.contains("lines 5, 12, 15") && !message.contains("50.5"),
             "{message}"
         );
-        assert!(parse_keeping(b"[ui\nbrightness = 50\n").is_err());
+        let (_, _, gone) = parse_keeping(b"[ui\nbrightness = 50\n").expect("used");
+        assert_eq!(gone, [1, 2]);
+        assert!(parse_keeping(BROKEN.as_bytes()).is_err());
     }
 
     /// What loading does with config text, minus the disk (the disk is
@@ -1341,7 +1393,7 @@ mod tests {
     #[test]
     fn unparsable_configs_are_set_aside_under_names_of_their_own() {
         let dir = Dir::new("broken");
-        std::fs::write(dir.config(), "[window\npos_x = 1").unwrap();
+        std::fs::write(dir.config(), BROKEN).unwrap();
         let first = block(load_with(&dir.config(), &QUICK));
         let Some(LoadProblem::SetAside { backup: one, .. }) = first.problem.clone() else {
             panic!("{:?}", first.problem);
@@ -1349,23 +1401,15 @@ mod tests {
         assert!(!first.problem.as_ref().unwrap().saving_off());
         assert_eq!(first.config, Config::fresh_install());
         assert!(!dir.config().exists());
-        std::fs::write(
-            dir.config(),
-            "[[providers
-pos_x = 2",
-        )
-        .unwrap();
+        let second_text = format!("{BROKEN}j = =\n");
+        std::fs::write(dir.config(), &second_text).unwrap();
         let second = block(load_with(&dir.config(), &QUICK));
         let Some(LoadProblem::SetAside { backup: two, .. }) = second.problem.clone() else {
             panic!("{:?}", second.problem);
         };
         assert_ne!(one, two);
-        assert_eq!(std::fs::read_to_string(&one).unwrap(), "[window\npos_x = 1");
-        assert_eq!(
-            std::fs::read_to_string(&two).unwrap(),
-            "[[providers
-pos_x = 2"
-        );
+        assert_eq!(std::fs::read_to_string(&one).unwrap(), BROKEN);
+        assert_eq!(std::fs::read_to_string(&two).unwrap(), second_text);
         for backup in [&one, &two] {
             let name = backup.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
@@ -1393,7 +1437,7 @@ pos_x = 2"
         use std::os::windows::fs::OpenOptionsExt;
         const FILE_SHARE_READ: u32 = 1;
         let dir = Dir::new("pinned");
-        std::fs::write(dir.config(), "[broken").unwrap();
+        std::fs::write(dir.config(), BROKEN).unwrap();
         let held = std::fs::File::options()
             .read(true)
             .share_mode(FILE_SHARE_READ)
@@ -1407,7 +1451,7 @@ pos_x = 2"
         assert_eq!(loaded.config.reads.pending, PendingNotice::None);
         assert_eq!(dir.names(), ["config.toml"]);
         assert!(block(save_to(&loaded.config, &dir.config())).is_err());
-        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), "[broken");
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), BROKEN);
         // Not watched either: such a session runs on a config that reads
         // nothing until a restart, as its message says.
         let file = ConfigFile::new(dir.config(), loaded.on_disk);
@@ -1520,7 +1564,7 @@ pos_x = 2"
         let dir = Dir::new("broken-edit");
         let (loaded, file) = watched(&dir, &current_text());
         let broken = format!(
-            "{}\n[hooks]\non_reset = \"sk-ant-SECRET\" junk\n",
+            "{}\n[hooks]\non_reset = \"sk-ant-SECRET\" junk\n{BROKEN}",
             current_text()
         );
         std::fs::write(dir.config(), &broken).unwrap();
@@ -1656,7 +1700,7 @@ pos_x = 2"
         let dir = Dir::new("peek");
         assert!(matches!(peek(&dir.config()), Peek::Missing));
         assert!(dir.names().is_empty());
-        std::fs::write(dir.config(), "[broken").unwrap();
+        std::fs::write(dir.config(), BROKEN).unwrap();
         assert!(matches!(peek(&dir.config()), Peek::Unparsable(_)));
         assert_eq!(dir.names(), ["config.toml"]);
         std::fs::write(dir.config(), CONFIG_0_7_0).unwrap();

@@ -710,10 +710,17 @@ mod tests {
         let fresh = config_at(&path).unwrap();
         assert_eq!(fresh, Config::fresh_install());
         assert!(!path.exists());
-        std::fs::write(&path, "[broken").unwrap();
+        std::fs::write(
+            &path,
+            "a = =\nb = =\nc = =\nd = =\ne = =\nf = =\ng = =\nh = =\ni = =\n",
+        )
+        .unwrap();
         let err = config_at(&path).unwrap_err().to_string();
         assert!(err.contains("nothing was changed"), "{err}");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[broken");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "a = =\nb = =\nc = =\nd = =\ne = =\nf = =\ng = =\nh = =\ni = =\n"
+        );
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }

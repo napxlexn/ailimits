@@ -16,6 +16,9 @@ const IDS: [&str; 6] = [
     "cursor",
 ];
 
+/// Text no line-by-line repair makes readable.
+const BROKEN: &str = "a = =\nb = =\nc = =\nd = =\ne = =\nf = =\ng = =\nh = =\ni = =\n";
+
 #[test]
 fn default_config_lists_every_provider_without_keys() {
     // The template every config starts from: all six providers, in the
@@ -343,7 +346,8 @@ fn a_saved_config_loads_back_as_it_was() {
 fn two_broken_configs_are_both_kept() {
     let dir = Dir::new("broken");
     let mut backups = Vec::new();
-    for text in ["[ui\npalette = 1", "[[x\nid = 2"] {
+    let second = format!("{BROKEN}j = =\n");
+    for text in [BROKEN, second.as_str()] {
         std::fs::write(dir.config(), text).unwrap();
         let loaded = block(storage::load_from(&dir.config()));
         let Some(LoadProblem::SetAside { backup, .. }) = loaded.problem else {
@@ -388,10 +392,10 @@ fn a_peek_at_the_config_changes_nothing() {
     let dir = Dir::new("peek");
     assert!(matches!(storage::peek(&dir.config()), Peek::Missing));
     assert!(dir.names().is_empty(), "{:?}", dir.names());
-    std::fs::write(dir.config(), "[broken").unwrap();
+    std::fs::write(dir.config(), BROKEN).unwrap();
     assert!(matches!(storage::peek(&dir.config()), Peek::Unparsable(_)));
     assert_eq!(dir.names(), ["config.toml"]);
-    assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), "[broken");
+    assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), BROKEN);
     let mut config = Config::fresh_install();
     config.allow_sign_in("grok");
     block(storage::save_to(&config, &dir.config())).unwrap();

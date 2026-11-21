@@ -344,6 +344,15 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **The widget no longer freezes on a busy PC.** The window library could
+  make the widget wait, for seconds on a loaded machine, for an update that
+  was announced before it was handed over. Fixed with the upstream fix of
+  tao#1394 applied to the version the app uses.
+- **A table written twice in config.toml costs that table only.** Pasting a
+  `[tune.widget]` under the one already there, or a header left unclosed,
+  used to make the whole file unreadable: at the next start the app began
+  as on a new install. Now that table's lines are left out and named, and
+  the rest of the file is used.
 - **Codex names a window by its length.** The window that lasts five hours
   is the session and the one that lasts a week is the week, whichever field
   the answer sends it in: a plan with no five-hour limit no longer shows its

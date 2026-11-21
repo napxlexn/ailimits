@@ -82,10 +82,13 @@ The file stays as you saved it until the app saves a change of its own,
 which writes it anew without that line: fix the line first. (At start the
 file as it was is also kept beside it, as `config.toml.<stamp>.left-out`.)
 
-A mistake in the TOML's structure costs more: a table written twice, a
-broken table header (`[tune.widget` without its `]`), more than 8 lines
-that do not read. Then the edit is not applied, the app keeps running on
-the settings it had, and one notification says so:
+A table written twice (a recipe pasted under the one already there) or a
+broken table header (`[tune.widget` without its `]`) costs that table: its
+header and its lines are left out, named in the same notification, and the
+rest of the file is used, so its keys never land in another table. Put the
+keys under the table that is there instead. Only a file with more than 8
+such lines, or bytes that are not text, is not applied at all: the app keeps
+running on the settings it had, and one notification says so:
 
 > config.toml was saved, but it does not read: not a usable config at line
 > 12, column 7. AI Limits keeps running on the settings it had and does not

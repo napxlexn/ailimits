@@ -131,7 +131,10 @@ fn the_saver_never_writes_over_a_config_kept_at_startup() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
-    let text = "[window]\npos_x = 1234\n[broken";
+    let text = concat!(
+        "[window]\npos_x = 1234\n",
+        "a = =\nb = =\nc = =\nd = =\ne = =\nf = =\ng = =\nh = =\ni = =\n"
+    );
     std::fs::write(&path, text).unwrap();
 
     let rt = tokio::runtime::Runtime::new().unwrap();
