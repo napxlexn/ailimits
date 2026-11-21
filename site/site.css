@@ -135,6 +135,12 @@ main { position: relative; z-index: 3; }
    it is worn only while the line is split, and dropped with the split. */
 .manifesto .line { display: block; padding-bottom: 0.07em; margin-bottom: -0.07em; }
 .manifesto .line.masked { overflow: clip; }
+/* the typed line: its whole text, unseen, and the copy being typed share one
+   cell, so the line is as tall as the finished text from the first letter
+   (typeInto in site.js) */
+.manifesto .line.typed { display: grid; }
+.typed-hold, .typed-live { grid-area: 1 / 1; }
+.typed-hold { visibility: hidden; }
 .manifesto .dim { color: rgba(236, 240, 244, 0.30); }
 .manifesto .w { display: inline-block; white-space: pre; }
 .manifesto .ch { display: inline-block; will-change: transform; }
@@ -486,35 +492,43 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   padding: 6px 10px; border-radius: 6px; }
 .pg-desk .aw { position: absolute; left: 56%; top: 44%; transform: translate(-50%, -50%); cursor: grab; }
-/* With the rows and the model label in it the rail is taller than a screen,
-   and a desk stretched to its height left the widget below the fold. Beside
-   the rail, the desk is a screen tall and stays in view while the options
-   scroll past it, so every change is seen as it is made. Stacked (980 and
-   under) it leads the section as before and grows to the widget instead
-   (pgRender in site.js). */
+/* Beside the desk (981 and wider) the playground is one block clearly
+   shorter than the window: the options, at most 640 px and never taller than
+   the window under the bar, and the desk as tall as they are. A block as tall
+   as the screen showed whole at one exact scroll position, and the wheel
+   steps past it; this one stays whole over a few turns of the wheel, so it is
+   easy to land on (and its links land it in the middle, site.js). Where the
+   options do not fit (one column, a short window) the rail scrolls inside
+   itself, the widget in view beside it (pgRender lets the wheel through to
+   the rail only while it has something to scroll). Stacked (980 and under)
+   the desk leads the section and grows to the widget instead (pgRender). */
 @media (min-width: 981px) {
-  .pg { align-items: start; }
-  .pg-desk { position: sticky; top: 72px; height: calc(100vh - 104px); min-height: 540px; }
-  /* The rail no taller than the desk beside it: where the screen is too
-     short for every option, the rail scrolls inside itself and the widget
-     stays in view next to whatever is being changed (pgRender lets the wheel
-     through to it only while it has something to scroll). */
-  .pg-rail { max-height: max(calc(100vh - 104px), 540px); overflow-y: auto;
+  .pg-desk { min-height: 420px; }
+  .pg-rail { max-height: min(calc(100vh - 104px), 640px); overflow-y: auto;
     scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.22) transparent; }
 }
 /* The options in two halves: the widget's shape (detail to model label) and
    its look (palette to desktop). In one column the halves are not boxes at
    all and the groups stand in the rail's own grid. */
 .pg-col { display: contents; }
-/* A screen too short for the options in one column (a 1080p display, a
-   laptop), but wide enough: the halves side by side, so all of them and the
-   widget fit at once. A screen tall enough keeps the one column. Each half
-   is the one-column rail's width inside (256px holds Compact / Medium /
-   Expanded). */
-@media (min-width: 1200px) and (max-height: 1199px) {
+/* Wide enough (1200 and up, whatever the height): the halves side by side,
+   about 600 px tall, so every option and the widget are in view at once.
+   Each half is the one-column rail's width inside (256px holds Compact /
+   Medium / Expanded). */
+@media (min-width: 1200px) {
   .pg { grid-template-columns: 578px 1fr; }
   .pg-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 22px; align-items: start; }
   .pg-col { display: grid; gap: 20px; }
+}
+/* A short window (a laptop, 860 px of page and less): the same options with
+   less air between them, some 80 px shorter, so the block still leaves the
+   wheel room to land on it whole. */
+@media (min-width: 981px) and (max-height: 860px) {
+  .pg-rail { padding: 16px 22px; gap: 14px; }
+  .pg-col { gap: 14px; }
+  .pg-rail .pg-group .hud { margin-bottom: 6px; }
+  .pg-rail .pg-note { margin-top: 5px; }
+  .pg-rail .seg button { padding-top: 5px; padding-bottom: 5px; }
 }
 .pg-desk .aw.dragging { cursor: grabbing; }
 /* the reader's own desktop, so the acrylic has something real to sit on */

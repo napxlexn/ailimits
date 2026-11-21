@@ -1256,15 +1256,16 @@ function pgRender() {
     providers: PG_ROWS.filter((r) => pg.rows.has(r.id)).map((r) => Object.assign({}, r, { model: pgLabel(r.label) })),
   });
   /* The widget is drawn at 115% and kept whole on the glass: narrower where
-     the desk is narrow, and, beside the rail, shorter where the desk is a
-     screen tall; stacked, the desk grows to the widget instead. Both read the
-     viewport, so they are worked out again on every resize. */
+     the desk is narrow, and, beside the rail, shorter where the desk (as tall
+     as the rail) is short; stacked, the desk grows to the widget instead. Both
+     read the viewport, so they are worked out again on every resize. */
   const desk = $("[data-pg-desk]");
   let k = 1.15;
   if (desk) {
     const [w0, h0] = computeSize(st);
     desk.style.minHeight = "";
-    const beside = getComputedStyle(desk).position === "sticky";
+    /* beside the rail: the desk is one of two columns, as tall as the rail */
+    const beside = getComputedStyle(desk.parentElement).gridTemplateColumns.trim().split(/\s+/).length > 1;
     /* it stands centred on 56% across and 44% down, so the nearer edge
        allows it 88% of the desk either way */
     k = Math.max(0.5, Math.min(1.15, (desk.clientWidth * 0.88 - 8) / w0, beside ? (desk.clientHeight * 0.88 - 8) / h0 : Infinity));
@@ -1441,7 +1442,23 @@ function typeInto(el, delay) {
   /* claim the element: any run still in flight sees a newer token and stops */
   const run = (typingRun.get(el) || 0) + 1;
   typingRun.set(el, run);
+  /* A line of its own (the hero's) keeps the height of all of its text from
+     the start: the whole text, unseen, holds the room and the visible copy is
+     typed over it with the same line breaks (site.css). Typed into an empty
+     box, it grew by a line as the last words arrived and moved the whole page
+     under it, so a jump to a section made meanwhile landed short. A command in
+     the terminal is one line, with the caret after it, and types as it is. */
+  let out = el;
   el.textContent = "";
+  if (getComputedStyle(el).display !== "inline") {
+    const hold = document.createElement("span");
+    hold.className = "typed-hold";
+    hold.setAttribute("aria-hidden", "true");
+    hold.textContent = text;
+    out = document.createElement("span");
+    out.className = "typed-live";
+    el.append(hold, out);
+  }
   let i = 0;
   /* a long command should not take four seconds to appear: the cadence is set
      from the length so every line lands in about the same time, jittered so it
@@ -1449,7 +1466,7 @@ function typeInto(el, delay) {
   const base = Math.max(12, Math.min(50, 1400 / text.length));
   setTimeout(function step() {
     if (typingRun.get(el) !== run) return;
-    el.textContent = text.slice(0, ++i);
+    out.textContent = text.slice(0, ++i);
     if (i < text.length) setTimeout(step, base * (0.7 + Math.random() * 0.6));
   }, delay);
 }
@@ -1922,6 +1939,21 @@ if (typeof gsap !== "undefined" && !reduced) {
     delete document.documentElement.dataset.jump;
     dispatchEvent(new Event("scroll"));     /* let the scenes catch up at once */
   }
+  /* The playground is a thing to use, not to read about: beside the desk,
+     its links land on the options and the glass, centred in the window under
+     the bar (under it, top first, when they are taller than that room), not
+     on the heading above them. Elsewhere, and for every other section, the
+     section's own top. */
+  function landing(id) {
+    if (id !== "playground") return null;
+    const pg = $(".playground .pg"), bar = $(".top");
+    if (!pg || getComputedStyle(pg).gridTemplateColumns.trim().split(/\s+/).length < 2) return null;
+    const r = pg.getBoundingClientRect();
+    const under = bar ? bar.getBoundingClientRect().bottom : 0;
+    const room = innerHeight - under;
+    const y = scrollY + r.top - under - Math.max(12, (room - r.height) / 2);
+    return Math.max(0, Math.min(y, document.documentElement.scrollHeight - innerHeight));
+  }
   $$('.rail a, a[href^="#"]:not(.skip)').forEach((a) => {
     a.addEventListener("click", (e) => {
       const id = a.getAttribute("data-rail") || (a.getAttribute("href") || "").slice(1);
@@ -1929,8 +1961,10 @@ if (typeof gsap !== "undefined" && !reduced) {
       if (!target) return;
       e.preventDefault();
       document.documentElement.dataset.jump = "1";
-      if (lenis) lenis.scrollTo(target, { offset: -20, onComplete: endJump });
-      else target.scrollIntoView({ behavior: "smooth" });
+      const to = landing(id);
+      if (lenis) lenis.scrollTo(to == null ? target : to, to == null ? { offset: -20, onComplete: endJump } : { onComplete: endJump });
+      else if (to == null) target.scrollIntoView({ behavior: "smooth" });
+      else scrollTo({ top: to, behavior: "smooth" });
       /* three ways out, and the last one cannot be postponed */
       addEventListener("wheel", takeBack, { passive: true });
       addEventListener("touchstart", takeBack, { passive: true });
