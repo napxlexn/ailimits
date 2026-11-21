@@ -490,6 +490,12 @@ pub fn run() -> Result<()> {
 
     // 2. The event loop with user events.
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // No raw keyboard and mouse input: the app uses no device events, and
+    // tao registers every keyboard and mouse for them by default, which
+    // costs a wake-up per mouse move while a window of ours is in front and
+    // looks like a key logger to behaviour-watching antivirus. Keys typed
+    // into the picker come as window messages either way.
+    event_loop.set_device_event_filter(tao::event_loop::DeviceEventFilter::Always);
     let proxy = event_loop.create_proxy();
 
     // The scheduler → event loop channel: tokio mpsc → EventLoopProxy.

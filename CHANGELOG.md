@@ -284,6 +284,14 @@ Notable, user-visible changes. Dates are release dates.
   (or after the idle pause) that got no answer at all is tried again after
   20 seconds rather than 2 minutes.
 - **Building from source needs Rust 1.90** or newer.
+- **No raw keyboard and mouse input.** The app uses none, but the window
+  library registered every keyboard and mouse for it: a wake-up per mouse
+  move while a window of AI Limits was in front, and a pattern that
+  behaviour-watching antivirus links to key loggers. Typing into Rows and
+  models works as before.
+- **The exes and the installer describe themselves in full**: product name
+  AI Limits, publisher, copyright and version in their file properties
+  (Task Manager now names the process "AI Limits").
 
 ### Removed
 

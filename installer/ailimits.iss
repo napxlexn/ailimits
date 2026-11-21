@@ -12,6 +12,13 @@ AppId={{7A1B9C44-5E2D-4F8A-9C3B-AILIMITS0001}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=napxlexn
+AppCopyright=Copyright (C) 2026 napxlexn. GPL-3.0-or-later.
+; The installer's own version resource in full (scanners and Explorer read it).
+VersionInfoVersion={#AppVersion}
+VersionInfoProductName={#AppName}
+VersionInfoDescription={#AppName} Setup
+VersionInfoCompany=napxlexn
+VersionInfoCopyright=Copyright (C) 2026 napxlexn. GPL-3.0-or-later.
 AppPublisherURL=https://github.com/napxlexn/ailimits
 LicenseFile=..\LICENSE
 DefaultDirName={localappdata}\AiLimits
