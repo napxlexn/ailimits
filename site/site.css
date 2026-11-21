@@ -263,9 +263,12 @@ main { position: relative; z-index: 3; }
 /* 02 sources */
 .providers { padding: 15vh 30px; max-width: 1240px; margin: 0 auto; }
 .prov-head .lead { margin-top: 20px; }
+/* six cards: three across on a desk, two on a tablet, one on a phone, so no
+   row is ever left half-empty. min() keeps a card inside a phone narrower
+   than its minimum instead of widening the page. */
 .panes {
   margin-top: 54px; display: grid; gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   perspective: 1200px;
 }
 .pane { --op: 0.52; padding: 24px 22px;
@@ -345,8 +348,11 @@ html[data-jump] .tb-stage { visibility: hidden; }
    erased from the bar render when the scene flattens */
 .tb-tic { position: absolute; left: 220.5px; top: 1.75px; width: 44px; height: 44px; }
 /* the panel's metrics are measured off media/bar-panel.png: 102 wide, rows at
-   16.5 and 31.5, pill 64x6 */
-.tb-panel { position: absolute; left: 98px; top: 0; width: 102px; height: 48px; --o: 1; }
+   16.5 and 31.5, pill 64x6. Its place too, off a real bar at 100%
+   (design/taskbar_ref.png): 28px from the pill's end to the chevron's ink,
+   the app's TRAY_MARGIN and PAD_X plus the chevron button's own air. The
+   chevron's ink starts at 207.5 here, so the pill ends at 179.5. */
+.tb-panel { position: absolute; left: 77.5px; top: 0; width: 102px; height: 48px; --o: 1; }
 .tb-row { position: absolute; left: 0; top: 10.5px; width: 102px; height: 12px;
   display: flex; align-items: center; gap: 9px; }
 .tb-row.r1 { top: 25.5px; }
@@ -444,8 +450,12 @@ html[data-jump] .tb-stage { visibility: hidden; }
    keeps a long row inside the rail, where the tracks simply shrink together. */
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px;
   width: max-content; max-width: 100%; }
-/* the palette has nine of them, so it runs in rows of three rather than one line */
+/* the palette has eight of them, so it runs in rows of three rather than one line */
 .seg-wrap { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* the rows go two to a line: a provider beside its extra row, as the picker
+   lists them; Monochrome stands alone above the palettes, as in the menu */
+.seg-2 { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+.seg-1 { margin-bottom: 6px; }
 .seg button { min-width: 0; }
 .seg button {
   font: 500 0.8rem var(--font); color: var(--ink-2);
@@ -472,6 +482,16 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   padding: 6px 10px; border-radius: 6px; }
 .pg-desk .aw { position: absolute; left: 56%; top: 44%; transform: translate(-50%, -50%); cursor: grab; }
+/* With the rows and the model label in it the rail is taller than a screen,
+   and a desk stretched to its height left the widget below the fold. Beside
+   the rail, the desk is a screen tall and stays in view while the options
+   scroll past it, so every change is seen as it is made. Stacked (980 and
+   under) it leads the section as before and grows to the widget instead
+   (pgRender in site.js). */
+@media (min-width: 981px) {
+  .pg { align-items: start; }
+  .pg-desk { position: sticky; top: 72px; height: calc(100vh - 104px); min-height: 540px; }
+}
 .pg-desk .aw.dragging { cursor: grabbing; }
 /* the reader's own desktop, so the acrylic has something real to sit on */
 .pg-wall { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }

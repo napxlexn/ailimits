@@ -74,17 +74,57 @@ function rowTier(detail, rowW) {
   if (rowW >= NAME_W + PCT_W + RGAP) return "full";
   return rowW >= PCT_W ? "nameless" : "pctonly";
 }
+/* Text widths, for the places the app fits a name or a model label to its
+   room (renderer.rs fit_name / fit_label): measured in the replica's own font. */
+let measureCtx = null, measureFam = "";
+function textW(text, size) {
+  if (!measureCtx) {
+    measureCtx = document.createElement("canvas").getContext("2d");
+    measureFam = getComputedStyle(document.body).getPropertyValue("--font").trim() || "Segoe UI, sans-serif";
+  }
+  measureCtx.font = `${size}px ${measureFam}`;
+  return measureCtx.measureText(text).width;
+}
+/* a row with shorter forms of its name (an extra row: "Claude · Fable",
+   "Cl · Fable", "Fable") takes the longest that fits */
+const fitName = (p, size, room) => (p.names ? p.names.find((n) => textW(n, size) <= room) || p.names[p.names.length - 1] : p.name);
+/* rows.rs ModelLabel::steps: the effort steps out first, then the version,
+   then the model; a word is never cut */
+function labelSteps(l) {
+  const head = l.version || l.model, out = [];
+  if (l.effort) out.push(head ? `${head} · ${l.effort}` : l.effort);
+  for (const part of [l.version, l.model]) if (part && out[out.length - 1] !== part) out.push(part);
+  return out;
+}
+const fitLabel = (l, size, room) => labelSteps(l).find((t) => textW(t, size) <= room);
+/* layout.rs: the line a row (14) or a column (13) grows by for its model,
+   the air beside Medium's reset, and the narrowest name slot at 10.5 */
+const MODEL_LINE_H = 14, MODEL_COL_LINE_H = 13, MODEL_GAP = 8, META_SIZE = 10.5;
+const MEDIUM_NAME_SLOT = 56.5, LONGEST_RESET = "23h 59min";
+/* layout.rs Shape::of: which rows carry a line of their own for the model.
+   Compact rows leave it to the tooltip; Expanded and every columns layout give
+   it a line; Medium shares the meta line unless the reset at its widest
+   leaves less than the narrowest name slot. */
+function modelLines(st) {
+  const rowW = ROWS_W[st.detail] * WFRAC[st.width] - PAD * 2;
+  return st.providers.map((p) => {
+    if (!p.model) return false;
+    if (st.layout !== "rows") return true;
+    if (st.detail !== "medium") return st.detail === "expanded";
+    return (p.meta ? rowW - textW(LONGEST_RESET, META_SIZE) - MODEL_GAP : rowW) < MEDIUM_NAME_SLOT;
+  });
+}
 function computeSize(st) {
-  const n = st.providers.length;
+  const n = st.providers.length, lines = modelLines(st), withLine = lines.filter(Boolean).length;
   if (st.layout === "rows") {
     const w = ROWS_W[st.detail] * WFRAC[st.width];
     const t = rowTier(st.detail, w - PAD * 2);
     const hint = st.detail === "compact" && t === "full" ? HINT : 0;
-    return [w, TOP + n * ROW_H[st.detail] + hint + 4];
+    return [w, TOP + n * ROW_H[st.detail] + withLine * MODEL_LINE_H + hint + 4];
   }
   const cw = COL_W[st.detail], bh = BODY_H[st.detail];
-  if (st.layout === "cols-column") return [COL_PAD * 2 + cw, TOP + n * bh + (n - 1) * GAP_STACK + 6];
-  return [COL_PAD * 2 + n * cw + (n - 1) * GAP_ROW, TOP + bh + 6];
+  if (st.layout === "cols-column") return [COL_PAD * 2 + cw, TOP + n * bh + (n - 1) * GAP_STACK + withLine * MODEL_COL_LINE_H + 6];
+  return [COL_PAD * 2 + n * cw + (n - 1) * GAP_ROW, TOP + bh + (withLine ? MODEL_COL_LINE_H : 0) + 6];
 }
 function span(x, y, size, color, text, extra) {
   return `<span class="aw-abs" style="left:${x.toFixed(1)}px;top:${y.toFixed(1)}px;font-size:${size}px;line-height:${Math.round(size * 1.2)}px;color:${color};${extra || ""}">${text}</span>`;
@@ -102,14 +142,17 @@ function renderContent(st) {
     return { barC: rgba(grey ? th.meta : lvl.bar), txtC: rgbaT(grey ? th.meta : lvl.text),
              pctText: (p.estimated ? "≈" : "") + Math.round(p.pct) + "%" };
   };
+  const lines = modelLines(st);
   if (st.layout === "rows") {
     const rowW = W - PAD * 2, rh = ROW_H[st.detail], t = rowTier(st.detail, rowW);
+    let next = TOP;
     st.providers.forEach((p, i) => {
-      const y = TOP + i * rh;
+      const y = next;
+      next += rh + (lines[i] ? MODEL_LINE_H : 0);
       const { barC, txtC, pctText } = rowsOf(p);
       if (st.detail === "compact") {
         const ty = y + (rh - 13) / 2;
-        if (t === "full") h += span(PAD, ty, 11, rgbaT(th.name), p.name, `width:${NAME_W}px;overflow:hidden`);
+        if (t === "full") h += span(PAD, ty, 11, rgbaT(th.name), fitName(p, 11, NAME_W), `width:${NAME_W}px;overflow:hidden`);
         const bx = t === "full" ? PAD + NAME_W + RGAP : PAD;
         const bw = t === "full" ? rowW - NAME_W - PCT_W - RGAP * 2 : rowW - PCT_W - RGAP;
         if (t !== "pctonly") {
@@ -122,33 +165,48 @@ function renderContent(st) {
       } else {
         const ex = st.detail === "expanded";
         const nameS = ex ? 13 : 12, pctS = ex ? 15 : 13, barH = ex ? 5 : 4, barY = y + (ex ? 26 : 20);
-        h += span(PAD, y + 3, nameS, rgbaT(th.name), p.name);
+        h += span(PAD, y + 3, nameS, rgbaT(th.name), fitName(p, nameS, rowW - textW(pctText, pctS) - 6));
         h += span(PAD, y + 2, pctS, txtC, pctText, `width:${rowW}px;text-align:right`);
         h += bar(PAD, barY, rowW, barH, rgba(th.track));
         h += bar(PAD, barY, Math.max(1, rowW * Math.min(1, p.pct / 100)), barH, barC);
         const metaY = barY + barH + 4, metaS = ex ? 11 : 10.5;
         if (p.meta) h += span(PAD + rowW / 2, metaY, metaS, rgbaT(th.meta), p.meta, `width:${rowW / 2}px;text-align:right`);
         if (ex && p.weekly != null) h += span(PAD, metaY + 0.5, 11, rgbaT(th.meta), `Weekly: ${p.weekly}%`);
+        /* the model: a line of its own when the row has one, else (Medium)
+           what the reset leaves of the meta line (renderer.rs vertical_medium) */
+        if (p.model && (lines[i] || !ex)) {
+          const size = lines[i] && ex ? 11 : META_SIZE;
+          const room = lines[i] || !p.meta ? rowW : rowW - textW(p.meta, META_SIZE) - MODEL_GAP;
+          const text = fitLabel(p.model, size, room);
+          if (text) h += span(PAD, lines[i] ? metaY + MODEL_LINE_H : metaY, size, rgbaT(th.meta), text);
+        }
       }
     });
     if (st.detail === "compact" && t === "full" && st.providers[0]) {
       const p = st.providers[0];
-      h += span(PAD, TOP + st.providers.length * rh + 1, 10.5, rgbaT(th.meta), `${p.name}: ${Math.round(p.pct)}% / ${p.meta || ""}`);
+      h += span(PAD, next + 1, 10.5, rgbaT(th.meta), `${fitName(p, 10.5, Infinity)}: ${Math.round(p.pct)}% / ${p.meta || ""}`);
     }
   } else {
     const [bw, topG, botG, pctS, nameS, resetS] = COL_SPEC[st.detail];
     const cw = COL_W[st.detail], bh = BODY_H[st.detail];
+    let above = 0;
     st.providers.forEach((p, i) => {
       const x = st.layout === "cols-column" ? COL_PAD : COL_PAD + i * (cw + GAP_ROW);
-      const y = st.layout === "cols-column" ? TOP + i * (bh + GAP_STACK) : TOP;
+      const y = st.layout === "cols-column" ? TOP + i * (bh + GAP_STACK) + above : TOP;
+      if (st.layout === "cols-column" && lines[i]) above += MODEL_COL_LINE_H;
       const { barC, txtC, pctText } = rowsOf(p);
       if (pctS) h += span(x, y + 1, pctS, txtC, pctText, `width:${cw}px;text-align:center`);
       const bx = x + (cw - bw) / 2, bTop = y + topG, bH = bh - topG - botG;
       h += bar(bx, bTop, bw, bH, rgba(th.track));
       const fh = Math.max(1, Math.round(bH * Math.min(1, p.pct / 100)));
       h += bar(bx, bTop + bH - fh, bw, fh, barC, fh >= bH - 0.5 ? 2 : 0);
-      h += span(x, y + bh - (resetS ? 23 : 12), nameS, rgbaT(th.name), p.name, `width:${cw}px;text-align:center`);
+      h += span(x, y + bh - (resetS ? 23 : 12), nameS, rgbaT(th.name), fitName(p, nameS, Math.min(cw, textW("Antigravity", nameS))), `width:${cw}px;text-align:center`);
       if (resetS && p.meta) h += span(x, y + bh - 10, resetS, rgbaT(th.meta), p.meta, `width:${cw}px;text-align:center`);
+      /* the model under the column, half a point smaller than the name */
+      if (lines[i]) {
+        const text = fitLabel(p.model, nameS - 0.5, cw);
+        if (text) h += span(x, y + bh + (resetS ? 3 : 0), nameS - 0.5, rgbaT(th.meta), text, `width:${cw}px;text-align:center`);
+      }
     });
   }
   return `<div class="aw-content">${h}</div>`;
@@ -1082,10 +1140,10 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
       }
     };
 
-    /* The cards do not always stand in one row: the grid gives four columns on
-       a desk, two on a tablet and one on a phone. The reading follows whatever
-       row a card is actually in — four across is one pass over the four, a
-       column is four passes, each starting when its own card arrives. Grouped
+    /* The cards do not always stand in one row: the grid gives three columns
+       on a desk, two on a tablet and one on a phone. The reading follows
+       whatever row a card is actually in — three across is one pass over the
+       three, a column is six passes, each starting when its own card arrives. Grouped
        by offsetTop, and only when the layout can have changed, since reading
        it back mid-frame would cost a layout every time. */
     let bands = null;
@@ -1113,18 +1171,26 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
          is complete however you got here. Ending it any earlier left the last
          cards resolving off in the lower corner. */
       const secTop = sec.getBoundingClientRect().top;
-      const bs = groups(), stacked = bs.length > 1;
-      bs.forEach((ps) => {
+      /* stacked: one or two cards across (a phone, a tablet); three across is
+         a desk, even when the six cards take two rows there */
+      const bs = groups(), stacked = bs.length > 1 && bs[0].length < 3;
+      let top0 = 0;
+      bs.forEach((ps, k) => {
         const rects = ps.map((pane) => pane.getBoundingClientRect());
         const br = { left: Math.min(...rects.map((r) => r.left)),
                      top: Math.min(...rects.map((r) => r.top)) };
         br.width = Math.max(...rects.map((r) => r.right)) - br.left;
+        if (!k) top0 = br.top;
         /* One row reads across the whole section as it settles. Stacked, a card
            is only a screen-fifth tall and would otherwise be finished while it
            was still at the bottom edge, so its reading ends higher up — by the
-           time the card has risen into view it has been read. */
+           time the card has risen into view it has been read. On a desk the
+           second row ends where it stands once the first has settled, so both
+           are read when you arrive from the rail; the cap keeps it some travel
+           on a short screen. */
         const endTop = stacked ? innerHeight * 0.22
-                               : Math.min(innerHeight * 0.55, br.top - secTop);
+                               : Math.min(innerHeight * 0.8,
+                                   Math.min(innerHeight * 0.55, top0 - secTop) + (br.top - top0));
         /* stacked, the reading starts a little under the fold, so a card is
            already being read by the time it comes up rather than waiting to be
            in view before anything happens */
@@ -1146,41 +1212,123 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
   }
 }
 
-/* ════ playground ════ */
+/* ════ playground ════
+   The controls are the app's own: the context menu's items with its steps
+   (context_menu.rs: Vertical/Horizontal bars, Width, Arrangement, Monochrome
+   beside eight palettes, opacity 15-85, brightness 40-100, saturation 0-100)
+   and the Widget column of Rows and models, with the model label's three
+   parts. The rows, the extra rows and the labels are the ones the app's own
+   tests draw (renderer.rs label_for, rows.rs SUB_ROWS). */
 const playEl = $("#aw-play");
-const pgState = baseState({
-  providers: [
-    { name: "Claude", pct: 93, meta: "2h 22min", weekly: 19 },
-    { name: "Codex", pct: 81, meta: "57min" },
-    { name: "Copilot", pct: 61, meta: "14h 40min" },
-    { name: "Antigravity", pct: 40, meta: "33min" },
-  ],
-});
+const PG_ROWS = [
+  { id: "claude", name: "Claude", pct: 93, meta: "2h 22min", weekly: 19, label: ["Opus", "Opus 5.5", "xhigh"] },
+  { id: "claude.fable", names: ["Claude · Fable", "Cl · Fable", "Fable"], pct: 34, meta: "4d 6h" },
+  { id: "codex", name: "Codex", pct: 81, meta: "57min", label: ["GPT", "GPT-6.1 Sol", "high"] },
+  { id: "copilot", name: "Copilot", pct: 61, meta: "14h 40min", label: ["Auto", null, "medium"] },
+  { id: "antigravity", name: "Antigravity", pct: 40, meta: "33min", label: ["Claude Sonnet", "Claude Sonnet 4.6", null] },
+  { id: "antigravity.cg", names: ["Antigravity · Claude and GPT", "Antigravity · Claude+GPT", "AG · Claude+GPT", "Claude+GPT", "C+GPT"], pct: 22, meta: "5d 2h" },
+  { id: "grok", name: "Grok", pct: 27, meta: "3d 14h", label: ["Grok", "Grok 4.7", "high"] },
+  { id: "grok.build", names: ["Grok · Build", "Build"], pct: 12, meta: "3d 14h" },
+  { id: "cursor", name: "Cursor", pct: 46, meta: "6d 3h", label: ["Grok", "Grok 4.7", "high"] },
+  { id: "cursor.bot", names: ["Cursor · Grok Bot", "Grok Bot", "Bot"], pct: 46, meta: "6d 3h" },
+];
+const pg = {
+  detail: "medium", bars: "horizontal", width: "full", flow: "row",
+  palette: "default", monochrome: true, opacity: 50, brightness: 100, saturation: 50,
+  rows: new Set(["claude", "codex", "copilot", "antigravity", "grok", "cursor"]),
+  model: new Set(),
+};
+/* rows.rs model_label: the version needs the model, the effort can go alone */
+function pgLabel(l) {
+  if (!l) return null;
+  const on = (k) => pg.model.has(k);
+  const label = { model: on("model") ? l[0] : null, version: on("model") && on("version") ? l[1] : null, effort: on("effort") ? l[2] : null };
+  return label.model || label.effort ? label : null;
+}
 function pgRender() {
-  renderWidget(playEl, pgState, 1.15);
-  const widthGroup = $('[data-only="rows"]');
-  if (widthGroup) {
-    if (pgState.layout === "rows") widthGroup.removeAttribute("data-hidden");
-    else widthGroup.setAttribute("data-hidden", "");
+  const st = baseState({
+    detail: pg.detail, width: pg.width,
+    layout: pg.bars === "horizontal" ? "rows" : pg.flow === "row" ? "cols-row" : "cols-column",
+    palette: pg.monochrome ? "mono" : pg.palette,
+    opacity: pg.opacity, brightness: pg.brightness, saturation: pg.saturation,
+    providers: PG_ROWS.filter((r) => pg.rows.has(r.id)).map((r) => Object.assign({}, r, { model: pgLabel(r.label) })),
+  });
+  /* The widget is drawn at 115% and kept whole on the glass: narrower where
+     the desk is narrow, and, beside the rail, shorter where the desk is a
+     screen tall; stacked, the desk grows to the widget instead. Both read the
+     viewport, so they are worked out again on every resize. */
+  const desk = $("[data-pg-desk]");
+  let k = 1.15;
+  if (desk) {
+    const [w0, h0] = computeSize(st);
+    desk.style.minHeight = "";
+    const beside = getComputedStyle(desk).position === "sticky";
+    /* it stands centred on 56% across and 44% down, so the nearer edge
+       allows it 88% of the desk either way */
+    k = Math.max(0.5, Math.min(1.15, (desk.clientWidth * 0.88 - 8) / w0, beside ? (desk.clientHeight * 0.88 - 8) / h0 : Infinity));
+    /* stacked, tall enough that the widget's top clears the drag hint */
+    const need = Math.ceil((56 + h0 * k / 2) / 0.44);
+    if (!beside && need > desk.clientHeight) desk.style.minHeight = need + "px";
   }
+  renderWidget(playEl, st, k);
+  /* Width means something only with horizontal bars, Arrangement only with
+     vertical ones: the menu greys the other, and so does this */
+  $$(".pg [data-only]").forEach((g) => g.toggleAttribute("data-hidden", g.getAttribute("data-only") !== pg.bars));
 }
 pgRender();
-$$(".pg .seg").forEach((seg) => {
+if (document.fonts) document.fonts.ready.then(pgRender);
+{
+  let queued = false;
+  addEventListener("resize", () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => { queued = false; pgRender(); });
+  }, { passive: true });
+}
+const press = (seg, test) => $$("button", seg).forEach((b) => b.setAttribute("aria-pressed", test(b) ? "true" : "false"));
+const paletteSeg = $('.pg [data-opt="palette"]'), monoSeg = $('.pg [data-toggle="monochrome"]');
+$$(".pg .seg[data-opt]").forEach((seg) => {
   const opt = seg.getAttribute("data-opt");
   seg.addEventListener("click", (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
-    $$("button", seg).forEach((b) => b.setAttribute("aria-pressed", b === btn ? "true" : "false"));
-    pgState[opt] = btn.getAttribute("data-v");
+    press(seg, (b) => b === btn);
+    pg[opt] = btn.getAttribute("data-v");
+    /* a palette picked in the menu switches Monochrome off */
+    if (opt === "palette" && monoSeg) { pg.monochrome = false; press(monoSeg, () => false); }
     pgRender();
   });
 });
-$$("[data-opt-range]").forEach((r) => {
+if (monoSeg) monoSeg.addEventListener("click", () => {
+  pg.monochrome = !pg.monochrome;
+  press(monoSeg, () => pg.monochrome);
+  /* Monochrome keeps the palette; unticked, that palette comes back */
+  if (paletteSeg) press(paletteSeg, (b) => !pg.monochrome && b.getAttribute("data-v") === pg.palette);
+  pgRender();
+});
+$$(".pg .seg[data-multi]").forEach((seg) => {
+  const set = pg[seg.getAttribute("data-multi")];
+  seg.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const v = btn.getAttribute("data-v");
+    if (set.has(v)) {
+      /* the widget keeps at least one row to show */
+      if (set === pg.rows && set.size === 1) return;
+      set.delete(v);
+    } else set.add(v);
+    btn.setAttribute("aria-pressed", set.has(v) ? "true" : "false");
+    pgRender();
+  });
+});
+$$("[data-opt-steps]").forEach((r) => {
+  const steps = r.getAttribute("data-steps").split(" ").map(Number);
   r.addEventListener("input", () => {
-    const k = r.getAttribute("data-opt-range");
-    pgState[k] = +r.value;
+    const k = r.getAttribute("data-opt-steps"), v = steps[+r.value];
+    pg[k] = v;
+    r.setAttribute("aria-valuetext", v + "%");
     const out = $(`[data-out="${k}"]`);
-    if (out) out.textContent = r.value;
+    if (out) out.textContent = v;
     pgRender();
   });
 });

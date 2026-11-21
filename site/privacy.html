@@ -41,69 +41,125 @@
 <div class="sheet" aria-hidden="true"></div>
 
 <main class="doc">
-  <p class="hud">PRIVACY · 2026-09-11</p>
+  <p class="hud">PRIVACY · 2026-11-21</p>
   <h1>What the widget reads, and what it never does.</h1>
 
   <p>AI Limits is a desktop widget that shows how much of your AI subscription
   windows you have used. It runs entirely on your computer. There is no account
   to create, no server of ours in the middle, and nothing it learns about you
   ever leaves your machine except the requests described below, which go to the
-  providers themselves.</p>
+  providers themselves. This page describes version 0.7.1.</p>
 
-  <h2>What it reads</h2>
-  <p>To show a limit, the widget needs to ask the provider the same way its own
-  command-line tool does. So it reads the login those tools already keep on your
-  machine, <strong>read-only</strong>:</p>
+  <h2>It asks before it reads</h2>
+  <p>Nothing that belongs to another program is read until you allow it. Each
+  question names the file it would read and the only server its token would
+  be sent to. On a first start the widget shows a welcome with the tools found
+  on this PC, each with a tick; it finds them only by whether their folder
+  exists, without opening anything inside. <em>Cancel</em> reads nothing. If
+  you update from 0.7.0, the providers you already had keep working, and one
+  window lists every file read and every server contacted. To stop reading a
+  tool, untick its rows in <em>Rows and models</em>; unticking Model, Version
+  and Effort takes back the reads for model labels.</p>
+
+  <h2>What it reads, once allowed</h2>
+  <p>To show a limit, the widget asks the provider the same way its own
+  command-line tool does. So it reads the sign-in those tools already keep on
+  your machine, <strong>read-only</strong>, unless you choose another source
+  under the provider's <em>Sign-in</em> in <em>Rows and models</em>: a usage
+  token, or a key or token you paste. Only the source chosen is used.</p>
   <ul>
-    <li><strong>Claude</strong> — the Claude Code login in <code>%USERPROFILE%\.claude\.credentials.json</code>, and, if present, Claude Code's status-line snapshot file.</li>
-    <li><strong>OpenAI Codex</strong> — the Codex CLI login in <code>%USERPROFILE%\.codex\auth.json</code>.</li>
-    <li><strong>GitHub Copilot</strong> — the token the gh CLI prints for <code>gh auth token</code>.</li>
-    <li><strong>Google Antigravity</strong> — the Antigravity session in Windows Credential Manager, or the legacy Gemini CLI login in <code>~/.gemini/oauth_creds.json</code>.</li>
+    <li><strong>Claude</strong> — the Claude Code sign-in in <code>%USERPROFILE%\.claude\.credentials.json</code>.</li>
+    <li><strong>OpenAI Codex</strong> — the Codex CLI sign-in in <code>%USERPROFILE%\.codex\auth.json</code> (in <code>CODEX_HOME</code> when that is set).</li>
+    <li><strong>GitHub Copilot</strong> — a token you paste, or the token the GitHub CLI keeps for github.com (<code>gh auth token --hostname github.com</code>, asked at most every 15 minutes, and once more at once when GitHub refuses a token gh gave earlier).</li>
+    <li><strong>Google Antigravity</strong> — the Antigravity CLI's sign-in in Windows Credential Manager (<code>gemini:antigravity</code>). It is renewed only when you run the CLI, <code>agy</code>; opening the Antigravity editor does not renew it, and the editor's own sign-in is never read. Until you run <code>agy</code> again, the row reads "token expired". Google has suspended some accounts for using Antigravity's sign-in outside Antigravity; AI Limits only reads the quota, once per update, but the risk is yours, and its question says so before anything is read. The older Gemini CLI sign-in, <code>%USERPROFILE%\.gemini\oauth_creds.json</code>, is no longer read.</li>
+    <li><strong>xAI Grok</strong> — the Grok CLI sign-in in <code>%USERPROFILE%\.grok\auth.json</code> (in <code>GROK_HOME</code> when that is set).</li>
+    <li><strong>Cursor</strong> — no file of Cursor's. You sign in once from <em>Rows and models</em>, Cursor's <em>Sign-in</em>, <em>Sign in to Cursor...</em>, on Cursor's own sign-in page at cursor.com, in your browser. Cursor has no sign-in for other apps, so the widget signs in as the Cursor editor's client, and keeps that session (about 60 days) in Windows Credential Manager. It tries to renew that session in its last week, at most once a day; when the session ends, you sign in again. The editor's own sign-in is never read or touched.</li>
   </ul>
-  <p>The widget never writes to those files, never refreshes or rotates a token,
-  and never signs you in or out of anything. If a login is missing or expired,
-  the row for that provider goes grey; nothing else happens.</p>
+  <p>Model labels are optional and allowed separately. With them, the widget
+  reads each running tool's own settings file (for example
+  <code>%USERPROFILE%\.claude\settings.json</code>, <code>config.toml</code> of
+  Codex or Grok, <code>settings.json</code> of the Copilot or Antigravity CLI,
+  and from Cursor's <code>state.vscdb</code> only the model chosen for its
+  Agent), and, if you choose "Last used", the end of the newest Claude Code or
+  Codex CLI session file (at most its last 1 MB). Only the model's name and its
+  effort are kept, in memory, and nothing from these files is sent anywhere.
+  Nothing is ever written to or created in another program's folder, Cursor's
+  included.</p>
+  <p>The widget never writes to those files, never refreshes or rotates a
+  tool's token, and never signs you out of anything. The one session it
+  renews is its own Cursor session. If a sign-in is missing or expired, that
+  provider's row goes grey or hides; nothing else happens.</p>
 
   <h2>Where it sends</h2>
-  <p>Each token is sent only to the endpoint of the provider that issued it, over
-  HTTPS, to fetch your usage: <code>api.anthropic.com</code>,
-  <code>chatgpt.com</code>, <code>api.github.com</code> and
-  <code>daily-cloudcode-pa.googleapis.com</code>. One request per enabled provider
-  per update cycle, no more often than once a minute, and none at all while the
-  computer is idle or locked. A provider you disable in the menu is never
-  contacted.</p>
-  <p>The installer build also asks <code>api.github.com</code> whether a newer
-  release exists, and downloads it only after checking the digest GitHub
-  publishes for it. The Microsoft Store build does not do this; the Store
-  updates it. That request carries the standard user agent
-  <code>ailimits/&lt;version&gt;</code> and nothing about you.</p>
-  <p>There is no telemetry, no analytics, no crash reporting and no advertising.
-  Nothing is sent to us, because there is no us to send it to: the project has no
+  <p>Each token is sent only to the provider that issued it, over HTTPS, to
+  fetch your usage: <code>api.anthropic.com</code> (Claude),
+  <code>chatgpt.com</code> (Codex), <code>api.github.com</code> (Copilot),
+  <code>cloudcode-pa.googleapis.com</code> and
+  <code>daily-cloudcode-pa.googleapis.com</code> (Antigravity),
+  <code>cli-chat-proxy.grok.com</code> (Grok) and <code>api2.cursor.sh</code>
+  (Cursor). The Cursor sign-in page, <code>cursor.com</code>, opens in your
+  browser; the widget sends nothing there itself. A request that carries a
+  token never follows a redirect, so the token cannot be passed on to another
   server.</p>
+  <p>One usage request per running provider per update cycle, no more often
+  than once a minute, and none at all while the computer is idle or locked.
+  The few extra requests, exactly: Cursor's plan at most once an hour, its
+  Grok Bot share only while you show that row, and its session renewal only
+  in the session's last week, at most once a day; Antigravity's project once a
+  session, and its second quota endpoint only when the first gave nothing
+  usable. A token a server refused is not sent again for a while. A provider
+  you switched off, or did not allow, is never contacted. A usage token you
+  paste is checked with one request to the same server it is meant for.</p>
+  <p>Requests use the proxy set in Windows, or the one an
+  <code>HTTPS_PROXY</code> or <code>HTTP_PROXY</code> variable names; the
+  <code>ailimits-auth</code> command-line tool follows only the variables.</p>
+  <p>A copy installed with the AI Limits installer also asks
+  <code>api.github.com</code> once a day whether a newer release exists, and
+  downloads it from the release on GitHub only to install it while you are
+  away. It checks the digest GitHub publishes for the installer and the
+  release's own signature first, and installs nothing that fails either
+  check. That request carries the standard user agent
+  <code>ailimits/&lt;version&gt;</code> and nothing about you. The Microsoft
+  Store, Scoop and portable copies never do this: their own channel updates
+  them, and they do not contact GitHub at all.</p>
+  <p>There is no telemetry, no analytics, no crash reporting and no
+  advertising. Nothing is sent to us, because there is no us to send it to: the
+  project has no server.</p>
 
   <h2>What it stores</h2>
+  <p>Everything below stays on your computer.</p>
   <ul>
-    <li><strong>Settings</strong> — in <code>%APPDATA%\AiLimits\config.toml</code>: layout, palette, which providers are on. It holds labels, never secrets.</li>
-    <li><strong>Optional keys and tokens you add yourself</strong> — an API key or a pasted usage token goes into Windows Credential Manager under the service <code>ailimits</code>, never into a file.</li>
+    <li><strong>Settings</strong> — in <code>%APPDATA%\AiLimits\config.toml</code>: layout, palette, the rows shown, which providers are on and what you allowed it to read. It holds labels, never secrets.</li>
+    <li><strong>Keys, tokens and the Cursor session</strong> — a key or usage token you add, and the widget's own Cursor session, go into Windows Credential Manager under the service <code>ailimits</code>, never into a file.</li>
     <li><strong>The last readings</strong> — in <code>provider-cache.json</code> beside the settings, so the widget can show them, marked with their age, while a provider is unreachable.</li>
-    <li><strong>A log</strong> — only if you set <code>AILIMITS_LOG</code> yourself. Tokens are never written to it.</li>
+    <li><strong>The notification icon</strong> — <code>icon.png</code>, so Windows can show the app's icon on its notifications (installer and portable copies).</li>
+    <li><strong>Alerts given</strong> — in <code>alerts.json</code>, so a restart does not repeat a usage alert.</li>
+    <li><strong>The last update attempt</strong> — in <code>update-attempt.json</code>, installer copies only, so an update that failed is not retried by itself.</li>
+    <li><strong>A crash note</strong> — if the widget ever crashes, one line in <code>crash.log</code>: the time, the version and the place in the code, never the message's text. A start that failed may name a local file path there. It is not sent anywhere.</li>
+    <li><strong>A log</strong> — only if you set <code>AILIMITS_LOG</code> yourself. Tokens and clipboard contents are never written to it.</li>
   </ul>
 
   <h2>Removing it</h2>
-  <p>The installer's uninstaller removes the settings, the cache and every
-  Credential Manager entry the widget created. The Microsoft Store cannot run
-  a step of ours at uninstall, so after removing the Store version any keys or
-  tokens you added by hand stay in Credential Manager under <code>ailimits</code>
-  until you delete them there. The CLI logins the widget only read are not ours
-  and are never touched either way.</p>
+  <p>The installer's uninstaller removes the app, the folder
+  <code>%APPDATA%\AiLimits</code> with everything listed above, every
+  Credential Manager entry the widget created (keys, usage tokens and its
+  Cursor session), its autostart entry and its notification registration. It
+  works offline.</p>
+  <p>The Microsoft Store cannot run a step of ours at uninstall. Before
+  removing the Store version, use each provider's <em>Sign-in</em> in
+  <em>Rows and models</em> to sign out of Cursor and remove a key or token
+  you pasted, or delete the
+  <code>ailimits</code> entries under Windows Credentials in Credential
+  Manager afterwards. The CLI sign-ins the widget only read are not ours and
+  are never touched either way.</p>
 
   <h2>Who this is from</h2>
   <p>AI Limits is free software under the GPL-3.0, written and maintained by one
   person. The code that does everything described here is public at
   <a href="https://github.com/napxlexn/ailimits">github.com/napxlexn/ailimits</a>;
   the file <a href="https://github.com/napxlexn/ailimits/blob/master/docs/en/PROVIDERS.md">docs/en/PROVIDERS.md</a>
-  lists each provider's exact source and endpoint. Questions go to the
-  <a href="https://github.com/napxlexn/ailimits/issues">issue tracker</a>.
+  lists each provider's exact source, endpoint and request budget. Questions go
+  to the <a href="https://github.com/napxlexn/ailimits/issues">issue tracker</a>.
   If this page ever changes, the date at the top changes with it.</p>
 
   <a class="back" href="./">Back to the site</a>

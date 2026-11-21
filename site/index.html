@@ -4,22 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="google-site-verification" content="wndZkr4zX21cQuq8hR7TiBEZFOgL741CfEteTvg5ZOU">
-<title>AI Limits – Claude, Codex &amp; Copilot usage limits on your Windows desktop</title>
-<meta name="description" content="A native Windows 11 widget that shows how much of your Claude, Codex, Copilot and Antigravity limits is used and when each window resets. No API keys, open source.">
+<title>AI Limits – Claude, Codex, Copilot, Grok &amp; Cursor usage limits on Windows</title>
+<meta name="description" content="A native Windows 11 widget that shows how much of your Claude, Codex, Copilot, Antigravity, Grok and Cursor limits is used and when each window resets. Asks before it reads. No API keys, open source.">
 <link rel="canonical" href="https://napxlexn.github.io/ailimits/">
 <link rel="icon" type="image/png" href="./media/favicon.png">
 <link rel="apple-touch-icon" href="./media/apple-touch-icon.png">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AI Limits">
 <meta property="og:title" content="AI Limits – your AI usage limits, live on the Windows desktop">
-<meta property="og:description" content="Claude, Codex, Copilot and Antigravity limits in one acrylic widget. Reads your existing CLI logins, no API keys. Free and open source.">
+<meta property="og:description" content="Claude, Codex, Copilot, Antigravity, Grok and Cursor limits in one acrylic widget. Reads your existing CLI logins once you allow it, no API keys. Free and open source.">
 <meta property="og:url" content="https://napxlexn.github.io/ailimits/">
 <meta property="og:image" content="https://napxlexn.github.io/ailimits/media/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="AI Limits – your AI usage limits, live on the Windows desktop">
-<meta name="twitter:description" content="Claude, Codex, Copilot and Antigravity limits in one acrylic widget. No API keys. Free and open source.">
+<meta name="twitter:description" content="Claude, Codex, Copilot, Antigravity, Grok and Cursor limits in one acrylic widget. No API keys. Free and open source.">
 <meta name="twitter:image" content="https://napxlexn.github.io/ailimits/media/og.png">
 <meta name="theme-color" content="#0a0c0e">
 <link rel="preload" as="image" href="./media/wall.jpg" fetchpriority="high">
@@ -47,7 +47,7 @@ document.documentElement.classList.add("js");
   "operatingSystem": "Windows 11",
   "applicationCategory": "UtilitiesApplication",
   "softwareVersion": "0.7.0",
-  "description": "A native Windows 11 desktop widget that shows live usage limits for Claude, OpenAI Codex, GitHub Copilot and Google Antigravity: session and weekly windows, reset countdowns, and a choice of tray-icon or taskbar-panel indicator.",
+  "description": "A native Windows 11 desktop widget that shows live usage limits for Claude, OpenAI Codex, GitHub Copilot, Google Antigravity, xAI Grok and Cursor: session and weekly windows, reset countdowns, optional model labels, and a choice of tray-icon or taskbar-panel indicator. Nothing of another tool is read before you allow it.",
   "url": "https://napxlexn.github.io/ailimits/",
   "downloadUrl": "https://github.com/napxlexn/ailimits/releases/latest",
   "installUrl": "https://apps.microsoft.com/detail/9P2B0J1VWPWH",
@@ -67,17 +67,25 @@ document.documentElement.classList.add("js");
   "@type": "FAQPage",
   "mainEntity": [
     { "@type": "Question", "name": "How do I check my Claude Code session and weekly limit?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Install AI Limits and log in to Claude Code as usual. The widget reads the Claude Code login on your machine and shows the 5-hour session, the weekly window and the weekly Opus and Sonnet windows with live percentages and reset countdowns. Nothing to configure." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Install AI Limits and log in to Claude Code as usual. When AI Limits asks to read the Claude Code sign-in, allow it: the question names the file and where its token goes. The widget then shows the 5-hour session and the weekly window with live percentages and reset countdowns. On plans that have them, the Fable, Opus and Sonnet weeks can be rows of their own." } },
     { "@type": "Question", "name": "Does AI Limits need API keys?",
-      "acceptedAnswer": { "@type": "Answer", "text": "No. It reads the logins your CLI tools already have: Claude Code, Codex CLI, the gh CLI and the Antigravity CLI session. The tokens are used read-only and never rotated, so your tools stay logged in. API keys are an optional extra path, stored in Windows Credential Manager, never in a config file." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "No. It reads the logins your tools already have: Claude Code, Codex CLI, the gh CLI, the Antigravity CLI (agy) and the Grok CLI, each only once you allow it. Cursor has no sign-in for other apps, so AI Limits signs in to Cursor once with a session of its own, from Cursor's Sign-in in Rows and models: Cursor's own sign-in page opens in your browser, and the editor's sign-in is never read. The tokens are used read-only and never rotated, so your tools stay logged in. A key or usage token you paste is an optional extra path, chosen under the provider's Sign-in in Rows and models and stored in Windows Credential Manager, never in a config file." } },
+    { "@type": "Question", "name": "Does AI Limits read anything before I allow it?",
+      "acceptedAnswer": { "@type": "Answer", "text": "No. A fresh install reads nothing. On the first start a welcome lists the tools found on this PC, found only by whether their folder exists, with nothing inside opened, and names each file it would read and where each token goes. Allow starts the ticked tools; Cancel reads nothing. Any other tool asks once, the same way. An update from 0.7.0 keeps what worked and lists every file read in one window. Antigravity's question also says that Google has suspended some accounts for using Antigravity's sign-in outside Antigravity: AI Limits only reads the quota, once per update, but the risk is yours." } },
     { "@type": "Question", "name": "Which AI providers are supported?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each one can be toggled from the context menu; disabled providers make no network requests." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, Google Antigravity, xAI Grok (the weekly SuperGrok limit) and Cursor (the subscription's included usage). Each one is switched on by ticking its rows in Rows and models, where its sign-in is chosen too; a provider with every row unticked, or not allowed, makes no network requests. Antigravity needs the Antigravity CLI: its sign-in is renewed only when you run agy, not by the Antigravity editor, so until then the row reads token expired." } },
+    { "@type": "Question", "name": "What is the Rows and models window?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Right-click the widget, Rows and models. Every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. Percent and Reset time choose what the panel and its tooltip show for each provider: the percentage, the time until its limit resets, or both. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a token you paste, and only the one chosen is used. Model, Version and Effort add the model a tool is using to its row, for example Opus 5.5 · xhigh, and any model can be given a name of your own. A tick shows at once." } },
     { "@type": "Question", "name": "Does it slow the PC down?",
       "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the release build records about 0.012% of one CPU core, no GPU engine time at all, a working set around 67 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked." } },
     { "@type": "Question", "name": "Is AI Limits free?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. Open source under GPL-3.0; the code, releases and issue tracker live on GitHub." } },
     { "@type": "Question", "name": "Does it show GitHub Copilot premium requests?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Yes. The Copilot rows show the premium requests, chat and completions quotas with the date each one resets, read from the same endpoint the Copilot extensions use." } }
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. The Copilot rows show the premium requests, chat and completions quotas with the date each one resets, read from the same endpoint the Copilot extensions use. Plans billed in AI Credits are read too; a quota the plan does not have is left out." } },
+    { "@type": "Question", "name": "Can I see a look before I choose it?",
+      "acceptedAnswer": { "@type": "Answer", "text": "Yes. Rest the pointer on a detail level, a layout, a width, the arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or a saturation in the context menu, and the widget, the taskbar panel and the tray icon show it at once. A click keeps it; closing the menu without one puts back what was there. Nothing is saved until the click." } },
+    { "@type": "Question", "name": "How does AI Limits update itself?",
+      "acceptedAnswer": { "@type": "Answer", "text": "With Automatic updates on, as it is by default, a copy from the installer checks GitHub for a newer release, checks the download against the SHA-256 GitHub publishes and against the release's Ed25519 signature, and installs it only once you have been away for five minutes (no input, or the session locked). Microsoft Store, Scoop and portable copies never contact GitHub: their own channel updates them. Requests follow the proxy set in Windows." } }
   ]
 }
 </script>
@@ -149,8 +157,8 @@ document.documentElement.classList.add("js");
         <span class="line typed" data-type="Before they know you.">Before they know you.</span><span class="caret" aria-hidden="true"></span>
       </h1>
       <p class="lead">A native acrylic widget for Windows 11 that shows how much of your
-      Claude, Codex, Copilot and Antigravity limits you have used, and when every window resets.
-      It reads the logins your CLI tools already have. No API keys required.</p>
+      Claude, Codex, Copilot, Antigravity, Grok and Cursor limits you have used, and when every window resets.
+      It reads the logins your CLI tools already have, once you allow it. No API keys required.</p>
       <div class="cmd" data-cmd>
         <code>winget install napxlexn.AILimits</code>
         <button type="button" aria-label="Copy install command">Copy</button>
@@ -189,16 +197,16 @@ document.documentElement.classList.add("js");
 <section class="scene providers" id="providers" aria-label="Supported providers">
   <div class="prov-head">
     <p class="hud scene-tag">02 · SOURCES</p>
-    <h2 class="manifesto"><span class="line">Four providers.</span><span class="line dim">Zero API keys.</span></h2>
-    <p class="lead">It reads each tool's existing login. Read-only. Never rotates a token,
-    so your CLIs stay signed in.</p>
+    <h2 class="manifesto"><span class="line">Six providers.</span><span class="line dim">Zero API keys.</span></h2>
+    <p class="lead">It reads each tool's existing login, once you allow it. Read-only. Never rotates a token,
+    so your CLIs stay signed in. Cursor gets a sign-in of its own, in your browser.</p>
   </div>
   <div class="panes">
     <article class="pane glass"><div class="body">
       <p class="hud">SRC · CLAUDE CODE LOGIN</p>
       <h3>Claude</h3>
       <p>The live server-side percentages for every window, the same numbers <code>/usage</code> shows.</p>
-      <p class="windows">5-hour session · weekly · Opus · Sonnet</p></div>
+      <p class="windows">5-hour session · weekly · Fable, Opus and Sonnet weeks on plans that have them</p></div>
     </article>
     <article class="pane glass"><div class="body">
       <p class="hud">SRC · CODEX CLI LOGIN</p>
@@ -209,14 +217,26 @@ document.documentElement.classList.add("js");
     <article class="pane glass"><div class="body">
       <p class="hud">SRC · GH CLI / PAT</p>
       <h3>GitHub Copilot</h3>
-      <p>The same quotas the Copilot extensions read, including the date each one resets.</p>
+      <p>The same quotas the Copilot extensions read, AI Credits plans included, with the date each one resets.</p>
       <p class="windows">premium requests · chat · completions</p></div>
     </article>
     <article class="pane glass"><div class="body">
-      <p class="hud">SRC · ANTIGRAVITY SESSION</p>
+      <p class="hud">SRC · ANTIGRAVITY CLI (AGY)</p>
       <h3>Google Antigravity</h3>
-      <p>The shared model pools Antigravity actually meters.</p>
+      <p>The shared model pools Antigravity actually meters. Needs the Antigravity CLI: the row reads "token expired" until you run <code>agy</code> again. Its question warns first: Google has suspended some accounts for using this sign-in outside Antigravity.</p>
       <p class="windows">Gemini pool · Claude/GPT pool</p></div>
+    </article>
+    <article class="pane glass"><div class="body">
+      <p class="hud">SRC · GROK CLI LOGIN</p>
+      <h3>xAI Grok</h3>
+      <p>The weekly SuperGrok limit, the one grok.com's Usage page shows.</p>
+      <p class="windows">weekly · Grok Build</p></div>
+    </article>
+    <article class="pane glass"><div class="body">
+      <p class="hud">SRC · OWN SIGN-IN</p>
+      <h3>Cursor</h3>
+      <p>The subscription's included usage, labelled with the plan. You sign in once, on Cursor's own page; the editor's sign-in is never read.</p>
+      <p class="windows">included usage · Grok Bot</p></div>
     </article>
   </div>
 </section>
@@ -257,12 +277,12 @@ document.documentElement.classList.add("js");
       </div>
       <div class="tb-rig" data-tb-rig>
         <div class="tb-plate"><canvas class="tb-bar" data-tb-note="&lt;b&gt;The taskbar itself.&lt;/b&gt; Real renderer pixels: the system tray, the language, the clock. The empty slot in the icon row is where our tray icon sits — lifted one layer up here."></canvas></div>
-        <div class="tb-plate"><canvas class="tb-tic" data-tb-note="&lt;b&gt;The tray icon.&lt;/b&gt; INTEGRATED into the system row, so it sits closest to the bar and is built differently from the panel: two rings, the outer one the first provider, the inner one the second."></canvas></div>
-        <div class="tb-plate"><div class="tb-panel" data-tb-note="&lt;b&gt;The mini panel.&lt;/b&gt; Its OWN window over the taskbar, right beside the tray: the top two providers, a percentage and a bar. The background is transparent — it is a separate object, not part of the bar.">
+        <div class="tb-plate"><canvas class="tb-tic" data-tb-note="&lt;b&gt;The tray icon.&lt;/b&gt; INTEGRATED into the system row, so it sits closest to the bar and is built differently from the panel: two rings, the busier provider outside, the other inside."></canvas></div>
+        <div class="tb-plate"><div class="tb-panel" data-tb-note="&lt;b&gt;The mini panel.&lt;/b&gt; Its OWN window over the taskbar, beside the tray: two providers you choose, each a percentage and a bar or the reset time. Transparent — a separate object, not part of the bar.">
           <div class="tb-row"><span class="tb-pv" data-tb-pv="0">0%</span><span class="tb-pill"><i data-tb-pb="0"></i></span></div>
           <div class="tb-row r1"><span class="tb-pv" data-tb-pv="1">0%</span><span class="tb-pill"><i data-tb-pb="1"></i></span></div>
         </div></div>
-        <div class="tb-plate"><div class="tb-tipbox" data-tb-note="&lt;b&gt;The tooltip.&lt;/b&gt; Hovering the panel in the bar lists all four providers in one line. Its numbers are the same ones the panel bars and the icon rings are showing.">Claude <span data-tb-tn="0">0%</span> · Codex <span data-tb-tn="1">0%</span> · Copilot <span data-tb-tn="2">0%</span> · Antigravity <span data-tb-tn="3">0%</span></div></div>
+        <div class="tb-plate"><div class="tb-tipbox" data-tb-note="&lt;b&gt;The tooltip.&lt;/b&gt; Hovering the panel in the bar lists every provider, here in one line. Its numbers are the same ones the panel bars and the icon rings are showing.">Claude <span data-tb-tn="0">0%</span> · Codex <span data-tb-tn="1">0%</span> · Copilot <span data-tb-tn="2">0%</span> · Antigravity <span data-tb-tn="3">0%</span></div></div>
       </div>
       <svg class="tb-csvg" data-tb-csvg aria-hidden="true"><polyline data-tb-cline points=""></polyline></svg>
       <p class="tb-name" data-tb-name aria-hidden="true"></p>
@@ -291,24 +311,56 @@ document.documentElement.classList.add("js");
           <button type="button" data-v="expanded">Expanded</button>
         </div>
       </div>
-      <div class="pg-group"><p class="hud">LAYOUT</p>
-        <div class="seg" data-opt="layout">
-          <button type="button" data-v="rows" aria-pressed="true">Rows</button>
-          <button type="button" data-v="cols-row">Columns</button>
-          <button type="button" data-v="cols-column">Stacked</button>
+      <div class="pg-group"><p class="hud">BARS</p>
+        <div class="seg" data-opt="bars">
+          <button type="button" data-v="horizontal" aria-pressed="true">Horizontal</button>
+          <button type="button" data-v="vertical">Vertical</button>
         </div>
       </div>
-      <div class="pg-group" data-only="rows"><p class="hud">WIDTH</p>
+      <div class="pg-group" data-only="horizontal"><p class="hud">WIDTH</p>
         <div class="seg" data-opt="width">
           <button type="button" data-v="full" aria-pressed="true">100%</button>
           <button type="button" data-v="threequarters">75%</button>
           <button type="button" data-v="half">50%</button>
         </div>
       </div>
+      <div class="pg-group" data-only="vertical" data-hidden><p class="hud">ARRANGEMENT</p>
+        <div class="seg" data-opt="flow">
+          <button type="button" data-v="row" aria-pressed="true">In a row</button>
+          <button type="button" data-v="column">In a column</button>
+        </div>
+      </div>
+      <div class="pg-group"><p class="hud">ROWS</p>
+        <div class="seg seg-2" data-multi="rows">
+          <button type="button" data-v="claude" aria-pressed="true">Claude</button>
+          <button type="button" data-v="claude.fable" aria-pressed="false">Claude · Fable</button>
+          <button type="button" data-v="codex" aria-pressed="true">Codex</button>
+          <button type="button" data-v="copilot" aria-pressed="true">Copilot</button>
+          <button type="button" data-v="antigravity" aria-pressed="true">Antigravity</button>
+          <button type="button" data-v="antigravity.cg" aria-pressed="false">AG · Claude+GPT</button>
+          <button type="button" data-v="grok" aria-pressed="true">Grok</button>
+          <button type="button" data-v="grok.build" aria-pressed="false">Grok · Build</button>
+          <button type="button" data-v="cursor" aria-pressed="true">Cursor</button>
+          <button type="button" data-v="cursor.bot" aria-pressed="false">Cursor · Grok Bot</button>
+        </div>
+        <p class="pg-note">The Widget column of <em>Rows and models</em>. Extra rows show
+        where a provider meters a part on its own, and only when it reports one.</p>
+      </div>
+      <div class="pg-group"><p class="hud">MODEL LABEL</p>
+        <div class="seg" data-multi="model">
+          <button type="button" data-v="model" aria-pressed="false">Model</button>
+          <button type="button" data-v="version" aria-pressed="false">Version</button>
+          <button type="button" data-v="effort" aria-pressed="false">Effort</button>
+        </div>
+        <p class="pg-note">The model each tool is set to. Compact rows leave it to the
+        tooltip; where room runs out, the effort goes first.</p>
+      </div>
       <div class="pg-group"><p class="hud">PALETTE</p>
+        <div class="seg seg-1" data-toggle="monochrome">
+          <button type="button" aria-pressed="true">Monochrome</button>
+        </div>
         <div class="seg seg-wrap" data-opt="palette">
-          <button type="button" data-v="mono" aria-pressed="true">Mono</button>
-          <button type="button" data-v="default">Default</button>
+          <button type="button" data-v="default" aria-pressed="false">Default</button>
           <button type="button" data-v="ocean">Ocean</button>
           <button type="button" data-v="sunset">Sunset</button>
           <button type="button" data-v="forest">Forest</button>
@@ -318,14 +370,14 @@ document.documentElement.classList.add("js");
           <button type="button" data-v="slate">Slate</button>
         </div>
       </div>
-      <div class="pg-group"><p class="hud">OPACITY <output data-out="opacity">45</output>%</p>
-        <input type="range" min="15" max="85" step="5" value="45" data-opt-range="opacity" aria-label="Background opacity">
+      <div class="pg-group"><p class="hud">BACKGROUND OPACITY <output data-out="opacity">50</output>%</p>
+        <input type="range" min="0" max="5" step="1" value="3" data-opt-steps="opacity" data-steps="15 25 35 50 70 85" aria-label="Background opacity" aria-valuetext="50%">
       </div>
       <div class="pg-group"><p class="hud">BRIGHTNESS <output data-out="brightness">100</output>%</p>
-        <input type="range" min="40" max="100" step="20" value="100" data-opt-range="brightness" aria-label="Brightness">
+        <input type="range" min="0" max="3" step="1" value="3" data-opt-steps="brightness" data-steps="40 60 80 100" aria-label="Brightness" aria-valuetext="100%">
       </div>
-      <div class="pg-group"><p class="hud">SATURATION <output data-out="saturation">55</output>%</p>
-        <input type="range" min="0" max="100" step="25" value="55" data-opt-range="saturation" aria-label="Saturation">
+      <div class="pg-group"><p class="hud">SATURATION <output data-out="saturation">50</output>%</p>
+        <input type="range" min="0" max="4" step="1" value="2" data-opt-steps="saturation" data-steps="0 25 50 75 100" aria-label="Saturation" aria-valuetext="50%">
       </div>
       <div class="pg-group"><p class="hud">DESKTOP</p>
         <div class="pg-wall">
@@ -414,7 +466,7 @@ document.documentElement.classList.add("js");
         <div><p class="hud">PORTABLE ZIP</p>
           <p>On every <a href="https://github.com/napxlexn/ailimits/releases/latest">release</a>:
           the two executables, the licence and trademark notices, and the README. Nothing is
-          written outside the folder you unpack it into.</p></div>
+          installed; the settings and the cache go to <code>%APPDATA%\AiLimits</code>.</p></div>
         <div><p class="hud">WHAT THE ONE-LINER DOES</p>
           <p>The PowerShell tab downloads the installer for the latest release and checks it
           against the SHA-256 digest GitHub publishes for that asset before running it.</p></div>
@@ -425,19 +477,27 @@ document.documentElement.classList.add("js");
   <section class="faq" aria-label="Frequently asked questions">
     <h2>Questions people actually ask</h2>
     <details><summary>How do I check my Claude Code session and weekly limit?</summary>
-      <p>Install AI Limits and log in to Claude Code as usual. The widget reads the Claude Code login on your machine and shows the 5-hour session, the weekly window and the weekly Opus and Sonnet windows with live percentages and reset countdowns. Nothing to configure.</p></details>
+      <p>Install AI Limits and log in to Claude Code as usual. When AI Limits asks to read the Claude Code sign-in, allow it: the question names the file and where its token goes. The widget then shows the 5-hour session and the weekly window with live percentages and reset countdowns. On plans that have them, the Fable, Opus and Sonnet weeks can be rows of their own.</p></details>
     <details><summary>Does it need API keys?</summary>
-      <p>No. It reads the logins your CLI tools already have: Claude Code, Codex CLI, the gh CLI and the Antigravity CLI session. The tokens are used read-only and never rotated, so your tools stay logged in. API keys are an optional extra path, stored in Windows Credential Manager, never in a config file.</p></details>
+      <p>No. It reads the logins your tools already have: Claude Code, Codex CLI, the gh CLI, the Antigravity CLI (agy) and the Grok CLI, each only once you allow it. Cursor has no sign-in for other apps, so AI Limits signs in to Cursor once with a session of its own, from Cursor's Sign-in in Rows and models: Cursor's own sign-in page opens in your browser, and the editor's sign-in is never read. The tokens are used read-only and never rotated, so your tools stay logged in. A key or usage token you paste is an optional extra path, chosen under the provider's Sign-in in Rows and models and stored in Windows Credential Manager, never in a config file.</p></details>
+    <details><summary>Does it read anything before I allow it?</summary>
+      <p>No. A fresh install reads nothing. On the first start a welcome lists the tools found on this PC, found only by whether their folder exists, with nothing inside opened, and names each file it would read and where each token goes. <em>Allow</em> starts the ticked tools; <em>Cancel</em> reads nothing. Any other tool asks once, the same way. An update from 0.7.0 keeps what worked and lists every file read in one window. Antigravity's question also says that Google has suspended some accounts for using Antigravity's sign-in outside Antigravity: AI Limits only reads the quota, once per update, but the risk is yours. The <a href="./privacy.html">privacy page</a> lists every file and host.</p></details>
     <details><summary>Which providers are supported?</summary>
-      <p>Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, and Google Antigravity. Each one can be toggled from the context menu; disabled providers make no network requests.</p></details>
+      <p>Claude (Anthropic), OpenAI Codex via a ChatGPT subscription, GitHub Copilot including premium requests, Google Antigravity, xAI Grok (the weekly SuperGrok limit) and Cursor (the subscription's included usage). Each one is switched on by ticking its rows in Rows and models, where its sign-in is chosen too; a provider with every row unticked, or not allowed, makes no network requests. Antigravity needs the Antigravity CLI: its sign-in is renewed only when you run agy, not by the Antigravity editor, so until then the row reads token expired.</p></details>
+    <details><summary>What is the Rows and models window?</summary>
+      <p>Right-click the widget, <em>Rows and models</em>. Every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. Percent and Reset time choose what the panel and its tooltip show for each provider: the percentage, the time until its limit resets, or both. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a token you paste, and only the one chosen is used. Model, Version and Effort add the model a tool is using to its row, for example <code>Opus 5.5 · xhigh</code>, and any model can be given a name of your own. A tick shows at once.</p></details>
     <details><summary>Does it slow the PC down?</summary>
       <p>Measured, not estimated: an automated audit of the release build records about 0.012% of one CPU core, no GPU engine time at all, a working set around 67 MB and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked.</p></details>
     <details><summary>Is it free?</summary>
       <p>Yes. Open source under GPL-3.0; the code, releases and issue tracker live on <a href="https://github.com/napxlexn/ailimits">GitHub</a>.</p></details>
     <details><summary>Does it show GitHub Copilot premium requests?</summary>
-      <p>Yes. The Copilot rows show the premium requests, chat and completions quotas with the date each one resets, read from the same endpoint the Copilot extensions use.</p></details>
+      <p>Yes. The Copilot rows show the premium requests, chat and completions quotas with the date each one resets, read from the same endpoint the Copilot extensions use. Plans billed in AI Credits are read too; a quota the plan does not have is left out.</p></details>
     <details><summary>What does the tray icon show?</summary>
-      <p>Two concentric rings: the busiest provider on the outer ring, the runner-up inside, both sweeping clockwise from 12 o'clock. A value too small for an arc becomes a dot, and only a true 100% closes the ring, so the shape never lies. It is one of two indicators: the alternative is the taskbar panel, which paints the first two providers onto the bar as digits and bars instead. You pick one from the Indicator submenu.</p></details>
+      <p>Two concentric rings: by default the busiest provider on the outer ring, the runner-up inside, both sweeping clockwise from 12 o'clock. A value too small for an arc becomes a dot, and only a true 100% closes the ring, so the shape never lies. It is one of two indicators: the alternative is the taskbar panel, which paints two providers onto the bar as digits and bars, as the time until each limit resets, or both. The Taskbar column of <em>Rows and models</em> picks which two providers the panel and the rings show. You pick the indicator from the Indicator submenu.</p></details>
+    <details><summary>Can I see a look before I choose it?</summary>
+      <p>Yes. Rest the pointer on a detail level, a layout, a width, the arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or a saturation in the context menu, and the widget, the taskbar panel and the tray icon show it at once. A click keeps it; closing the menu without one puts back what was there. Nothing is saved until the click.</p></details>
+    <details><summary>How does it update itself?</summary>
+      <p>With <em>Automatic updates</em> on, as it is by default, a copy from the installer checks GitHub for a newer release, checks the download against the SHA-256 GitHub publishes and against the release's Ed25519 signature, and installs it only once you have been away for five minutes (no input, or the session locked). Microsoft Store, Scoop and portable copies never contact GitHub: their own channel updates them. Requests follow the proxy set in Windows.</p></details>
   </section>
 
   <footer>

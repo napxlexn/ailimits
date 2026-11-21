@@ -49,7 +49,7 @@
     <Program_Change_Info>The compact widget's name column fits every provider name.</Program_Change_Info>
     <Program_Specific_Category>Desktop</Program_Specific_Category>
     <Program_Category_Class>Desktop::Other</Program_Category_Class>
-    <Program_System_Requirements>Windows 11 (build 22000 or later), x64. No runtime, no admin rights. At least one signed-in AI command-line tool: Claude Code, Codex CLI, GitHub CLI or the Antigravity CLI.</Program_System_Requirements>
+    <Program_System_Requirements>Windows 11 (build 22000 or later), x64. No runtime, no admin rights. At least one signed-in AI tool: Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI (agy) or the Grok CLI, or a Cursor subscription signed in from the app's Rows and models window.</Program_System_Requirements>
     <File_Info>
       <File_Size_Bytes>3184235</File_Size_Bytes>
       <File_Size_K>3110</File_Size_K>
@@ -67,20 +67,20 @@
   </Program_Info>
   <Program_Descriptions>
     <English>
-      <Keywords>AI usage limits, usage monitor, desktop widget, quota, rate limit, taskbar, system tray, Claude, Codex, Copilot, Antigravity</Keywords>
+      <Keywords>AI usage limits, usage monitor, desktop widget, quota, rate limit, taskbar, system tray, Claude, Codex, Copilot, Antigravity, Grok, Cursor</Keywords>
       <Char_Desc_45>Live AI usage limits on the Windows desktop</Char_Desc_45>
-      <Char_Desc_80>Native Windows 11 widget with live Claude, Codex, Copilot and Antigravity limits</Char_Desc_80>
-      <Char_Desc_250>A tiny native Windows 11 floating overlay that shows your AI provider usage limits on the desktop: Claude, OpenAI Codex, GitHub Copilot and Google Antigravity. It reads the logins your CLI tools already have, needs no API key, and sends no telemetry.</Char_Desc_250>
-      <Char_Desc_450>AI Limits is a tiny native Windows 11 floating overlay that shows how much of each AI subscription window you have used and when it resets: Claude's session and weekly windows, Codex's session and weekly windows, Copilot's premium requests, chat and completions, and the model pools Antigravity meters. It reads the logins your CLI tools already keep, read-only, needs no API key and no account, and sends no telemetry. Free and open source, GPL-3.0.</Char_Desc_450>
-      <Char_Desc_2000>AI Limits reads the logins of the AI command-line tools already on your computer - Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI - and shows the usage limits behind them, live, on the desktop: how much of each subscription window is used and when it resets. Claude's 5-hour session, weekly and weekly Opus and Sonnet windows. OpenAI Codex's session and weekly windows. GitHub Copilot's premium requests, chat and completions, with the date each one resets. The shared model pools Google Antigravity meters.
+      <Char_Desc_80>Windows 11 widget: live Claude, Codex, Copilot, Antigravity, Grok, Cursor limits</Char_Desc_80>
+      <Char_Desc_250>A tiny native Windows 11 floating overlay that shows your AI usage limits on the desktop: Claude, OpenAI Codex, GitHub Copilot, Google Antigravity, xAI Grok and Cursor. It reads nothing before you allow it, needs no API key, and sends no telemetry.</Char_Desc_250>
+      <Char_Desc_450>AI Limits is a tiny native Windows 11 floating overlay that shows how much of each AI subscription window you have used and when it resets: Claude, Codex, Copilot, Antigravity, Grok and Cursor. It reads the sign-ins your tools already keep, read-only and only once you allow each one; Cursor gets a sign-in of its own in the browser. No API key, no account, no telemetry. Free and open source, GPL-3.0.</Char_Desc_450>
+      <Char_Desc_2000>AI Limits reads the sign-ins of the AI tools already on your computer - Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI (agy), the Grok CLI - once you allow each one, and shows the usage limits behind them, live, on the desktop: how much of each window is used and when it resets. Claude's 5-hour and weekly windows, plus the Fable, Opus and Sonnet weeks on plans that have them. Codex's session and weekly windows. Copilot's premium requests, chat and completions. Antigravity's shared model pools. Grok's weekly SuperGrok limit. Cursor's included usage, through a sign-in of the app's own in the browser.
 
-It reads those logins read-only and never refreshes a token, so your tools stay signed in. There is nothing to configure and no API key to paste; API keys are an optional path and live in Windows Credential Manager, never in a file. Each token is sent only to the provider that issued it. There is no telemetry and no server of ours in the middle.
+Nothing of another tool is read before you allow it: the first start asks, naming every file and where each token goes. Sign-ins are read read-only and never refreshed, so your tools stay signed in. Antigravity's row needs the Antigravity CLI (agy) and reads "token expired" until agy is run again; the app warns first that Google has suspended some accounts for using that sign-in outside Antigravity. Each token goes only to the provider that issued it. No telemetry, no server of ours.
 
-Closed, it does not disappear: it folds into a tray icon whose two rings carry the two busiest providers, or into a mini panel painted beside the system tray on the taskbar. When a source is down, the last real reading turns grey and shows its age instead of vanishing. A window that has provably reset shows an estimate, marked as an estimate. It never invents a number.
+Rows and models chooses the rows the widget and the tooltip show, extra rows where a provider meters a part on its own, and an optional model label. Closed, the widget folds into a tray icon with two rings, or a mini panel beside the tray showing a percentage, the time to the reset, or both. A source that is down leaves its last reading grey, with its age. It never invents a number.
 
 Measured on the audited release build: about 0.005% of one CPU core at idle, no GPU time at all (the interface is drawn on the CPU), and around 37 MB of memory. A 3 MB executable, statically linked, no runtime to install, no admin rights needed.
 
-Three detail levels, several layouts, nine palettes; opacity, brightness and saturation are adjustable. Free and open source under GPL-3.0; the source is on GitHub.</Char_Desc_2000>
+Three detail levels, several layouts, nine palettes; opacity, brightness and saturation are adjustable, and the context menu shows each look before you click it. Free and open source under GPL-3.0; the source is on GitHub.</Char_Desc_2000>
     </English>
   </Program_Descriptions>
   <Web_Info>

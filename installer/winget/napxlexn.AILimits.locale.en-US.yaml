@@ -19,8 +19,10 @@ Description: >-
   one, or credentials added manually by the user; Cursor uses a sign-in of
   the app's own. It does not refresh CLI tokens and sends no telemetry. It
   needs no admin rights, ships statically linked with no extra runtime, and
-  has a low idle resource footprint. A taskbar indicator keeps usage visible
-  even when the overlay is hidden.
+  has a low idle resource footprint. A Rows and models window chooses the
+  rows shown, extra rows where a provider meters a part on its own, and an
+  optional label with the model in use. A taskbar indicator keeps usage, or
+  the time until a limit resets, visible even when the overlay is hidden.
 Moniker: ailimits
 Tags:
   - ai

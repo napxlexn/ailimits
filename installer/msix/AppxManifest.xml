@@ -13,8 +13,9 @@
      asks GitHub for a release, and its menu has no Automatic updates item.
      The Store runs no uninstall step of ours, so the Credential Manager
      entries the app made (ailimits/cursor_session and any pasted key) stay
-     until the menu's Sign out of Cursor / Remove key / Remove usage token,
-     or until the user deletes them in Credential Manager. -->
+     until the user signs out of Cursor or removes them under the
+     provider's Sign-in in Rows and models, or deletes them in Credential
+     Manager. -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
