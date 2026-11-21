@@ -27,7 +27,7 @@ the official CLI tools already store on the machine, read-only and only
 after you allow each one (the first start asks, naming every file and
 host), and never refreshes them. Cursor uses a sign-in of the app's own,
 made once from the Rows and models window. It sends no telemetry and
-renders on the CPU, with a measured idle load of 0.012% of one core (0.7.0).
+renders on the CPU, with a measured idle load of 0.0097% of one core (0.7.1).
 
 The Rows and models window chooses the rows the widget and the taskbar
 tooltip show, each provider's sign-in, extra rows where a provider meters a part on its own, and an
