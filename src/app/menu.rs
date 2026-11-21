@@ -22,6 +22,9 @@ impl App {
         let Some(action) = self.menu.action_for(&id) else {
             return;
         };
+        // An edit of config.toml made meanwhile first: the click applies on
+        // top of the file as it is now (app/config_watch.rs).
+        self.check_config_file();
         // What a look item does to the config is one function, the one its
         // preview uses (`context_menu::look`); the arms below repaint and save.
         crate::ui::context_menu::look(&mut self.config, &action);

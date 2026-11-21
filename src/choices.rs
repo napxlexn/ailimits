@@ -338,7 +338,9 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
         | PickerAction::RemoveSecret(_)
         | PickerAction::CursorSignIn
         | PickerAction::CursorCancel
-        | PickerAction::CursorSignOut => out.changed = false,
+        | PickerAction::CursorSignOut
+        // The settings file opens in Notepad (app/config_watch.rs).
+        | PickerAction::OpenSettingsFile => out.changed = false,
         PickerAction::NoticeDone => {
             config.reads.pending = PendingNotice::None;
         }

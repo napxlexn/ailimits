@@ -245,7 +245,8 @@ fn area(p: &Picker, t: &Target) -> Option<(Layer, Rect)> {
             | El::Pick { target, rect, .. }
             | El::Field { target, rect, .. }
             | El::Button { target, rect, .. }
-            | El::Toggle { target, rect, .. } => (target.clone(), *rect),
+            | El::Toggle { target, rect, .. }
+            | El::Link { target, rect, .. } => (target.clone(), *rect),
             El::Close { rect, .. } => (Target::Close, *rect),
             _ => return None,
         };
@@ -272,6 +273,53 @@ fn click(p: &mut Picker, t: &Target) -> Vec<PickerAction> {
     let mut out = p.handle(PickerEvent::PointerDown { x, y });
     out.extend(p.handle(PickerEvent::PointerUp { x, y }));
     out
+}
+
+/// "Settings file..." at the list's end: a click, or Enter on it, asks the
+/// app to open config.toml; on hover and on keyboard focus it says what the
+/// file is for. The welcome, which is about what to read, has none.
+#[test]
+fn the_settings_file_link_opens_config_toml() {
+    let mut p = picker(input());
+    let t = Target::SettingsFile;
+    let (_, r) = area(&p, &t).expect("the link");
+    // The last thing in the list.
+    let f = p.frame();
+    let last = f
+        .els
+        .iter()
+        .filter(|(l, _)| *l == Layer::Body)
+        .filter_map(|(_, el)| super::scene::el_rect(el))
+        .map(|r| bottom(&r))
+        .fold(0.0, f32::max);
+    assert_eq!(bottom(&r), last);
+    assert!(texts(&p).contains(SETTINGS_FILE));
+    assert_eq!(click(&mut p, &t), [PickerAction::OpenSettingsFile]);
+    // Its description under the pointer.
+    let (x, y) = spot(&mut p, &t);
+    p.handle(PickerEvent::PointerMove { x, y });
+    let shown = p.scene().texts().join(" ");
+    assert!(shown.contains("Opens config.toml in Notepad"), "{shown}");
+    // The keyboard reaches it, and Enter opens it.
+    let mut p = picker(input());
+    p.handle(PickerEvent::Key(PickerKey::End));
+    for _ in 0..200 {
+        if p.focus == Some(t.clone()) {
+            break;
+        }
+        key(&mut p, PickerKey::Tab);
+    }
+    assert_eq!(p.focus, Some(t.clone()));
+    assert_eq!(
+        key(&mut p, PickerKey::Enter),
+        [PickerAction::OpenSettingsFile]
+    );
+    // Not in the welcome.
+    let mut welcome = input();
+    welcome.mode = PickerMode::Welcome;
+    let p = picker(welcome);
+    assert!(area(&p, &t).is_none());
+    assert!(!texts(&p).contains(SETTINGS_FILE));
 }
 
 /// The Providers menu's Enabled tick asks the same question; Allow sends
@@ -1087,12 +1135,14 @@ fn the_keyboard_walks_the_grid() {
     assert_eq!(p.focus, Some(row("claude", Surface::Widget)));
     key(&mut p, PickerKey::BackTab);
     assert_eq!(p.focus, Some(Target::Close));
-    // End goes to the last control, scrolled into view: with no model
-    // part on, the source waits and the list of names is closed, so the
-    // last is its heading.
+    // End goes to the last control, scrolled into view: the settings
+    // file's link; with no model part on, the source waits and the list of
+    // names is closed, so above it is the names' heading.
     key(&mut p, PickerKey::End);
-    assert_eq!(p.focus, Some(Target::Names));
+    assert_eq!(p.focus, Some(Target::SettingsFile));
     assert!(p.scroll > 0.0);
+    key(&mut p, PickerKey::Up);
+    assert_eq!(p.focus, Some(Target::Names));
 }
 
 #[test]
@@ -2322,6 +2372,21 @@ fn visual_baseline_picker() {
     hint.handle(PickerEvent::PointerMove { x: 60.0, y });
     let _ = x;
     items.push(("hint-dark".to_string(), draw(&hint, false, 1.0)));
+
+    // "Settings file..." under the pointer: underlined, its description
+    // above it; and with the keyboard's focus ring.
+    for (light, name) in [(false, "settings-file-dark"), (true, "settings-file-light")] {
+        let mut link = make(input());
+        let (x, y) = spot(&mut link, &Target::SettingsFile);
+        link.handle(PickerEvent::PointerMove { x, y });
+        items.push((name.to_string(), draw(&link, light, 1.0)));
+    }
+    let mut link = make(input());
+    key(&mut link, PickerKey::End);
+    items.push((
+        "settings-file-focus-dark".to_string(),
+        draw(&link, false, 1.0),
+    ));
 
     // Scrolled half way, the heads pinned, a row hovered.
     let mut scrolled = make(input());

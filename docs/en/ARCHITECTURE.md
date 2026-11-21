@@ -28,6 +28,9 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          BuildKey (config, tool_files, Grok Bot) changed
    ├── app/cache.rs           provider-cache.json: one writer, fewer writes
    ├── app/model_job.rs       what the model labels read; one reader at a time
+   ├── app/config_watch.rs    config.toml edited by hand: looked at by its stamp
+   │                          (cycle, actions, 2 s after Settings file...),
+   │                          merged with the app's changes, applied part by part
    ├── app/clipboard.rs       the shape check of a pasted key or usage token
    ├── app/widget.rs, app/indicator.rs  the overlay window; the fallback tray icon
    ├── monitor/scheduler.rs   tokio task: fetch_all → sleep(interval) loop;

@@ -16,9 +16,11 @@
 //   clipboard.rs     keys and tokens pasted from the menu
 //   widget.rs        the overlay window: glass, showing, layout
 //   indicator.rs     the taskbar panel's fallback to the tray icon (Windows)
+//   config_watch.rs  config.toml edited by hand, applied while the app runs
 
 mod cache;
 mod clipboard;
+mod config_watch;
 mod events;
 mod flow;
 #[cfg(target_os = "windows")]
@@ -103,6 +105,9 @@ pub enum AppCommand {
     /// effort, nothing else of the files; with the generation of the
     /// request they answer.
     Models(u64, Models),
+    /// config.toml changed on disk, as the polling cycle or the writer
+    /// found: the event loop reads and applies it (app/config_watch.rs).
+    ConfigFileChanged,
     /// Quit the application.
     Quit,
 }
@@ -361,6 +366,9 @@ struct App {
     /// Kept for the shutdown handshake, so the final write cannot race an
     /// in-flight background one.
     saver_at_exit: Option<storage::ConfigSaver>,
+    /// config.toml as the writer left it, and the looks for edits made
+    /// elsewhere (app/config_watch.rs).
+    config_watch: config_watch::ConfigWatch,
 
     // ── Providers and what they reported ──
     providers: ProviderSet,
@@ -469,6 +477,9 @@ pub fn run() -> Result<()> {
     let loaded = runtime.block_on(storage::load());
     let mut config = loaded.config;
     info!("Config loaded: {} providers", config.providers.len());
+    // The file as it was found: the writer replaces only that, and the
+    // watch takes every other change for an edit (app/config_watch.rs).
+    let config_file = config_watch::config_file(loaded.on_disk);
 
     // Toasts carry the app's own name and icon; the identity is registered
     // per user, before the first threshold alert can fire.
@@ -554,12 +565,24 @@ pub fn run() -> Result<()> {
         Arc::new(AtomicU64::new(config.general.update_interval_secs));
     // The model labels are re-read on the polling cycle, never on a timer
     // of their own, and only as far as `[reads]` allows (`model_request`).
+    // config.toml is looked at on the same cycle: one metadata call, and an
+    // event only when it changed.
     let model_job = ModelJob::new(&config);
+    {
+        let tx = cmd_tx.clone();
+        config_file.set_notify(move || {
+            let _ = tx.try_send(AppCommand::ConfigFileChanged);
+        });
+    }
     let cycle_hook: CycleHook = {
         let job = model_job.clone();
         let tx = cmd_tx.clone();
         let rt = runtime.handle().clone();
-        Arc::new(move || spawn_model_read(&job, &tx, &rt))
+        let file = config_file.clone();
+        Arc::new(move || {
+            spawn_model_read(&job, &tx, &rt);
+            file.tell_if_changed();
+        })
     };
     let scheduler = Scheduler::new(providers.shared(), update_interval.clone(), cmd_tx.clone())
         .with_cycle_hook(cycle_hook);
@@ -723,7 +746,7 @@ pub fn run() -> Result<()> {
         ..Default::default()
     };
 
-    let saver = storage::spawn_saver(runtime.handle(), storage::config_path());
+    let saver = storage::spawn_saver_for(runtime.handle(), config_file.clone());
     let config_saves = saver.handle();
     let picker_mode = picker_mode_for(&config);
 
@@ -733,6 +756,7 @@ pub fn run() -> Result<()> {
         config,
         config_saves,
         saver_at_exit: Some(saver),
+        config_watch: config_watch::ConfigWatch::new(config_file),
         providers,
         display,
         provider_cache,

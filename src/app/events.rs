@@ -42,11 +42,16 @@ impl App {
         // Sleep until the soonest timer, or until the next event.
         #[cfg(target_os = "windows")]
         {
-            // The panel's countdown, while it shows one, is one more timer.
-            let wake = [self.indicator.next_wake(), self.panel.next_tick()]
-                .into_iter()
-                .flatten()
-                .min();
+            // The panel's countdown, while it shows one, is one more timer;
+            // so is the next look at config.toml while it is looked at often.
+            let wake = [
+                self.indicator.next_wake(),
+                self.panel.next_tick(),
+                self.config_watch.next_wake(),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             *control_flow = match wake {
                 Some(t) => ControlFlow::WaitUntil(t),
                 None => ControlFlow::Wait,
@@ -138,6 +143,11 @@ impl App {
         // nothing else (no placement query).
         if self.panel.next_tick().is_some_and(|t| now >= t) {
             self.panel.redraw(&self.visible());
+        }
+        // config.toml, opened from Rows and models a while ago: one metadata
+        // call, and the edit applied when it changed.
+        if self.config_watch.due(now) {
+            self.check_config_file();
         }
         if let Some(t) = self.indicator.recheck_at {
             if now >= t {
@@ -427,6 +437,7 @@ impl App {
                     ticket,
                 } => self.on_usage_token(pid, check, token, ticket),
                 AppCommand::Models(generation, read) => self.on_models(generation, read),
+                AppCommand::ConfigFileChanged => self.check_config_file(),
                 AppCommand::Quit => *control_flow = ControlFlow::Exit,
             },
 
@@ -772,6 +783,9 @@ impl App {
 
     fn shut_down(&mut self) {
         if let Some(saver) = self.saver_at_exit.take() {
+            // An edit of config.toml not read yet goes into the last save
+            // instead of under it.
+            self.config_file_at_exit();
             #[cfg(target_os = "windows")]
             let config = self.config_to_save();
             #[cfg(not(target_os = "windows"))]

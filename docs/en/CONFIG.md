@@ -1,7 +1,8 @@
 # CONFIG.md — the configuration file
 
 Location: `%APPDATA%\AiLimits\config.toml`. Created automatically on the
-first launch; every context-menu change is persisted here. Unknown fields
+first launch; every context-menu change is persisted here, and edits saved
+in it apply while the app runs (see "Live edits" below). Unknown fields
 and providers are ignored (old configs never break parsing). UTF-8 with or
 without a BOM and UTF-16 with a BOM (Notepad's encodings) are read.
 
@@ -30,6 +31,64 @@ uninstaller together with the folder):
 | `crash.log` | one line per crash: UTC time, version, thread, source file:line:column. The panic's text is never written. Rotates at 64 KB into `crash.log.1`. A start that failed writes `could not start: <error>` (which may name a local path, such as config.toml's). |
 | `ailimits.log` | only while `AILIMITS_LOG` or `RUST_LOG` is set; rotates at 5 MB into `ailimits.log.1`. Tokens are never written. |
 | `config.toml.<stamp>.corrupt` | a config that could not be understood, set aside as above. |
+
+## Live edits
+
+Edits saved in `config.toml` apply while the app runs, without a restart.
+Rows and models has a small link at the end of its list, *Settings
+file...*, for the fine-tuning that has no place in the window (sizes,
+colours, thresholds): it opens this file in Notepad
+(`%SystemRoot%\System32\notepad.exe`, started directly, no shell verb).
+The welcome has no such link.
+
+- **When the file is looked at.** No change notification of Windows is
+  used: the app compares the file's size and last write time (one metadata
+  call, about 20 µs, nothing read) once per update cycle, right before it
+  applies a context-menu or Rows and models action (so the change made
+  there lands on top of the file as saved), and when it quits. For 30
+  minutes after *Settings file...* opened the file, also every 2 seconds.
+  While polling pauses (idle or locked), an edit is read at the next cycle
+  or the next action.
+- **The app's own saves are not edits.** The writer records the size and
+  time of each file it writes, and a file that matches is left alone. A
+  save with nothing new in it is not written at all, so the comments and
+  layout of a hand edit stay until the app has a change of its own to save;
+  that save writes the whole file anew, without comments.
+- **An edit that reads** applies at once, brought up to date as a start
+  would (renamed and added providers, `[reads]` as its origin calls for; a
+  position on no monitor comes back onto one), except that it never brings
+  the welcome back nor settles the sign-in sources again: `[reads] pending`
+  and `sources_settled` stay the app's. Only what changed is redone: the
+  providers whose entry or consent changed are rebuilt and fetched (an
+  alert threshold rebuilds nothing and keeps the numbers on screen), the
+  model labels, the widget's layout, colours, position and opacity, Always
+  on top, Lock position, the menu's ticks, the tray icon, the taskbar panel
+  (mode, display, offset, what it shows), the update interval (after the
+  current wait, as from the menu), automatic updates, notifications, hooks,
+  `[tune]`, and Rows and models if it is open. Nothing needs a restart;
+  `on_startup` has run already and runs again at the next start.
+- **A change made in the app while an edit was on its way** (in the moment
+  before the file was saved, or while it did not read) is kept wherever the
+  edit left that setting as it was, and saved together with the edit; where
+  both changed the same setting, the file wins.
+- **Consent in the file.** A read allowed by hand in `[reads]` (`sign_in`,
+  `app_sign_in`, `tool_settings`, `last_session`) counts as your choice, as
+  a tick in Rows and models does: the files it names are read from the next
+  fetch on, without a question. A provider taken out of `[reads]` by hand
+  stops at once.
+- **An edit that does not read** (broken TOML, another encoding) is not
+  applied: the app keeps running on the settings it had and says so in one
+  message that names the line and column only, never the text. The file is
+  never written over while it stays broken, not even when the app quits:
+  changes made in the app meanwhile apply but are not saved, and are merged
+  as above once the file reads again (one message says so). Quit before
+  fixing it, and they are lost while your text stays exactly as it is.
+- **A file emptied or removed** is not applied (it would read as a fresh
+  install): the app keeps its settings and writes them back with its next
+  save, or when it quits. To start over, quit the app first.
+- **A file kept as it was at start** (one that could not be read, or
+  neither understood nor set aside: see the top) is not looked at: that
+  session still needs a restart, as its message says.
 
 ## Full example
 

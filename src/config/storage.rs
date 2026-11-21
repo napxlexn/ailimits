@@ -4,6 +4,8 @@
 use super::schema::{Config, PendingNotice};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 /// Config path: %APPDATA%\AiLimits\config.toml.
@@ -37,6 +39,11 @@ pub struct Loaded {
     pub config: Config,
     /// None: the file was read and used (or created on a first start).
     pub problem: Option<LoadProblem>,
+    /// The file as it was found or created: its stamp (taken before it was
+    /// read) and the config it holds, brought up to date. None where no
+    /// usable file is there. What the writer and the watch for edits made
+    /// elsewhere start from (`ConfigFile`).
+    pub on_disk: Option<(FileStamp, Config)>,
 }
 
 /// Why the config file was not used as it stands. Each case keeps the file:
@@ -108,6 +115,9 @@ pub async fn load_from(path: &Path) -> Loaded {
 }
 
 async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
+    // Taken before the read: an edit that lands while the file is read
+    // leaves a newer stamp, so the watch reads it again.
+    let stamp = stamp_of(path).ok().flatten();
     let bytes = match read_with_retries(path, retries).await {
         FileRead::Bytes(bytes) => bytes,
         FileRead::Missing => return first_start(path).await,
@@ -117,6 +127,7 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
             return Loaded {
                 config: in_memory(),
                 problem: Some(LoadProblem::Unreadable { error }),
+                on_disk: None,
             };
         }
     };
@@ -125,6 +136,7 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
             let mut config = config;
             migrate(&mut config, origin);
             Loaded {
+                on_disk: stamp.map(|s| (s, config.clone())),
                 config,
                 problem: None,
             }
@@ -141,6 +153,7 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
                     Loaded {
                         config,
                         problem: Some(LoadProblem::SetAside { backup, error }),
+                        on_disk: None,
                     }
                 }
                 Err(e) => {
@@ -149,6 +162,7 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
                     Loaded {
                         config: in_memory(),
                         problem: Some(LoadProblem::Unparsable { error }),
+                        on_disk: None,
                     }
                 }
             }
@@ -162,13 +176,20 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
 async fn first_start(path: &Path) -> Loaded {
     let mut default = Config::default();
     settle_reads(&mut default, Origin::FreshInstall);
-    match save_to(&default, path).await {
-        Ok(()) => tracing::info!("Created default config at {}", path.display()),
-        Err(e) => tracing::warn!("could not write default config ({e}); running in-memory"),
-    }
+    let on_disk = match save_to(&default, path).await {
+        Ok(()) => {
+            tracing::info!("Created default config at {}", path.display());
+            stamp_of(path).ok().flatten().map(|s| (s, default.clone()))
+        }
+        Err(e) => {
+            tracing::warn!("could not write default config ({e}); running in-memory");
+            None
+        }
+    };
     Loaded {
         config: default,
         problem: None,
+        on_disk,
     }
 }
 
@@ -460,9 +481,12 @@ pub async fn save(config: &Config) -> Result<()> {
     save_to(config, &config_path()).await
 }
 
-/// Save the config to a specific path — the seam the background saver and its
-/// tests build on. Refused, with the file untouched, while saving to that
-/// path is held for the session (`LoadProblem::saving_off`).
+/// Save the config to a specific path at once: a first start, the commands
+/// of `ailimits-auth`, tests. The app's own saves go through the background
+/// writer instead (`spawn_saver_for`, `ConfigFile::write`), which also
+/// keeps an edit made elsewhere from being written over. Refused, with the
+/// file untouched, while saving to that path is held for the session
+/// (`LoadProblem::saving_off`).
 pub async fn save_to(config: &Config, path: &Path) -> Result<()> {
     if saving_held(path) {
         anyhow::bail!(
@@ -483,26 +507,30 @@ pub async fn save_to(config: &Config, path: &Path) -> Result<()> {
 /// disk must delay exit, not prevent it.
 const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// A message for the config writer task.
+/// A message for the config writer task, with the generation of the file
+/// it was made against (`ConfigFile::generation`): one made before an edit
+/// that was read since is dropped.
 #[derive(Clone)]
 pub enum SaveMsg {
     /// Persist this config and keep running.
-    Write(Config),
+    Write(Config, u64),
     /// Persist this config, then stop. Always the writer's last action.
-    Final(Config),
+    Final(Config, u64),
 }
 
 /// The single background config writer. Every write goes through it, so two
 /// writes can never interleave or land out of order.
 pub struct ConfigSaver {
-    tx: std::sync::Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
+    tx: Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
     task: tokio::task::JoinHandle<()>,
+    file: Arc<ConfigFile>,
 }
 
 /// A cheap clone of the writer's sending end, for the app's hot paths.
 #[derive(Clone)]
 pub struct ConfigSaverHandle {
-    tx: std::sync::Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
+    tx: Arc<tokio::sync::watch::Sender<Option<SaveMsg>>>,
+    file: Arc<ConfigFile>,
 }
 
 impl ConfigSaverHandle {
@@ -517,10 +545,11 @@ impl ConfigSaverHandle {
     /// picked it up would make the task loop back for more instead of
     /// breaking, and the `JoinHandle` `shutdown` awaits would never resolve.
     pub fn save(&self, config: Config) {
+        let generation = self.file.generation();
         self.tx.send_if_modified(|slot| match slot {
-            Some(SaveMsg::Final(_)) => false,
+            Some(SaveMsg::Final(..)) => false,
             _ => {
-                *slot = Some(SaveMsg::Write(config));
+                *slot = Some(SaveMsg::Write(config, generation));
                 true
             }
         });
@@ -532,6 +561,7 @@ impl ConfigSaver {
     pub fn handle(&self) -> ConfigSaverHandle {
         ConfigSaverHandle {
             tx: self.tx.clone(),
+            file: self.file.clone(),
         }
     }
 
@@ -558,8 +588,8 @@ impl ConfigSaver {
     /// entering the runtime there is always sound; joining it back is a
     /// plain OS-level wait that works from either kind of caller.
     pub fn shutdown(self, config: Config, rt: &tokio::runtime::Handle) {
-        let ConfigSaver { tx, task } = self;
-        let _ = tx.send(Some(SaveMsg::Final(config)));
+        let ConfigSaver { tx, task, file } = self;
+        let _ = tx.send(Some(SaveMsg::Final(config, file.generation())));
         let rt = rt.clone();
         let waited = std::thread::spawn(move || {
             // `tokio::time::timeout` must be constructed AFTER the runtime is
@@ -590,27 +620,57 @@ impl ConfigSaver {
 /// While saving to `path` is held for the session (the file could not be
 /// used at startup and is kept as it is), the saver writes nothing; the
 /// shutdown handshake still completes.
+///
+/// The file found at `path` now counts as known: the first save replaces
+/// it, as it always did. The app starts its writer from what it loaded
+/// instead (`spawn_saver_for`).
 pub fn spawn_saver(handle: &tokio::runtime::Handle, path: PathBuf) -> ConfigSaver {
+    spawn_saver_for(handle, Arc::new(ConfigFile::new(path, None)))
+}
+
+/// `spawn_saver` for a file whose state the app shares with its watch for
+/// edits made elsewhere (`ConfigFile`): each write is checked against it,
+/// and recorded in it.
+pub fn spawn_saver_for(handle: &tokio::runtime::Handle, file: Arc<ConfigFile>) -> ConfigSaver {
     let (tx, mut rx) = tokio::sync::watch::channel::<Option<SaveMsg>>(None);
+    let writer = file.clone();
     let task = handle.spawn(async move {
         let mut told = false;
         while rx.changed().await.is_ok() {
             let msg = rx.borrow_and_update().clone();
-            let (cfg, last) = match msg {
-                Some(SaveMsg::Write(cfg)) => (cfg, false),
-                Some(SaveMsg::Final(cfg)) => (cfg, true),
+            let (cfg, generation, last) = match msg {
+                Some(SaveMsg::Write(cfg, g)) => (cfg, g, false),
+                Some(SaveMsg::Final(cfg, g)) => (cfg, g, true),
                 // The initial `None` seed carries no config.
                 None => continue,
             };
-            if saving_held(&path) {
-                if !told {
-                    tracing::info!(
-                        "config not saved: the file is kept as it was found this session"
-                    );
-                    told = true;
+            // One blocking step: the stamp checked, the file written and its
+            // new stamp recorded under the lock the watch takes, so the
+            // watch never sees a write of the app's own half done.
+            let file = writer.clone();
+            let outcome = tokio::task::spawn_blocking(move || file.write(&cfg, generation))
+                .await
+                .unwrap_or_else(|e| Written::Failed(e.to_string()));
+            match outcome {
+                Written::Done | Written::Same => {}
+                Written::Held => {
+                    if !told {
+                        tracing::info!(
+                            "config not saved: the file is kept as it was found this session"
+                        );
+                        told = true;
+                    }
                 }
-            } else if let Err(e) = save_to(&cfg, &path).await {
-                tracing::warn!("config save failed: {e}");
+                Written::Stale => {
+                    tracing::debug!("config save dropped: made before an edit of the file")
+                }
+                Written::Broken => tracing::info!(
+                    "config not saved: config.toml was edited and does not read; it is kept as it is"
+                ),
+                Written::Unseen => tracing::info!(
+                    "config not saved: config.toml was edited elsewhere; the edit is read first"
+                ),
+                Written::Failed(e) => tracing::warn!("config save failed: {e}"),
             }
             if last {
                 break;
@@ -618,8 +678,311 @@ pub fn spawn_saver(handle: &tokio::runtime::Handle, path: PathBuf) -> ConfigSave
         }
     });
     ConfigSaver {
-        tx: std::sync::Arc::new(tx),
+        tx: Arc::new(tx),
         task,
+        file,
+    }
+}
+
+// ─── The file on disk, shared by the writer and the watch ────────────
+
+/// A file's length and last write time: what tells that it changed on disk,
+/// for one metadata call and no read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    pub modified: Option<std::time::SystemTime>,
+    pub len: u64,
+}
+
+/// The stamp of the file at `path` now; None when there is no file.
+pub fn stamp_of(path: &Path) -> std::io::Result<Option<FileStamp>> {
+    match std::fs::metadata(path) {
+        Ok(m) => Ok(Some(FileStamp {
+            modified: m.modified().ok(),
+            len: m.len(),
+        })),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// What this process knows of its config file, shared by the background
+/// writer and the watch for edits made elsewhere (app/config_watch.rs).
+///
+/// Each write of the app's own records the stamp it left (under the lock
+/// the watch takes), so the watch never takes it for an edit; each edit the
+/// watch reads is recorded the same way. The writer replaces only the file
+/// it knows: one changed elsewhere and not read yet, or read and found
+/// broken, is never written over.
+pub struct ConfigFile {
+    path: PathBuf,
+    state: Mutex<OnDisk>,
+    /// Bumped by every edit read from disk. A save queued before it carries
+    /// an older number and is dropped: it was made from the config the edit
+    /// replaced (the app merges the two and saves again).
+    generation: AtomicU64,
+    /// Told when a change is found off the event loop (the polling cycle, a
+    /// write refused for an edit not read yet), so the edit is read at once.
+    notify: OnceLock<Box<dyn Fn() + Send + Sync>>,
+}
+
+#[derive(Debug, Default)]
+struct OnDisk {
+    /// The file's stamp as last written or read here; None: no file.
+    stamp: Option<FileStamp>,
+    /// The config that file holds, brought up to date; None while unknown
+    /// (removed, emptied, never read).
+    config: Option<Config>,
+    /// Changed elsewhere and does not read: never written over while so.
+    broken: bool,
+}
+
+/// What the background writer did with a config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Written {
+    Done,
+    /// The file already holds this config: left as it is, so its comments
+    /// and layout stay.
+    Same,
+    /// Saving is held for the session (`LoadProblem::saving_off`).
+    Held,
+    /// Made before an edit that was read since.
+    Stale,
+    /// The file was edited and does not read: kept as it is.
+    Broken,
+    /// The file was changed elsewhere and not read yet: kept, and the watch
+    /// told.
+    Unseen,
+    Failed(String),
+}
+
+/// What a look at the file found (`ConfigFile::check`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Change {
+    /// Nothing new on disk.
+    None,
+    /// The file cannot be looked at now (the writer has it, or it is being
+    /// written): look again in a moment.
+    Retry,
+    /// Edited elsewhere and understood: the config it holds now, brought up
+    /// to date as a start would (renamed and added providers, `[reads]` as
+    /// its origin calls for), and what the file held before as far as this
+    /// process knows (None: unknown).
+    Edited {
+        config: Box<Config>,
+        base: Option<Box<Config>>,
+    },
+    /// Edited elsewhere and not understood: where (line and column, never
+    /// the text). Nothing is written over it while it stays so.
+    Broken(String),
+    /// Removed or emptied. Not applied: the settings in memory are written
+    /// back with the next save.
+    Gone,
+}
+
+impl ConfigFile {
+    /// The file at `path` as `on_disk` found it (`Loaded::on_disk`); without
+    /// it, the file there now counts as known, its content unknown.
+    pub fn new(path: PathBuf, on_disk: Option<(FileStamp, Config)>) -> Self {
+        let state = match on_disk {
+            Some((stamp, config)) => OnDisk {
+                stamp: Some(stamp),
+                config: Some(config),
+                broken: false,
+            },
+            None => OnDisk {
+                stamp: stamp_of(&path).ok().flatten(),
+                config: None,
+                broken: false,
+            },
+        };
+        Self {
+            path,
+            state: Mutex::new(state),
+            generation: AtomicU64::new(0),
+            notify: OnceLock::new(),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// What to call when a change is found off the event loop (once).
+    pub fn set_notify(&self, f: impl Fn() + Send + Sync + 'static) {
+        let _ = self.notify.set(Box::new(f));
+    }
+
+    fn tell(&self) {
+        if let Some(f) = self.notify.get() {
+            f();
+        }
+    }
+
+    /// Bumped by every edit read; a save carries the number it was made at.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, OnDisk> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn try_lock(&self) -> Option<MutexGuard<'_, OnDisk>> {
+        match self.state.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        }
+    }
+
+    /// Whether the file changed since it was last written or read here: one
+    /// metadata call, nothing read, never waiting for the writer. For the
+    /// polling cycle, off the event loop; `check` reads the change.
+    pub fn changed(&self) -> bool {
+        if saving_held(&self.path) {
+            return false;
+        }
+        let Some(disk) = self.try_lock() else {
+            return false;
+        };
+        stamp_of(&self.path).is_ok_and(|now| now != disk.stamp)
+    }
+
+    /// `changed`, and the change told (`set_notify`) when there is one.
+    pub fn tell_if_changed(&self) {
+        if self.changed() {
+            self.tell();
+        }
+    }
+
+    /// Look at the file: one metadata call while nothing changed. A change
+    /// is read, parsed and brought up to date as a start would, and
+    /// recorded, so it is reported once. A file that could not be used at
+    /// startup is not looked at (`LoadProblem::saving_off`: restart).
+    pub fn check(&self) -> Change {
+        if saving_held(&self.path) {
+            return Change::None;
+        }
+        let Some(mut disk) = self.try_lock() else {
+            return Change::Retry;
+        };
+        let Ok(now) = stamp_of(&self.path) else {
+            return Change::None;
+        };
+        if now == disk.stamp {
+            return Change::None;
+        }
+        let Some(stamp) = now else {
+            *disk = OnDisk::default();
+            return Change::Gone;
+        };
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return Change::Retry;
+        };
+        // Still being written (an editor that writes in place): read again
+        // in a moment rather than take half a file.
+        if stamp_of(&self.path).ok().flatten() != Some(stamp) {
+            return Change::Retry;
+        }
+        disk.stamp = Some(stamp);
+        if is_blank(&bytes) {
+            disk.config = None;
+            disk.broken = false;
+            return Change::Gone;
+        }
+        match parse(&bytes) {
+            Ok((mut config, origin)) => {
+                migrate(&mut config, origin);
+                let base = disk.config.replace(config.clone());
+                disk.broken = false;
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                Change::Edited {
+                    config: Box::new(config),
+                    base: base.map(Box::new),
+                }
+            }
+            Err(error) => {
+                disk.broken = true;
+                Change::Broken(error)
+            }
+        }
+    }
+
+    /// Write `config`, made at `generation`, unless the file is not the
+    /// one known here: an edit made elsewhere and not read yet, or read and
+    /// broken, is kept (`Written`). Nothing is written when the file already
+    /// holds this config, so a hand edit's comments stay until the app has
+    /// something new to say. Blocking: the writer task runs it off the
+    /// runtime's threads.
+    pub fn write(&self, config: &Config, generation: u64) -> Written {
+        if saving_held(&self.path) {
+            return Written::Held;
+        }
+        let mut disk = self.lock();
+        if generation < self.generation() {
+            return Written::Stale;
+        }
+        if disk.broken {
+            return Written::Broken;
+        }
+        if let Ok(now) = stamp_of(&self.path) {
+            if now != disk.stamp {
+                drop(disk);
+                self.tell();
+                return Written::Unseen;
+            }
+        }
+        if disk.config.as_ref() == Some(config) {
+            return Written::Same;
+        }
+        let written = toml::to_string_pretty(config)
+            .map_err(|e| e.to_string())
+            .and_then(|text| {
+                // The directory may have vanished between runs.
+                if let Some(parent) = self.path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                write_atomically(&self.path, text.as_bytes()).map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => {
+                disk.stamp = stamp_of(&self.path).ok().flatten();
+                disk.config = Some(config.clone());
+                Written::Done
+            }
+            Err(e) => Written::Failed(e),
+        }
+    }
+}
+
+/// Empty, or only white space (with or without a BOM): what an editor
+/// leaves for a moment while it saves, or a file cleared by hand.
+fn is_blank(bytes: &[u8]) -> bool {
+    decode(bytes).is_ok_and(|text| text.trim().is_empty())
+}
+
+/// A unique sibling temp file for an atomic write: two overlapping writes
+/// must not share one (the second would garble the first one's rename).
+fn temp_beside(path: &Path) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(".tmp{n}"));
+    PathBuf::from(tmp)
+}
+
+/// `atomic_write` for a caller that may block (the config writer, under its
+/// lock).
+fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = temp_beside(path);
+    std::fs::write(&tmp, bytes)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
     }
 }
 
@@ -630,14 +993,7 @@ pub fn spawn_saver(handle: &tokio::runtime::Handle, path: PathBuf) -> ConfigSave
 /// old contents survive any interruption. Shared by the config and the
 /// provider cache.
 pub async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    // Unique per write: two overlapping background saves must not share a
-    // temp file (the second writer would garble the first one's rename).
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let n = SEQ.fetch_add(1, Ordering::Relaxed);
-    let mut tmp = path.as_os_str().to_owned();
-    tmp.push(format!(".tmp{n}"));
-    let tmp = PathBuf::from(tmp);
+    let tmp = temp_beside(path);
     tokio::fs::write(&tmp, bytes).await?;
     match tokio::fs::rename(&tmp, path).await {
         Ok(()) => Ok(()),
@@ -874,6 +1230,187 @@ mod tests {
         assert_eq!(dir.names(), ["config.toml"]);
         assert!(block(save_to(&loaded.config, &dir.config())).is_err());
         assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), "[broken");
+        // Not watched either: such a session runs on a config that reads
+        // nothing until a restart, as its message says.
+        let file = ConfigFile::new(dir.config(), loaded.on_disk);
+        std::fs::write(dir.config(), current_text()).unwrap();
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+        assert_eq!(file.write(&loaded.config, 0), Written::Held);
+    }
+
+    // ─── Edits made elsewhere, and the app's own writes ──────────
+
+    /// The file loaded, and its writer's state as the app starts it.
+    fn watched(dir: &Dir, text: &str) -> (Loaded, ConfigFile) {
+        std::fs::write(dir.config(), text).unwrap();
+        let loaded = block(load_with(&dir.config(), &QUICK));
+        assert_eq!(loaded.problem, None);
+        let file = ConfigFile::new(dir.config(), loaded.on_disk.clone());
+        (loaded, file)
+    }
+
+    /// The app's own writes are recorded as they land: the watch never
+    /// takes one for an edit, whether written directly or by the writer.
+    #[test]
+    fn the_apps_own_writes_are_not_edits() {
+        let dir = Dir::new("own");
+        let (loaded, file) = watched(&dir, &current_text());
+        // The file as loaded is known.
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+        let mut config = loaded.config.clone();
+        config.window.pos_x = 4321;
+        assert_eq!(file.write(&config, file.generation()), Written::Done);
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+        // Through the background writer, as the app saves.
+        let file = Arc::new(file);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let saver = spawn_saver_for(rt.handle(), file.clone());
+        config.window.pos_y = 98765;
+        saver.handle().save(config.clone());
+        config.ui.saturation = 7;
+        saver.shutdown(config.clone(), rt.handle());
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+        let on_disk: Config =
+            toml::from_str(&std::fs::read_to_string(dir.config()).unwrap()).unwrap();
+        assert_eq!(on_disk.window.pos_y, 98765);
+        assert_eq!(on_disk.ui.saturation, 7);
+    }
+
+    /// An edit made elsewhere is read once, brought up to date as a start
+    /// would, with what the file held before as the base of the merge.
+    #[test]
+    fn an_edit_made_elsewhere_is_read_once() {
+        let dir = Dir::new("edited");
+        let (loaded, file) = watched(&dir, &current_text());
+        let before = file.generation();
+        std::fs::write(
+            dir.config(),
+            current_text().replace("pos_x = 1200", "pos_x = 33"),
+        )
+        .unwrap();
+        assert!(file.changed());
+        let Change::Edited { config, base } = file.check() else {
+            panic!("no edit read");
+        };
+        assert_eq!(config.window.pos_x, 33);
+        // Brought up to date: the providers 0.7.0 did not have are there.
+        assert!(config.providers.iter().any(|p| p.id == "cursor"));
+        assert_eq!(base.as_deref(), Some(&loaded.config));
+        assert_eq!(file.generation(), before + 1);
+        // Once: the next look finds nothing new.
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+    }
+
+    /// The bug this guards against: an edit saved a moment before the app
+    /// saved a change of its own was written over. The writer keeps a file
+    /// it does not know, tells the watch, and a save made before the edit
+    /// was read is dropped; once read, the app's next save goes through.
+    #[test]
+    fn an_edit_not_read_yet_is_never_written_over() {
+        let dir = Dir::new("unseen");
+        let (loaded, file) = watched(&dir, &current_text());
+        let told = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let told = told.clone();
+            file.set_notify(move || told.store(true, Ordering::SeqCst));
+        }
+        let edit = current_text().replace("pos_x = 1200", "pos_x = 5");
+        std::fs::write(dir.config(), &edit).unwrap();
+        let queued_at = file.generation();
+        let mut ours = loaded.config.clone();
+        ours.ui.saturation = 1;
+        assert_eq!(file.write(&ours, queued_at), Written::Unseen);
+        assert!(told.load(Ordering::SeqCst), "the watch was not told");
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), edit);
+        // Read: the save queued before it is dropped, a new one is written.
+        assert!(matches!(file.check(), Change::Edited { .. }));
+        assert_eq!(file.write(&ours, queued_at), Written::Stale);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), edit);
+        assert_eq!(file.write(&ours, file.generation()), Written::Done);
+    }
+
+    /// An edit that does not parse is said by its place only, kept exactly
+    /// as it is, and never saved over - directly, by the writer, or at the
+    /// exit - until it reads again; then the last good config is the base.
+    #[test]
+    fn a_broken_edit_is_kept_and_never_saved_over() {
+        let dir = Dir::new("broken-edit");
+        let (loaded, file) = watched(&dir, &current_text());
+        let broken = format!(
+            "{}\n[hooks]\non_reset = \"sk-ant-SECRET\" junk\n",
+            current_text()
+        );
+        std::fs::write(dir.config(), &broken).unwrap();
+        let Change::Broken(error) = file.check() else {
+            panic!("not broken");
+        };
+        assert!(error.contains("at line "), "{error}");
+        assert!(!error.contains("SECRET"), "{error}");
+        // Told once: the next look finds nothing new.
+        assert_eq!(file.check(), Change::None);
+        let mut ours = loaded.config.clone();
+        ours.window.locked = true;
+        assert_eq!(file.write(&ours, file.generation()), Written::Broken);
+        let file = Arc::new(file);
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let saver = spawn_saver_for(rt.handle(), file.clone());
+        saver.handle().save(ours.clone());
+        saver.shutdown(ours.clone(), rt.handle());
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), broken);
+        assert_eq!(dir.names(), ["config.toml"]);
+        // Fixed: read, with the last config that read as the base.
+        let fixed = current_text().replace("pos_y = 80", "pos_y = 81");
+        std::fs::write(dir.config(), &fixed).unwrap();
+        let Change::Edited { config, base } = file.check() else {
+            panic!("the fix was not read");
+        };
+        assert_eq!(config.window.pos_y, 81);
+        assert_eq!(base.as_deref(), Some(&loaded.config));
+        assert_eq!(file.write(&ours, file.generation()), Written::Done);
+    }
+
+    /// A config the file already holds is not written again: a hand edit's
+    /// comments and layout stay until the app has something new to say.
+    #[test]
+    fn the_same_config_is_not_written_again() {
+        let dir = Dir::new("same");
+        let text = format!("# my notes\n{}", current_text());
+        let (loaded, file) = watched(&dir, &text);
+        assert_eq!(file.write(&loaded.config, 0), Written::Same);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), text);
+        // An edited file read is known the same way.
+        let edited = text.replace("# my notes", "# my notes, longer now");
+        std::fs::write(dir.config(), &edited).unwrap();
+        let Change::Edited { config, .. } = file.check() else {
+            panic!("no edit read");
+        };
+        assert_eq!(file.write(&config, file.generation()), Written::Same);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), edited);
+    }
+
+    /// A file emptied (or caught empty while an editor saves it) or
+    /// removed is not applied - it would read as a fresh install - and the
+    /// next save writes the settings back.
+    #[test]
+    fn an_emptied_or_removed_file_is_not_applied() {
+        let dir = Dir::new("emptied");
+        let (loaded, file) = watched(&dir, &current_text());
+        std::fs::write(dir.config(), "  \r\n").unwrap();
+        assert_eq!(file.check(), Change::Gone);
+        assert_eq!(file.check(), Change::None);
+        assert_eq!(file.write(&loaded.config, 0), Written::Done);
+        std::fs::remove_file(dir.config()).unwrap();
+        assert_eq!(file.check(), Change::Gone);
+        assert_eq!(file.write(&loaded.config, 0), Written::Done);
+        assert_eq!(
+            block(load_with(&dir.config(), &QUICK)).config,
+            loaded.config
+        );
     }
 
     /// Notepad's encodings: UTF-8 with a BOM and UTF-16 with a BOM read as

@@ -234,6 +234,9 @@ impl App {
     /// Apply what the picker asks for to the config and every surface at
     /// once.
     pub(super) fn apply_picker_actions(&mut self, actions: Vec<PickerAction>) {
+        // An edit of config.toml made meanwhile first: the actions apply on
+        // top of the file as it is now (app/config_watch.rs).
+        self.check_config_file();
         // The menu's question sends its Allow alone; a row's Allow comes
         // with the row it was asked for.
         let lone = actions.len() == 1;
@@ -242,6 +245,11 @@ impl App {
             // The Sign-in block's actions reach the Credential Manager, the
             // clipboard and the browser (app/sign_in.rs).
             if self.on_sign_in_action(&action) {
+                continue;
+            }
+            // The settings file opens in Notepad (app/config_watch.rs).
+            if action == PickerAction::OpenSettingsFile {
+                self.open_settings_file();
                 continue;
             }
             let done = crate::choices::apply(&mut self.config, &action);

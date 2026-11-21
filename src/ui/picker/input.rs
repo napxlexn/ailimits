@@ -361,6 +361,7 @@ impl Picker {
             Target::CursorSignIn => vec![PickerAction::CursorSignIn],
             Target::CursorCancel => vec![PickerAction::CursorCancel],
             Target::CursorSignOut => vec![PickerAction::CursorSignOut],
+            Target::SettingsFile => vec![PickerAction::OpenSettingsFile],
             Target::NamesOf(p) => {
                 if let Some(i) = self.open_names.iter().position(|o| o == p) {
                     self.open_names.remove(i);

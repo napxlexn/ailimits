@@ -560,7 +560,34 @@ impl Picker {
                 }
             }
         }
+        // The settings file, for what has no place here. Not in the
+        // welcome, which is about what to read.
+        if !welcome {
+            self.flow_settings_file(f);
+        }
         f.y += 10.0;
+    }
+
+    /// "Settings file...": a small link at the list's end, its description
+    /// on hover.
+    pub(super) fn flow_settings_file(&self, f: &mut Flow) {
+        self.flow_sep(f);
+        const PAD: f32 = 4.0;
+        let w = self.adv(SETTINGS_FILE, SIZE_NOTE).ceil();
+        let r = rect(PAD_X - PAD, f.y, w + PAD * 2.0, lh(SIZE_NOTE) + 8.0);
+        f.els.push(El::Link {
+            target: Target::SettingsFile,
+            rect: r,
+            label: SETTINGS_FILE.to_string(),
+            pad: PAD,
+            nav: (f.nav, 0),
+        });
+        f.els.push(El::Hint {
+            rect: r,
+            text: SETTINGS_FILE_HINT.to_string(),
+        });
+        f.nav += 1;
+        f.y += r.h;
     }
 
     /// One row: its name (and note) with a Widget and a Tooltip tick.

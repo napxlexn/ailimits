@@ -28,6 +28,9 @@ app.rs ─── App: володіє всім (конфіг, дані, вікн�
    │                          коли змінився його BuildKey (конфіг, tool_files, Grok Bot)
    ├── app/cache.rs           provider-cache.json: один записувач, менше записів
    ├── app/model_job.rs       що читають підписи моделей; один читач водночас
+   ├── app/config_watch.rs    config.toml, змінений вручну: перевірка за штампом
+   │                          (цикл, дії, 2 с після Settings file...), злиття зі
+   │                          змінами програми, застосування частинами
    ├── app/clipboard.rs       перевірка форми вставленого ключа чи usage-токена
    ├── app/widget.rs, app/indicator.rs  вікно overlay; запасна трей-іконка
    ├── monitor/scheduler.rs   tokio-задача: цикл fetch_all → sleep(interval);

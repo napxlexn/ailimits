@@ -114,6 +114,9 @@ pub enum PickerAction {
     CursorSignIn,
     CursorCancel,
     CursorSignOut,
+    /// Open config.toml (in Notepad), for the fine-tuning that has no place
+    /// in the window. The app applies what is saved there.
+    OpenSettingsFile,
     /// The welcome or the update notice was answered (a button, the cross,
     /// Esc, Alt+F4 or an answered question); it is not owed again. Losing
     /// the focus to another window is no answer.
@@ -583,6 +586,9 @@ const IN_USE: &str = "in use";
 const SOURCE_SET_HINT: &str =
     "The model chosen in each tool's settings, whatever a session is using.";
 const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI session, read from the end of its file. The other tools show the model as set.";
+/// The link at the list's end, and what it says on hover.
+const SETTINGS_FILE: &str = "Settings file...";
+const SETTINGS_FILE_HINT: &str = "Fine-tuning that has no place in this window: sizes, colours, thresholds. Opens config.toml in Notepad; changes apply when you save.";
 const ALLOW_ALL: &str = "Allow all";
 const ALLOW_ALL_LEAD: &str = "Allow all also starts the other tools found on this PC:";
 const FOUND_TITLE: &str = "Show the tools found on this PC?";
@@ -753,6 +759,8 @@ enum Target {
     CursorSignIn,
     CursorCancel,
     CursorSignOut,
+    /// The "Settings file..." link.
+    SettingsFile,
 }
 
 /// Keyboard grid position: (row, column).
@@ -828,6 +836,16 @@ enum El {
         rect: Rect,
         text: String,
     },
+    /// A line of text that acts when clicked, in the accent: underlined
+    /// under the pointer. `rect` answers to the pointer; the text sits
+    /// `pad` in from its left.
+    Link {
+        target: Target,
+        rect: Rect,
+        label: String,
+        pad: f32,
+        nav: Nav,
+    },
 }
 
 impl El {
@@ -851,7 +869,8 @@ impl El {
             | El::Button { rect, .. }
             | El::Close { rect, .. }
             | El::Toggle { rect, .. }
-            | El::Hint { rect, .. } => *rect = m(rect),
+            | El::Hint { rect, .. }
+            | El::Link { rect, .. } => *rect = m(rect),
         }
         e
     }
@@ -887,6 +906,9 @@ impl El {
                 target, rect, nav, ..
             }
             | El::Toggle {
+                target, rect, nav, ..
+            }
+            | El::Link {
                 target, rect, nav, ..
             } => Some((target, *rect, *nav)),
             El::Close { rect, nav } => Some((&Target::Close, *rect, *nav)),

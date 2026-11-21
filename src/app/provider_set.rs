@@ -63,8 +63,15 @@ fn built_config(config: &Config, pc: &ProviderConfig) -> ProviderConfig {
 }
 
 fn build_key(config: &Config, id: &ProviderId, pc: &ProviderConfig) -> BuildKey {
+    // The alert threshold is the event loop's (`ProviderSet::threshold`),
+    // not the instance's: a threshold edited in config.toml rebuilds
+    // nothing and keeps the numbers on screen.
+    let built = ProviderConfig {
+        alert_threshold: 0,
+        ..pc.clone()
+    };
     BuildKey {
-        config: serde_json::to_value(pc).unwrap_or(serde_json::Value::Null),
+        config: serde_json::to_value(&built).unwrap_or(serde_json::Value::Null),
         tool_files: pc.tool_files,
         grok_bot: *id == ProviderId::Cursor && grok_bot_wanted(config),
     }
@@ -339,6 +346,21 @@ mod tests {
         config.allow_sign_in("codex");
         let ids: Vec<ProviderId> = set.sync(&config, None).into_iter().map(|r| r.id).collect();
         assert_eq!(ids, [ProviderId::Claude, ProviderId::Codex]);
+    }
+
+    /// A threshold changed (in config.toml) rebuilds nothing: the instance
+    /// does not use it, and its numbers stay on screen. The new value is
+    /// the one alerts go by.
+    #[test]
+    fn a_threshold_edit_keeps_every_instance() {
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        let mut set = ProviderSet::new(&config);
+        let claude = serial_of(&set, &ProviderId::Claude);
+        config.providers[0].alert_threshold = 55;
+        assert!(set.sync(&config, None).is_empty());
+        assert_eq!(serial_of(&set, &ProviderId::Claude), claude);
+        assert_eq!(set.threshold(&ProviderId::Claude), 55);
     }
 
     #[test]

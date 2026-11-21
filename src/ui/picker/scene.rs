@@ -441,6 +441,54 @@ impl Picker {
                 }
             }
             El::Hint { .. } => {}
+            El::Link {
+                target,
+                rect: r,
+                label,
+                pad,
+                ..
+            } => {
+                if self.ring(target) {
+                    out.push(Shape::Stroke {
+                        rect: *r,
+                        radius: 4.0,
+                        width: 2.0,
+                        ink: Ink::Text,
+                        alpha: Level::Full,
+                    });
+                }
+                let (x, y) = (r.x + pad, r.y + ((r.h - lh(SIZE_NOTE)) / 2.0).round());
+                let down = pressed(target);
+                let level = if down {
+                    Level::AccentPressed
+                } else {
+                    Level::Full
+                };
+                out.push(Shape::Text {
+                    x,
+                    y,
+                    text: label.clone(),
+                    size: SIZE_NOTE,
+                    ink: Ink::Accent,
+                    bold: false,
+                    italic: false,
+                    alpha: level,
+                });
+                // Underlined under the pointer, as a link is.
+                if down || hovered == Some(target) {
+                    out.push(Shape::Fill {
+                        rect: rect(
+                            x,
+                            y + lh(SIZE_NOTE) - 2.0,
+                            self.adv(label, SIZE_NOTE).round(),
+                            1.0,
+                        ),
+                        radius: 0.0,
+                        ink: Ink::Accent,
+                        alpha: level,
+                    });
+                }
+            }
             El::Close { rect: r, .. } => {
                 let t = Target::Close;
                 if hovered == Some(&t) || self.ring(&t) {
@@ -664,7 +712,8 @@ pub(super) fn el_rect(el: &El) -> Option<Rect> {
         | El::Button { rect, .. }
         | El::Close { rect, .. }
         | El::Toggle { rect, .. }
-        | El::Hint { rect, .. } => Some(*rect),
+        | El::Hint { rect, .. }
+        | El::Link { rect, .. } => Some(*rect),
         El::Shape(Shape::Text { x, y, size, .. }) => Some(rect(*x, *y, 1.0, lh(*size))),
     }
 }
