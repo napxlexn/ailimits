@@ -966,4 +966,54 @@ mod tests {
         // Deleting what is not there is fine.
         delete_at(&label).expect("nothing to delete");
     }
+
+    /// The record in Credential Manager holds epoch seconds; a record 0.7.0
+    /// wrote reads and is written back to the byte.
+    #[test]
+    fn the_record_reads_and_is_written_as_before() {
+        for record in [
+            r#"{"access_token":"a.b.c","expires_at":4102444800,"refreshed_at":1794823200}"#,
+            r#"{"access_token":"a.b.c","refresh_token":"r","expires_at":0,"refreshed_at":-1,"ended":true}"#,
+            r#"{"access_token":"a.b.c","expires_at":-62135596800}"#,
+            r#"{"access_token":"a.b.c"}"#,
+        ] {
+            assert_eq!(OwnSession::decode(record).unwrap().encode(), record);
+        }
+        let s = OwnSession::decode(r#"{"access_token":"t","expires_at":1794823200}"#).unwrap();
+        assert_eq!(
+            s.expires_at,
+            crate::utc::parse_rfc3339("2026-11-16T10:00:00Z")
+        );
+        // A refresh noted mid-second is kept in whole seconds, rounded down.
+        let noted = s.after_refresh(
+            &RefreshAnswer::Unrecognized,
+            crate::utc::parse_rfc3339("2026-11-16T10:00:00.999Z").unwrap(),
+        );
+        assert_eq!(
+            noted.encode(),
+            r#"{"access_token":"t","expires_at":1794823200,"refreshed_at":1794823200}"#
+        );
+        // An instant no calendar holds reads as none.
+        let huge = OwnSession::decode(r#"{"access_token":"t","expires_at":9223372036854775807}"#);
+        assert_eq!(huge.unwrap().expires_at, None);
+    }
+
+    /// Refreshed within 7 days of the expiry, to the nanosecond, never after
+    /// it, and at most once in 24 hours.
+    #[test]
+    fn the_refresh_boundaries_hold_to_the_nanosecond() {
+        let t = |text: &str| crate::utc::parse_rfc3339(text).unwrap();
+        let now = t("2026-11-16T10:00:00Z");
+        assert!(session(Some(t("2026-11-23T10:00:00Z"))).near_expiry(now));
+        assert!(!session(Some(t("2026-11-23T10:00:00.000000001Z"))).near_expiry(now));
+        assert!(session(Some(t("2026-11-16T10:00:00.000000001Z"))).near_expiry(now));
+        assert!(!session(Some(now)).near_expiry(now));
+        assert!(session(Some(now)).is_expired(now));
+        assert!(!session(Some(t("2026-11-16T10:00:00.000000001Z"))).is_expired(now));
+        assert!(attempt_due(None, now));
+        assert!(attempt_due(Some(t("2026-11-15T10:00:00Z")), now));
+        assert!(!attempt_due(Some(t("2026-11-15T10:00:00.000000001Z")), now));
+        // A clock set back: the last attempt lies ahead, none is due.
+        assert!(!attempt_due(Some(t("2026-11-17T10:00:00Z")), now));
+    }
 }

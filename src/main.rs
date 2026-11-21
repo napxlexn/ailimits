@@ -267,6 +267,17 @@ mod tests {
         );
     }
 
+    /// The crash log's time is whole seconds in UTC with "Z": a fraction is
+    /// dropped, never rounded up.
+    #[test]
+    fn a_crash_line_keeps_whole_seconds() {
+        let now = ailimits::utc::parse_rfc3339("2026-11-16T11:59:59.999999999+02:00").unwrap();
+        assert_eq!(
+            crash_line(now, "0.7.1", "ui", None),
+            "2026-11-16T09:59:59Z AI Limits 0.7.1: panic in thread 'ui' at an unknown place\n"
+        );
+    }
+
     #[test]
     fn a_dependencys_path_drops_the_builders_folders() {
         assert_eq!(

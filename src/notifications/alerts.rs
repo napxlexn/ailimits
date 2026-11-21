@@ -283,4 +283,65 @@ mod tests {
         assert!(!see(&mut book, 20.0, None, 2 * 24 * 60));
         assert_eq!(book.to_json(), None);
     }
+
+    fn json(book: &AlertBook) -> String {
+        String::from_utf8(book.to_json().unwrap()).unwrap()
+    }
+
+    /// `alerts.json` as 0.7.0 wrote it reads and is written back to the byte.
+    #[test]
+    fn the_alerts_file_reads_and_is_written_as_before() {
+        let file = r#"{
+  "providers": {
+    "claude": {
+      "windows": [
+        null,
+        "2026-11-16T10:00:00Z",
+        "2026-11-16T15:00:00.123Z",
+        "2026-11-16T15:00:00.123456789Z"
+      ],
+      "last": "2026-11-16T10:00:00.123456700Z"
+    }
+  }
+}"#;
+        assert_eq!(json(&AlertBook::from_json(file)), file);
+        // Fields left out read as empty and are written in full.
+        assert_eq!(
+            json(&AlertBook::from_json(r#"{"providers":{"codex":{}}}"#)),
+            "{\n  \"providers\": {\n    \"codex\": {\n      \"windows\": [],\n      \"last\": null\n    }\n  }\n}"
+        );
+        // The reading is chrono's lenient one: offsets, spaces, "UTC".
+        assert_eq!(
+            json(&AlertBook::from_json(
+                r#"{"providers":{"grok":{"windows":["2026-11-16 12:00:00 +02:00", " 2026-1-5T1:2:3.5Z "],"last":"2026-11-16T10:00:00utc"}}}"#
+            )),
+            "{\n  \"providers\": {\n    \"grok\": {\n      \"windows\": [\n        \"2026-11-16T10:00:00Z\",\n        \"2026-01-05T01:02:03.500Z\"\n      ],\n      \"last\": \"2026-11-16T10:00:00Z\"\n    }\n  }\n}"
+        );
+        // An instant that does not read costs the whole book: one alert
+        // again at worst.
+        for last in ["2026-11-16T10:00Z", "2026-11-16T10:00:00", "1", "null x"] {
+            let text = format!(r#"{{"providers":{{"claude":{{"last":"{last}"}}}}}}"#);
+            assert_eq!(AlertBook::from_json(&text), AlertBook::default(), "{last}");
+        }
+        assert_eq!(
+            AlertBook::from_json(r#"{"providers":{"claude":{"last":1794823200}}}"#),
+            AlertBook::default()
+        );
+    }
+
+    /// Two resets less than 11 whole minutes apart (counted toward zero) are
+    /// one window, whichever comes first.
+    #[test]
+    fn resets_ten_minutes_apart_are_one_window() {
+        let t = crate::utc::parse_rfc3339;
+        let base = t("2026-11-16T10:00:00Z");
+        let near = t("2026-11-16T10:10:59.999999999Z");
+        let far = t("2026-11-16T10:11:00Z");
+        assert!(same_window(base, near));
+        assert!(same_window(near, base));
+        assert!(!same_window(base, far));
+        assert!(!same_window(far, base));
+        assert!(same_window(None, None));
+        assert!(!same_window(base, None));
+    }
 }

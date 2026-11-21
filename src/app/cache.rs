@@ -561,4 +561,100 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"final");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// `provider-cache.json` as 0.7.0 wrote it: every instant in UTC with "Z"
+    /// and 0, 3, 6 or 9 fractional digits. It reads and is written back to
+    /// the byte, so either version reads what the other wrote.
+    const CACHE_FILE: &str = r#"[
+  {
+    "id": "claude",
+    "status": "Ok",
+    "metrics": [
+      {
+        "label": "Session",
+        "used": 20,
+        "limit": 100,
+        "unit": "Percent",
+        "reset_at": "2099-11-16T15:00:00Z",
+        "window": "Session"
+      },
+      {
+        "label": "Weekly",
+        "used": 60,
+        "limit": 100,
+        "unit": "Percent",
+        "reset_at": "2099-11-20T08:59:59.407Z",
+        "window": "Long"
+      },
+      {
+        "label": "Fable",
+        "used": 5,
+        "limit": 100,
+        "unit": "Percent",
+        "reset_at": "2099-11-20T09:00:00.123456Z",
+        "window": "Long",
+        "extra_only": true
+      }
+    ],
+    "updated_at": "2026-11-21T07:58:01.123456700Z"
+  },
+  {
+    "id": "codex",
+    "status": "Ok",
+    "metrics": [
+      {
+        "label": "Session",
+        "used": 7,
+        "limit": 100,
+        "unit": "Percent",
+        "reset_at": "2100-01-01T00:00:00.000000001Z",
+        "window": "Session"
+      },
+      {
+        "label": "Weekly",
+        "used": 9,
+        "limit": 100,
+        "unit": "Percent",
+        "reset_at": "2300-01-01T00:00:30.500Z",
+        "window": "Long"
+      }
+    ],
+    "updated_at": "2026-11-21T07:58:00Z"
+  }
+]"#;
+
+    fn cache_file() -> HashMap<ProviderId, ProviderData> {
+        serde_json::from_str::<Vec<ProviderData>>(CACHE_FILE)
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.id.clone(), d))
+            .collect()
+    }
+
+    #[test]
+    fn the_cache_file_reads_and_is_written_as_before() {
+        let bytes = cache_file_bytes(&cache_file()).unwrap();
+        assert_eq!(String::from_utf8(bytes).unwrap(), CACHE_FILE);
+    }
+
+    /// Resets count to the minute, rounded down; one past 2262 (out of the
+    /// i64-nanosecond range) is compared as it is.
+    #[test]
+    fn the_cache_meaning_holds_resets_to_the_minute() {
+        assert_eq!(
+            cache_meaning(&cache_file()),
+            concat!(
+                r#"[[0,[{"label":"Session","used":20,"limit":100,"unit":"Percent","#,
+                r#""reset_at":"2099-11-16T15:00:00Z","window":"Session"},"#,
+                r#"{"label":"Weekly","used":60,"limit":100,"unit":"Percent","#,
+                r#""reset_at":"2099-11-20T08:59:00Z","window":"Long"},"#,
+                r#"{"label":"Fable","used":5,"limit":100,"unit":"Percent","#,
+                r#""reset_at":"2099-11-20T09:00:00Z","window":"Long","extra_only":true}]],"#,
+                r#"[1,[{"label":"Session","used":7,"limit":100,"unit":"Percent","#,
+                r#""reset_at":"2100-01-01T00:00:00Z","window":"Session"},"#,
+                r#"{"label":"Weekly","used":9,"limit":100,"unit":"Percent","#,
+                r#""reset_at":"2300-01-01T00:00:30.500Z","window":"Long"}]]]"#,
+            )
+        );
+    }
 }

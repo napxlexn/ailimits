@@ -183,6 +183,51 @@ mod tests {
         );
     }
 
+    /// `AILIMITS_RESET_AT` as 0.7.0 set it: RFC 3339 in UTC with "+00:00"
+    /// and 0, 3, 6 or 9 fractional digits.
+    #[test]
+    fn the_reset_reaches_the_hook_as_before() {
+        let reset_at = |text: &str| {
+            let reset = crate::utc::parse_rfc3339(text);
+            assert!(reset.is_some(), "{text}");
+            let cmd =
+                hook_command("exit 0", HookEvent::Reset, &ProviderId::Claude, None, reset).unwrap();
+            let value = cmd
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == "AILIMITS_RESET_AT")
+                .and_then(|(_, value)| value)
+                .map(|v| v.to_string_lossy().into_owned());
+            value.unwrap()
+        };
+        assert_eq!(
+            reset_at("2026-11-16T12:00:00+02:00"),
+            "2026-11-16T10:00:00+00:00"
+        );
+        assert_eq!(
+            reset_at("2026-11-16T10:00:00.4Z"),
+            "2026-11-16T10:00:00.400+00:00"
+        );
+        assert_eq!(
+            reset_at("2026-11-16T10:00:00.000001Z"),
+            "2026-11-16T10:00:00.000001+00:00"
+        );
+        assert_eq!(
+            reset_at("2026-11-09T05:43:16.908847600Z"),
+            "2026-11-09T05:43:16.908847600+00:00"
+        );
+        assert_eq!(
+            reset_at("1969-12-31T23:59:59.5Z"),
+            "1969-12-31T23:59:59.500+00:00"
+        );
+        let none = hook_command("exit 0", HookEvent::Reset, &ProviderId::Claude, None, None);
+        assert!(!none
+            .unwrap()
+            .as_std()
+            .get_envs()
+            .any(|(key, _)| key == "AILIMITS_RESET_AT"));
+    }
+
     #[test]
     fn a_line_break_refuses_the_command_whole() {
         assert_eq!(cmd_arguments("echo one\r\ndel x"), None);

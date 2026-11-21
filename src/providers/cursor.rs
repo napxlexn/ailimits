@@ -1175,4 +1175,27 @@ mod tests {
         let long = format!(r#"{{"planInfo":{{"planName":"{}"}}}}"#, "x".repeat(90));
         assert_eq!(parse_plan_info(&long).unwrap().name.unwrap().len(), 32);
     }
+
+    /// Without a plan the cycle's length names it, in whole days counted
+    /// down: 6–8 a week, 27–32 a month.
+    #[test]
+    fn the_cycle_length_names_the_period_in_whole_days() {
+        let label = |end: &str| {
+            let usage = PeriodUsage {
+                used: 1,
+                start: crate::utc::parse_rfc3339("2026-11-01T00:00:00Z"),
+                end: crate::utc::parse_rfc3339(end),
+            };
+            usage_label(&usage, None)
+        };
+        assert_eq!(label("2026-11-06T23:59:59.999999999Z"), "Included");
+        assert_eq!(label("2026-11-07T00:00:00Z"), "Weekly");
+        assert_eq!(label("2026-11-09T23:59:59.999999999Z"), "Weekly");
+        assert_eq!(label("2026-11-10T00:00:00Z"), "Included");
+        assert_eq!(label("2026-11-27T23:59:59Z"), "Included");
+        assert_eq!(label("2026-11-28T00:00:00Z"), "Monthly");
+        assert_eq!(label("2026-12-03T23:59:59.999Z"), "Monthly");
+        assert_eq!(label("2026-12-04T00:00:00Z"), "Included");
+        assert_eq!(label("2026-10-25T00:00:00Z"), "Included");
+    }
 }
