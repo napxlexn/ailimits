@@ -185,17 +185,23 @@ percent = false
 reset   = true
 
 # What each row of the taskbar panel shows (menu: Rows and models...,
-# Percent and Reset time, Taskbar column): the percentage with its bar (as
-# in 0.7.0), the time left until the limit the row shows resets in the
-# bar's place ("25%  2h14"), or the time alone before the bar ("2h14 ▬▬").
-# Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the row's own
-# reset is not known. Never neither. Written only once changed; without
-# it, the percentage alone. The panel keeps its size either way; while it
-# shows a time it repaints when the time next reads differently (once a
-# minute, once an hour past a day), and asks the shell nothing for it.
+# Percent, Reset time and Progress bar, Taskbar column): the percentage
+# with its bar (as in 0.7.0), the time alone before the bar ("2h14 ▬▬"), or
+# both with the bar between them ("25% ▬▬ 2h14"; on a side taskbar the time
+# under the percentage). Compact like the clock: 3d4h, 2h14, 12m, <1m; a
+# dash when the row's own reset is not known. Never neither number.
+# `bar = false` leaves the bar out for a narrower panel ("25%", "2h14",
+# "25%  2h14"); without the key the bar is on. Written only once changed;
+# without it, the percentage with its bar. The panel is as long as what it
+# shows (119 px at 100% for a number and the bar, 161 px with both numbers,
+# 50 px for one number alone); with no room for it on the taskbar the tray
+# icon stands in. While it shows a time it repaints when the time next reads
+# differently (once a minute, once an hour past a day), and asks the shell
+# nothing for it.
 [ui.panel]
 percent = true
 reset   = true
+bar     = true
 
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"

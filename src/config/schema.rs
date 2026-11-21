@@ -445,13 +445,17 @@ pub enum Surface {
 /// (`UIConfig::tooltip`) or on the taskbar panel itself (`UIConfig::panel`):
 /// the percentage, the time left until it resets, or both; never neither
 /// (the picker keeps one on). The tray icon's own tooltip always says the
-/// percentages; the widget always shows both.
+/// percentages; the widget always shows both. `bar` is the taskbar panel's
+/// progress bar, on unless switched off to take less of the taskbar; the
+/// tooltip has none and ignores it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UiNumbers {
     #[serde(default = "default_true")]
     pub percent: bool,
     #[serde(default = "default_true")]
     pub reset: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub bar: bool,
 }
 
 /// Both, the owner's choice (2026-11-20): each row says how much is used
@@ -461,15 +465,18 @@ impl Default for UiNumbers {
         Self {
             percent: true,
             reset: true,
+            bar: true,
         }
     }
 }
 
 impl UiNumbers {
-    /// The percentage alone: the tooltip's one line of 0.7.0.
+    /// The percentage alone (with the panel's bar): the tooltip's one line
+    /// and the panel of 0.7.0.
     pub const PERCENT_ONLY: Self = Self {
         percent: true,
         reset: false,
+        bar: true,
     };
 }
 
@@ -492,15 +499,17 @@ impl UiNumbers {
         match part {
             TipPart::Percent => self.percent,
             TipPart::Reset => self.reset,
+            TipPart::Bar => self.bar,
         }
     }
 
-    /// Turn `part` on or off; the last one on stays on.
+    /// Turn `part` on or off; the last number on stays on (the bar is free).
     pub fn set(&mut self, part: TipPart, on: bool) {
         let mut next = *self;
         match part {
             TipPart::Percent => next.percent = on,
             TipPart::Reset => next.reset = on,
+            TipPart::Bar => next.bar = on,
         }
         if next.percent || next.reset {
             *self = next;
@@ -508,11 +517,13 @@ impl UiNumbers {
     }
 }
 
-/// One thing a tooltip or panel row can show (`UiNumbers`).
+/// One thing a tooltip or panel row can show (`UiNumbers`). The bar is the
+/// taskbar panel's only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TipPart {
     Percent,
     Reset,
+    Bar,
 }
 
 /// Where a `UiNumbers` choice applies: the panel's tooltip or the taskbar
@@ -744,4 +755,8 @@ fn default_cooldown() -> u32 {
 }
 fn default_true() -> bool {
     true
+}
+
+fn is_true(v: &bool) -> bool {
+    *v
 }

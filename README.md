@@ -188,7 +188,9 @@ none of the auth sources listed below until you allow it.
    (model, version, effort) and where each provider's sign-in comes from.
    Its Taskbar column picks the two providers the panel and the tray icon
    show; Percent and Reset time choose whether the panel and its tooltip
-   show the percentage, the time until the limit resets, or both.
+   show the percentage, the time until the limit resets, or both, and
+   Progress bar (on by default) can leave the panel's bar out to take less
+   of the taskbar.
 4. **Hover a provider row** to swap its reset countdown for its weekly limit.
    A greyed or `≈` row shows the reason and the fix instead, for example
    `token expired — run Claude Code`.

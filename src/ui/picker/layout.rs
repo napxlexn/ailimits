@@ -381,6 +381,10 @@ impl Picker {
                 (1, NumbersOn::Tooltip, COL_TOOLTIP),
                 (2, NumbersOn::Panel, COL_TASKBAR),
             ] {
+                // The tooltip has no bar to show or hide.
+                if part == TipPart::Bar && place == NumbersOn::Tooltip {
+                    continue;
+                }
                 f.els.push(El::Tick {
                     target: Target::Tip(part, place),
                     cell: rect(cx - COL_W / 2.0, y, COL_W, h),

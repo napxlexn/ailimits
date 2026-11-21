@@ -601,9 +601,9 @@ fn count_of(n: usize, one: &str) -> String {
 }
 
 /// What each row of the panel's tooltip can show besides its name, with a
-/// sample and what it says on hover. Only the tooltip chooses: the widget
-/// always shows both.
-const TIP_PARTS: [(TipPart, &str, &str, &str); 2] = [
+/// sample and what it says on hover. Only the tooltip and the taskbar panel
+/// choose: the widget always shows both. The bar is the panel's only.
+const TIP_PARTS: [(TipPart, &str, &str, &str); 3] = [
     (
         TipPart::Percent,
         "Percent",
@@ -614,7 +614,13 @@ const TIP_PARTS: [(TipPart, &str, &str, &str); 2] = [
         TipPart::Reset,
         "Reset time",
         "2h 14min · 4d 3h",
-        "How long until the limit the row shows resets. The widget always shows it; tick it to see it in the tooltip or on the taskbar panel too. On the panel it takes the bar's place beside the percentage.",
+        "How long until the limit the row shows resets. The widget always shows it; tick it to see it in the tooltip or on the taskbar panel too. On the panel it follows the bar, or stands in the percentage's place when that is left out.",
+    ),
+    (
+        TipPart::Bar,
+        "Progress bar",
+        "taskbar panel only",
+        "The bar beside each number on the taskbar panel. Untick it to show the numbers alone and take less of the taskbar.",
     ),
 ];
 

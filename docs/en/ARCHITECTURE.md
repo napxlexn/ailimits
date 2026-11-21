@@ -436,7 +436,8 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   owner's decision (`UPDATE_PINNED_BASELINE=1`); never re-record them to
   make a test pass.
 - **Other groups** (`picker`, `widget-rows`, `tooltip-rows`,
-  `panel-numbers`: the panel's percentage, reset time or both) cover new
+  `panel-numbers`: the panel's percentage, reset time or both, with or
+  without its bar, each at the size the app gives it) cover new
   looks; they are re-recorded with `UPDATE_BASELINE=1` only for an intended
   change, said in the commit.
 - **The font.** Every hash depends on the UI font (the first of

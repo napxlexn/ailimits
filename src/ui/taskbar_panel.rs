@@ -144,14 +144,92 @@ fn pixmap_to_bgra(pm: &Pixmap) -> Vec<u8> {
     bgra
 }
 
+/// The classic panel's columns along a horizontal bar, as fractions of its
+/// width: the margin, a number's column, the gap between columns, the bar.
+const H_PAD: f32 = 0.06;
+const H_NUM: f32 = 0.30;
+const H_GAP: f32 = 0.05;
+const H_BAR: f32 = 1.0 - 2.0 * H_PAD - H_NUM - H_GAP;
+
+/// Whether a row is the classic "number + bar": the percentage or the time,
+/// then the bar (the panel of 0.7.0, its size and its pixels).
+fn classic(numbers: &UiNumbers) -> bool {
+    numbers.bar && !(numbers.percent && numbers.reset)
+}
+
+/// The panel's length along a horizontal bar, as a share of the classic
+/// panel's: a number's column, the bar's when it is on, and the time's
+/// column beside the percentage when both are shown.
+fn width_factor(numbers: &UiNumbers) -> f32 {
+    if classic(numbers) {
+        return 1.0;
+    }
+    let mut f = 2.0 * H_PAD + H_NUM;
+    if numbers.bar {
+        f += H_GAP + H_BAR;
+    }
+    if numbers.percent && numbers.reset {
+        f += H_GAP + H_NUM;
+    }
+    f
+}
+
+/// One provider's height standing up, in digit heights: the first number,
+/// the time under the percentage when both are shown, and the bar.
+fn stack_row(numbers: &UiNumbers) -> f32 {
+    let mut row = 1.0;
+    if numbers.percent && numbers.reset {
+        row += STACK_UNDER + STACK_SMALL;
+    }
+    if numbers.bar {
+        row += STACK_UNDER + STACK_BAR;
+    }
+    row
+}
+
+/// Standing up, in digit heights: the space under a line, the time's size
+/// under the percentage, the bar's thickness.
+const STACK_UNDER: f32 = 0.35;
+const STACK_SMALL: f32 = 0.85;
+const STACK_BAR: f32 = 0.50;
+
+/// The percentage as drawn, or a dash when it is not known.
+fn percent_label(data: &ProviderData) -> String {
+    match provider_pct(data) {
+        Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
+        None => "—".to_string(),
+    }
+}
+
+/// A bar with a sliver kept visible at low usage, so it never looks absent.
+#[allow(clippy::too_many_arguments)]
+fn paint_bar(
+    pm: &mut Pixmap,
+    data: &ProviderData,
+    bx: f32,
+    by: f32,
+    bar_w: f32,
+    bar_h: f32,
+    ink: Color,
+    track: Color,
+) {
+    let rad = bar_h / 2.0;
+    fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
+    if let Some(p) = provider_pct(data) {
+        let frac = (p / 100.0).clamp(0.0, 1.0);
+        let fwid = (bar_w * frac).max(bar_h);
+        fill_round_rect(pm, bx, by, fwid, bar_h, rad, ink);
+    }
+}
+
 /// Paint the rows into the panel's pixmap: the layout lying down (rows of
 /// "percent + bar" across, digits sized from the height) or standing up
 /// (a stack of percent-over-bar, digits sized from the width), in the given
 /// ink over the transparent fill — dimmed for a row that is not live. With
-/// the reset time asked for (`numbers`), the time takes the bar's place
-/// beside the percent ("25%  2h14"), or the percent's place before the bar
-/// when the percent is left out ("2h14 ▬▬"); the panel keeps its size. Free
-/// of the window so a test can look.
+/// the reset time asked for (`numbers`), the time stands in the percent's
+/// place when the percent is left out ("2h14 ▬▬"), or follows the bar
+/// beside it ("25% ▬▬ 2h14"; standing up, under the percent). Without the
+/// bar, the numbers alone. Free of the window so a test can look.
 fn paint_rows(
     pm: &mut Pixmap,
     vertical: bool,
@@ -160,31 +238,14 @@ fn paint_rows(
     track: Color,
     numbers: &UiNumbers,
 ) {
-    let both = numbers.percent && numbers.reset;
-    let time_only = !numbers.percent && numbers.reset;
+    if !classic(numbers) {
+        paint_rows_more(pm, vertical, top, fg, track, numbers);
+        return;
+    }
+    let time_only = !numbers.percent;
     let (fw, fh) = (pm.width() as f32, pm.height() as f32);
-    let label_of = |data: &ProviderData| match provider_pct(data) {
-        Some(p) => format!("{}%", p.round().clamp(0.0, 100.0) as u32),
-        None => "—".to_string(),
-    };
     let aged = aged_ink(fg, track);
     let ink_of = |data: &ProviderData| if data.is_aged() { aged } else { fg };
-    // A bar with a sliver kept visible at low usage, so it never looks absent.
-    let bar_fill = |pm: &mut Pixmap,
-                    data: &ProviderData,
-                    bx: f32,
-                    by: f32,
-                    bar_w: f32,
-                    bar_h: f32,
-                    ink: Color| {
-        let rad = bar_h / 2.0;
-        fill_round_rect(pm, bx, by, bar_w, bar_h, rad, track);
-        if let Some(p) = provider_pct(data) {
-            let frac = (p / 100.0).clamp(0.0, 1.0);
-            let fwid = (bar_w * frac).max(bar_h);
-            fill_round_rect(pm, bx, by, fwid, bar_h, rad, ink);
-        }
-    };
     if vertical {
         // Standing up: the digits are sized from the bar's WIDTH (the
         // thickness, as the height is lying down), each provider a percent
@@ -194,7 +255,7 @@ fn paint_rows(
         let digit_h = fw * 0.225;
         let bar_h = digit_h * 0.50;
         let under = digit_h * 0.35;
-        let row_h = digit_h + under + if both { digit_h * 0.85 } else { bar_h };
+        let row_h = digit_h + under + bar_h;
         let row_gap = digit_h * 0.6;
         let block_h = n * row_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
@@ -207,26 +268,18 @@ fn paint_rows(
                 let t = countdown_of(data);
                 draw_text_like_digits(pm, &t, pad_x, ry, inner, digit_h, false, ink);
             } else {
-                draw_digits_fit(pm, &label_of(data), pad_x, ry, inner, digit_h, ink);
+                draw_digits_fit(pm, &percent_label(data), pad_x, ry, inner, digit_h, ink);
             }
-            if both {
-                // The time where the bar was, a little smaller, so percent
-                // and time read as one provider's pair.
-                let t = countdown_of(data);
-                let small = digit_h * 0.85;
-                draw_text_like_digits(
-                    pm,
-                    &t,
-                    pad_x,
-                    ry + digit_h + under,
-                    inner,
-                    small,
-                    false,
-                    ink,
-                );
-            } else {
-                bar_fill(pm, data, pad_x, ry + digit_h + under, inner, bar_h, ink);
-            }
+            paint_bar(
+                pm,
+                data,
+                pad_x,
+                ry + digit_h + under,
+                inner,
+                bar_h,
+                ink,
+                track,
+            );
         }
     } else {
         // Digit ink height matched to the taskbar clock: the user tuned it
@@ -240,9 +293,9 @@ fn paint_rows(
         let bar_h = digit_h * 0.50;
         let block_h = n * digit_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
-        let pad_x = fw * 0.06;
-        let num_w = fw * 0.30;
-        let num_gap = fw * 0.05;
+        let pad_x = fw * H_PAD;
+        let num_w = fw * H_NUM;
+        let num_gap = fw * H_GAP;
         let bx = pad_x + num_w + num_gap;
         let bar_w = fw - bx - pad_x;
         for (i, data) in top.iter().enumerate() {
@@ -263,7 +316,7 @@ fn paint_rows(
             } else {
                 draw_digits_fit(
                     pm,
-                    &label_of(data),
+                    &percent_label(data),
                     pad_x,
                     cy - digit_h / 2.0,
                     num_w,
@@ -271,14 +324,110 @@ fn paint_rows(
                     ink,
                 );
             }
+            paint_bar(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h, ink, track);
+        }
+    }
+}
+
+/// The rows other than the classic "number + bar": the percentage and the
+/// time with the bar ("25% ▬▬ 2h14"), or the numbers without it ("25%",
+/// "2h14", "25%  2h14"). The same digit size, gaps and bar as the classic
+/// panel; the panel is as much longer or shorter as its columns or lines.
+fn paint_rows_more(
+    pm: &mut Pixmap,
+    vertical: bool,
+    top: &[&ProviderData],
+    fg: Color,
+    track: Color,
+    numbers: &UiNumbers,
+) {
+    let both = numbers.percent && numbers.reset;
+    let (fw, fh) = (pm.width() as f32, pm.height() as f32);
+    let aged = aged_ink(fg, track);
+    let ink_of = |data: &ProviderData| if data.is_aged() { aged } else { fg };
+    let first = |pm: &mut Pixmap, data: &ProviderData, x: f32, y: f32, w: f32, h: f32, ink| {
+        if numbers.percent {
+            draw_digits_fit(pm, &percent_label(data), x, y, w, h, ink);
+        } else {
+            draw_text_like_digits(pm, &countdown_of(data), x, y, w, h, false, ink);
+        }
+    };
+    let n = top.len().max(1) as f32;
+    if vertical {
+        let digit_h = fw * 0.225;
+        let bar_h = digit_h * STACK_BAR;
+        let under = digit_h * STACK_UNDER;
+        let small = digit_h * STACK_SMALL;
+        let row_h = digit_h * stack_row(numbers);
+        let row_gap = digit_h * 0.6;
+        let block_h = n * row_h + (n - 1.0) * row_gap;
+        let top0 = (fh - block_h) / 2.0;
+        let pad_x = fw * 0.10;
+        let inner = fw - 2.0 * pad_x;
+        for (i, data) in top.iter().enumerate() {
+            let ink = ink_of(data);
+            let mut y = top0 + i as f32 * (row_h + row_gap);
+            first(pm, data, pad_x, y, inner, digit_h, ink);
+            y += digit_h;
             if both {
-                // The time takes the bar's place, from where the bar began.
+                y += under;
                 let t = countdown_of(data);
-                draw_text_like_digits(pm, &t, bx, cy - digit_h / 2.0, bar_w, digit_h, true, ink);
-            } else {
-                bar_fill(pm, data, bx, cy - bar_h / 2.0, bar_w, bar_h, ink);
+                draw_text_like_digits(pm, &t, pad_x, y, inner, small, false, ink);
+                y += small;
+            }
+            if numbers.bar {
+                y += under;
+                paint_bar(pm, data, pad_x, y, inner, bar_h, ink, track);
             }
         }
+    } else {
+        let digit_h = fh * 0.225;
+        let row_gap = digit_h * 0.40;
+        let bar_h = digit_h * 0.50;
+        let block_h = n * digit_h + (n - 1.0) * row_gap;
+        let top0 = (fh - block_h) / 2.0;
+        // The classic panel's width this one is measured against.
+        let w0 = fw / width_factor(numbers);
+        let (pad_x, num_w, gap, bar_w) = (w0 * H_PAD, w0 * H_NUM, w0 * H_GAP, w0 * H_BAR);
+        for (i, data) in top.iter().enumerate() {
+            let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
+            let y = cy - digit_h / 2.0;
+            let ink = ink_of(data);
+            let mut x = pad_x;
+            first(pm, data, x, y, num_w, digit_h, ink);
+            x += num_w;
+            if numbers.bar {
+                x += gap;
+                paint_bar(pm, data, x, cy - bar_h / 2.0, bar_w, bar_h, ink, track);
+                x += bar_w;
+            }
+            if both {
+                x += gap;
+                let t = countdown_of(data);
+                draw_text_like_digits(pm, &t, x, y, num_w, digit_h, false, ink);
+            }
+        }
+    }
+}
+
+/// The overlay's size for a bar `thickness` thick: lying down, the classic
+/// panel's width (two "percent + bar" rows across, the bar's full height)
+/// times `width_factor`; standing up, the bar's full width and the classic
+/// stack's length, longer or shorter by the lines the rows gain or lose.
+fn panel_size(vertical: bool, thickness: i32, numbers: &UiNumbers) -> (u32, u32) {
+    let scale = (thickness as f32 / 48.0).clamp(1.0, 3.0);
+    let thick = thickness.max(1) as u32;
+    if vertical {
+        let mut h = STACK_H * scale;
+        if !classic(numbers) {
+            // Two providers' rows, each so many digit heights longer.
+            let classic_row = 1.0 + STACK_UNDER + STACK_BAR;
+            h += 2.0 * (stack_row(numbers) - classic_row) * thick as f32 * 0.225;
+        }
+        (thick, h.round().max(1.0) as u32)
+    } else {
+        let w = (PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale * width_factor(numbers);
+        (w.round().max(1.0) as u32, thick)
     }
 }
 
@@ -712,16 +861,7 @@ impl TaskbarPanel {
     /// bar: the bar's full width, and the two providers stacked, each a
     /// percent over its own short bar — the way the clock stacks its lines.
     fn desired_size(&self, edge: Edge, thickness: i32) -> (u32, u32) {
-        let scale = (thickness as f32 / 48.0).clamp(1.0, 3.0);
-        let thick = thickness.max(1) as u32;
-        if edge.vertical() {
-            (thick, (STACK_H * scale).round() as u32)
-        } else {
-            (
-                ((PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale).round() as u32,
-                thick,
-            )
-        }
+        panel_size(edge.vertical(), thickness, &self.numbers)
     }
 
     fn hide(&mut self) {
@@ -988,29 +1128,27 @@ mod tests {
         vb::check("panel", items);
     }
 
-    /// The panel with the reset time: beside the percent in the bar's
-    /// place, or alone before the bar; every fixture set, lying down and
-    /// standing up, dark and light. Not pinned: the default panel is the
-    /// pinned "panel" group above.
+    /// The panel's other rows: the time alone before the bar, the
+    /// percentage and the time with the bar, and the numbers without it;
+    /// every fixture set, lying down at 100%, 125% and 150% and standing up,
+    /// dark and light, each the size the app gives it. Not pinned: the
+    /// default panel is the pinned "panel" group above.
     #[test]
     fn visual_baseline_panel_numbers() {
         use crate::ui::visual_baseline as vb;
-        let both = UiNumbers::default();
-        let time_only = UiNumbers {
-            percent: false,
-            reset: true,
-        };
         let mut items = Vec::new();
         for light in [false, true] {
             let (fg, track) = theme_ink(light);
             let ink = if light { "light" } else { "dark" };
             for (set, providers) in vb::sets() {
-                for (mode, numbers) in [("both", both), ("time", time_only)] {
-                    for (sname, w, h, vertical) in [
-                        ("bottom-100", 100, 48, false),
-                        ("bottom-150", 150, 72, false),
-                        ("side-100", 62, 96, true),
+                for (mode, numbers) in panel_variants() {
+                    for (sname, thickness, vertical) in [
+                        ("bottom-100", 48, false),
+                        ("bottom-125", 60, false),
+                        ("bottom-150", 72, false),
+                        ("side-100", 62, true),
                     ] {
+                        let (w, h) = panel_size(vertical, thickness, &numbers);
                         let mut pm = Pixmap::new(w, h).unwrap();
                         pm.fill(hit_fill());
                         paint_rows(
@@ -1027,6 +1165,42 @@ mod tests {
             }
         }
         vb::check("panel-numbers", items);
+    }
+
+    /// Every choice of the Taskbar column but the default one.
+    fn panel_variants() -> Vec<(&'static str, UiNumbers)> {
+        let n = |percent, reset, bar| UiNumbers {
+            percent,
+            reset,
+            bar,
+        };
+        vec![
+            ("time-bar", n(false, true, true)),
+            ("both-bar", n(true, true, true)),
+            ("percent", n(true, false, false)),
+            ("time", n(false, true, false)),
+            ("both", n(true, true, false)),
+        ]
+    }
+
+    /// The default rows keep the classic panel's size; the others are as
+    /// much longer or shorter as their columns, and never larger than the
+    /// percentage, the bar and the time together.
+    #[test]
+    fn the_panel_is_as_long_as_what_it_shows() {
+        let classic = panel_size(false, 48, &UiNumbers::panel_default());
+        assert_eq!(classic, (119, 48));
+        assert_eq!(panel_size(true, 62, &UiNumbers::panel_default()), (62, 83));
+        let widths: Vec<u32> = panel_variants()
+            .iter()
+            .map(|(_, n)| panel_size(false, 48, n).0)
+            .collect();
+        // time-bar, both-bar, percent, time, both
+        assert_eq!(widths, [119, 161, 50, 50, 92]);
+        for (_, n) in panel_variants() {
+            let (_, h) = panel_size(true, 62, &n);
+            assert!(h > 20 && h < 140, "{n:?}: {h}");
+        }
     }
 
     /// With the reset time shown, the drawn time is part of what a repaint

@@ -2063,6 +2063,12 @@ fn visual_baseline_picker() {
     items.push(("normal-light".to_string(), draw(&normal, true, 1.0)));
     items.push(("normal-dark-150".to_string(), draw(&normal, false, 1.5)));
 
+    // Percent, Reset time and the panel's Progress bar, scrolled into view.
+    let mut numbers = make(input());
+    spot(&mut numbers, &Target::Tip(TipPart::Bar, NumbersOn::Panel));
+    items.push(("numbers-dark".to_string(), draw(&numbers, false, 1.0)));
+    items.push(("numbers-light".to_string(), draw(&numbers, true, 1.0)));
+
     let mut welcome = input();
     welcome.mode = PickerMode::Welcome;
     welcome.reads = Reads::default();

@@ -1728,6 +1728,7 @@ mod tests {
         let reset = UiNumbers {
             percent: false,
             reset: true,
+            bar: true,
         };
         assert_eq!(
             texts(&reset),
@@ -1751,6 +1752,7 @@ mod tests {
         let reset = UiNumbers {
             percent: false,
             reset: true,
+            bar: true,
         };
         let texts: Vec<String> = tooltip_lines(&rows, false, &reset)
             .into_iter()
@@ -1768,6 +1770,7 @@ mod tests {
         let both = UiNumbers {
             percent: true,
             reset: true,
+            bar: true,
         };
         let texts: Vec<String> = tooltip_lines(&rows, false, &both)
             .into_iter()
@@ -1986,10 +1989,12 @@ mod tests {
             let both = UiNumbers {
                 percent: true,
                 reset: true,
+                bar: true,
             };
             let reset_only = UiNumbers {
                 percent: false,
                 reset: true,
+                bar: true,
             };
             add_with("mix-reset", &mix, false, 48.0, both);
             add_with(

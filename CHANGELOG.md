@@ -118,11 +118,14 @@ Notable, user-visible changes. Dates are release dates.
 - **The taskbar panel can show when a limit resets.** The same Percent and
   Reset time ticks, in the Taskbar column of *Rows and models*, decide what
   each of the panel's two rows shows: the percentage with its bar, as
-  before and by default; the time left until the limit resets in the bar's
-  place ("25%  2h14"); or the time alone before the bar ("2h14 ▬▬"). The
-  time is the shown window's own reset, compact like the clock beside it,
-  and a dash when it is not known. The panel keeps its size, and the time is
-  repainted only when it reads differently. Asked for in #2 by JCauz.
+  before and by default; the time alone before the bar ("2h14 ▬▬"); or
+  both, with the bar between them ("25% ▬▬ 2h14"; on a side taskbar the
+  time under the percentage). The time is the shown window's own reset,
+  compact like the clock beside it, and a dash when it is not known; it is
+  repainted only when it reads differently. A new **Progress bar** tick
+  (on by default) leaves the bar out for a narrower panel ("25%", "2h14",
+  "25%  2h14"); the panel is as long as what it shows. Asked for in #2 by
+  JCauz.
 - **Antigravity says what renews its sign-in.** The row reads the
   Antigravity CLI's sign-in (`agy`), so it needs that CLI signed in on this
   PC; the token lasts about an hour and is renewed only when `agy` runs. The

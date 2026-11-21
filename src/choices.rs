@@ -954,6 +954,34 @@ mod tests {
         assert!(!back.ui.panel.percent && back.ui.panel.reset);
     }
 
+    /// The panel's progress bar: on by default and not written; it can go
+    /// whatever numbers are shown, and the last number still stays.
+    #[test]
+    fn the_panels_bar_can_be_switched_off() {
+        use crate::config::schema::{TipPart, UiNumbers};
+        let set = |part, on| PickerAction::SetTip {
+            part,
+            place: NumbersOn::Panel,
+            on,
+        };
+        let mut config = Config::default();
+        assert!(config.ui.panel.bar);
+        assert!(apply(&mut config, &set(TipPart::Bar, false)).changed);
+        assert!(!config.ui.panel.bar && config.ui.panel.percent);
+        // The percentage alone without its bar: still the last number.
+        assert!(!apply(&mut config, &set(TipPart::Percent, false)).changed);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("bar = false"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.ui.panel, config.ui.panel);
+        // An older [ui.panel] without the key keeps its bar.
+        let old: UiNumbers = toml::from_str("percent = true\nreset = true").unwrap();
+        assert!(old.bar);
+        // Back on: the default again, and nothing written.
+        assert!(apply(&mut config, &set(TipPart::Bar, true)).changed);
+        assert!(!toml::to_string(&config).unwrap().contains("[ui.panel]"));
+    }
+
     /// The sign-in under each provider: the source the config names, what
     /// it reads (the consent text) and where its token goes; a pasted
     /// source says whether anything is stored and offers its actions.
