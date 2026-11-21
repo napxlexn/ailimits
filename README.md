@@ -383,6 +383,7 @@ panel** opens this same menu.
 
 `%APPDATA%\AiLimits\config.toml` is created automatically, and every menu change
 is persisted there. Format reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
+Fine-tuning beyond the menu (sizes, colours, thresholds): [docs/en/TUNING.md](docs/en/TUNING.md).
 
 Set `AILIMITS_LOG=ailimits=debug` or `RUST_LOG=ailimits=debug` to write a
 diagnostic log to `%APPDATA%\AiLimits\ailimits.log` (stderr is invisible in a

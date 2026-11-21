@@ -352,9 +352,12 @@ pub struct UIConfig {
     pub tooltip: UiNumbers,
     /// What each row of the taskbar panel shows: the percentage (with its
     /// bar), the time left until the reset, or both. Absent: the percentage
-    /// alone, the panel of 0.7.0.
+    /// alone, the panel of 0.7.0; a key left out of a hand-written table
+    /// keeps that default too (`[ui.panel] bar = false` is the percentage
+    /// alone, without its bar).
     #[serde(
         default = "UiNumbers::panel_default",
+        deserialize_with = "de_panel_numbers",
         skip_serializing_if = "UiNumbers::is_panel_default"
     )]
     pub panel: UiNumbers,
@@ -763,4 +766,24 @@ fn default_true() -> bool {
 
 fn is_true(v: &bool) -> bool {
     *v
+}
+
+/// `[ui.panel]`: each key left out keeps the panel's own default (the
+/// percentage with its bar), not the tooltip's.
+fn de_panel_numbers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<UiNumbers, D::Error> {
+    #[derive(Deserialize)]
+    struct Partial {
+        percent: Option<bool>,
+        reset: Option<bool>,
+        bar: Option<bool>,
+    }
+    let p = Partial::deserialize(d)?;
+    let base = UiNumbers::panel_default();
+    let n = UiNumbers {
+        percent: p.percent.unwrap_or(base.percent),
+        reset: p.reset.unwrap_or(base.reset),
+        bar: p.bar.unwrap_or(base.bar),
+    };
+    // Never neither number: as the picker keeps one on.
+    Ok(if n.percent || n.reset { n } else { base })
 }

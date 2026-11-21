@@ -976,6 +976,28 @@ mod tests {
         assert!(text.contains("bar = false"), "{text}");
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.ui.panel, config.ui.panel);
+        // A hand-written table: a key left out keeps the panel's default.
+        let only_bar: Config = toml::from_str(
+            "[ui.panel]
+bar = false
+",
+        )
+        .unwrap();
+        assert_eq!(
+            only_bar.ui.panel,
+            UiNumbers {
+                bar: false,
+                ..UiNumbers::PERCENT_ONLY
+            }
+        );
+        let neither: Config = toml::from_str(
+            "[ui.panel]
+percent = false
+reset = false
+",
+        )
+        .unwrap();
+        assert_eq!(neither.ui.panel, UiNumbers::PERCENT_ONLY);
         // An older [ui.panel] without the key keeps its bar.
         let old: UiNumbers = toml::from_str("percent = true\nreset = true").unwrap();
         assert!(old.bar);

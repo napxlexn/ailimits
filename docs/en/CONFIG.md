@@ -5,6 +5,7 @@ first launch; every context-menu change is persisted here, and edits saved
 in it apply while the app runs (see "Live edits" below). Unknown fields
 and providers are ignored (old configs never break parsing). UTF-8 with or
 without a BOM and UTF-16 with a BOM (Notepad's encodings) are read.
+Fine-tuning beyond the menu, the `[tune]` tables, has a guide of its own: [TUNING.md](TUNING.md).
 
 When the file cannot be used, it is never overwritten with defaults:
 
@@ -251,7 +252,8 @@ reset   = true
 # dash when the row's own reset is not known. Never neither number.
 # `bar = false` leaves the bar out for a narrower panel ("25%", "2h14",
 # "25%  2h14"); without the key the bar is on. Written only once changed;
-# without it, the percentage with its bar. The panel is as long as what it
+# without it, the percentage with its bar, and a key left out of the table
+# keeps that default. The panel is as long as what it
 # shows (119 px at 100% for a number and the bar, 161 px with both numbers,
 # 50 px for one number alone); with no room for it on the taskbar the tray
 # icon stands in. While it shows a time it repaints when the time next reads

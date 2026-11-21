@@ -388,6 +388,7 @@ Display** вибирає, до якого таскбару кріпиться п
 
 `%APPDATA%\AiLimits\config.toml` створюється автоматично, і кожна зміна з меню
 зберігається туди. Довідник формату: [docs/uk/CONFIG.md](docs/uk/CONFIG.md).
+Тонке налаштування поза меню (розміри, кольори, пороги): [docs/uk/TUNING.md](docs/uk/TUNING.md).
 
 Задай `AILIMITS_LOG=ailimits=debug` або `RUST_LOG=ailimits=debug`, і
 діагностичний лог писатиметься у `%APPDATA%\AiLimits\ailimits.log` (stderr у

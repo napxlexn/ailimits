@@ -156,6 +156,21 @@ Notable, user-visible changes. Dates are release dates.
   per crash: the time, the version, the thread and the place in the code,
   never the crash message's text. A start that fails says so in a message
   that names the file.
+- **Fine-tuning in `config.toml`.** Four tables that only the file holds
+  tune what the menu does not reach: `[tune.widget]` (text size, the gap
+  between rows, bar thickness, padding, corners, your own colours for the
+  three levels and for each provider's name), `[tune.panel]` (the taskbar
+  panel's digits, bar length and thickness, row gap, the gap to the tray, its
+  ink on a dark and on a light taskbar, its tooltip's size), `[tune.tray]`
+  (the tray rings' width and gap) and `[tune.format]` (the usage at which the
+  middle and high colours start, and how the widget writes a time left:
+  "2d 5h", "2d5h" or "2d 5h 12min"). *Settings file...* at the end of *Rows
+  and models* opens the file in Notepad. A saved edit applies without a
+  restart: within about 2 seconds for 30 minutes after the file was opened
+  there, otherwise at the next update or the next menu click. Every key is
+  optional and defaults to today's look; a value out of range is held to its
+  range, and a mistyped one costs only that key. The guide, with recipes:
+  `docs/en/TUNING.md`.
 
 ### Changed
 
