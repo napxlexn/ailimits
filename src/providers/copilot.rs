@@ -900,4 +900,79 @@ mod tests {
         assert_eq!(GH_HOST, "github.com");
         assert!(!format!("{:?}", GhToken::Token("secret".into())).contains("secret"));
     }
+
+    /// An answer's shape: its keys, every value replaced by its type, an
+    /// array by the shape of its first item. No value of the answer.
+    fn shape(v: &serde_json::Value) -> serde_json::Value {
+        use serde_json::Value;
+        match v {
+            Value::Object(m) => {
+                Value::Object(m.iter().map(|(k, v)| (k.clone(), shape(v))).collect())
+            }
+            Value::Array(a) => Value::Array(a.first().map(shape).into_iter().collect()),
+            Value::String(_) => "string".into(),
+            Value::Number(_) => "number".into(),
+            Value::Bool(_) => "bool".into(),
+            Value::Null => Value::Null,
+        }
+    }
+
+    /// One request each to copilot_internal/user and to GitHub's public
+    /// premium-request usage report, with the token pasted in this PC's
+    /// AI Limits (Credential Manager, copilot_pat): prints each status, the
+    /// permissions GitHub names when it refuses, and the answers' shapes.
+    /// Never a value of an answer, the account's login or the token.
+    #[tokio::test]
+    #[ignore = "live requests with the token pasted in this PC's AI Limits"]
+    async fn live_pasted_token_endpoints() {
+        let Some(pat) = keyring_password("copilot_pat") else {
+            println!("no copilot_pat stored");
+            return;
+        };
+        let client = reqwest::Client::new();
+        let get = |url: String| {
+            client
+                .get(url)
+                .header("Authorization", format!("token {pat}"))
+                .header("User-Agent", "ailimits-widget")
+                .header("X-GitHub-Api-Version", "2022-11-28")
+        };
+        let report = |what: &str, resp: &reqwest::Response| {
+            let wants = resp
+                .headers()
+                .get("x-accepted-github-permissions")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-");
+            println!(
+                "{what}: HTTP {} (accepted permissions: {wants})",
+                resp.status()
+            );
+        };
+        let resp = get(COPILOT_INTERNAL_URL.to_string()).send().await.unwrap();
+        report("copilot_internal/user", &resp);
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            println!("  shape {}", shape(&v));
+        }
+        let resp = get("https://api.github.com/user".to_string())
+            .send()
+            .await
+            .unwrap();
+        report("user", &resp);
+        let login = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("login").and_then(|l| l.as_str()).map(String::from));
+        let Some(login) = login else {
+            println!("no login: the usage report is not asked for");
+            return;
+        };
+        let url =
+            format!("https://api.github.com/users/{login}/settings/billing/premium_request/usage");
+        let resp = get(url).send().await.unwrap();
+        report("premium_request/usage", &resp);
+        if let Ok(v) = resp.json::<serde_json::Value>().await {
+            println!("  shape {}", shape(&v));
+        }
+    }
 }
