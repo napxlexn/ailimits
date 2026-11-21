@@ -55,9 +55,8 @@ Notable, user-visible changes. Dates are release dates.
   the wheel, PageUp/PageDown and the arrow keys, follows the apps' light or
   dark mode, high contrast and Windows' text size, and puts the IME
   candidates beside the caret. With the rows and labels left as they are,
-  the widget, the panel and the tray look as in 0.7.0, except for stale and
-  estimated data and the panel's tooltip, which now gives each provider a
-  line with its reset time (see Changed and the tooltip entry below).
+  the widget, the panel and the tray look as in 0.7.0, but for what "What
+  looks different from 0.7.0" lists under Changed.
 - **Extra rows where a provider meters a part on its own.** Claude's Opus,
   Sonnet and Fable weeks (on plans that have them; Fable is the "Current
   week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
@@ -113,22 +112,23 @@ Notable, user-visible changes. Dates are release dates.
   another version. Releases are published only after the files are checked.
 - **The proxy set in Windows is followed.** The providers, the Cursor
   sign-in and the updater use the proxy from Settings, Network, Proxy ("Use
-  a proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` still win, and
+  a proxy server"); `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` still win, and
   `ailimits-auth` follows only those. A proxy script
   (PAC) is not followed, and a network that inspects TLS with its own root
   certificate is not trusted: its rows say so ("untrusted certificate,
   retrying").
-- **The taskbar panel can show when a limit resets.** The same Percent and
-  Reset time ticks, in the Taskbar column of *Rows and models*, decide what
-  each of the panel's two rows shows: the percentage with its bar, as
-  before and by default; the time alone before the bar ("2h14 ▬▬"); or
-  both, with the bar between them ("25% ▬▬ 2h14"; on a side taskbar the
-  time under the percentage). The time is the shown window's own reset,
-  compact like the clock beside it, and a dash when it is not known; it is
-  repainted only when it reads differently. A new **Progress bar** tick
-  (on by default) leaves the bar out for a narrower panel ("25%", "2h14",
-  "25%  2h14"); the panel is as long as what it shows. Asked for in #2 by
-  JCauz.
+- **The taskbar panel can show when a limit resets.** Percent and Reset
+  time ticks of its own, in the Taskbar column of *Rows and models*
+  (`[ui.panel]`; the tooltip has a pair of its own in the Tooltip column,
+  `[ui.tooltip]`), decide what each of the panel's two rows shows: the
+  percentage with its bar, as before and by default; the time alone before
+  the bar ("2h14 ▬▬"); or both, with the bar between them ("25% ▬▬ 2h14";
+  on a side taskbar the time under the percentage). The time is the shown
+  window's own reset, compact like the clock beside it, and a dash when it
+  is not known; it is repainted only when it reads differently. A new
+  **Progress bar** tick (on by default) leaves the bar out for a narrower
+  panel ("25%", "2h14", "25%  2h14"); the panel is as long as what it
+  shows. Asked for in #2 by JCauz.
 - **Antigravity says what renews its sign-in.** The row reads the
   Antigravity CLI's sign-in (`agy`), so it needs that CLI signed in on this
   PC; the token lasts about an hour and is renewed only when `agy` runs. The
@@ -136,14 +136,15 @@ Notable, user-visible changes. Dates are release dates.
   "run Antigravity" (the editor keeps a sign-in of its own, which is never
   read, and opening it does not renew this one). A bucket's own window is read: a weekly pool stays the long
   window, a five-hour one would be a session window of its own.
-- **The tooltip's percentage and reset time, chosen.** Two ticks in *Rows
-  and models*, Percent and Reset time, decide what each row of the taskbar
-  panel's tooltip shows: the percentage, the time left until the limit it
-  shows resets ("Claude 25% · 2h 14min"), or either alone ("Claude 2h
-  14min"). By default both: the tooltip gives each provider a line of its
-  own with when it resets, where 0.7.0 had one line of percentages (untick
-  Reset time to get that line back). The time no longer depends on a model
-  label or an extra row being shown.
+- **The tooltip's percentage and reset time, chosen.** Two ticks in the
+  Tooltip column of *Rows and models*, Percent and Reset time
+  (`[ui.tooltip]`), decide what each row of the taskbar panel's tooltip
+  shows: the percentage, the time left until the limit it shows resets
+  ("Claude 25% · 2h 14min"), or either alone ("Claude 2h 14min"). By
+  default both: the tooltip gives each provider a line of its own with when
+  it resets, where 0.7.0 had one line of percentages (untick Reset time to
+  get that line back). The time no longer depends on a model label or an
+  extra row being shown.
 - **The context menu shows a look before you click it.** Resting the
   pointer (or the keyboard) on a detail level, a layout, a width, the
   arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or
@@ -156,6 +157,19 @@ Notable, user-visible changes. Dates are release dates.
   per crash: the time, the version, the thread and the place in the code,
   never the crash message's text. A start that fails says so in a message
   that names the file.
+- **Edits to `config.toml` apply while the app runs.** Any setting saved
+  in the file, by hand or by `ailimits-auth`, applies within about two
+  seconds of its save, with no restart: the app looks at the file's size
+  and time every 2 seconds while you are at the PC (every 30 while you are
+  away), one metadata call each time, and redoes only what changed. A
+  change made in the app meanwhile is kept, and the app's own saves are
+  never taken for edits. *Settings file...* at the end of *Rows and models*
+  opens the file in Notepad. A line that does not read (a value of the
+  wrong kind, a typo, a missing value) is left out and its default used:
+  one message names the line, never its text, and the rest of the file
+  applies. An edit that does not read at all (a broken table header, say)
+  is not applied, and the file is never written over while it stays
+  broken, not even when the app quits.
 - **Fine-tuning in `config.toml`.** Four tables that only the file holds
   tune what the menu does not reach: `[tune.widget]` (text size, the gap
   between rows, bar thickness, padding, corners, your own colours for the
@@ -164,13 +178,11 @@ Notable, user-visible changes. Dates are release dates.
   ink on a dark and on a light taskbar, its tooltip's size), `[tune.tray]`
   (the tray rings' width and gap) and `[tune.format]` (the usage at which the
   middle and high colours start, and how the widget writes a time left:
-  "2d 5h", "2d5h" or "2d 5h 12min"). *Settings file...* at the end of *Rows
-  and models* opens the file in Notepad. A saved edit applies without a
-  restart: within about 2 seconds for 30 minutes after the file was opened
-  there, otherwise at the next update or the next menu click. Every key is
-  optional and defaults to today's look; a value out of range is held to its
-  range, and a mistyped one costs only that key. The guide, with recipes:
-  `docs/en/TUNING.md`.
+  "2d 5h", "2d5h" or "2d 5h 12min"). *Settings file...* opens the file, and
+  a saved edit applies within about two seconds (the entry above). Every
+  key is optional and defaults to today's look; a value out of range is
+  held to its range, and a mistyped one costs only that key. The guide,
+  with recipes: `docs/en/TUNING.md`.
 
 ### Changed
 
@@ -229,10 +241,9 @@ Notable, user-visible changes. Dates are release dates.
   key chosen and none stored hides its row instead of saying "check the
   key".
 - **What looks different from 0.7.0, on purpose.** With the default rows,
-  everything is drawn as in 0.7.0 except the panel's tooltip, which by
-  default gives each provider a line with its reset time (Percent and Reset
-  time both ticked; untick Reset time for 0.7.0's one line), and stale and
-  estimated data:
+  everything is drawn as in 0.7.0 except the panel's tooltip (its reset
+  times, see "The tooltip's percentage and reset time" under Added) and
+  stale and estimated data:
   stale data greys as soon as it misses its refresh, even while its reset
   is still ahead (ac17bd2); data counts as stale once the update interval
   plus a minute has passed, never under 5 minutes, instead of after a fixed
@@ -369,8 +380,12 @@ Notable, user-visible changes. Dates are release dates.
 - **A `config.toml` held by another program (right after an update, say)
   no longer resets the app or gets overwritten on exit.** It is read again
   for about 2 seconds; if it still cannot be read, it is kept as it is and
-  nothing is saved over it until a restart, and one message says so. One
-  that cannot be understood is set aside under a name of its own
+  nothing is saved over it until a restart, and one message says so. A
+  line that does not read costs only that line: it is left out, its default
+  used, and a message names it; the file as it was is kept beside it
+  (`config.toml.<date>-<time>.left-out`), since the next save writes it
+  without that line. One that cannot be understood at all (a broken table
+  header, say) is set aside under a name of its own
   (`config.toml.<date>-<time>.corrupt`), never replacing an earlier one, and
   a message names it. A config saved by Notepad as UTF-16 now reads.
 - **Hook commands with a quoted path work** (`"C:\Program Files\x\y.exe"
@@ -414,12 +429,13 @@ Notable, user-visible changes. Dates are release dates.
 Not supported. 0.7.0 cannot read a cache that has Grok or Cursor in it, so
 it shows no cached readings. It keeps the Grok and Cursor entries in the
 config but shows neither, and when it saves its settings it drops
-`[ui.rows]`, `[ui.model]`, `[ui.tooltip]`, `[ui.panel]` and `[reads]`, and
-writes a usage token's source as `subscription`. Back on 0.7.1, the
-providers switched on in the config keep reading (Grok and Cursor among
-them, if they were on; the Cursor sign-in stays in Credential Manager), the
-update notice shows once more, a stored usage token or Copilot token is
-the source again, and the rows, labels and names are chosen again.
+`[ui.rows]`, `[ui.model]`, `[ui.tooltip]`, `[ui.panel]`, `[tune]` and
+`[reads]`, and writes a usage token's source as `subscription`. Back on
+0.7.1, the providers switched on in the config keep reading (Grok and
+Cursor among them, if they were on; the Cursor sign-in stays in Credential
+Manager), the update notice shows once more, a stored usage token or
+Copilot token is the source again, and the rows, labels, names and `[tune]`
+knobs are chosen again.
 
 ## 0.7.0 - 2026-09-23
 
