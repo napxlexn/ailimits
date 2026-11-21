@@ -15,6 +15,7 @@
 // context menu; a left-click toggles the overlay.
 
 use crate::config::schema::{IndicatorKind, UiNumbers};
+use crate::config::tune::TuneTray;
 use crate::providers::{ProviderData, ProviderStatus};
 use crate::rows::{ModelLabel, RowView};
 use crate::ui::theme::{ComputedTheme, UsageLevel};
@@ -41,6 +42,8 @@ pub struct Tray {
     /// Nothing chosen yet (a fresh install, `rows::nothing_chosen`): the
     /// tooltip says what to do instead of the bare app name.
     first_install: bool,
+    /// The rings' stroke and spacing (`[tune.tray]`).
+    rings: Rings,
 }
 
 impl Tray {
@@ -52,7 +55,19 @@ impl Tray {
             promote_pending: false,
             fallback: false,
             first_install: false,
+            rings: Rings::DEFAULT,
         }
+    }
+
+    /// The `[tune.tray]` knobs; the icon is redrawn when the rings they
+    /// give changed.
+    pub fn set_tune(&mut self, tune: &TuneTray, providers: &[ProviderData], theme: &ComputedTheme) {
+        let rings = Rings::of(tune);
+        if self.rings == rings {
+            return;
+        }
+        self.rings = rings;
+        self.update(providers, theme, true);
     }
 
     /// Whether nothing is chosen yet. Set it whenever the providers allowed
@@ -124,7 +139,7 @@ impl Tray {
             let light = crate::platform::system_uses_light_theme();
             let img = if rings {
                 // The ring icon is monochrome by design — it takes no theme.
-                draw_ring_icon(providers, light)
+                draw_ring_icon(providers, light, self.rings)
             } else {
                 draw_stacked_icon(providers, theme, light)
             };
@@ -426,8 +441,39 @@ const RING_W: f32 = 5.0;
 const CENTER: f32 = ICON_SIZE as f32 / 2.0;
 const RING_OUTER: f32 = 15.0;
 const RING_STEP: f32 = 7.0;
+/// The smallest hole the inner ring leaves at the centre, radius in canvas
+/// pixels, whatever `[tune.tray]` asks.
+const RING_HOLE_MIN: f32 = 1.0;
 
-fn draw_ring_icon(providers: &[ProviderData], light: bool) -> Result<Icon> {
+/// The rings as drawn: the stroke width and `step`, the drop in outer
+/// radius from one ring to the next (the stroke plus the bare gap). The
+/// `[tune.tray]` knobs, fitted to the icon; `DEFAULT` is the constants above.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rings {
+    w: f32,
+    step: f32,
+}
+
+impl Rings {
+    const DEFAULT: Rings = Rings {
+        w: RING_W,
+        step: RING_STEP,
+    };
+
+    /// The knobs' rings. The outer ring keeps its place 1px inside the
+    /// canvas; a gap that would close the inner ring's hole is cut down so
+    /// the hole keeps `RING_HOLE_MIN`.
+    fn of(tune: &TuneTray) -> Self {
+        let w = tune.ring_width();
+        let gap = tune
+            .ring_gap()
+            .min(RING_OUTER - RING_HOLE_MIN - 2.0 * w)
+            .max(0.0);
+        Self { w, step: w + gap }
+    }
+}
+
+fn draw_ring_icon(providers: &[ProviderData], light: bool, rings: Rings) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
     pm.fill(tiny_skia::Color::TRANSPARENT);
     // One ink for everything. The tray sits on the system taskbar, whose theme
@@ -441,14 +487,15 @@ fn draw_ring_icon(providers: &[ProviderData], light: bool) -> Result<Icon> {
         // the runner-up the inner one. Which is which is answered by the
         // tooltip, which lists every provider with its percentage.
         (Some(first), Some(second)) => {
-            draw_ring(&mut pm, RING_OUTER, first as f32, ink, track);
-            draw_ring(&mut pm, RING_OUTER - RING_STEP, second as f32, ink, track);
+            draw_ring(&mut pm, RING_OUTER, rings.w, first as f32, ink, track);
+            let inner = RING_OUTER - rings.step;
+            draw_ring(&mut pm, inner, rings.w, second as f32, ink, track);
         }
         // Exactly one: the outer ring alone, so the icon keeps its meaning
         // when a second provider starts reporting — nothing moves, a ring
         // simply appears inside.
         (Some(only), None) => {
-            draw_ring(&mut pm, RING_OUTER, only as f32, ink, track);
+            draw_ring(&mut pm, RING_OUTER, rings.w, only as f32, ink, track);
         }
         // No percentage data yet (loading / binary / error).
         _ => fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(light, 200)),
@@ -506,37 +553,40 @@ fn ring_fill(pct: f32, r_mid: f32, w: f32) -> RingFill {
     }
 }
 
-/// One ring: the faint full-circle track, then the used arc over it.
+/// One ring, `w` thick: the faint full-circle track, then the used arc over
+/// it.
 fn draw_ring(
     pm: &mut Pixmap,
     outer: f32,
+    w: f32,
     pct: f32,
     ink: tiny_skia::Color,
     track: tiny_skia::Color,
 ) {
-    let r_mid = outer - RING_W / 2.0;
+    let r_mid = outer - w / 2.0;
     let full = std::f32::consts::TAU;
-    stroke_arc(pm, r_mid, 0.0, full, track, LineCap::Butt);
-    match ring_fill(pct, r_mid, RING_W) {
+    stroke_arc(pm, r_mid, w, 0.0, full, track, LineCap::Butt);
+    match ring_fill(pct, r_mid, w) {
         RingFill::Empty => {}
         RingFill::Dot => fill_circle(
             pm,
             CENTER + r_mid * RING_TOP.cos(),
             CENTER + r_mid * RING_TOP.sin(),
-            RING_W / 2.0,
+            w / 2.0,
             ink,
         ),
-        RingFill::Arc { start, end } => stroke_arc(pm, r_mid, start, end, ink, LineCap::Round),
-        RingFill::Full => stroke_arc(pm, r_mid, 0.0, full, ink, LineCap::Butt),
+        RingFill::Arc { start, end } => stroke_arc(pm, r_mid, w, start, end, ink, LineCap::Round),
+        RingFill::Full => stroke_arc(pm, r_mid, w, 0.0, full, ink, LineCap::Butt),
     }
 }
 
-/// Stroke an arc as a polyline. tiny-skia's PathBuilder has no arc primitive;
-/// sampling finely enough that each segment is well under a pixel makes the
-/// difference invisible once the shell scales the icon down.
+/// Stroke an arc `w` wide as a polyline. tiny-skia's PathBuilder has no arc
+/// primitive; sampling finely enough that each segment is well under a pixel
+/// makes the difference invisible once the shell scales the icon down.
 fn stroke_arc(
     pm: &mut Pixmap,
     r_mid: f32,
+    w: f32,
     start: f32,
     end: f32,
     c: tiny_skia::Color,
@@ -562,7 +612,7 @@ fn stroke_arc(
     paint.set_color(c);
     paint.anti_alias = true;
     let stroke = Stroke {
-        width: RING_W,
+        width: w,
         line_cap: cap,
         // Round joins keep the sampled polyline from showing facets.
         line_join: LineJoin::Round,
@@ -1258,7 +1308,7 @@ mod tests {
             neutral_icon(light).unwrap();
             items.push((format!("neutral-{ink}"), take()));
             for (set, providers) in vb::sets() {
-                draw_ring_icon(&providers, light).unwrap();
+                draw_ring_icon(&providers, light, Rings::of(&TuneTray::default())).unwrap();
                 items.push((format!("rings-{set}-{ink}"), take()));
                 for n in 1..=providers.len().min(4) {
                     let first: Vec<ProviderData> = providers.iter().take(n).cloned().collect();
@@ -1434,6 +1484,96 @@ mod tests {
             outer - step - w > 0.0,
             "the inner ring must not swallow its own centre"
         );
+    }
+
+    /// `[tune.tray]` left out draws today's rings (the pinned `tray` group
+    /// holds them to the pixel).
+    #[test]
+    fn the_default_tray_knobs_are_todays_rings() {
+        assert_eq!(Rings::of(&TuneTray::default()), Rings::DEFAULT);
+        assert_eq!(
+            Rings::DEFAULT,
+            Rings {
+                w: RING_W,
+                step: RING_STEP
+            }
+        );
+    }
+
+    /// Whatever `[tune.tray]` asks, in range or not, the rings keep their
+    /// width range, at least a canvas pixel of bare space between them, and
+    /// the hole in the middle; a gap that would close the hole is cut down.
+    #[test]
+    fn tuned_rings_fit_the_icon() {
+        for w in -10..=120 {
+            for g in -10..=120 {
+                let tune = TuneTray {
+                    ring_width: Some(w as f64 / 10.0),
+                    ring_gap: Some(g as f64 / 10.0),
+                };
+                let r = Rings::of(&tune);
+                assert!((2.0..=6.0).contains(&r.w), "{tune:?}: width {}", r.w);
+                let gap = r.step - r.w;
+                assert!(gap >= 1.0 - 1e-5, "{tune:?}: gap {gap}");
+                let hole = RING_OUTER - r.step - r.w;
+                assert!(hole >= RING_HOLE_MIN - 1e-5, "{tune:?}: hole {hole}");
+            }
+        }
+        let widest = TuneTray {
+            ring_width: Some(6.0),
+            ring_gap: Some(6.0),
+        };
+        assert_eq!(Rings::of(&widest), Rings { w: 6.0, step: 8.0 });
+        let thin = TuneTray {
+            ring_width: Some(3.0),
+            ring_gap: Some(4.0),
+        };
+        assert_eq!(Rings::of(&thin), Rings { w: 3.0, step: 7.0 });
+    }
+
+    /// The rings with `[tune.tray]` knobs other than the defaults, on a dark
+    /// and a light taskbar (painted over the bar's grey so the PNGs can be
+    /// looked at), at the 32px the icon is drawn at and the 16px the shell
+    /// shows at 100% scaling. Not pinned: the default rings are in the
+    /// pinned `tray` group.
+    #[test]
+    fn visual_baseline_tray_tune() {
+        use crate::ui::visual_baseline as vb;
+        let take = || LAST_ICON.with(|c| c.borrow_mut().take().expect("an icon was drawn"));
+        let tune = |w: f64, g: f64| TuneTray {
+            ring_width: Some(w),
+            ring_gap: Some(g),
+        };
+        let variants = [
+            ("thin", tune(3.0, 2.0)),
+            ("thick", tune(6.0, 2.0)),
+            ("tight", tune(5.0, 1.0)),
+            ("apart", tune(4.0, 4.0)),
+            ("hairline", tune(2.0, 6.0)),
+        ];
+        let mut items = Vec::new();
+        for (light, bar) in [(false, 32u8), (true, 228u8)] {
+            let ink = if light { "light" } else { "dark" };
+            for (set, providers) in [("typical", vb::typical()), ("levels", vb::levels())] {
+                for (name, t) in &variants {
+                    draw_ring_icon(&providers, light, Rings::of(t)).unwrap();
+                    let icon = take();
+                    for size in [32u32, 16] {
+                        let mut pm = Pixmap::new(size, size).unwrap();
+                        pm.fill(color(bar, bar, bar, 255));
+                        let s = size as f32 / ICON_SIZE as f32;
+                        let paint = tiny_skia::PixmapPaint {
+                            quality: tiny_skia::FilterQuality::Bicubic,
+                            ..Default::default()
+                        };
+                        let scale = Transform::from_scale(s, s);
+                        pm.draw_pixmap(0, 0, icon.as_ref(), &paint, scale, None);
+                        items.push((format!("{name}-{set}-{size}-{ink}"), pm));
+                    }
+                }
+            }
+        }
+        vb::check("tray-tune", items);
     }
 
     /// Every ring starts at 12 o'clock and grows clockwise.
@@ -2111,10 +2251,11 @@ mod tests {
             let (ink, track) = (tray_ink(false, 255), tray_ink(false, 64));
             match two_busiest(&providers) {
                 (Some(a), Some(b)) => {
-                    draw_ring(&mut pm, RING_OUTER, a as f32, ink, track);
-                    draw_ring(&mut pm, RING_OUTER - RING_STEP, b as f32, ink, track);
+                    draw_ring(&mut pm, RING_OUTER, RING_W, a as f32, ink, track);
+                    let inner = RING_OUTER - RING_STEP;
+                    draw_ring(&mut pm, inner, RING_W, b as f32, ink, track);
                 }
-                (Some(a), None) => draw_ring(&mut pm, RING_OUTER, a as f32, ink, track),
+                (Some(a), None) => draw_ring(&mut pm, RING_OUTER, RING_W, a as f32, ink, track),
                 _ => fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(false, 200)),
             }
             let path = dir.join(format!("ailimits_{name}"));

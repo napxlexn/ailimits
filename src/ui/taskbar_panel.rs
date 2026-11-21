@@ -18,6 +18,7 @@
 // slides away with the bar.
 
 use crate::config::schema::{IndicatorKind, UiNumbers};
+use crate::config::tune::TunePanel;
 use crate::platform::taskbar_geom::Edge;
 use crate::providers::ProviderData;
 use crate::rows::RowView;
@@ -38,7 +39,9 @@ const BAR_W: f32 = 62.0;
 /// The stacked layout's length along a side bar at 100% DPI: two rows of a
 /// clock-sized percent over a short bar, with the clock's own breathing room.
 const STACK_H: f32 = 64.0;
-/// Gap between the overlay and the notification area.
+/// Gap between the overlay and the notification area (`[tune.panel]
+/// tray_gap` moves the tray's side of it), and the air kept on the app
+/// buttons' side.
 const TRAY_MARGIN: i32 = 10;
 /// Initial (hidden) window size; reposition() sizes it to the real taskbar.
 const INIT_W: u32 = 119;
@@ -52,9 +55,69 @@ fn hit_fill() -> Color {
 
 /// Ink + track colors for the current system theme (`theme::panel_ink`,
 /// where the measurements behind them are).
+#[cfg(test)]
 fn theme_ink(light: bool) -> (Color, Color) {
+    tuned_ink(light, None)
+}
+
+/// The theme's ink and track, or the `[tune.panel]` ink of this theme in
+/// their place: its colour at the theme's own alphas, so the track (and the
+/// aged ink, halfway between) derive from it exactly as from the default.
+fn tuned_ink(light: bool, over: Option<(u8, u8, u8)>) -> (Color, Color) {
     let (ink, track) = crate::ui::theme::panel_ink(light);
+    let (ink, track) = match over {
+        Some((r, g, b)) => (
+            crate::ui::theme::Color { r, g, b, ..ink },
+            crate::ui::theme::Color { r, g, b, ..track },
+        ),
+        None => (ink, track),
+    };
     (ink.to_skia_color(), track.to_skia_color())
+}
+
+/// The `[tune.panel]` sizes, clamped: each a multiple of today's look, so
+/// `DEFAULT` multiplies every measure by exactly 1.0 and the default panel
+/// keeps its pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Knobs {
+    /// The digits' height, and the number column's width with it.
+    digit: f32,
+    /// The bar's length.
+    bar_len: f32,
+    /// The bar's thickness.
+    bar_thick: f32,
+    /// The space between the two rows.
+    row_gap: f32,
+}
+
+impl Knobs {
+    const DEFAULT: Knobs = Knobs {
+        digit: 1.0,
+        bar_len: 1.0,
+        bar_thick: 1.0,
+        row_gap: 1.0,
+    };
+
+    fn of(tune: &TunePanel) -> Self {
+        Self {
+            digit: tune.digit_size(),
+            bar_len: tune.bar_length(),
+            bar_thick: tune.bar_thickness(),
+            row_gap: tune.row_gap(),
+        }
+    }
+}
+
+/// The air kept along the bar on the tray's side of the panel and on the
+/// app buttons' side, for a tray edge measured or estimated: the tray's side
+/// is `[tune.panel] tray_gap`; an estimated edge is a guess at where the
+/// clock starts, so both sides keep `TRAY_MARGIN` more.
+fn margins(tray_found: bool, tray_gap: i32) -> (i32, i32) {
+    if tray_found {
+        (tray_gap, TRAY_MARGIN)
+    } else {
+        (tray_gap + TRAY_MARGIN, TRAY_MARGIN * 2)
+    }
 }
 
 /// The ink of a row that is not live — stale, or an estimate: the live ink
@@ -159,39 +222,56 @@ fn classic(numbers: &UiNumbers) -> bool {
 
 /// The panel's length along a horizontal bar, as a share of the classic
 /// panel's: a number's column, the bar's when it is on, and the time's
-/// column beside the percentage when both are shown.
-fn width_factor(numbers: &UiNumbers) -> f32 {
+/// column beside the percentage when both are shown; the number columns as
+/// wide as the knobs make the digits, the bar as long as they make it.
+fn width_factor(numbers: &UiNumbers, k: Knobs) -> f32 {
     if classic(numbers) {
-        return 1.0;
+        // Both terms are exactly 0.0 at the default knobs.
+        return 1.0 + H_NUM * (k.digit - 1.0) + H_BAR * (k.bar_len - 1.0);
     }
-    let mut f = 2.0 * H_PAD + H_NUM;
+    let mut f = 2.0 * H_PAD + H_NUM * k.digit;
     if numbers.bar {
-        f += H_GAP + H_BAR;
+        f += H_GAP + H_BAR * k.bar_len;
     }
     if numbers.percent && numbers.reset {
-        f += H_GAP + H_NUM;
+        f += H_GAP + H_NUM * k.digit;
     }
     f
 }
 
 /// One provider's height standing up, in digit heights: the first number,
-/// the time under the percentage when both are shown, and the bar.
-fn stack_row(numbers: &UiNumbers) -> f32 {
+/// the time under the percentage when both are shown, and the bar
+/// (`bar_thick` times its usual thickness).
+fn stack_row(numbers: &UiNumbers, bar_thick: f32) -> f32 {
     let mut row = 1.0;
     if numbers.percent && numbers.reset {
         row += STACK_UNDER + STACK_SMALL;
     }
     if numbers.bar {
-        row += STACK_UNDER + STACK_BAR;
+        row += STACK_UNDER + STACK_BAR * bar_thick;
     }
     row
 }
 
+/// The two providers' stack standing up, in the default digit's heights:
+/// two rows and the gap between them, as the knobs size them.
+fn stack_len(numbers: &UiNumbers, k: Knobs) -> f32 {
+    k.digit * (2.0 * stack_row(numbers, k.bar_thick) + STACK_GAP * k.row_gap)
+}
+
+/// The bar standing up: `inner` long by default, centred, at most the
+/// panel's width `fw` less a pixel at each end. Its left end and length.
+fn stack_bar(pad_x: f32, inner: f32, fw: f32, bar_len: f32) -> (f32, f32) {
+    let bar_w = (inner * bar_len).min(fw - 2.0);
+    (pad_x + (inner - bar_w) / 2.0, bar_w)
+}
+
 /// Standing up, in digit heights: the space under a line, the time's size
-/// under the percentage, the bar's thickness.
+/// under the percentage, the bar's thickness, the gap between the rows.
 const STACK_UNDER: f32 = 0.35;
 const STACK_SMALL: f32 = 0.85;
 const STACK_BAR: f32 = 0.50;
+const STACK_GAP: f32 = 0.6;
 
 /// The percentage as drawn, or a dash when it is not known.
 fn percent_label(data: &ProviderData) -> String {
@@ -229,7 +309,8 @@ fn paint_bar(
 /// the reset time asked for (`numbers`), the time stands in the percent's
 /// place when the percent is left out ("2h14 ▬▬"), or follows the bar
 /// beside it ("25% ▬▬ 2h14"; standing up, under the percent). Without the
-/// bar, the numbers alone. Free of the window so a test can look.
+/// bar, the numbers alone. The `[tune.panel]` knobs scale the digits, the
+/// bar and the gap between the rows. Free of the window so a test can look.
 fn paint_rows(
     pm: &mut Pixmap,
     vertical: bool,
@@ -237,9 +318,10 @@ fn paint_rows(
     fg: Color,
     track: Color,
     numbers: &UiNumbers,
+    k: Knobs,
 ) {
     if !classic(numbers) {
-        paint_rows_more(pm, vertical, top, fg, track, numbers);
+        paint_rows_more(pm, vertical, top, fg, track, numbers, k);
         return;
     }
     let time_only = !numbers.percent;
@@ -252,15 +334,16 @@ fn paint_rows(
         // centred over its own short bar, the two stacked like the clock's
         // lines with the same breathing room between them.
         let n = top.len().max(1) as f32;
-        let digit_h = fw * 0.225;
-        let bar_h = digit_h * 0.50;
+        let digit_h = fw * 0.225 * k.digit;
+        let bar_h = digit_h * 0.50 * k.bar_thick;
         let under = digit_h * 0.35;
         let row_h = digit_h + under + bar_h;
-        let row_gap = digit_h * 0.6;
+        let row_gap = digit_h * STACK_GAP * k.row_gap;
         let block_h = n * row_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
         let pad_x = fw * 0.10;
         let inner = fw - 2.0 * pad_x;
+        let (bar_x, bar_w) = stack_bar(pad_x, inner, fw, k.bar_len);
         for (i, data) in top.iter().enumerate() {
             let ry = top0 + i as f32 * (row_h + row_gap);
             let ink = ink_of(data);
@@ -273,9 +356,9 @@ fn paint_rows(
             paint_bar(
                 pm,
                 data,
-                pad_x,
+                bar_x,
                 ry + digit_h + under,
-                inner,
+                bar_w,
                 bar_h,
                 ink,
                 track,
@@ -288,14 +371,17 @@ fn paint_rows(
         // the ink height and stays constant regardless of the row count.
         // The tight centered block mirrors the clock's time-over-date stack.
         let n = top.len().max(1) as f32;
-        let digit_h = fh * 0.225;
-        let row_gap = digit_h * 0.40;
-        let bar_h = digit_h * 0.50;
+        let digit_h = fh * 0.225 * k.digit;
+        let row_gap = digit_h * 0.40 * k.row_gap;
+        let bar_h = digit_h * 0.50 * k.bar_thick;
         let block_h = n * digit_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
-        let pad_x = fw * H_PAD;
-        let num_w = fw * H_NUM;
-        let num_gap = fw * H_GAP;
+        // The columns are fractions of the classic panel's width, which is
+        // the pixmap's own at the default knobs (`width_factor` is 1.0).
+        let w0 = fw / width_factor(numbers, k);
+        let pad_x = w0 * H_PAD;
+        let num_w = w0 * H_NUM * k.digit;
+        let num_gap = w0 * H_GAP;
         let bx = pad_x + num_w + num_gap;
         let bar_w = fw - bx - pad_x;
         for (i, data) in top.iter().enumerate() {
@@ -340,6 +426,7 @@ fn paint_rows_more(
     fg: Color,
     track: Color,
     numbers: &UiNumbers,
+    k: Knobs,
 ) {
     let both = numbers.percent && numbers.reset;
     let (fw, fh) = (pm.width() as f32, pm.height() as f32);
@@ -354,16 +441,17 @@ fn paint_rows_more(
     };
     let n = top.len().max(1) as f32;
     if vertical {
-        let digit_h = fw * 0.225;
-        let bar_h = digit_h * STACK_BAR;
+        let digit_h = fw * 0.225 * k.digit;
+        let bar_h = digit_h * STACK_BAR * k.bar_thick;
         let under = digit_h * STACK_UNDER;
         let small = digit_h * STACK_SMALL;
-        let row_h = digit_h * stack_row(numbers);
-        let row_gap = digit_h * 0.6;
+        let row_h = digit_h * stack_row(numbers, k.bar_thick);
+        let row_gap = digit_h * STACK_GAP * k.row_gap;
         let block_h = n * row_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
         let pad_x = fw * 0.10;
         let inner = fw - 2.0 * pad_x;
+        let (bar_x, bar_w) = stack_bar(pad_x, inner, fw, k.bar_len);
         for (i, data) in top.iter().enumerate() {
             let ink = ink_of(data);
             let mut y = top0 + i as f32 * (row_h + row_gap);
@@ -377,18 +465,23 @@ fn paint_rows_more(
             }
             if numbers.bar {
                 y += under;
-                paint_bar(pm, data, pad_x, y, inner, bar_h, ink, track);
+                paint_bar(pm, data, bar_x, y, bar_w, bar_h, ink, track);
             }
         }
     } else {
-        let digit_h = fh * 0.225;
-        let row_gap = digit_h * 0.40;
-        let bar_h = digit_h * 0.50;
+        let digit_h = fh * 0.225 * k.digit;
+        let row_gap = digit_h * 0.40 * k.row_gap;
+        let bar_h = digit_h * 0.50 * k.bar_thick;
         let block_h = n * digit_h + (n - 1.0) * row_gap;
         let top0 = (fh - block_h) / 2.0;
         // The classic panel's width this one is measured against.
-        let w0 = fw / width_factor(numbers);
-        let (pad_x, num_w, gap, bar_w) = (w0 * H_PAD, w0 * H_NUM, w0 * H_GAP, w0 * H_BAR);
+        let w0 = fw / width_factor(numbers, k);
+        let (pad_x, num_w, gap, bar_w) = (
+            w0 * H_PAD,
+            w0 * H_NUM * k.digit,
+            w0 * H_GAP,
+            w0 * H_BAR * k.bar_len,
+        );
         for (i, data) in top.iter().enumerate() {
             let cy = top0 + digit_h / 2.0 + i as f32 * (digit_h + row_gap);
             let y = cy - digit_h / 2.0;
@@ -414,7 +507,10 @@ fn paint_rows_more(
 /// panel's width (two "percent + bar" rows across, the bar's full height)
 /// times `width_factor`; standing up, the bar's full width and the classic
 /// stack's length, longer or shorter by the lines the rows gain or lose.
-fn panel_size(vertical: bool, thickness: i32, numbers: &UiNumbers) -> (u32, u32) {
+/// The `[tune.panel]` knobs make it as much longer or shorter as they make
+/// what it paints, so nothing is clipped and the room asked of the bar is
+/// the room the panel takes.
+fn panel_size(vertical: bool, thickness: i32, numbers: &UiNumbers, k: Knobs) -> (u32, u32) {
     let scale = (thickness as f32 / 48.0).clamp(1.0, 3.0);
     let thick = thickness.max(1) as u32;
     if vertical {
@@ -422,11 +518,14 @@ fn panel_size(vertical: bool, thickness: i32, numbers: &UiNumbers) -> (u32, u32)
         if !classic(numbers) {
             // Two providers' rows, each so many digit heights longer.
             let classic_row = 1.0 + STACK_UNDER + STACK_BAR;
-            h += 2.0 * (stack_row(numbers) - classic_row) * thick as f32 * 0.225;
+            h += 2.0 * (stack_row(numbers, 1.0) - classic_row) * thick as f32 * 0.225;
         }
+        // What the knobs add to (or take from) the stack: exactly 0.0 at
+        // the defaults.
+        h += (stack_len(numbers, k) - stack_len(numbers, Knobs::DEFAULT)) * thick as f32 * 0.225;
         (thick, h.round().max(1.0) as u32)
     } else {
-        let w = (PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale * width_factor(numbers);
+        let w = (PAD_X * 2.0 + NUM_W + NUM_GAP + BAR_W) * scale * width_factor(numbers, k);
         (w.round().max(1.0) as u32, thick)
     }
 }
@@ -441,6 +540,8 @@ pub struct TaskbarPanel {
     /// What each row shows: the percentage, the reset time, or both
     /// (`[ui.panel]`).
     numbers: UiNumbers,
+    /// The `[tune.panel]` knobs: sizes, the gap to the tray, the ink.
+    tune: TunePanel,
     /// When the countdown on the panel next reads differently, while it
     /// shows one and is in sight: the event loop wakes then and repaints
     /// (`redraw`, which asks the shell nothing). None otherwise.
@@ -532,6 +633,7 @@ impl TaskbarPanel {
             mode: IndicatorKind::Off,
             last: Vec::new(),
             numbers: UiNumbers::panel_default(),
+            tune: TunePanel::default(),
             next_tick: None,
             size: (INIT_W, INIT_H),
             rect: None,
@@ -615,6 +717,17 @@ impl TaskbarPanel {
         self.update(providers, true);
     }
 
+    /// The `[tune.panel]` knobs; placed and repainted when they changed (the
+    /// size, and with it the room asked of the bar, may change too).
+    pub fn set_tune(&mut self, tune: &TunePanel, providers: &[ProviderData]) {
+        if self.tune == *tune {
+            return;
+        }
+        self.tune = tune.clone();
+        self.last.clear();
+        self.update(providers, true);
+    }
+
     /// When the countdown on the panel next reads differently, if it shows
     /// one: the event loop's deadline for `redraw`.
     pub fn next_tick(&self) -> Option<std::time::Instant> {
@@ -660,8 +773,9 @@ impl TaskbarPanel {
             // only DPI signal here - not from the panel's height, which is
             // the thickness lying down and the stacked layout's 64px
             // standing up. Taking the height made a side bar's tooltip a
-            // third too big, while the tray icon's was right.
-            let bar_thickness = self.bar_thickness() as f32;
+            // third too big, while the tray icon's was right. `[tune.panel]
+            // tooltip_size` scales it as a bar that much thicker would.
+            let bar_thickness = self.bar_thickness() as f32 * self.tune.tooltip_size();
             let pm = crate::ui::tray::render_tooltip_lines(&lines, bar_thickness, light);
             let (w, h) = (pm.width() as i32, pm.height() as i32);
             // The pixmap carries the drop shadow around the box, so the box's
@@ -861,7 +975,12 @@ impl TaskbarPanel {
     /// bar: the bar's full width, and the two providers stacked, each a
     /// percent over its own short bar — the way the clock stacks its lines.
     fn desired_size(&self, edge: Edge, thickness: i32) -> (u32, u32) {
-        panel_size(edge.vertical(), thickness, &self.numbers)
+        panel_size(
+            edge.vertical(),
+            thickness,
+            &self.numbers,
+            Knobs::of(&self.tune),
+        )
     }
 
     fn hide(&mut self) {
@@ -936,11 +1055,7 @@ impl TaskbarPanel {
             let (w, h) = self.desired_size(slot.edge, thickness(slot.edge, slot.bar));
             // An estimated tray edge is a guess at where the clock starts, so
             // keep a little more air than when the edge was measured.
-            let margin = if slot.tray_found {
-                TRAY_MARGIN
-            } else {
-                TRAY_MARGIN * 2
-            };
+            let (tray_side, button_side) = margins(slot.tray_found, self.tune.tray_gap());
             if read_screen && slot.tray_start != 0 {
                 self.room_read = Some(std::time::Instant::now());
             }
@@ -955,7 +1070,16 @@ impl TaskbarPanel {
             // direction only: it takes a little more room to come back than
             // it took to leave, and it never flips on its own.
             let along = if slot.edge.vertical() { h } else { w } as i32;
-            if !room_for(slot.band_end, slot.tray_start, along, margin) {
+            // `room_for` keeps its margin on both sides of the panel; the
+            // tray's side asks for `tray_side` instead (the same at the
+            // default gap).
+            let room = room_for(
+                slot.band_end,
+                slot.tray_start,
+                along + tray_side - button_side,
+                button_side,
+            );
+            if !room {
                 if before.is_some() || !self.unavailable {
                     tracing::debug!(
                         "panel hidden: no room on the bar ({:?} edge, buttons end at {:?}, tray at {})",
@@ -974,7 +1098,7 @@ impl TaskbarPanel {
                 slot.bar,
                 slot.tray_start,
                 (w as i32, h as i32),
-                margin,
+                tray_side,
             );
             if self.size != (w, h) {
                 self.resize_pixmap(w, h);
@@ -1040,7 +1164,9 @@ impl TaskbarPanel {
         let Some((x, y, w, h)) = self.rect else {
             return;
         };
-        let (fg, track) = theme_ink(crate::platform::system_uses_light_theme());
+        let light = crate::platform::system_uses_light_theme();
+        let (fg, track) = tuned_ink(light, self.tune.ink(light));
+        let knobs = Knobs::of(&self.tune);
         let pm = &mut self.pixmap;
         // A per-pixel-alpha layered window passes mouse clicks THROUGH any
         // fully transparent (alpha 0) pixel to the window beneath — here the
@@ -1050,7 +1176,15 @@ impl TaskbarPanel {
         pm.fill(hit_fill());
 
         let top = first_two(providers);
-        paint_rows(pm, self.edge.vertical(), &top, fg, track, &self.numbers);
+        paint_rows(
+            pm,
+            self.edge.vertical(),
+            &top,
+            fg,
+            track,
+            &self.numbers,
+            knobs,
+        );
         self.next_tick = next_countdown_tick(&top, &self.numbers);
 
         let data = self.pixmap.data();
@@ -1120,6 +1254,7 @@ mod tests {
                         fg,
                         track,
                         &UiNumbers::panel_default(),
+                        Knobs::of(&TunePanel::default()),
                     );
                     items.push((format!("{set}-{sname}-{ink}"), pm));
                 }
@@ -1148,7 +1283,8 @@ mod tests {
                         ("bottom-150", 72, false),
                         ("side-100", 62, true),
                     ] {
-                        let (w, h) = panel_size(vertical, thickness, &numbers);
+                        let k = Knobs::of(&TunePanel::default());
+                        let (w, h) = panel_size(vertical, thickness, &numbers, k);
                         let mut pm = Pixmap::new(w, h).unwrap();
                         pm.fill(hit_fill());
                         paint_rows(
@@ -1158,6 +1294,7 @@ mod tests {
                             fg,
                             track,
                             &numbers,
+                            k,
                         );
                         items.push((format!("{mode}-{set}-{sname}-{ink}"), pm));
                     }
@@ -1188,19 +1325,281 @@ mod tests {
     /// percentage, the bar and the time together.
     #[test]
     fn the_panel_is_as_long_as_what_it_shows() {
-        let classic = panel_size(false, 48, &UiNumbers::panel_default());
+        let k = Knobs::DEFAULT;
+        let classic = panel_size(false, 48, &UiNumbers::panel_default(), k);
         assert_eq!(classic, (119, 48));
-        assert_eq!(panel_size(true, 62, &UiNumbers::panel_default()), (62, 83));
+        assert_eq!(
+            panel_size(true, 62, &UiNumbers::panel_default(), k),
+            (62, 83)
+        );
         let widths: Vec<u32> = panel_variants()
             .iter()
-            .map(|(_, n)| panel_size(false, 48, n).0)
+            .map(|(_, n)| panel_size(false, 48, n, k).0)
             .collect();
         // time-bar, both-bar, percent, time, both
         assert_eq!(widths, [119, 161, 50, 50, 92]);
         for (_, n) in panel_variants() {
-            let (_, h) = panel_size(true, 62, &n);
+            let (_, h) = panel_size(true, 62, &n, k);
             assert!(h > 20 && h < 140, "{n:?}: {h}");
         }
+    }
+
+    /// `[tune.panel]` left out is today's panel: every size knob 1.0, the
+    /// tray gap `TRAY_MARGIN` on both sides (twice that against an estimated
+    /// tray edge), the theme's own ink, the tooltip at the bar's size.
+    #[test]
+    fn the_default_panel_knobs_are_todays_panel() {
+        let tune = TunePanel::default();
+        assert_eq!(Knobs::of(&tune), Knobs::DEFAULT);
+        assert_eq!(tune.tray_gap(), TRAY_MARGIN);
+        assert_eq!(margins(true, tune.tray_gap()), (TRAY_MARGIN, TRAY_MARGIN));
+        assert_eq!(
+            margins(false, tune.tray_gap()),
+            (2 * TRAY_MARGIN, 2 * TRAY_MARGIN)
+        );
+        assert_eq!(tune.tooltip_size(), 1.0);
+        for light in [false, true] {
+            assert_eq!(tune.ink(light), None);
+            assert_eq!(tuned_ink(light, tune.ink(light)), theme_ink(light));
+        }
+    }
+
+    /// The room the panel asks of the bar is the panel and the tray gap on
+    /// the tray's side, `TRAY_MARGIN` on the buttons' side; at the default
+    /// gap exactly what `room_for` asked before the knob.
+    #[test]
+    fn the_tray_gap_moves_the_panel_and_the_room_it_needs() {
+        use crate::platform::taskbar_geom::{panel_origin, room_for};
+        let ask = |found: bool, gap: i32, band: i32, len: i32| {
+            let (tray_side, button_side) = margins(found, gap);
+            room_for(Some(band), 1000, len + tray_side - button_side, button_side)
+        };
+        for found in [true, false] {
+            let before = if found { TRAY_MARGIN } else { 2 * TRAY_MARGIN };
+            for band in (700..900).step_by(7) {
+                assert_eq!(
+                    ask(found, TRAY_MARGIN, band, 119),
+                    room_for(Some(band), 1000, 119, before),
+                    "{found} {band}"
+                );
+            }
+        }
+        // 119 px of panel and 10 + 10 of air: room from a band ending at 861.
+        assert!(ask(true, 10, 861, 119) && !ask(true, 10, 862, 119));
+        // No gap on the tray's side: 10 px more room.
+        assert!(ask(true, 0, 871, 119) && !ask(true, 0, 872, 119));
+        let bar = (0, 1032, 1920, 1080);
+        let at = |gap: i32| {
+            let (tray_side, _) = margins(true, gap);
+            panel_origin(Edge::Bottom, bar, 1000, (119, 48), tray_side).0
+        };
+        assert_eq!(at(10), 1000 - 119 - 10);
+        assert_eq!(at(0), 1000 - 119);
+        assert_eq!(at(40), 1000 - 119 - 40);
+    }
+
+    /// The panel's size follows the knobs: lying down the digits widen the
+    /// number column and the bar's length the bar's, while the bar's
+    /// thickness and the row gap stay within the bar's height; standing up
+    /// the digits, the bar's thickness and the gap make the stack longer or
+    /// shorter, while the bar's length stays within the bar's width.
+    #[test]
+    fn the_panel_size_follows_the_knobs() {
+        let n = UiNumbers::panel_default();
+        let size = |vertical: bool, thickness: i32, f: fn(&mut Knobs)| {
+            let mut k = Knobs::DEFAULT;
+            f(&mut k);
+            panel_size(vertical, thickness, &n, k)
+        };
+        let (w0, h0) = size(false, 48, |_| {});
+        assert_eq!((w0, h0), (119, 48));
+        assert!(size(false, 48, |k| k.digit = 1.5).0 > w0);
+        assert!(size(false, 48, |k| k.digit = 0.5).0 < w0);
+        assert!(size(false, 48, |k| k.bar_len = 2.0).0 > w0);
+        assert!(size(false, 48, |k| k.bar_len = 0.25).0 < w0);
+        assert_eq!(size(false, 48, |k| k.bar_thick = 2.0), (w0, h0));
+        assert_eq!(size(false, 48, |k| k.row_gap = 0.0), (w0, h0));
+        // The bar's length in pixels: half the classic width per 1.0.
+        let longer = size(false, 48, |k| k.bar_len = 2.0).0 - w0;
+        assert!((55..=65).contains(&longer), "{longer}");
+
+        let (sw, sh) = size(true, 62, |_| {});
+        assert_eq!((sw, sh), (62, 83));
+        assert!(size(true, 62, |k| k.digit = 1.5).1 > sh);
+        assert!(size(true, 62, |k| k.digit = 0.5).1 < sh);
+        assert!(size(true, 62, |k| k.bar_thick = 2.0).1 > sh);
+        assert!(size(true, 62, |k| k.row_gap = 0.0).1 < sh);
+        assert!(size(true, 62, |k| k.row_gap = 2.0).1 > sh);
+        assert_eq!(size(true, 62, |k| k.bar_len = 3.0), (sw, sh));
+    }
+
+    /// At the knobs' far ends, in every layout the panel can take, nothing
+    /// is clipped: the panel's outermost rows and columns carry no ink, and
+    /// both rows (digits and bar) are painted.
+    #[test]
+    fn tuned_panels_paint_inside_their_size() {
+        let rows = [data(ProviderId::Claude, 100), data(ProviderId::Codex, 100)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = theme_ink(false);
+        let ends = [
+            Knobs {
+                digit: 1.5,
+                bar_len: 3.0,
+                bar_thick: 2.0,
+                row_gap: 2.0,
+            },
+            Knobs {
+                digit: 0.5,
+                bar_len: 0.25,
+                bar_thick: 0.25,
+                row_gap: 0.0,
+            },
+            Knobs {
+                digit: 1.5,
+                bar_len: 0.25,
+                bar_thick: 0.25,
+                row_gap: 2.0,
+            },
+        ];
+        let mut layouts = panel_variants();
+        layouts.push(("percent-bar", UiNumbers::panel_default()));
+        for k in ends {
+            for (mode, numbers) in &layouts {
+                for (thickness, vertical) in [(48, false), (72, false), (40, true), (62, true)] {
+                    let (w, h) = panel_size(vertical, thickness, numbers, k);
+                    let mut pm = Pixmap::new(w, h).unwrap();
+                    pm.fill(color(0, 0, 0, 255));
+                    paint_rows(&mut pm, vertical, &top, fg, track, numbers, k);
+                    let lit = |x: u32, y: u32| pm.pixel(x, y).is_some_and(|p| p.red() > 40);
+                    let edge = (0..w).any(|x| lit(x, 0) || lit(x, h - 1))
+                        || (0..h).any(|y| lit(0, y) || lit(w - 1, y));
+                    assert!(
+                        !edge,
+                        "{mode} {k:?} at {thickness} (vertical {vertical}): ink on the edge of {w}x{h}"
+                    );
+                    // Both providers are painted: ink in either half, along
+                    // the stack standing up and across the rows lying down.
+                    let half = |lo: u32, hi: u32| (lo..hi).any(|y| (0..w).any(|x| lit(x, y)));
+                    assert!(
+                        half(0, h / 2) && half(h / 2, h),
+                        "{mode} {k:?} at {thickness}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// An ink of one's own stands in for the theme's: its colour at the
+    /// theme's alphas, so the groove and a stale row's dimmer ink follow it;
+    /// a value that is not `#rrggbb` leaves the theme's ink.
+    #[test]
+    fn an_ink_of_ones_own_replaces_the_theme_ink() {
+        for light in [false, true] {
+            let (ink, track) = theme_ink(light);
+            let (mine, groove) = tuned_ink(light, Some((255, 128, 0)));
+            assert_eq!(mine, color(255, 128, 0, 255));
+            assert_eq!(groove.alpha(), track.alpha());
+            assert_eq!(
+                (groove.red(), groove.green(), groove.blue()),
+                (1.0, mine.green(), 0.0)
+            );
+            assert_eq!(aged_ink(mine, groove).alpha(), aged_ink(ink, track).alpha());
+        }
+        let tune = TunePanel {
+            ink_dark: Some("#FF8000".into()),
+            ink_light: Some("orange".into()),
+            ..Default::default()
+        };
+        assert_eq!(tune.ink(false), Some((255, 128, 0)));
+        assert_eq!(tune.ink(true), None);
+
+        let rows = [data(ProviderId::Claude, 60), stale(ProviderId::Codex, 60)];
+        let top: Vec<&ProviderData> = rows.iter().collect();
+        let (fg, track) = tuned_ink(false, tune.ink(false));
+        let mut pm = Pixmap::new(119, 48).unwrap();
+        pm.fill(color(DARK_BAR.0, DARK_BAR.1, DARK_BAR.2, 255));
+        let n = UiNumbers::panel_default();
+        paint_rows(&mut pm, false, &top, fg, track, &n, Knobs::DEFAULT);
+        // Orange: red well above blue, in the live row and the stale one.
+        let orange = |ys: std::ops::Range<u32>| {
+            ys.flat_map(|y| (0..119).map(move |x| (x, y)))
+                .filter_map(|(x, y)| pm.pixel(x, y))
+                .any(|p| p.red() > 150 && p.blue() < 60)
+        };
+        assert!(orange(0..24) && orange(24..48));
+    }
+
+    /// The panel with `[tune.panel]` knobs other than the defaults: each
+    /// size knob at both ends of a useful range, an ink of one's own, all of
+    /// them at their largest; with the default rows and (all at their
+    /// largest) the percentage and the time with the bar. A live row over a
+    /// stale one, lying down at 100% and 150% and standing up, on the dark
+    /// and the light bar (painted over the bar's grey so the PNGs can be
+    /// looked at), each the size the app gives it; and the hover tooltip
+    /// half as big again. Not pinned: the default panel is the pinned
+    /// "panel" group.
+    #[test]
+    fn visual_baseline_panel_tune() {
+        use crate::ui::visual_baseline as vb;
+        let t = |f: fn(&mut TunePanel)| {
+            let mut t = TunePanel::default();
+            f(&mut t);
+            t
+        };
+        let max = |t: &mut TunePanel| {
+            t.digit_size = Some(1.5);
+            t.bar_length = Some(3.0);
+            t.bar_thickness = Some(2.0);
+            t.row_gap = Some(2.0);
+        };
+        let classic = UiNumbers::panel_default();
+        let variants = [
+            ("digits-large", t(|t| t.digit_size = Some(1.4)), classic),
+            ("digits-small", t(|t| t.digit_size = Some(0.7)), classic),
+            ("bar-long", t(|t| t.bar_length = Some(2.0)), classic),
+            ("bar-short", t(|t| t.bar_length = Some(0.5)), classic),
+            ("bar-thick", t(|t| t.bar_thickness = Some(2.0)), classic),
+            ("bar-thin", t(|t| t.bar_thickness = Some(0.4)), classic),
+            ("rows-apart", t(|t| t.row_gap = Some(2.0)), classic),
+            ("rows-tight", t(|t| t.row_gap = Some(0.0)), classic),
+            (
+                "ink",
+                t(|t| {
+                    t.ink_dark = Some("#7fd4ff".into());
+                    t.ink_light = Some("#0b5394".into());
+                }),
+                classic,
+            ),
+            ("max", t(max), classic),
+            ("max-both-bar", t(max), UiNumbers::default()),
+        ];
+        let typical = vb::typical();
+        let live_and_stale = vec![typical[0].clone(), vb::states()[4].clone()];
+        let mut items = Vec::new();
+        for (light, bar) in [(false, DARK_BAR), (true, LIGHT_BAR)] {
+            let theme = if light { "light" } else { "dark" };
+            for (name, tune, numbers) in &variants {
+                let (fg, track) = tuned_ink(light, tune.ink(light));
+                let k = Knobs::of(tune);
+                for (sname, thickness, vertical) in [
+                    ("bottom-100", 48, false),
+                    ("bottom-150", 72, false),
+                    ("side-100", 62, true),
+                ] {
+                    let (w, h) = panel_size(vertical, thickness, numbers, k);
+                    let mut pm = Pixmap::new(w, h).unwrap();
+                    pm.fill(color(bar.0, bar.1, bar.2, 255));
+                    let top = first_two(&live_and_stale);
+                    paint_rows(&mut pm, vertical, &top, fg, track, numbers, k);
+                    items.push((format!("{name}-{sname}-{theme}"), pm));
+                }
+            }
+            let tune = t(|t| t.tooltip_size = Some(1.5));
+            let text = crate::ui::tray::tooltip(&typical, false);
+            let pm = crate::ui::tray::render_tooltip(&text, 48.0 * tune.tooltip_size(), light);
+            items.push((format!("tooltip-large-{theme}"), pm));
+        }
+        vb::check("panel-tune", items);
     }
 
     /// With the reset time shown, the drawn time is part of what a repaint
@@ -1278,6 +1677,7 @@ mod tests {
                         fg,
                         track,
                         &UiNumbers::panel_default(),
+                        Knobs::DEFAULT,
                     );
                     let at = if scale == 1 {
                         String::new()
@@ -1328,7 +1728,15 @@ mod tests {
             let (fg, track) = theme_ink(light);
             let mut pm = Pixmap::new(119, 48).unwrap();
             pm.fill(color(bar.0, bar.1, bar.2, 255));
-            paint_rows(&mut pm, false, &top, fg, track, &UiNumbers::panel_default());
+            paint_rows(
+                &mut pm,
+                false,
+                &top,
+                fg,
+                track,
+                &UiNumbers::panel_default(),
+                Knobs::DEFAULT,
+            );
             let lum = |x: u32, y: u32| luminance(pm.pixel(x, y).unwrap());
             let back = lum(0, 0);
             // The strongest digit ink in each row: the digits take the left
@@ -1412,7 +1820,15 @@ mod tests {
         let (fg, track) = theme_ink(false);
         let mut pm = Pixmap::new(48, 64).unwrap();
         pm.fill(color(0, 0, 0, 255));
-        paint_rows(&mut pm, true, &top, fg, track, &UiNumbers::panel_default());
+        paint_rows(
+            &mut pm,
+            true,
+            &top,
+            fg,
+            track,
+            &UiNumbers::panel_default(),
+            Knobs::DEFAULT,
+        );
         // rows with ink, top to bottom; a bar is a run of lit rows after a
         // gap below the digits
         let lit: Vec<bool> = (0..64)

@@ -687,6 +687,7 @@ pub fn run() -> Result<()> {
         rows::nothing_chosen(&config),
         &visible_data(&config, &display),
     );
+    tray.set_tune(&config.tune.tray, &visible_data(&config, &display), &theme);
     tray.set_mode(
         config.general.indicator,
         &menu.menu,
@@ -705,6 +706,7 @@ pub fn run() -> Result<()> {
     crate::platform::register_fullscreen_watch();
     panel.set_mode(config.general.indicator, &visible_data(&config, &display));
     panel.set_numbers(config.ui.panel, &visible_data(&config, &display));
+    panel.set_tune(&config.tune.panel, &visible_data(&config, &display));
     #[cfg(target_os = "windows")]
     let indicator = indicator::Indicator::new();
 
