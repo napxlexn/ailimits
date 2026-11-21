@@ -94,7 +94,9 @@ requests, exactly:
 
 - Every request goes over HTTPS to the hosts named per provider below, with
   a 10 s time-out and no redirects, so a token is never forwarded to another
-  host.
+  host. An answer's body is read up to 1 MiB (`MAX_ANSWER_BYTES`): a
+  Content-Length past it is refused before anything is read, and a body
+  without one is given up on as soon as it passes the cap.
 - **Proxy.** The app uses the proxy set in Windows (Settings > Network >
   Proxy > "Use a proxy server": `ProxyEnable`, `ProxyServer`,
   `ProxyOverride` under the user's Internet Settings) for the providers, the
@@ -118,6 +120,7 @@ Every error keeps the last real data, greyed with its age.
 | no answer: offline, DNS, a body cut off | `offline, retrying` |
 | no answer in 10 s | `timed out, retrying` |
 | the certificate is refused | `untrusted certificate, retrying` |
+| an answer over 1 MiB | `answer too large, retrying` |
 | HTTP 429 | `rate-limited, retrying` |
 | HTTP 5xx (Anthropic's 529 among them) | `HTTP <code>, retrying` |
 | any other status | `HTTP <code>` |
@@ -676,7 +679,9 @@ A refused refresh (401/403, not seen yet) keeps the session: it is noted
 as the day's attempt, and the session is used until the service itself
 refuses it. A refresh that gets no answer at all (offline, a time-out)
 counts as the day's attempt too, so a PC that is offline does not try
-again each cycle. Whether a refresh near `exp` extends the session is not verified
+again each cycle. The attempt is noted in the stored session and in the
+provider's memory, so it counts even when Credential Manager does not take
+the updated session. Whether a refresh near `exp` extends the session is not verified
 yet; if it does not, a session lasts about 60 days and the row then asks
 for a new sign-in.
 

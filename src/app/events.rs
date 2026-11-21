@@ -417,12 +417,15 @@ impl App {
                 AppCommand::UpdateProvider { data, serial } => {
                     self.on_provider_update(data, serial, target)
                 }
-                AppCommand::CursorSignIn(outcome) => self.on_cursor_sign_in(outcome),
+                AppCommand::CursorSignIn { approval, ticket } => {
+                    self.on_cursor_sign_in(approval, ticket)
+                }
                 AppCommand::UsageToken {
                     pid,
-                    outcome,
+                    check,
+                    token,
                     ticket,
-                } => self.on_usage_token(pid, outcome, ticket),
+                } => self.on_usage_token(pid, check, token, ticket),
                 AppCommand::Models(generation, read) => self.on_models(generation, read),
                 AppCommand::Quit => *control_flow = ControlFlow::Exit,
             },

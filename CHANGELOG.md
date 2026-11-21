@@ -354,6 +354,22 @@ Notable, user-visible changes. Dates are release dates.
   and leaves the config as it is; `login` keeps the session it got and says
   the config could not be updated. `set` and `set-usage-token` make what
   they store the provider's source (`api_key`, `usage_token`).
+- **The updater runs exactly the file it verified.** The installer is
+  written into a new folder of its own in `%TEMP%` and held from its last
+  check until it starts: nothing can change, rename or delete it meanwhile,
+  and it is read back against the verified SHA-256 first. Downloads follow
+  redirects only to GitHub over https, and every answer the app reads is
+  capped in size (a provider's at 1 MiB, the installer at 64 MiB); a larger
+  one reads "answer too large, retrying".
+- **A pasted key goes only to its own provider.** Claude reads only its API
+  key and Copilot only its token, whatever label `config.toml` names.
+- **Removing a usage token, cancelling the Cursor sign-in or signing out
+  always wins.** A check or sign-in still under way can no longer store its
+  token or session afterwards: it is stored only while it is still awaited.
+- **Cursor's session refresh stays once a day** when Credential Manager
+  cannot save the refreshed session, instead of being tried every cycle.
+- **A `config.toml` that cannot be understood is logged by line and column
+  only**, never by the text of the line.
 - **The TLS libraries are updated** for the October 2026 advisories.
 - **Libraries brought up to date** (the menu, tray, drawing, settings-file
   and Windows-binding crates among them; the installer is built with Inno

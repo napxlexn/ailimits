@@ -358,7 +358,16 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `1507bd92b1a4bb7b`). The signature covers the file name and its SHA-256,
   so a signed installer cannot pass for another version. No signature, or
   one that does not verify: no install. If the user came back during the
-  download, it waits again.
+  download, it waits again. Every answer is read up to a cap (the release
+  1 MiB, the signature 1 KiB, the installer 64 MiB; it is about 4 MB), and
+  a redirect is followed only to https on github.com, api.github.com or a
+  `*.githubusercontent.com` asset host, five at most.
+- **The file run is the file checked.** The verified installer is written
+  into a folder made new for that download, `%TEMP%\AiLimits-update-<random>`
+  (`create_new`), and held from its last check until it runs: opened with
+  read sharing only, so nothing can write, rename or delete it, read back
+  through that handle against the verified SHA-256, and kept open until
+  the installer process has started. Its folder goes with it.
 - **No script in between.** The attempt is written to
   `update-attempt.json` first (version, installer path, `told`), then the
   installer itself is started by `CreateProcessW` (its path as UTF-16, so a

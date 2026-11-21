@@ -2,8 +2,9 @@
 // See docs/en/PROVIDERS.md, section "Claude".
 
 use super::{
-    keyring_secret, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
-    ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
+    keyring_password, keyring_secret, pasted_key, read_text, status_words, transport_error, Metric,
+    MetricUnit, MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus, Refusals,
+    SecretSource, MAX_ANSWER_BYTES,
 };
 use crate::config::{
     paths::ToolPaths,
@@ -38,6 +39,9 @@ pub struct ClaudeProvider {
     /// follows a redirect: reqwest strips only Authorization on one, never
     /// x-api-key.
     net: Net,
+    /// The API key the user pasted (Credential Manager), read each cycle
+    /// under Claude's own label only (`providers::own_key_label`).
+    api_key: SecretSource,
     /// The app's own usage token (Credential Manager), read each cycle; it
     /// does not touch Claude Code's credentials.
     usage_token: SecretSource,
@@ -52,6 +56,11 @@ pub struct ClaudeProvider {
 impl ClaudeProvider {
     pub fn new(config: ProviderConfig) -> Self {
         Self {
+            api_key: pasted_key(
+                ProviderId::Claude,
+                &config.credential_label,
+                keyring_password,
+            ),
             config,
             net: Net::new(),
             usage_token: keyring_secret(USAGE_TOKEN_LABEL),
@@ -71,6 +80,9 @@ impl ClaudeProvider {
     ) -> Self {
         let token = usage_token.map(str::to_string);
         Self {
+            // No test reads Credential Manager: a key is handed in by the
+            // test that needs one.
+            api_key: Box::new(|| None),
             config,
             net: Net::local(server),
             usage_token: Box::new(move || token.clone()),
@@ -79,14 +91,9 @@ impl ClaudeProvider {
         }
     }
 
-    /// API key from Windows Credential Manager.
+    /// API key from Windows Credential Manager, under Claude's own label.
     fn get_api_key(&self) -> Option<String> {
-        if self.config.credential_label.is_empty() {
-            return None;
-        }
-        keyring::Entry::new("ailimits", &self.config.credential_label)
-            .and_then(|e| e.get_password())
-            .ok()
+        (self.api_key)()
     }
 
     /// Method A: API key → rate limit headers.
@@ -274,11 +281,11 @@ impl ClaudeProvider {
 
         match resp.status().as_u16() {
             200 => {
-                let body = match resp.text().await {
+                let body = match read_text(resp, MAX_ANSWER_BYTES).await {
                     Ok(body) => body,
                     Err(e) => {
                         warn!("oauth usage body read failed: {e}");
-                        chain.no_answer = Some(transport_error(&e));
+                        chain.no_answer = Some(e.words());
                         return Err(Miss::Other);
                     }
                 };
@@ -735,6 +742,49 @@ mod tests {
         let p = ClaudeProvider::for_test(config(true), &server.base, None, Some(home.path()));
         let data = p.fetch().await.unwrap();
         assert_eq!(message(&data), "offline, retrying");
+    }
+
+    /// The API key is read under Claude's own label only. A config naming
+    /// another label (Copilot's token, a usage token) reads nothing, so that
+    /// secret is never sent to Anthropic; the row shows no key instead.
+    #[tokio::test]
+    async fn the_api_key_is_read_only_under_claudes_own_label() {
+        /// A Credential Manager holding a secret under every label.
+        fn every_label(label: &'static str) -> Option<String> {
+            Some(format!("secret of {label}"))
+        }
+        let with_label = |label: &str| ProviderConfig {
+            auth_method: AuthMethod::ApiKey,
+            credential_label: label.to_string(),
+            ..config(false)
+        };
+        for foreign in [
+            "copilot_pat",
+            "claude_usage_token",
+            "codex_usage_token",
+            "cursor_session",
+            "",
+        ] {
+            let server = TestServer::start();
+            server.route("/v1/models", vec![Reply::ok("{}")]);
+            let mut p = ClaudeProvider::for_test(with_label(foreign), &server.base, None, None);
+            p.api_key = pasted_key(ProviderId::Claude, foreign, every_label);
+            let data = p.fetch().await.unwrap();
+            assert!(
+                matches!(data.status, ProviderStatus::NotConfigured),
+                "{foreign:?}: {:?}",
+                data.status
+            );
+            assert!(server.seen().is_empty(), "{foreign:?}: nothing sent");
+        }
+        // Its own label: the key goes with the request.
+        let server = TestServer::start();
+        server.route("/v1/models", vec![Reply::ok("{}")]);
+        let mut p =
+            ClaudeProvider::for_test(with_label("claude_api_key"), &server.base, None, None);
+        p.api_key = pasted_key(ProviderId::Claude, "claude_api_key", every_label);
+        let _ = p.fetch().await.unwrap();
+        assert_eq!(server.count("/v1/models"), 1);
     }
 
     /// Without the user's leave, Claude Code's file is not read and nothing

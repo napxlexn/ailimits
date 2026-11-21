@@ -6,8 +6,8 @@
 // individual, AI Pro and Ultra accounts through Gemini CLI on 2026-06-18.
 
 use super::{
-    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
-    ProviderData, ProviderId, ProviderStatus,
+    clean_label, read_text, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net,
+    Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
@@ -193,11 +193,11 @@ impl AntigravityProvider {
                 return QuotaOutcome::Unusable;
             }
         }
-        let body = match resp.text().await {
+        let body = match read_text(resp, MAX_ANSWER_BYTES).await {
             Ok(body) => body,
             Err(e) => {
                 warn!("{name} body read failed: {e}");
-                return QuotaOutcome::Passing(transport_error(&e).to_string());
+                return QuotaOutcome::Passing(e.words().to_string());
             }
         };
         let parsed = match quota {
@@ -242,11 +242,11 @@ impl AntigravityProvider {
                 return ProjectResolution::Passing(status_words(other));
             }
         }
-        let body = match resp.text().await {
+        let body = match read_text(resp, MAX_ANSWER_BYTES).await {
             Ok(body) => body,
             Err(e) => {
                 warn!("loadCodeAssist body read failed: {e}");
-                return ProjectResolution::Passing(transport_error(&e).to_string());
+                return ProjectResolution::Passing(e.words().to_string());
             }
         };
         let Some(project) = parse_load_code_assist_project(&body) else {

@@ -10,8 +10,8 @@
 // status only while its row ("cursor.bot") is chosen.
 
 use super::{
-    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
-    ProviderData, ProviderId, ProviderStatus,
+    clean_label, read_text, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net,
+    Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::schema::ProviderConfig;
 use anyhow::Result;
@@ -84,6 +84,11 @@ pub struct CursorProvider {
     plan: Mutex<Option<PlanCache>>,
     /// Refusals of the own session in a row: (a hash of its token, count).
     refusals: Mutex<Option<(u64, u32)>>,
+    /// When this instance last tried a refresh, answered or not. The kept
+    /// session notes the attempt too (`OwnSession::refreshed_at`), but only
+    /// once it is saved: should Credential Manager not take it, this still
+    /// holds the next attempt off for a day.
+    last_refresh: Mutex<Option<DateTime<Utc>>>,
 }
 
 /// One cached plan answer.
@@ -111,6 +116,7 @@ impl CursorProvider {
             grok_bot: false,
             plan: Mutex::new(None),
             refusals: Mutex::new(None),
+            last_refresh: Mutex::new(None),
         }
     }
 
@@ -169,7 +175,7 @@ impl CursorProvider {
             return self.sign_in_again();
         }
         let mut renewed = false;
-        if own.needs_refresh(Utc::now()) {
+        if self.refresh_due(&own, Utc::now()) {
             (own, renewed) = self.refresh(own).await;
         }
         // An expired token is never sent; a refresh could not renew it.
@@ -182,7 +188,7 @@ impl CursorProvider {
             // Refused. Near its expiry one refresh may still save the
             // session — at most one a day, like any refresh, so a run of
             // refusals costs no refresh each cycle.
-            if !renewed && own.needs_refresh(Utc::now()) {
+            if !renewed && self.refresh_due(&own, Utc::now()) {
                 (own, renewed) = self.refresh(own).await;
                 if renewed {
                     answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
@@ -221,9 +227,29 @@ impl CursorProvider {
         count
     }
 
+    /// Whether `own` is to be refreshed at `now`: near its expiry with no
+    /// attempt noted in the kept session for a day (`needs_refresh`), and
+    /// none made by this instance for a day either, kept or not.
+    fn refresh_due(&self, own: &OwnSession, now: DateTime<Utc>) -> bool {
+        own.needs_refresh(now)
+            && session::attempt_due(
+                *self
+                    .last_refresh
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+                now,
+            )
+    }
+
     /// One refresh of the widget's own session — never of the editor's
     /// token. The result is kept; `true` when a new token came.
     async fn refresh(&self, own: OwnSession) -> (OwnSession, bool) {
+        // Noted before the request: an attempt counts whatever comes of it,
+        // and whether or not Credential Manager takes the result.
+        *self
+            .last_refresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Utc::now());
         let Some(answer) = session::request_refresh(&self.net, &own).await else {
             // No answer at all (offline, a timeout): nothing learnt, but the
             // attempt counts, so it waits a day like any other and a PC that
@@ -243,7 +269,8 @@ impl CursorProvider {
     /// Keep the session after a change, in place of the one this fetch
     /// started with — unless the user signed out or in again meanwhile. A
     /// failure is logged and survived: the session in hand still works for
-    /// this cycle.
+    /// this cycle, and `last_refresh` keeps the refresh from repeating on
+    /// the next.
     fn keep(&self, previous_token: &str, next: &OwnSession) {
         match self.store.replace(previous_token, next) {
             Ok(true) => {}
@@ -371,9 +398,9 @@ impl CursorProvider {
             })?;
         let code = resp.status().as_u16();
         let body = if code == 200 {
-            resp.text().await.map_err(|e| {
+            read_text(resp, MAX_ANSWER_BYTES).await.map_err(|e| {
                 warn!("cursor {method} body read failed: {e}");
-                transport_error(&e)
+                e.words()
             })?
         } else {
             String::new()
@@ -979,6 +1006,58 @@ mod tests {
             tries,
             "no second try the same day"
         );
+    }
+
+    /// A session store that reads but never keeps anything: Credential
+    /// Manager refusing every write.
+    struct Unwritable(OwnSession);
+
+    impl SessionStore for Unwritable {
+        fn load(&self) -> std::result::Result<Option<OwnSession>, StoreError> {
+            Ok(Some(self.0.clone()))
+        }
+
+        fn replace(&self, _: &str, _: &OwnSession) -> std::result::Result<bool, StoreError> {
+            Err(StoreError::Unavailable("refused in the test".to_string()))
+        }
+    }
+
+    /// A refresh whose result cannot be kept is still an attempt: each
+    /// cycle reads the session as it was before, near its expiry and with
+    /// no attempt noted, yet only one refresh goes out a day - answered,
+    /// renewed, refused or unanswered.
+    #[tokio::test]
+    async fn a_refresh_that_cannot_be_kept_is_not_repeated_each_cycle() {
+        let renewed = format!(r#"{{"access_token":"{FAKE_TOKEN}","shouldLogout":false}}"#);
+        for (reply, usage) in [
+            (Reply::ok(&renewed), Reply::ok(USAGE_BODY)),
+            (Reply::status(500), Reply::ok(USAGE_BODY)),
+            (Reply::status(401), Reply::ok(USAGE_BODY)),
+            (Reply::Hangup, Reply::ok(USAGE_BODY)),
+            // Refused usage near the expiry asks for a refresh too.
+            (Reply::status(500), Reply::status(401)),
+        ] {
+            let server = TestServer::start();
+            server.route("/oauth/token", vec![reply.clone()]);
+            server.route(CURRENT_PERIOD_USAGE, vec![usage.clone()]);
+            server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+            let mut near = session();
+            near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+            let p = CursorProvider::with_parts(
+                config(),
+                Net::local(&server.base),
+                Arc::new(Unwritable(near)),
+            );
+            for _ in 0..3 {
+                let _ = p.fetch().await.unwrap();
+            }
+            assert_eq!(
+                server.count("/oauth/token"),
+                1,
+                "{reply:?} / usage {usage:?}"
+            );
+            assert_eq!(server.count(CURRENT_PERIOD_USAGE), 3);
+        }
     }
 
     /// Refused near its expiry: one refresh is tried, not one each cycle,

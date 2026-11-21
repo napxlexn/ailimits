@@ -6,8 +6,8 @@
 // proxy's billing call in its credits format.
 
 use super::{
-    clean_label, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
-    ProviderData, ProviderId, ProviderStatus,
+    clean_label, read_text, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net,
+    Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::{paths::ToolPaths, schema::ProviderConfig};
 use anyhow::Result;
@@ -151,11 +151,11 @@ impl GrokProvider {
         // Only a 200 carries a body worth reading. One cut off mid-transfer
         // is an honest error row, never an Err the scheduler would only log.
         let body = if code == 200 {
-            match resp.text().await {
+            match read_text(resp, MAX_ANSWER_BYTES).await {
                 Ok(body) => body,
                 Err(e) => {
                     warn!("grok billing body read failed: {e}");
-                    let words = transport_error(&e).to_string();
+                    let words = e.words().to_string();
                     return Ok(self.data(ProviderStatus::NetworkError(words), vec![]));
                 }
             }

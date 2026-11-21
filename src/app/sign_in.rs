@@ -15,16 +15,110 @@ use crate::{
     config::schema::AuthMethod,
     providers::{
         self,
-        cursor::session::{self as cursor_session, SignInOutcome},
+        cursor::session::{
+            self as cursor_session, Approval, OwnSession, SignInOutcome, StoreError,
+        },
         key_label_for, usage_token_label_for, ProviderId, TokenCheck,
     },
     ui::picker::{CursorState, PickerAction, SourceId},
 };
-use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
-/// Numbers the usage-token checks, so an answer can be matched to its paste.
-static TOKEN_CHECKS: AtomicU64 = AtomicU64::new(0);
+/// The one task of a kind whose answer the event loop still waits for: the
+/// check of a pasted usage token, or Cursor's sign-in. Each task is started
+/// under a ticket of its own and sends it back with its answer. A task
+/// does not store what it brings back: the event loop does, and only while
+/// the answer's ticket is the one awaited. An answer from a task that was
+/// cancelled, removed or replaced since is dropped, so a secret can never
+/// be stored after the user took it back - not even by a task already past
+/// its last await point when it was aborted.
+pub(super) struct Awaited<H> {
+    /// The last ticket handed out.
+    issued: u64,
+    /// The task awaited and its ticket.
+    current: Option<(u64, H)>,
+}
+
+impl<H> Default for Awaited<H> {
+    fn default() -> Self {
+        Self {
+            issued: 0,
+            current: None,
+        }
+    }
+}
+
+impl<H> Awaited<H> {
+    /// Start a task under a new ticket (`spawn` is handed it, to send back
+    /// with the answer) and await it alone: the task awaited until now, if
+    /// any, is returned to be aborted, and its answer no longer counts.
+    pub(super) fn start(&mut self, spawn: impl FnOnce(u64) -> H) -> Option<H> {
+        self.issued += 1;
+        let ticket = self.issued;
+        self.current
+            .replace((ticket, spawn(ticket)))
+            .map(|(_, h)| h)
+    }
+
+    /// Await nothing any more (Cancel, a removal, a sign-out): the task, to
+    /// be aborted. Its answer, should one still come, no longer counts.
+    pub(super) fn cancel(&mut self) -> Option<H> {
+        self.current.take().map(|(_, h)| h)
+    }
+
+    /// Whether a task is awaited.
+    pub(super) fn is_waiting(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// An answer came under `ticket`: whether it is the one awaited. If it
+    /// is, nothing is awaited any more.
+    pub(super) fn answered(&mut self, ticket: u64) -> bool {
+        let current = self.current.as_ref().is_some_and(|(t, _)| *t == ticket);
+        if current {
+            self.current = None;
+        }
+        current
+    }
+}
+
+/// A pasted usage token on its way back from its check to the event loop,
+/// which stores it there (`settle_token`). No debug print shows it.
+pub struct PastedToken(String);
+
+impl std::fmt::Debug for PastedToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PastedToken(..)")
+    }
+}
+
+/// What a checked paste's answer comes to: None, and nothing stored, when
+/// the paste is no longer the one awaited (a later paste or a removal came
+/// since); otherwise its outcome, the token stored with `store` unless the
+/// check refused it.
+fn settle_token<H>(
+    awaited: &mut Awaited<H>,
+    ticket: u64,
+    check: TokenCheck,
+    store: impl FnOnce() -> keyring::Result<()>,
+) -> Option<TokenOutcome> {
+    awaited
+        .answered(ticket)
+        .then(|| TokenOutcome::of(check, store))
+}
+
+/// What the end of Cursor's sign-in comes to: None, and nothing kept, when
+/// it is no longer the sign-in awaited (cancelled, signed out of, or
+/// started over since); otherwise its outcome, an approved session kept
+/// with `store`.
+fn settle_sign_in<H>(
+    awaited: &mut Awaited<H>,
+    ticket: u64,
+    approval: Approval,
+    store: impl FnOnce(&OwnSession) -> Result<(), StoreError>,
+) -> Option<SignInOutcome> {
+    awaited.answered(ticket).then(|| approval.keep_with(store))
+}
 
 /// Every Credential Manager label of the app's own keys and tokens.
 const SECRET_LABELS: [&str; 4] = [
@@ -157,7 +251,7 @@ impl App {
     /// task runs.
     pub(super) fn sign_in_view(&self) -> SignInState {
         let mut state = self.sign_in.clone();
-        if self.cursor_sign_in.is_some() {
+        if self.cursor_sign_in.is_waiting() {
             state.cursor = Some(CursorState::Waiting);
         }
         state
@@ -308,56 +402,64 @@ impl App {
 
     /// A usage token from the clipboard: its shape first, so nothing that
     /// is not one is ever sent; then one check against the provider's own
-    /// usage endpoint (`providers::check_usage_token`) and, unless refused,
-    /// Credential Manager - both in a task on the runtime, which the token
-    /// never leaves. The event loop hears only the outcome
-    /// (`AppCommand::UsageToken`, `on_usage_token`).
+    /// usage endpoint (`providers::check_usage_token`), in a task on the
+    /// runtime. The task stores nothing: it hands the token and the check
+    /// back to the event loop (`AppCommand::UsageToken`, `on_usage_token`),
+    /// which stores it there unless refused - and only if this paste is
+    /// still the one awaited.
     fn paste_usage_token(&mut self, pid: &'static str) {
         let pasted = usage_token_label_for(pid)
             .zip(SecretKind::usage_token_for(pid))
             .ok_or_else(|| anyhow::anyhow!("{pid} takes no usage token"))
-            .and_then(|(label, kind)| Ok((label, read_clipboard_secret(kind)?)));
-        let (label, token) = match pasted {
-            Ok(pasted) => pasted,
+            .and_then(|(_, kind)| read_clipboard_secret(kind));
+        let token = match pasted {
+            Ok(token) => token,
             Err(e) => return self.tell(pid, format!("Not stored: {e}.")),
         };
         if let Some(problem) = providers::usage_token_problem(pid, &token) {
             return self.tell(pid, format!("Not stored: {problem}."));
         }
-        // A second paste while one is checked: the newer one counts.
-        if let Some((_, task)) = self.usage_token_check.take() {
-            task.abort();
-        }
-        let ticket = TOKEN_CHECKS.fetch_add(1, Ordering::Relaxed);
         let tx = self.cmd_tx.clone();
         let owned = pid.to_string();
-        let task = self.runtime.spawn(async move {
-            let check = providers::check_usage_token(&owned, &token).await;
-            let outcome = TokenOutcome::of(check, || {
-                keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&token))
-            });
-            let done = AppCommand::UsageToken {
-                pid: owned,
-                outcome,
-                ticket,
-            };
-            let _ = tx.send(done).await;
+        let runtime = &self.runtime;
+        let replaced = self.usage_token_check.start(|ticket| {
+            runtime.spawn(async move {
+                let check = providers::check_usage_token(&owned, &token).await;
+                let done = AppCommand::UsageToken {
+                    pid: owned,
+                    check,
+                    token: PastedToken(token),
+                    ticket,
+                };
+                let _ = tx.send(done).await;
+            })
         });
-        self.usage_token_check = Some((ticket, task));
+        // A second paste while one is checked: the newer one counts.
+        if let Some(task) = replaced {
+            task.abort();
+        }
         self.tell(pid, format!("Checking it with {}...", name_of(pid)));
     }
 
-    /// A pasted usage token was checked (`paste_usage_token`). The answer
-    /// to a paste that a later paste or a removal replaced is not acted on.
-    pub(super) fn on_usage_token(&mut self, pid: String, outcome: TokenOutcome, ticket: u64) {
-        match self.usage_token_check.take() {
-            Some((current, _)) if current == ticket => {}
-            other => {
-                self.usage_token_check = other;
-                return;
-            }
-        }
+    /// A pasted usage token was checked (`paste_usage_token`): stored here
+    /// unless refused. The answer to a paste that a later paste or a
+    /// removal replaced is dropped, and its token with it.
+    pub(super) fn on_usage_token(
+        &mut self,
+        pid: String,
+        check: TokenCheck,
+        token: PastedToken,
+        ticket: u64,
+    ) {
         let Some(id) = ProviderId::from_config_id(&pid).map(|p| p.config_id()) else {
+            return;
+        };
+        let Some(label) = usage_token_label_for(id) else {
+            return;
+        };
+        let store =
+            || keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&token.0));
+        let Some(outcome) = settle_token(&mut self.usage_token_check, ticket, check, store) else {
             return;
         };
         match outcome {
@@ -367,10 +469,8 @@ impl App {
                     pc.auth_method = AuthMethod::UsageToken;
                     pc.credential_label.clear();
                 }
-                if let Some(label) = usage_token_label_for(id) {
-                    if !self.sign_in.stored.contains(&label) {
-                        self.sign_in.stored.push(label);
-                    }
+                if !self.sign_in.stored.contains(&label) {
+                    self.sign_in.stored.push(label);
                 }
                 self.set_up_with_app_sign_in(id);
                 let text = match outcome {
@@ -394,9 +494,9 @@ impl App {
     }
 
     fn remove_usage_token(&mut self, pid: &'static str) {
-        // A paste still being checked would store its token after this:
-        // the removal is the later wish.
-        if let Some((_, task)) = self.usage_token_check.take() {
+        // A paste still being checked is not stored after this, even if
+        // its answer is already on its way: the removal is the later wish.
+        if let Some(task) = self.usage_token_check.cancel() {
             task.abort();
         }
         let label = usage_token_label_for(pid).unwrap_or_default();
@@ -421,17 +521,22 @@ impl App {
     fn sign_in_cursor(&mut self) {
         match cursor_session::LoginRequest::new() {
             Ok(request) => {
-                // A second click starts over: the first link may have been
-                // closed unseen.
-                if let Some(task) = self.cursor_sign_in.take() {
-                    task.abort();
-                }
                 crate::platform::open_url(&request.url());
                 let tx = self.cmd_tx.clone();
-                self.cursor_sign_in = Some(self.runtime.spawn(async move {
-                    let outcome = cursor_session::complete_sign_in(request).await;
-                    let _ = tx.send(AppCommand::CursorSignIn(outcome)).await;
-                }));
+                let runtime = &self.runtime;
+                // The task only waits for the browser; the session it brings
+                // back is kept by `on_cursor_sign_in`.
+                let replaced = self.cursor_sign_in.start(|ticket| {
+                    runtime.spawn(async move {
+                        let approval = cursor_session::wait_for_approval(request).await;
+                        let _ = tx.send(AppCommand::CursorSignIn { approval, ticket }).await;
+                    })
+                });
+                // A second click starts over: the first link may have been
+                // closed unseen.
+                if let Some(task) = replaced {
+                    task.abort();
+                }
                 self.sign_in.notes.remove("cursor");
                 self.refresh_picker();
             }
@@ -443,15 +548,24 @@ impl App {
     }
 
     fn cancel_cursor_sign_in(&mut self) {
-        if let Some(task) = self.cursor_sign_in.take() {
+        if let Some(task) = self.cursor_sign_in.cancel() {
             task.abort();
         }
         self.tell("cursor", "Cancelled.");
     }
 
-    /// The sign-in started from the window has ended.
-    pub(super) fn on_cursor_sign_in(&mut self, outcome: SignInOutcome) {
-        self.cursor_sign_in = None;
+    /// The sign-in started from the window stopped waiting for the browser:
+    /// an approved session is kept here. One cancelled, signed out of or
+    /// started over since keeps nothing and says nothing.
+    pub(super) fn on_cursor_sign_in(&mut self, approval: Approval, ticket: u64) {
+        let Some(outcome) = settle_sign_in(
+            &mut self.cursor_sign_in,
+            ticket,
+            approval,
+            cursor_session::store,
+        ) else {
+            return;
+        };
         match outcome {
             SignInOutcome::SignedIn(_) => {
                 let pid = "cursor";
@@ -488,7 +602,9 @@ impl App {
     }
 
     fn sign_out_cursor(&mut self) {
-        if let Some(task) = self.cursor_sign_in.take() {
+        // A sign-in still waiting keeps nothing after this, even if its
+        // answer is already on its way.
+        if let Some(task) = self.cursor_sign_in.cancel() {
             task.abort();
         }
         match cursor_session::delete() {
@@ -547,6 +663,161 @@ mod tests {
             TokenOutcome::of(TokenCheck::Accepted, || Err(keyring::Error::NoEntry)),
             TokenOutcome::StoreFailed
         );
+    }
+
+    /// Only the task awaited counts: a later start replaces it, a cancel
+    /// ends it, and each answer is taken once.
+    #[test]
+    fn only_the_awaited_task_is_answered() {
+        let mut awaited = Awaited::default();
+        assert!(!awaited.is_waiting());
+        let mut first = 0;
+        assert_eq!(awaited.start(|t| first = t), None);
+        assert!(awaited.is_waiting());
+        let mut second = 0;
+        assert_eq!(awaited.start(|t| second = t), Some(()), "replaced");
+        assert_ne!(first, second);
+        assert!(!awaited.answered(first), "replaced since");
+        assert!(awaited.is_waiting());
+        assert!(awaited.answered(second));
+        assert!(!awaited.is_waiting());
+        assert!(!awaited.answered(second), "taken once");
+
+        let mut third = 0;
+        awaited.start(|t| third = t);
+        assert_eq!(awaited.cancel(), Some(()));
+        assert!(!awaited.is_waiting());
+        assert!(!awaited.answered(third), "cancelled");
+        assert_eq!(awaited.cancel(), None);
+    }
+
+    /// A checked token is stored by the event loop, unless refused, and
+    /// only while its paste is the one awaited: a removal or a later paste
+    /// made while it was checked leaves it unstored.
+    #[test]
+    fn a_checked_token_is_stored_only_while_its_paste_is_awaited() {
+        let mut awaited = Awaited::default();
+        let mut stored = false;
+        let mut ticket = 0;
+        awaited.start(|t| ticket = t);
+        assert_eq!(
+            settle_token(&mut awaited, ticket, TokenCheck::Accepted, || {
+                stored = true;
+                Ok(())
+            }),
+            Some(TokenOutcome::Stored)
+        );
+        assert!(stored);
+
+        // Removed while it was checked.
+        let mut stored = false;
+        awaited.start(|t| ticket = t);
+        let _ = awaited.cancel();
+        assert_eq!(
+            settle_token(&mut awaited, ticket, TokenCheck::Accepted, || {
+                stored = true;
+                Ok(())
+            }),
+            None
+        );
+        assert!(!stored, "a removal is the later wish");
+
+        // Pasted again while it was checked: only the newer one is stored.
+        let (mut older, mut newer) = (0, 0);
+        awaited.start(|t| older = t);
+        awaited.start(|t| newer = t);
+        let mut stored = Vec::new();
+        assert_eq!(
+            settle_token(&mut awaited, older, TokenCheck::Accepted, || {
+                stored.push("older");
+                Ok(())
+            }),
+            None
+        );
+        assert_eq!(
+            settle_token(
+                &mut awaited,
+                newer,
+                TokenCheck::Unchecked("x".into()),
+                || {
+                    stored.push("newer");
+                    Ok(())
+                }
+            ),
+            Some(TokenOutcome::StoredUnchecked("x".into()))
+        );
+        assert_eq!(stored, ["newer"]);
+
+        // Refused: awaited, and still not stored.
+        let mut stored = false;
+        awaited.start(|t| ticket = t);
+        assert_eq!(
+            settle_token(&mut awaited, ticket, TokenCheck::Refused, || {
+                stored = true;
+                Ok(())
+            }),
+            Some(TokenOutcome::Refused)
+        );
+        assert!(!stored);
+        assert!(!format!("{:?}", PastedToken("sk-ant-secret".into())).contains("secret"));
+    }
+
+    /// Cursor's session is kept by the event loop only while its sign-in is
+    /// the one awaited: Cancel, a sign-out or a new sign-in made while the
+    /// browser was waited for keeps nothing, approved or not.
+    #[test]
+    fn a_cursor_session_is_kept_only_while_its_sign_in_is_awaited() {
+        let approved = || {
+            Approval::Approved(cursor_session::Tokens {
+                access: "a.b.c".into(),
+                refresh: "a.b.c".into(),
+            })
+        };
+        let mut awaited = Awaited::default();
+        let mut kept = Vec::new();
+        let mut ticket = 0;
+
+        awaited.start(|t| ticket = t);
+        let outcome = settle_sign_in(&mut awaited, ticket, approved(), |s| {
+            kept.push(s.access_token.clone());
+            Ok(())
+        });
+        assert_eq!(outcome, Some(SignInOutcome::SignedIn(None)));
+        assert_eq!(kept.len(), 1);
+        assert!(!awaited.is_waiting(), "no longer waiting");
+
+        // Cancelled, or signed out of, while the browser was waited for.
+        awaited.start(|t| ticket = t);
+        let _ = awaited.cancel();
+        let outcome = settle_sign_in(&mut awaited, ticket, approved(), |s| {
+            kept.push(s.access_token.clone());
+            Ok(())
+        });
+        assert_eq!(outcome, None);
+        assert_eq!(kept.len(), 1, "nothing kept after a Cancel");
+
+        // Started over: the first link's answer keeps nothing.
+        let (mut first, mut second) = (0, 0);
+        awaited.start(|t| first = t);
+        awaited.start(|t| second = t);
+        let outcome = settle_sign_in(&mut awaited, first, approved(), |s| {
+            kept.push(s.access_token.clone());
+            Ok(())
+        });
+        assert_eq!(outcome, None);
+        assert!(awaited.is_waiting(), "still waiting for the second");
+        let outcome = settle_sign_in(&mut awaited, second, Approval::TimedOut, |_| {
+            panic!("nothing to keep")
+        });
+        assert_eq!(outcome, Some(SignInOutcome::TimedOut));
+
+        // Credential Manager refusing it: an honest failure.
+        awaited.start(|t| ticket = t);
+        let outcome = settle_sign_in(&mut awaited, ticket, approved(), |_| {
+            Err(StoreError::Unavailable("refused".into()))
+        });
+        assert!(matches!(outcome, Some(SignInOutcome::Failed(_))));
+        assert_eq!(kept.len(), 1);
     }
 
     /// A key or token pasted before the source could be chosen kept the

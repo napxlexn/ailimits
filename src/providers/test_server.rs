@@ -53,6 +53,9 @@ impl Drop for TempHome {
 pub(crate) enum Reply {
     /// A status and a JSON body.
     Status(u16, String),
+    /// A 200 whose body has no Content-Length: it ends where the connection
+    /// closes, so the reader only learns its size by reading it.
+    Unsized(String),
     /// The connection closed without an answer: a transport error.
     Hangup,
 }
@@ -183,6 +186,14 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>) {
             let _ = stream.write_all(head.as_bytes());
             let _ = stream.write_all(body.as_bytes());
             let _ = stream.flush();
+        }
+        Reply::Unsized(body) => {
+            let head =
+                "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
         }
         Reply::Hangup => {
             let _ = stream.shutdown(std::net::Shutdown::Both);

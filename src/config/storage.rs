@@ -208,7 +208,8 @@ async fn read_with_retries(path: &Path, retries: &[Duration]) -> FileRead {
 /// (with or without a BOM) or UTF-16 with a BOM, as Notepad saves it.
 fn parse(bytes: &[u8]) -> std::result::Result<(Config, Origin), String> {
     let content = decode(bytes)?;
-    let config = toml::from_str::<Config>(&content).map_err(|e| e.to_string())?;
+    let config =
+        toml::from_str::<Config>(&content).map_err(|e| toml_error_position(&e, &content))?;
     Ok(match origin_of(&content) {
         Some(origin) => (config, origin),
         // Neither [reads] nor [[providers]]: an empty file, or one written by
@@ -216,6 +217,35 @@ fn parse(bytes: &[u8]) -> std::result::Result<(Config, Origin), String> {
         // without asking wrote its providers, so this is no upgrade.
         None => (Config::default(), Origin::FreshInstall),
     })
+}
+
+/// Where in the config a TOML error is, never what: toml's own message
+/// quotes the line, and serde's can quote a value, and either may be the
+/// user's. Only the line and the column are logged and kept.
+fn toml_error_position(e: &toml::de::Error, text: &str) -> String {
+    match e.span() {
+        Some(span) => {
+            let (line, column) = line_and_column(text, span.start);
+            format!("not a usable config at line {line}, column {column}")
+        }
+        None => "not a usable config".to_string(),
+    }
+}
+
+/// The 1-based line and column (in characters) of byte `offset` in `text`.
+fn line_and_column(text: &str, offset: usize) -> (usize, usize) {
+    let mut end = offset.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let before = &text[..end];
+    let line = before.matches('\n').count() + 1;
+    let column = before
+        .rsplit('\n')
+        .next()
+        .map_or(0, |last| last.chars().count())
+        + 1;
+    (line, column)
 }
 
 /// Config file bytes as text.
@@ -868,6 +898,40 @@ mod tests {
         // Windows-1252 "é" alone is not UTF-8.
         assert!(parse(b"[hooks]\non_reset = \"caf\xE9\"\n").is_err());
         assert!(parse(b"\xFF\xFE\x00").is_err());
+    }
+
+    /// A config that does not parse is logged and kept by where the error
+    /// is, never by what is there: the broken line or a value in it may be
+    /// the user's.
+    #[test]
+    fn a_parse_error_names_the_place_never_the_content() {
+        for (text, line) in [
+            // Broken syntax on line 4.
+            ("[ui]\n\n[hooks]\non_reset = \"sk-ant-SECRET\" junk\n", 4),
+            // A value of the wrong type: serde would quote it.
+            (
+                "[[providers]]\nid = \"claude\"\nenabled = \"sk-ant-SECRET\"\n",
+                3,
+            ),
+            // An unclosed string after non-ASCII text.
+            ("[hooks]\non_reset = \"Вася sk-ant-SECRET\n", 2),
+        ] {
+            let Err(error) = parse(text.as_bytes()) else {
+                panic!("{text:?} parsed");
+            };
+            assert!(!error.contains("SECRET"), "{error}");
+            assert!(!error.contains("Вася"), "{error}");
+            assert!(
+                error.contains(&format!("at line {line}, column ")),
+                "{error}"
+            );
+        }
+        assert_eq!(line_and_column("ab\ncd", 0), (1, 1));
+        assert_eq!(line_and_column("ab\ncd", 4), (2, 2));
+        assert_eq!(line_and_column("я\nюя", 5), (2, 2));
+        // Inside a character, and past the end.
+        assert_eq!(line_and_column("я", 1), (1, 1));
+        assert_eq!(line_and_column("ab", 99), (1, 3));
     }
 
     /// `peek` (ailimits-auth status) creates, renames and writes nothing.

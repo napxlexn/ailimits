@@ -10,8 +10,9 @@
 // Both are used for a single undocumented endpoint: wham/usage.
 
 use super::{
-    keyring_secret, status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider,
-    ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
+    keyring_secret, read_text, status_words, transport_error, Metric, MetricUnit, MetricWindow,
+    Net, Provider, ProviderData, ProviderId, ProviderStatus, Refusals, SecretSource,
+    MAX_ANSWER_BYTES,
 };
 use crate::config::{
     paths::ToolPaths,
@@ -167,11 +168,11 @@ impl CodexProvider {
 
         match resp.status().as_u16() {
             200 => {
-                let body = match resp.text().await {
+                let body = match read_text(resp, MAX_ANSWER_BYTES).await {
                     Ok(body) => body,
                     Err(e) => {
                         warn!("codex usage body read failed: {e}");
-                        return Usage::NoAnswer(transport_error(&e));
+                        return Usage::NoAnswer(e.words());
                     }
                 };
                 let metrics = match parse_wham_usage(&body) {

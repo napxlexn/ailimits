@@ -42,7 +42,7 @@ use crate::{
         trend::Trend,
     },
     notifications::{alerts::AlertBook, toast::ToastNotifier},
-    providers::{cursor::session::SignInOutcome, ProviderData, ProviderId, ProviderStatus},
+    providers::{cursor::session::Approval, ProviderData, ProviderId, ProviderStatus, TokenCheck},
     rows::{self, RowView},
     ui::{
         context_menu::ContextMenu,
@@ -83,16 +83,20 @@ pub enum AppCommand {
     /// under `serial` (`monitor::scheduler::ProviderSlot`): an update from an
     /// instance that has since been replaced is dropped.
     UpdateProvider { data: ProviderData, serial: u64 },
-    /// A Cursor sign-in from the menu has ended.
-    CursorSignIn(SignInOutcome),
-    /// A usage token pasted from the menu was checked, and stored or not
-    /// (menu.rs `paste_usage_token`). The token itself stays in the task
-    /// that checked it: only the provider and the outcome come back.
+    /// The Cursor sign-in started from the window stopped waiting for the
+    /// browser. Its session is kept here, on the event loop, and only while
+    /// `ticket` is still the sign-in awaited (`sign_in::Awaited`): one
+    /// cancelled, signed out of or started over since keeps nothing.
+    CursorSignIn { approval: Approval, ticket: u64 },
+    /// A usage token pasted in the window was checked (sign_in.rs
+    /// `paste_usage_token`). It is stored here, on the event loop, unless
+    /// refused, and only while `ticket` is still the paste awaited: one
+    /// replaced by a later paste or by a removal stores nothing. The token
+    /// never shows in a debug print (`sign_in::PastedToken`).
     UsageToken {
         pid: String,
-        outcome: sign_in::TokenOutcome,
-        /// Which paste it answers: one replaced by a later paste or a
-        /// removal is not acted on.
+        check: TokenCheck,
+        token: sign_in::PastedToken,
         ticket: u64,
     },
     /// The model labels were read (models/): each provider's model id and
@@ -409,10 +413,10 @@ struct App {
     // ── Menu, tray icon, taskbar panel ──
     menu: ContextMenu,
     /// The Cursor sign-in waiting for the browser, if one is.
-    cursor_sign_in: Option<tokio::task::JoinHandle<()>>,
+    cursor_sign_in: sign_in::Awaited<tokio::task::JoinHandle<()>>,
     /// A pasted usage token being checked, if one is: a second paste
     /// replaces it.
-    usage_token_check: Option<(u64, tokio::task::JoinHandle<()>)>,
+    usage_token_check: sign_in::Awaited<tokio::task::JoinHandle<()>>,
     /// What the picker's Sign-in blocks show besides the config
     /// (app/sign_in.rs).
     sign_in: crate::choices::SignInState,
@@ -751,8 +755,8 @@ pub fn run() -> Result<()> {
         window_visible: true,
         cursor_inside_window: false,
         menu,
-        cursor_sign_in: None,
-        usage_token_check: None,
+        cursor_sign_in: Default::default(),
+        usage_token_check: Default::default(),
         sign_in: Default::default(),
         tray,
         panel,

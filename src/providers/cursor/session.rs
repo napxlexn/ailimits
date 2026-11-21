@@ -11,7 +11,7 @@
 // session is read.
 
 use super::{base64url_encode, parse_session_claims};
-use crate::providers::Net;
+use crate::providers::{read_text, BodyError, Net, MAX_ANSWER_BYTES};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Duration as StdDuration;
@@ -201,28 +201,80 @@ pub enum SignInOutcome {
     Failed(String),
 }
 
+/// How waiting for the browser ended. An approved session is not kept yet:
+/// whoever waited keeps it (`Approval::keep`). The app does so on its event
+/// loop, and only while the sign-in is still the one it waits for, so a
+/// Cancel or a sign-out made meanwhile is never undone by a session stored
+/// after it.
+#[derive(Debug)]
+pub enum Approval {
+    /// Approved: the session, to keep.
+    Approved(Tokens),
+    /// Nobody approved the link within `SIGN_IN_TIMEOUT`.
+    TimedOut,
+    /// Approved but unusable, or no client to ask with. The text names
+    /// what failed, never a token.
+    Failed(String),
+}
+
+impl Approval {
+    /// Keep an approved session in Credential Manager: the sign-in's
+    /// outcome.
+    pub fn keep(self) -> SignInOutcome {
+        self.keep_with(store)
+    }
+
+    /// `keep`, with `store` keeping the session.
+    pub fn keep_with(
+        self,
+        store: impl FnOnce(&OwnSession) -> Result<(), StoreError>,
+    ) -> SignInOutcome {
+        match self {
+            Approval::Approved(tokens) => {
+                let session = OwnSession::from_tokens(tokens);
+                match store(&session) {
+                    Ok(()) => SignInOutcome::SignedIn(session.expires_at),
+                    Err(e) => {
+                        warn!("cursor session not stored: {e}");
+                        SignInOutcome::Failed("could not store the session".to_string())
+                    }
+                }
+            }
+            Approval::TimedOut => SignInOutcome::TimedOut,
+            Approval::Failed(why) => SignInOutcome::Failed(why),
+        }
+    }
+}
+
 /// Wait for the user to approve `request` in the browser, then keep the
-/// session in Credential Manager. Polls with a growing pause and gives up
-/// after `SIGN_IN_TIMEOUT`.
+/// session in Credential Manager: the whole sign-in, for `ailimits-auth`,
+/// which nothing can cancel halfway.
 pub async fn complete_sign_in(request: LoginRequest) -> SignInOutcome {
+    wait_for_approval(request).await.keep()
+}
+
+/// Wait for the user to approve `request` in the browser. Polls with a
+/// growing pause and gives up after `SIGN_IN_TIMEOUT`. Nothing is stored
+/// here: the session comes back in the `Approval`.
+pub async fn wait_for_approval(request: LoginRequest) -> Approval {
     let http = match http_client() {
         Ok(http) => http,
-        Err(e) => return SignInOutcome::Failed(format!("no HTTP client: {e}")),
+        Err(e) => return Approval::Failed(format!("no HTTP client: {e}")),
     };
     let deadline = tokio::time::Instant::now() + SIGN_IN_TIMEOUT;
     let mut delay = POLL_FIRST;
     loop {
         let now = tokio::time::Instant::now();
         if now >= deadline {
-            return SignInOutcome::TimedOut;
+            return Approval::TimedOut;
         }
         tokio::time::sleep(delay.min(deadline - now)).await;
         match poll_once(&http, &request).await {
             PollAnswer::Pending => {}
-            PollAnswer::Approved(tokens) => return keep(tokens),
+            PollAnswer::Approved(tokens) => return Approval::Approved(tokens),
             PollAnswer::Unrecognized => {
                 warn!("cursor sign-in answered an unknown schema");
-                return SignInOutcome::Failed("unrecognized sign-in answer".to_string());
+                return Approval::Failed("unrecognized sign-in answer".to_string());
             }
         }
         delay = next_poll_delay(delay);
@@ -240,26 +292,17 @@ async fn poll_once(http: &reqwest::Client, request: &LoginRequest) -> PollAnswer
     };
     let code = resp.status().as_u16();
     let body = if code == 200 {
-        match resp.text().await {
+        match read_text(resp, MAX_ANSWER_BYTES).await {
             Ok(body) => body,
             // Cut off mid-transfer: the next poll asks again.
-            Err(_) => return PollAnswer::Pending,
+            Err(BodyError::Transport(_)) => return PollAnswer::Pending,
+            // No session is that large: asking again would bring the same.
+            Err(BodyError::TooLarge) => return PollAnswer::Unrecognized,
         }
     } else {
         String::new()
     };
     interpret_poll(code, &body)
-}
-
-fn keep(tokens: Tokens) -> SignInOutcome {
-    let session = OwnSession::from_tokens(tokens);
-    match store(&session) {
-        Ok(()) => SignInOutcome::SignedIn(session.expires_at),
-        Err(e) => {
-            warn!("cursor session not stored: {e}");
-            SignInOutcome::Failed("could not store the session".to_string())
-        }
-    }
 }
 
 /// The client for the sign-in. It never follows a redirect, so neither the
@@ -347,10 +390,7 @@ impl OwnSession {
     /// `REFRESH_EVERY_HOURS`. A token without an expiry is left to the
     /// server to judge.
     pub fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
-        self.near_expiry(now)
-            && self
-                .refreshed_at
-                .is_none_or(|t| now - t >= Duration::hours(REFRESH_EVERY_HOURS))
+        self.near_expiry(now) && attempt_due(self.refreshed_at, now)
     }
 
     /// The session after a refresh answer received at `now`. A new token
@@ -411,6 +451,12 @@ impl OwnSession {
             ended: record.ended,
         })
     }
+}
+
+/// Whether a refresh may be tried at `now`, the last attempt having been
+/// made at `last` (None: never): one attempt per `REFRESH_EVERY_HOURS`.
+pub fn attempt_due(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    last.is_none_or(|t| now - t >= Duration::hours(REFRESH_EVERY_HOURS))
 }
 
 /// A token's `exp`, when it is a JWT that states one.
@@ -584,9 +630,13 @@ pub(crate) async fn request_refresh(net: &Net, session: &OwnSession) -> Option<R
     };
     let code = resp.status().as_u16();
     let text = if code == 200 {
-        match resp.text().await {
+        match read_text(resp, MAX_ANSWER_BYTES).await {
             Ok(text) => text,
-            Err(_) => return None,
+            // Cut off, or past the cap: nothing learnt; the attempt counts.
+            Err(e) => {
+                debug!("cursor refresh answer not read: {e}");
+                return None;
+            }
         }
     } else {
         String::new()

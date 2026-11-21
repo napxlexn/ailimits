@@ -13,6 +13,11 @@
 // lives only with the owner and in the release secret. An installer without a
 // signature, or with one that does not verify, is refused — never installed.
 //
+// The verified installer is written into a folder of its own in %TEMP%, made
+// new for that download, and from its last check until it runs it is held
+// open so that nothing can change it: read back against the verified SHA-256
+// through that handle, which lets others read it and nothing else.
+//
 // The handoff starts the installer itself, with no script in between: its
 // path goes to CreateProcessW as UTF-16, so a Cyrillic, `&` or `%` profile or
 // TEMP path works like any other, and the switches are plain ASCII. The app
@@ -84,6 +89,26 @@ const SIGNATURE_FORMAT: &str = "ailimits-signature-v1";
 /// A signature file is one short line; anything longer is not one.
 const SIGNATURE_MAX_BYTES: usize = 1024;
 
+/// The release API's answer: some 16 KB for a release with its assets.
+const RELEASE_MAX_BYTES: usize = 1 << 20;
+
+/// The installer: about 4 MB (3.9 MB for 0.7.0). A download past this is
+/// not one, and is not read on.
+const INSTALLER_MAX_BYTES: usize = 64 << 20;
+
+/// How many redirects a request follows. A release download is sent on
+/// once, from github.com to the asset host; the API answers directly.
+const MAX_REDIRECTS: usize = 5;
+
+/// The folder one download is written to, in %TEMP%, starts with this; the
+/// rest of its name is random, and it is made new for each download.
+const DOWNLOAD_DIR_PREFIX: &str = "AiLimits-update-";
+
+/// FILE_SHARE_READ (winnt.h): while the installer is held for its start,
+/// others may read it, never write, rename or delete it.
+#[cfg(target_os = "windows")]
+const FILE_SHARE_READ: u32 = 0x0000_0001;
+
 /// Asks the installer to start the app again once the upgrade is done. The
 /// installer reads it as `{param:RELAUNCH}` (installer/ailimits.iss, [Run]),
 /// and only in a silent run.
@@ -153,6 +178,14 @@ pub fn channel() -> Channel {
 /// item does anything for.
 pub fn self_update_supported() -> bool {
     channel() == Channel::Installer
+}
+
+/// A verified installer on disk, alone in a folder made for it.
+struct Installer {
+    path: PathBuf,
+    /// The SHA-256 of the bytes that passed both checks, lower-case hex:
+    /// the file is read back against it right before it is started.
+    sha256: String,
 }
 
 /// A newer release with a verifiable Windows installer.
@@ -226,8 +259,34 @@ fn build_client() -> Result<reqwest::Client> {
     crate::providers::proxy::with_windows_proxy(reqwest::Client::builder())
         .timeout(HTTP_TIMEOUT)
         .user_agent(concat!("ailimits/", env!("CARGO_PKG_VERSION")))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() > MAX_REDIRECTS {
+                attempt.error("too many redirects")
+            } else if redirect_allowed(attempt.url()) {
+                attempt.follow()
+            } else {
+                attempt.error("a redirect away from GitHub")
+            }
+        }))
         .build()
         .context("build updater HTTP client")
+}
+
+/// Where a request may be sent on to: https, on the default port, to
+/// GitHub itself (github.com, api.github.com) or to the hosts its release
+/// downloads are served from (release-assets.githubusercontent.com today,
+/// objects.githubusercontent.com before). Nothing else, whatever the
+/// redirect says. Every file is verified anyway; this keeps the requests
+/// on GitHub.
+fn redirect_allowed(url: &reqwest::Url) -> bool {
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.host_str().is_some_and(|host| {
+            let host = host.to_ascii_lowercase();
+            host == "github.com"
+                || host == "api.github.com"
+                || host.ends_with(".githubusercontent.com")
+        })
 }
 
 /// The running build's version.
@@ -283,18 +342,18 @@ async fn check_and_install(
         if away(crate::platform::user_idle_secs()) {
             break installer;
         }
-        let _ = std::fs::remove_file(&installer);
+        remove_installer(&installer.path);
         debug!("the user came back during the download; the update waits again");
     };
     // Written down BEFORE the handoff: should the upgrade fail, the next
     // start knows, and does not try this version again.
     let attempt = Attempt {
         version: update.version.clone(),
-        installer: installer.clone(),
+        installer: installer.path.clone(),
         told: false,
     };
     if let Err(e) = record_attempt(state, &attempt) {
-        let _ = std::fs::remove_file(&installer);
+        remove_installer(&installer.path);
         return Err(e.context("record the update attempt — not installing without it"));
     }
     info!("update verified; starting the installer for a silent upgrade");
@@ -302,7 +361,7 @@ async fn check_and_install(
     // handoff must NOT take the app down — stay on the current version.
     if let Err(e) = launch_installer_and_exit(&installer) {
         warn!("update handoff failed, staying on the current version: {e:#}");
-        let _ = std::fs::remove_file(&installer);
+        remove_installer(&installer.path);
     }
     Ok(())
 }
@@ -340,14 +399,17 @@ async fn wait_until_away(enabled: &AtomicBool) -> bool {
 /// running build and carries a verifiable installer (see `release_update`).
 async fn fetch_latest(client: &reqwest::Client, current: Version) -> Result<Option<Update>> {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let body: serde_json::Value = client
+    let resp = client
         .get(&url)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .send()
         .await?
-        .error_for_status()?
-        .json()
-        .await?;
+        .error_for_status()?;
+    let body = crate::providers::read_body(resp, RELEASE_MAX_BYTES)
+        .await
+        .context("read the release")?;
+    let body: serde_json::Value =
+        serde_json::from_slice(&body).context("the release answer is not JSON")?;
     release_update(&body, current)
 }
 
@@ -422,31 +484,36 @@ fn download_url(asset: &serde_json::Value) -> Result<String> {
         .context("release asset has no download url")
 }
 
+/// One download, refused past `cap` bytes; `what` names it in the error.
+async fn download(client: &reqwest::Client, url: &str, cap: usize, what: &str) -> Result<Vec<u8>> {
+    let resp = client.get(url).send().await?.error_for_status()?;
+    crate::providers::read_body(resp, cap)
+        .await
+        .with_context(|| format!("download {what}"))
+}
+
 /// Download the signature and the installer, verify both checks, and write
-/// the installer to a temp path.
-async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Result<PathBuf> {
-    let signature = client
-        .get(&update.signature_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
-    if signature.len() > SIGNATURE_MAX_BYTES {
-        bail!("the installer's signature file is not one — refusing");
-    }
-    let signature = String::from_utf8(signature.to_vec())
+/// the installer into a folder of its own under %TEMP% (`write_installer`).
+async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Result<Installer> {
+    let signature = download(
+        client,
+        &update.signature_url,
+        SIGNATURE_MAX_BYTES,
+        "the installer's signature",
+    )
+    .await?;
+    let signature = String::from_utf8(signature)
         .map_err(|_| anyhow!("the installer's signature file is not text — refusing"))?;
     // Read before the 4 MB download: a malformed signature fails here.
     ReleaseSignature::parse(&signature)?;
 
-    let bytes = client
-        .get(&update.installer_url)
-        .send()
-        .await?
-        .error_for_status()?
-        .bytes()
-        .await?;
+    let bytes = download(
+        client,
+        &update.installer_url,
+        INSTALLER_MAX_BYTES,
+        "the installer",
+    )
+    .await?;
 
     let actual = hex_lower(digest(&SHA256, &bytes).as_ref());
     if !actual.eq_ignore_ascii_case(&update.sha256) {
@@ -459,11 +526,99 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
     verify_release(&name, &bytes, &signature)
         .with_context(|| format!("{name} failed its signature check — refusing to install it"))?;
 
-    let dest = std::env::temp_dir().join(&name);
-    tokio::fs::write(&dest, &bytes)
+    let temp = std::env::temp_dir();
+    let path = tokio::task::spawn_blocking(move || write_installer(&temp, &name, &bytes))
         .await
-        .with_context(|| format!("write installer to {}", dest.display()))?;
-    Ok(dest)
+        .context("write the installer")??;
+    Ok(Installer {
+        path,
+        sha256: actual,
+    })
+}
+
+/// Write the verified installer as `name` into a new folder under `temp`,
+/// its name random: made by this call (`create_dir` fails on any folder
+/// already there), and the file in it created new (`create_new`), so
+/// nothing put there beforehand is ever reused. Nothing is left behind on
+/// a failure.
+fn write_installer(temp: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    use ring::rand::{SecureRandom, SystemRandom};
+    use std::io::Write;
+    let mut random = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut random)
+        .map_err(|_| anyhow!("no system randomness"))?;
+    let dir = temp.join(format!("{DOWNLOAD_DIR_PREFIX}{}", hex_lower(&random)));
+    std::fs::create_dir(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = dir.join(name);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(bytes));
+    if let Err(e) = written {
+        remove_installer(&path);
+        return Err(e).with_context(|| format!("write installer to {}", path.display()));
+    }
+    Ok(path)
+}
+
+/// Delete a downloaded installer, and the folder made for it once that is
+/// empty. A folder not named as ours (0.7.1's first runs wrote the
+/// installer straight into %TEMP%) is never touched. Whether the installer
+/// is gone: one that is still running cannot be deleted.
+fn remove_installer(installer: &Path) -> bool {
+    let gone = match std::fs::remove_file(installer) {
+        Ok(()) => true,
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    let ours = installer.parent().filter(|dir| {
+        dir.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(DOWNLOAD_DIR_PREFIX))
+    });
+    if let Some(dir) = ours {
+        // Only an empty folder goes. Not `remove_dir`: it would add
+        // RemoveDirectoryW to the exe's imports, while `remove_dir_all`
+        // deletes through file handles, with functions already imported.
+        let empty = std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
+        if empty {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+    gone
+}
+
+/// Open the installer so that, while the handle is open, nothing can write,
+/// replace, rename or delete it (read sharing only), and read it back
+/// through that handle against the SHA-256 its bytes were verified with.
+/// The handle is kept until the installer has been started.
+fn open_unchanged(path: &Path, sha256: &str) -> Result<std::fs::File> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(FILE_SHARE_READ);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("hold {} for its start", path.display()))?;
+    let mut context = ring::digest::Context::new(&SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).context("read the installer back")?;
+        if n == 0 {
+            break;
+        }
+        context.update(&buf[..n]);
+    }
+    let actual = hex_lower(context.finish().as_ref());
+    if !actual.eq_ignore_ascii_case(sha256) {
+        bail!("the installer changed on disk after its checks — refusing to start it");
+    }
+    Ok(file)
 }
 
 // ─── Release signatures ──────────────────────────────────────────
@@ -583,9 +738,9 @@ fn read_attempt(state: &Path) -> Option<Attempt> {
 
 /// Settle the attempt on record against the running version: a finished one
 /// is forgotten, a failed one is kept so it is not tried again. Either way
-/// its downloaded installer is deleted (an installer that is still running
-/// cannot be, and is tried again on the next start). An unreadable record is
-/// dropped.
+/// its downloaded installer is deleted, with the folder made for it (an
+/// installer that is still running cannot be, and is tried again on the
+/// next start). An unreadable record is dropped.
 fn settle_attempt(state: &Path, current: Version) -> Settled {
     let path = state.join(ATTEMPT_FILE);
     if !path.exists() {
@@ -599,10 +754,7 @@ fn settle_attempt(state: &Path, current: Version) -> Settled {
         let _ = std::fs::remove_file(&path);
         return Settled::Nothing;
     };
-    let gone = match std::fs::remove_file(&attempt.installer) {
-        Ok(()) => true,
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-    };
+    let gone = remove_installer(&attempt.installer);
     if version <= current {
         if gone {
             let _ = std::fs::remove_file(&path);
@@ -761,17 +913,24 @@ fn installer_command(installer: &Path) -> std::process::Command {
 /// installer then replaces the files in the directory its uninstall entry
 /// names — the one this copy runs from (see `channel`) — and starts the app
 /// from there (`RELAUNCH_SWITCH`).
+///
+/// Between its checks and its start the file is held (`open_unchanged`):
+/// read back through a handle that lets nobody write, rename or delete it,
+/// and kept open until the installer is running, so the file Windows starts
+/// is the one that was verified. Starting it needs only read sharing.
 #[cfg(target_os = "windows")]
-fn launch_installer_and_exit(installer: &Path) -> Result<()> {
-    installer_command(installer)
+fn launch_installer_and_exit(installer: &Installer) -> Result<()> {
+    let _held = open_unchanged(&installer.path, &installer.sha256)?;
+    installer_command(&installer.path)
         .spawn()
         .context("start the installer")?;
-    // The installer is running; leave so it can replace our files.
+    // The installer is running; leave so it can replace our files. The
+    // handle closes with the process.
     std::process::exit(0);
 }
 
 #[cfg(not(target_os = "windows"))]
-fn launch_installer_and_exit(_installer: &Path) -> Result<()> {
+fn launch_installer_and_exit(_installer: &Installer) -> Result<()> {
     // Non-Windows builds ship no installer; nothing to hand off to.
     anyhow::bail!("no installer handoff on this platform")
 }
@@ -1333,6 +1492,160 @@ mod tests {
         record_attempt(&state, &attempt).unwrap();
         assert_eq!(read_attempt(&state), Some(attempt));
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ─── The downloaded installer on disk ────────────────────────
+
+    /// Each download gets a folder of its own, made new, under a random
+    /// name; removing the installer takes the folder with it.
+    #[test]
+    fn each_download_gets_a_new_folder_of_its_own() {
+        let temp = temp_dir_named("Вася & (100%)", "fresh");
+        let name = "AiLimits-Setup-9.9.9.exe";
+        let one = write_installer(&temp, name, b"one").unwrap();
+        let two = write_installer(&temp, name, b"two").unwrap();
+        assert_ne!(one.parent(), two.parent(), "a new folder each time");
+        for (path, bytes) in [(&one, b"one"), (&two, b"two")] {
+            assert_eq!(path.file_name().unwrap(), name);
+            assert_eq!(path.parent().unwrap().parent().unwrap(), temp);
+            let folder = path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(folder.starts_with(DOWNLOAD_DIR_PREFIX), "{folder}");
+            // 16 random bytes, as hex.
+            assert_eq!(folder.len(), DOWNLOAD_DIR_PREFIX.len() + 32);
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+        assert!(remove_installer(&one));
+        assert!(!one.parent().unwrap().exists(), "its folder went too");
+        assert!(two.exists(), "the other download is left alone");
+        assert!(remove_installer(&two));
+        assert!(remove_installer(&two), "already gone is gone");
+
+        // An installer straight in a folder not made for it (0.7.1's first
+        // runs used %TEMP% itself): the file goes, the folder stays.
+        let legacy = temp.join(name);
+        std::fs::write(&legacy, b"x").unwrap();
+        assert!(remove_installer(&legacy));
+        assert!(temp.exists());
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    /// The next start deletes an attempt's installer with its folder.
+    #[test]
+    fn a_settled_attempt_takes_its_download_folder_along() {
+        let temp = temp_dir_named("Їжак", "settle-dir");
+        let installer = write_installer(&temp, "AiLimits-Setup-0.7.2.exe", b"x").unwrap();
+        let state = temp.join("state");
+        record_attempt(
+            &state,
+            &Attempt {
+                version: "0.7.2".into(),
+                installer: installer.clone(),
+                told: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            settle_attempt(&state, (0, 7, 2)),
+            Settled::Installed("0.7.2".into())
+        );
+        assert!(!installer.parent().unwrap().exists());
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    /// Held for its start, the installer is read back against its verified
+    /// SHA-256, and nothing can write, rename or delete it until the hold
+    /// ends. A file that changed since its checks is refused.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_held_installer_cannot_change_until_it_starts() {
+        let temp = temp_dir_named("Tom&Jerry", "held");
+        let bytes = b"a verified installer".as_slice();
+        let sha = hex_lower(digest(&SHA256, bytes).as_ref());
+        let path = write_installer(&temp, "AiLimits-Setup-9.9.9.exe", bytes).unwrap();
+
+        let held = open_unchanged(&path, &sha).expect("the verified bytes");
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(&path).is_err(),
+            "no writer while held"
+        );
+        assert!(std::fs::remove_file(&path).is_err(), "no delete while held");
+        let moved = path.with_extension("moved");
+        assert!(
+            std::fs::rename(&path, &moved).is_err(),
+            "no rename while held"
+        );
+        assert!(
+            std::fs::rename(path.parent().unwrap(), temp.join("elsewhere")).is_err(),
+            "nor its folder"
+        );
+        // Others may still read it, as Windows does to start it.
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        drop(held);
+
+        // Changed after its checks: refused, and the hold is not kept.
+        std::fs::write(&path, b"something else").unwrap();
+        let e = open_unchanged(&path, &sha).unwrap_err();
+        assert!(format!("{e:#}").contains("changed on disk"), "{e:#}");
+        assert!(remove_installer(&path));
+        std::fs::remove_dir_all(&temp).unwrap();
+    }
+
+    /// The hold leaves Windows room to start the file: read sharing is all
+    /// CreateProcess needs. Shown with this test binary itself, started
+    /// while held to list no tests.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn a_held_installer_still_starts() {
+        let exe = std::env::current_exe().unwrap();
+        let sha = hex_lower(digest(&SHA256, &std::fs::read(&exe).unwrap()).as_ref());
+        let held = open_unchanged(&exe, &sha).expect("held");
+        let status = std::process::Command::new(&exe)
+            .args(["--list", "--exact", "no-test-has-this-name"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("started while held");
+        assert!(status.success());
+        drop(held);
+    }
+
+    /// Redirects are followed only to https on GitHub and its release asset
+    /// hosts, on the default port.
+    #[test]
+    fn redirects_stay_on_github() {
+        for allowed in [
+            "https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Setup-0.7.0.exe",
+            "https://api.github.com/repos/napxlexn/ailimits/releases/latest",
+            "https://release-assets.githubusercontent.com/github-production-release-asset/1/x?sp=r",
+            "https://objects.githubusercontent.com/github-production-release-asset-2e65be/1/x",
+            "https://GitHub.com/x",
+            "https://github.com:443/x",
+        ] {
+            let url = reqwest::Url::parse(allowed).unwrap();
+            assert!(redirect_allowed(&url), "{allowed}");
+        }
+        for refused in [
+            "http://github.com/x",
+            "http://release-assets.githubusercontent.com/x",
+            "https://github.com:8443/x",
+            "https://example.com/AiLimits-Setup-9.9.9.exe",
+            "https://github.com.example.com/x",
+            "https://evilgithubusercontent.com/x",
+            "https://githubusercontent.com.evil.net/x",
+            "https://gist.github.io/x",
+            "https://127.0.0.1/x",
+            "file:///C:/x.exe",
+        ] {
+            let url = reqwest::Url::parse(refused).unwrap();
+            assert!(!redirect_allowed(&url), "{refused}");
+        }
     }
 
     #[test]

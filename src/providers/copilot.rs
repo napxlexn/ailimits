@@ -5,8 +5,9 @@
 // data VS Code shows). Token: a PAT from Credential Manager, or the gh CLI.
 
 use super::{
-    status_words, transport_error, Metric, MetricUnit, MetricWindow, Net, Provider, ProviderData,
-    ProviderId, ProviderStatus, SecretSource,
+    keyring_password, pasted_key, read_text, status_words, transport_error, Metric, MetricUnit,
+    MetricWindow, Net, Provider, ProviderData, ProviderId, ProviderStatus, SecretSource,
+    MAX_ANSWER_BYTES,
 };
 use crate::config::schema::{AuthMethod, ProviderConfig};
 use anyhow::Result;
@@ -89,7 +90,8 @@ pub struct CopilotProvider {
     /// Never follows a 3xx — keeps the token from leaking to a redirected
     /// host. The internal endpoint returns 200 directly.
     net: Net,
-    /// The pasted PAT (Credential Manager, the provider's label).
+    /// The pasted PAT (Credential Manager), read under Copilot's own label
+    /// only (`providers::own_key_label`).
     pat: SecretSource,
     gh: GhRunner,
     /// gh's last answer, for `GH_TTL`.
@@ -98,18 +100,14 @@ pub struct CopilotProvider {
 
 impl CopilotProvider {
     pub fn new(config: ProviderConfig) -> Self {
-        let label = config.credential_label.clone();
         Self {
+            pat: pasted_key(
+                ProviderId::Copilot,
+                &config.credential_label,
+                keyring_password,
+            ),
             config,
             net: Net::new(),
-            pat: Box::new(move || {
-                if label.is_empty() {
-                    return None;
-                }
-                keyring::Entry::new("ailimits", &label)
-                    .and_then(|e| e.get_password())
-                    .ok()
-            }),
             gh: Arc::new(|| Box::pin(gh_cli_token())),
             gh_state: Mutex::new(None),
         }
@@ -243,11 +241,11 @@ impl CopilotProvider {
         // Only a 200 carries a body worth reading. One cut off mid-transfer
         // is an honest error row, never an Err the scheduler would only log.
         let body = if code == 200 {
-            match resp.text().await {
+            match read_text(resp, MAX_ANSWER_BYTES).await {
                 Ok(body) => body,
                 Err(e) => {
                     warn!("copilot body read failed: {e}");
-                    let words = transport_error(&e).to_string();
+                    let words = e.words().to_string();
                     return (None, self.data(ProviderStatus::NetworkError(words), vec![]));
                 }
             }
@@ -554,6 +552,52 @@ mod tests {
         assert_eq!(runs.load(Ordering::SeqCst), 0);
         assert!(server.seen().is_empty());
         assert!(p.gh_state.lock().unwrap().is_none());
+    }
+
+    /// The pasted token is read under Copilot's own label only. A config
+    /// naming another label (Claude's API key, a usage token) reads nothing,
+    /// so that secret never goes to GitHub, and gh is not asked instead.
+    #[tokio::test]
+    async fn the_pasted_token_is_read_only_under_copilots_own_label() {
+        /// A Credential Manager holding a secret under every label.
+        fn every_label(label: &'static str) -> Option<String> {
+            Some(format!("secret-of-{label}"))
+        }
+        let with_label = |label: &str| ProviderConfig {
+            auth_method: crate::config::schema::AuthMethod::ApiKey,
+            credential_label: label.to_string(),
+            ..config(true)
+        };
+        for foreign in [
+            "claude_api_key",
+            "claude_usage_token",
+            "codex_usage_token",
+            "cursor_session",
+            "",
+        ] {
+            let server = TestServer::start();
+            server.route("/copilot_internal/user", vec![Reply::ok(QUOTA_BODY)]);
+            let (gh, runs) = counting_gh(token("gh-token"));
+            let mut p = CopilotProvider::for_test(with_label(foreign), &server.base, None, gh);
+            p.pat = pasted_key(ProviderId::Copilot, foreign, every_label);
+            let data = p.fetch().await.unwrap();
+            assert!(
+                matches!(data.status, ProviderStatus::NotConfigured),
+                "{foreign:?}: {}",
+                status_of(&data)
+            );
+            assert!(server.seen().is_empty(), "{foreign:?}: nothing sent");
+            assert_eq!(runs.load(Ordering::SeqCst), 0);
+        }
+        // Its own label: that token, and only it, goes with the request.
+        let server = TestServer::start();
+        server.route("/copilot_internal/user", vec![Reply::ok(QUOTA_BODY)]);
+        let (gh, _) = counting_gh(token("gh-token"));
+        let mut p = CopilotProvider::for_test(with_label("copilot_pat"), &server.base, None, gh);
+        p.pat = pasted_key(ProviderId::Copilot, "copilot_pat", every_label);
+        let _ = p.fetch().await.unwrap();
+        let auths: Vec<_> = server.seen().into_iter().filter_map(|s| s.auth).collect();
+        assert_eq!(auths, ["token secret-of-copilot_pat"]);
     }
 
     /// gh that gives no token is asked once per 15 minutes, not every cycle.

@@ -167,6 +167,87 @@ fn certificate_refused(e: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// The most a provider's answer is read to: each one is a few kilobytes of
+/// JSON, so anything near this is not an answer at all.
+pub(crate) const MAX_ANSWER_BYTES: usize = 1 << 20;
+
+/// The row's words for an answer past its cap. It passes by itself as far as
+/// the row can tell: the next cycle asks again.
+pub(crate) const ANSWER_TOO_LARGE: &str = "answer too large, retrying";
+
+/// Why an answer's body was not read.
+#[derive(Debug)]
+pub(crate) enum BodyError {
+    /// The connection failed partway: a timeout, a body cut off.
+    Transport(reqwest::Error),
+    /// Longer than the cap: said so by its Content-Length, or found while
+    /// reading it. Nothing past the cap is kept.
+    TooLarge,
+}
+
+impl BodyError {
+    /// The row's words for it: at most 32 characters, ending in
+    /// ", retrying".
+    pub(crate) fn words(&self) -> &'static str {
+        match self {
+            BodyError::Transport(e) => transport_error(e),
+            BodyError::TooLarge => ANSWER_TOO_LARGE,
+        }
+    }
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BodyError::Transport(e) => e.fmt(f),
+            BodyError::TooLarge => f.write_str("the answer is larger than any it should be"),
+        }
+    }
+}
+
+impl std::error::Error for BodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            // Transparent: the transport error's own causes, not itself again.
+            BodyError::Transport(e) => e.source(),
+            BodyError::TooLarge => None,
+        }
+    }
+}
+
+/// The body of `resp`, at most `cap` bytes: a Content-Length past it is
+/// refused before anything is read, and a body without one is read in
+/// chunks and given up on as soon as it passes the cap.
+pub(crate) async fn read_body(
+    mut resp: reqwest::Response,
+    cap: usize,
+) -> std::result::Result<Vec<u8>, BodyError> {
+    let announced = resp.content_length();
+    if announced.is_some_and(|n| n > cap as u64) {
+        return Err(BodyError::TooLarge);
+    }
+    let mut body = Vec::with_capacity(announced.map_or(0, |n| n as usize));
+    while let Some(chunk) = resp.chunk().await.map_err(BodyError::Transport)? {
+        // `body` never holds more than `cap`, so this cannot underflow.
+        if chunk.len() > cap - body.len() {
+            return Err(BodyError::TooLarge);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// `read_body` as text, as reqwest's `text()` reads it here: UTF-8, any
+/// invalid sequence replaced.
+pub(crate) async fn read_text(
+    resp: reqwest::Response,
+    cap: usize,
+) -> std::result::Result<String, BodyError> {
+    let body = read_body(resp, cap).await?;
+    Ok(String::from_utf8(body)
+        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()))
+}
+
 /// The row's words for an HTTP status that says nothing about the token: a
 /// rate limit or a server error (5xx, Anthropic's 529 "overloaded" among
 /// them) passes by itself and says so, so the hover adds no action that
@@ -330,6 +411,41 @@ pub fn key_label_for(id: &str) -> Option<&'static str> {
         "claude" => Some("claude_api_key"),
         "copilot" => Some("copilot_pat"),
         _ => None,
+    }
+}
+
+/// The label a provider's pasted key is read under: its own fixed label
+/// (`key_label_for`), and only when the config names exactly that one. The
+/// config's `credential_label` only says whether a key is set up (configs
+/// from before 0.7.1 name the label this way); any other value in it -
+/// another provider's key, a usage token's label - is ignored and reads
+/// nothing, so no secret is ever sent to a host it was not pasted for.
+pub(crate) fn own_key_label(provider: ProviderId, configured: &str) -> Option<&'static str> {
+    key_label_for(provider.config_id()).filter(|own| configured == *own)
+}
+
+/// Reads the app's own secret under a label: Credential Manager in the app,
+/// a stand-in in tests.
+pub(crate) type SecretReader = fn(&'static str) -> Option<String>;
+
+/// The password kept under `label` (service `ailimits`), as it is stored.
+pub(crate) fn keyring_password(label: &'static str) -> Option<String> {
+    keyring::Entry::new("ailimits", label)
+        .and_then(|e| e.get_password())
+        .ok()
+}
+
+/// A provider's pasted key, read with `read` each time it is asked for, and
+/// only under the provider's own label (`own_key_label`). Nothing at all
+/// when the config names no key of the provider's own.
+pub(crate) fn pasted_key(
+    provider: ProviderId,
+    configured: &str,
+    read: SecretReader,
+) -> SecretSource {
+    match own_key_label(provider, configured) {
+        Some(label) => Box::new(move || read(label)),
+        None => Box::new(|| None),
     }
 }
 
@@ -846,6 +962,98 @@ mod tests {
             .await
             .expect_err("nobody listens there");
         assert_eq!(transport_error(&e), "offline, retrying");
+    }
+
+    /// An answer is read up to its cap and no further: a Content-Length past
+    /// it is refused before the body is read, a body without one as soon as
+    /// it passes the cap; anything within it is read whole.
+    #[tokio::test]
+    async fn an_answer_is_read_only_up_to_its_cap() {
+        use crate::providers::test_server::{Reply, TestServer};
+        let big = MAX_ANSWER_BYTES;
+        for (reply, cap, want) in [
+            (Reply::ok(&"x".repeat(64)), 64, Ok(64)),
+            (Reply::Unsized("x".repeat(64)), 64, Ok(64)),
+            (Reply::ok(""), 64, Ok(0)),
+            (Reply::ok(&"x".repeat(65)), 64, Err(ANSWER_TOO_LARGE)),
+            (Reply::Unsized("x".repeat(65)), 64, Err(ANSWER_TOO_LARGE)),
+            // Many chunks: counted across all of them.
+            (Reply::Unsized("x".repeat(big)), big, Ok(big)),
+            (
+                Reply::Unsized("x".repeat(big + 1)),
+                big,
+                Err(ANSWER_TOO_LARGE),
+            ),
+            (
+                Reply::Unsized("x".repeat(4 * big)),
+                big,
+                Err(ANSWER_TOO_LARGE),
+            ),
+        ] {
+            let server = TestServer::start();
+            server.route("/x", vec![reply]);
+            let net = Net::local(&server.base);
+            let resp = net
+                .http
+                .get(net.url("https://host.invalid/x"))
+                .send()
+                .await
+                .expect("an answer");
+            let got = read_text(resp, cap)
+                .await
+                .map(|text| text.len())
+                .map_err(|e| e.words());
+            assert_eq!(got, want, "cap {cap}");
+        }
+        assert!(ANSWER_TOO_LARGE.chars().count() <= 32);
+        assert!(ANSWER_TOO_LARGE.ends_with(", retrying"));
+    }
+
+    /// A pasted key is read only under the provider's own label: a config
+    /// naming another provider's label, or a usage token's, reads nothing.
+    #[test]
+    fn a_key_is_read_only_under_the_providers_own_label() {
+        assert_eq!(
+            own_key_label(ProviderId::Claude, "claude_api_key"),
+            Some("claude_api_key")
+        );
+        assert_eq!(
+            own_key_label(ProviderId::Copilot, "copilot_pat"),
+            Some("copilot_pat")
+        );
+        let others = [
+            "",
+            "copilot_pat",
+            "claude_api_key",
+            "claude_usage_token",
+            "codex_usage_token",
+            "cursor_session",
+            "CLAUDE_API_KEY",
+            " claude_api_key",
+        ];
+        for label in others {
+            if label != "claude_api_key" {
+                assert_eq!(own_key_label(ProviderId::Claude, label), None, "{label:?}");
+            }
+            if label != "copilot_pat" {
+                assert_eq!(own_key_label(ProviderId::Copilot, label), None, "{label:?}");
+            }
+            // Providers without a key of their own read none at all.
+            for id in [ProviderId::Codex, ProviderId::Grok, ProviderId::Cursor] {
+                assert_eq!(own_key_label(id.clone(), label), None, "{id:?} {label:?}");
+            }
+        }
+        fn every_label(label: &'static str) -> Option<String> {
+            Some(format!("secret of {label}"))
+        }
+        assert_eq!(
+            pasted_key(ProviderId::Copilot, "copilot_pat", every_label)(),
+            Some("secret of copilot_pat".to_string())
+        );
+        assert_eq!(
+            pasted_key(ProviderId::Copilot, "claude_api_key", every_label)(),
+            None
+        );
     }
 
     #[test]
