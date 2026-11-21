@@ -156,7 +156,7 @@ impl PickerWindow {
         let zoom = system::text_scale();
         // An auto-hidden taskbar's band is kept clear too: the bar slides
         // in over whatever sits there.
-        let work = crate::platform::safe_area_at(cx, cy);
+        let work = crate::platform::safe_area_at(cx, cy).map(|a| even_area(a.monitor, a.safe));
         let measure = renderer.clone();
         let mut picker = Picker::new(input, move |t, s| measure.text_width(t, s));
         if let Some(w) = work {
@@ -679,6 +679,31 @@ fn physical(size: (f32, f32), scale: f64) -> (u32, u32) {
 }
 
 /// The tallest box the work area allows, logical pixels.
+/// The room the window may use: the safe area, kept as far from every edge
+/// of the monitor as it is from the taskbar's (an auto-hidden one's band
+/// counted), so the window sits as far from the top as from the bottom
+/// wherever the widget and the taskbar are. A monitor with no bar keeps it
+/// all.
+pub(super) fn even_area(
+    monitor: (i32, i32, i32, i32),
+    safe: (i32, i32, i32, i32),
+) -> (i32, i32, i32, i32) {
+    let (ml, mt, mr, mb) = monitor;
+    let (sl, st, sr, sb) = safe;
+    let bar = (sl - ml).max(st - mt).max(mr - sr).max(mb - sb).max(0);
+    let even = (
+        sl.max(ml + bar),
+        st.max(mt + bar),
+        sr.min(mr - bar),
+        sb.min(mb - bar),
+    );
+    // A bar thicker than half the monitor (never seen): the safe area alone.
+    if even.2 - even.0 < (sr - sl) / 2 || even.3 - even.1 < (sb - st) / 2 {
+        return safe;
+    }
+    even
+}
+
 pub(super) fn max_box_height(work: (i32, i32, i32, i32), scale: f64) -> f32 {
     ((work.3 - work.1) as f64 / scale) as f32 - MARGIN * 2.0 - GAP * 2.0 - EDGE * 2.0
 }

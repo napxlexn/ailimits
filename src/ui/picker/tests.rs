@@ -1199,6 +1199,35 @@ fn the_box_keeps_clear_of_the_screens_edges() {
     assert_eq!((x + 18 + 570, y + 18 + 840), (1840 - 12, 1032 - 24));
 }
 
+/// As far from the top as from the taskbar at the bottom, an auto-hidden
+/// one's band counted, and the other way round; on every side alike. A
+/// monitor with no bar (a second one) keeps all of itself.
+#[test]
+fn the_room_is_even_on_every_side() {
+    use super::window::even_area;
+    let monitor = (0, 0, 1920, 1080);
+    // A bottom taskbar, kept or auto-hidden: 48 px off every side.
+    assert_eq!(even_area(monitor, (0, 0, 1920, 1032)), (48, 48, 1872, 1032));
+    // At the top.
+    assert_eq!(
+        even_area(monitor, (0, 48, 1920, 1080)),
+        (48, 48, 1872, 1032)
+    );
+    // On the left, 62 px.
+    assert_eq!(
+        even_area(monitor, (62, 0, 1920, 1080)),
+        (62, 62, 1858, 1018)
+    );
+    // No bar on this monitor.
+    assert_eq!(even_area(monitor, monitor), monitor);
+    // A second monitor to the right, its bar at the bottom.
+    let second = (3440, 0, 6000, 1440);
+    assert_eq!(
+        even_area(second, (3440, 0, 6000, 1392)),
+        (3488, 48, 5952, 1392)
+    );
+}
+
 #[test]
 fn room_text_reads_well() {
     assert_eq!(

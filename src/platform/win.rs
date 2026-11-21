@@ -453,7 +453,7 @@ pub fn ensure_on_screen(x: i32, y: i32) -> (i32, i32) {
 /// The shell is asked which bar auto-hides on each edge of that monitor
 /// (`ABM_GETAUTOHIDEBAREX`, through `SHAppBarMessage`, which the app calls
 /// already); the bar's own rectangle gives its thickness, slid out or not.
-pub fn safe_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+pub fn safe_area_at(x: i32, y: i32) -> Option<crate::platform::ScreenArea> {
     use crate::platform::taskbar_geom::{clear_of_bars, thickness, Edge};
     use windows::Win32::Foundation::{HWND, POINT, RECT};
     use windows::Win32::Graphics::Gdi::{
@@ -496,11 +496,11 @@ pub fn safe_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
                 hidden.push((edge, th));
             }
         }
-        Some(clear_of_bars(
-            (w.left, w.top, w.right, w.bottom),
-            (m.left, m.top, m.right, m.bottom),
-            &hidden,
-        ))
+        let monitor = (m.left, m.top, m.right, m.bottom);
+        Some(crate::platform::ScreenArea {
+            monitor,
+            safe: clear_of_bars((w.left, w.top, w.right, w.bottom), monitor, &hidden),
+        })
     }
 }
 

@@ -129,11 +129,19 @@ pub fn work_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
-/// The work area of the monitor nearest a screen point, an auto-hidden
+/// A monitor and its safe area, as (left, top, right, bottom).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScreenArea {
+    pub monitor: (i32, i32, i32, i32),
+    /// The work area, an auto-hidden taskbar's band taken off too.
+    pub safe: (i32, i32, i32, i32),
+}
+
+/// The monitor nearest a screen point and its work area, an auto-hidden
 /// taskbar's band taken off too: where a window of the app's own (the
 /// picker) opens without the bar sliding over it. None on non-Windows /
 /// query failure.
-pub fn safe_area_at(x: i32, y: i32) -> Option<(i32, i32, i32, i32)> {
+pub fn safe_area_at(x: i32, y: i32) -> Option<ScreenArea> {
     #[cfg(target_os = "windows")]
     {
         win::safe_area_at(x, y)
