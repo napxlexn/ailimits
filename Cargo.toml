@@ -155,3 +155,12 @@ codegen-units = 1
 inherits = "release"
 opt-level = "z"
 panic = "abort"
+
+# tao 0.37.0 as published, plus the two-hunk fix of tao#1394 (merged
+# 2026-11-19): EventLoopProxy::send_event queued the event after posting its
+# message, and the window procedure waited for it with a blocking recv(), so
+# a sender preempted between the two froze the event loop. 0.37.1+ changes
+# focus on show (why tao is pinned); drop this patch once a release has the
+# fix without that change. The source and its licence: vendor/tao/.
+[patch.crates-io]
+tao = { path = "vendor/tao" }
