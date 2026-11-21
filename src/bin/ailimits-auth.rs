@@ -257,7 +257,7 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
     } else if ailimits::providers::antigravity::keyring_token_present() {
         "OK"
     } else {
-        "no (run Antigravity once)"
+        "no (run agy, the Antigravity CLI)"
     };
     println!("Antigravity keyring (gemini:antigravity): {keyring}");
 

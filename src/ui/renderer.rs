@@ -1338,7 +1338,9 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         ProviderId::Claude => "run Claude Code",
         ProviderId::Codex => "run Codex CLI",
         ProviderId::Copilot => "check gh auth",
-        ProviderId::Antigravity => "run Antigravity",
+        // Only the CLI renews the sign-in the app reads; the editor keeps
+        // its own.
+        ProviderId::Antigravity => "run agy",
         ProviderId::Grok => "run Grok CLI",
         // The menu's "Sign in to Cursor..." mends every Cursor session.
         ProviderId::Cursor => "sign in to Cursor",

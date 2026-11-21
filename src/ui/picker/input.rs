@@ -315,6 +315,52 @@ impl Picker {
                 self.names_open = !self.names_open;
                 Vec::new()
             }
+            Target::SignIn(p) => {
+                if let Some(i) = self.open_sign_in.iter().position(|o| o == p) {
+                    self.open_sign_in.remove(i);
+                } else {
+                    self.open_sign_in.push(p.clone());
+                }
+                Vec::new()
+            }
+            Target::SignInSource(p, source) => {
+                let on = self
+                    .input
+                    .sign_in
+                    .iter()
+                    .find(|s| s.provider == p.as_str())
+                    .and_then(|s| s.sources.iter().find(|x| x.id == *source))
+                    .is_some_and(|x| x.on);
+                if on {
+                    return Vec::new();
+                }
+                let act = PickerAction::SetSignInSource {
+                    provider: p.clone(),
+                    source: *source,
+                };
+                // The tool's own sign-in is another tool's file: asked about
+                // first, as a row's tick is.
+                if *source == SourceId::Tool && !self.allowed(p) {
+                    self.open_question(ReadKind::SignIn(p.clone()), vec![act], t.clone());
+                    return Vec::new();
+                }
+                vec![act]
+            }
+            Target::Paste(p) => vec![PickerAction::PasteSecret(p.clone())],
+            Target::Remove(p) => {
+                let stored = self
+                    .input
+                    .sign_in
+                    .iter()
+                    .any(|s| s.provider == p.as_str() && s.stored);
+                if !stored {
+                    return Vec::new();
+                }
+                vec![PickerAction::RemoveSecret(p.clone())]
+            }
+            Target::CursorSignIn => vec![PickerAction::CursorSignIn],
+            Target::CursorCancel => vec![PickerAction::CursorCancel],
+            Target::CursorSignOut => vec![PickerAction::CursorSignOut],
             Target::NamesOf(p) => {
                 if let Some(i) = self.open_names.iter().position(|o| o == p) {
                     self.open_names.remove(i);

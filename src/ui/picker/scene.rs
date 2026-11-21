@@ -386,6 +386,7 @@ impl Picker {
                 count,
                 open,
                 bold,
+                arrow,
                 ..
             } => {
                 if hovered == Some(target) {
@@ -410,7 +411,13 @@ impl Picker {
                     });
                 }
                 let ty = r.y + ((r.h - lh(SIZE_TEXT)) / 2.0).round();
-                let sign = if *open { "\u{2212}" } else { "+" };
+                let sign = match (*arrow, *open) {
+                    // Arrowheads the UI font has (it lacks the triangles).
+                    (true, true) => "\u{02C5}",
+                    (true, false) => "\u{02C3}",
+                    (false, true) => "\u{2212}",
+                    (false, false) => "+",
+                };
                 out.push(text_shape(
                     r.x + 8.0,
                     ty,

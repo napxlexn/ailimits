@@ -28,6 +28,7 @@ impl Picker {
                 .clone()
                 .filter(|t| matches!(t, Target::Field { .. })),
             names: (self.names_open, self.open_names.clone()),
+            sign_in: self.open_sign_in.clone(),
         }
     }
 
@@ -352,6 +353,10 @@ impl Picker {
                 ));
                 f.y += lh(SIZE_NOTE) + 4.0;
             }
+            // Where its sign-in comes from, at the end of its group.
+            if !welcome {
+                self.flow_sign_in(f, g[0].provider);
+            }
         }
 
         // What each tooltip row shows, then the model, version, effort.
@@ -491,6 +496,7 @@ impl Picker {
             count,
             open: self.names_open,
             bold: true,
+            arrow: false,
             nav: (f.nav, 0),
         });
         f.els.push(El::Hint {
@@ -538,6 +544,7 @@ impl Picker {
                     count: mine.len().to_string(),
                     open,
                     bold: false,
+                    arrow: false,
                     nav: (f.nav, 0),
                 });
                 f.nav += 1;
@@ -662,6 +669,115 @@ impl Picker {
         }
         f.nav += 1;
         f.y += h;
+    }
+
+    /// A provider's sign-in under its own row: one line saying where it
+    /// comes from and how it went, which opens to choose the source, to
+    /// paste or remove a key, or to sign in to Cursor.
+    pub(super) fn flow_sign_in(&self, f: &mut Flow, provider: &str) {
+        let p = canonical(provider);
+        let Some(s) = self.input.sign_in.iter().find(|s| s.provider == p) else {
+            return;
+        };
+        let open = self.open_sign_in.iter().any(|o| o == p);
+        let h = ROW_H - 12.0;
+        let line = rect(SUB_X - 8.0, f.y, BOX_W - SUB_X - PAD_X + 8.0, h);
+        f.els.push(El::Toggle {
+            target: Target::SignIn(p.to_string()),
+            rect: line,
+            label: SIGN_IN.to_string(),
+            count: s.summary.clone(),
+            open,
+            bold: false,
+            arrow: true,
+            nav: (f.nav, 0),
+        });
+        f.els.push(El::Hint {
+            rect: line,
+            text: SIGN_IN_HINT.to_string(),
+        });
+        f.nav += 1;
+        f.y += h;
+        if !open {
+            f.y += 2.0;
+            return;
+        }
+        let x = SUB_X + 14.0;
+        let width = BOX_W - PAD_X - x;
+        f.y += 2.0;
+        for (col, src) in s.sources.iter().enumerate() {
+            let w = (RADIO + 8.0 + self.adv(src.label, SIZE_TEXT)).ceil();
+            f.els.push(El::Radio {
+                target: Target::SignInSource(p.to_string(), src.id),
+                rect: rect(x, f.y, w, RADIO_H),
+                label: src.label.to_string(),
+                on: src.on,
+                enabled: true,
+                nav: (f.nav, col as u32),
+            });
+            f.nav += 1;
+            f.y += RADIO_H;
+        }
+        if !s.sources.is_empty() {
+            f.y += 2.0;
+        }
+        let detail = self.wrap(&[span(&s.detail, SIZE_NOTE, Ink::Muted, false)], width);
+        f.y += f.lines(&detail, x, f.y, lh(SIZE_NOTE)) + 6.0;
+        // The actions, in one row.
+        let mut buttons: Vec<(Target, String, bool, bool)> = Vec::new();
+        if let Some(label) = s.paste {
+            buttons.push((Target::Paste(p.to_string()), label.to_string(), false, true));
+            buttons.push((
+                Target::Remove(p.to_string()),
+                REMOVE.to_string(),
+                false,
+                s.stored,
+            ));
+        }
+        match s.cursor {
+            Some(CursorState::SignedOut) => {
+                buttons.push((Target::CursorSignIn, CURSOR_SIGN_IN.to_string(), true, true));
+            }
+            Some(CursorState::Waiting) => {
+                buttons.push((Target::CursorCancel, CURSOR_CANCEL.to_string(), false, true));
+            }
+            Some(CursorState::SignedIn) => {
+                buttons.push((
+                    Target::CursorSignOut,
+                    CURSOR_SIGN_OUT.to_string(),
+                    false,
+                    true,
+                ));
+            }
+            None => {}
+        }
+        if !buttons.is_empty() {
+            let mut bx = x;
+            for (col, (target, label, primary, enabled)) in buttons.into_iter().enumerate() {
+                let w = self.button_w(&label);
+                f.els.push(El::Button {
+                    target,
+                    rect: rect(bx, f.y, w, BUTTON_H),
+                    label,
+                    primary,
+                    enabled,
+                    nav: (f.nav, col as u32),
+                });
+                bx += w + 8.0;
+            }
+            f.nav += 1;
+            f.y += BUTTON_H + 6.0;
+        }
+        let note = match (s.cursor, &s.note) {
+            (_, Some(n)) => Some(n.as_str()),
+            (Some(CursorState::Waiting), None) => Some(CURSOR_WAITING),
+            _ => None,
+        };
+        if let Some(n) = note {
+            let lines = self.wrap(&[span(n, SIZE_NOTE, Ink::Accent, false)], width);
+            f.y += f.lines(&lines, x, f.y, lh(SIZE_NOTE)) + 4.0;
+        }
+        f.y += 6.0;
     }
 
     pub(super) fn flow_sep(&self, f: &mut Flow) {

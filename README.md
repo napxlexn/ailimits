@@ -206,7 +206,7 @@ your machine, strictly read-only and only once you allow each one:
 | Claude | `%USERPROFILE%\.claude\.credentials.json` (Claude Code OAuth token) | run [Claude Code](https://claude.com/claude-code) at least once |
 | Codex | `%USERPROFILE%\.codex\auth.json` (Codex CLI token; in `CODEX_HOME` when it is set) | run `codex login` once |
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
-| Antigravity | Windows Credential Manager target `gemini:antigravity` | run Antigravity CLI once |
+| Antigravity | Windows Credential Manager target `gemini:antigravity` | run `agy`, the Antigravity CLI; its token lasts about an hour and only `agy` renews it (opening the editor does not) |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
 | Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`): Cursor's own sign-in page opens in the browser; ~60-day session |
 

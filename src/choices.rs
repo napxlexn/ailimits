@@ -328,6 +328,14 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 out.models = true;
             }
         },
+        // The sign-in's actions reach the Credential Manager, the clipboard
+        // and the browser: the app carries them out (app/flow.rs).
+        PickerAction::SetSignInSource { .. }
+        | PickerAction::PasteSecret(_)
+        | PickerAction::RemoveSecret(_)
+        | PickerAction::CursorSignIn
+        | PickerAction::CursorCancel
+        | PickerAction::CursorSignOut => out.changed = false,
         PickerAction::NoticeDone => {
             config.reads.pending = PendingNotice::None;
         }
@@ -470,6 +478,7 @@ pub(crate) fn picker_input_with(
         found: found.to_vec(),
         found_weak: found.iter().copied().filter(|id| !surely(id)).collect(),
         models: model_choices(config, models),
+        sign_in: Vec::new(),
     }
 }
 

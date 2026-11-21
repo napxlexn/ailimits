@@ -207,7 +207,7 @@ winget install --id 9P2B0J1VWPWH --source msstore
 | Claude | `%USERPROFILE%\.claude\.credentials.json` (OAuth-токен Claude Code) | запустити [Claude Code](https://claude.com/claude-code) хоч раз |
 | Codex | `%USERPROFILE%\.codex\auth.json` (токен Codex CLI; у `CODEX_HOME`, коли її задано) | один раз `codex login` |
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | один раз `gh auth login` |
-| Antigravity | Windows Credential Manager target `gemini:antigravity` | запустити Antigravity CLI хоч раз |
+| Antigravity | Windows Credential Manager target `gemini:antigravity` | запустити `agy`, тобто Antigravity CLI; його токен живе близько години, і оновлює його лише `agy` (відкриття редактора — ні) |
 | Grok | `%USERPROFILE%\.grok\auth.json` (логін Grok CLI; у `GROK_HOME`, коли її задано) | один раз запустити `grok` і залогінитись (підписка SuperGrok) |
 | Cursor | власний сеанс віджета у Windows Credential Manager (`cursor_session`); нічого з редактора Cursor для цього не читається | Один раз увійти в Cursor із меню (або `ailimits-auth login cursor`): у браузері відкривається власна сторінка входу Cursor; сеанс на ~60 днів |
 

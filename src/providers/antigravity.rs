@@ -527,7 +527,7 @@ pub fn parse_antigravity_keyring_token(body: &str) -> Result<AntigravityLogin> {
 
 /// Parse the retrieveUserQuotaSummary response. Verified live 2026-08-01:
 /// `{"groups": [{"displayName": "Gemini Models", "buckets": [{"bucketId": "…",
-///   "displayName": "Weekly Limit", "window": "…", "resetTime": "RFC3339",
+///   "displayName": "Weekly Limit", "window": "weekly", "resetTime": "RFC3339",
 ///   "remainingFraction": 0}]}, …], "description": "…"}`.
 pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
     let value: serde_json::Value = serde_json::from_str(body)?;
@@ -563,15 +563,34 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
                 None if reset_at.is_some() => 0.0,
                 None => continue,
             };
+            // The bucket says its window since 2026-11 ("window": "weekly",
+            // verified live 2026-11-21). Google's /usage docs also describe a
+            // five-hour limit per group: a bucket naming hours or a session
+            // is that one, and gets a label of its own so it never takes the
+            // weekly pool's row. Without the field: weekly, as before.
+            let window_name = bucket
+                .get("window")
+                .and_then(|v| v.as_str())
+                .unwrap_or("weekly")
+                .to_ascii_lowercase();
+            let short = window_name.contains("hour") || window_name.contains("session");
+            let mut label = short_pool_label(name);
+            if short {
+                label.push_str(" 5h");
+            }
             metrics.push(Metric {
-                label: short_pool_label(name),
+                label,
                 used: ((1.0 - frac.clamp(0.0, 1.0)) * 100.0).round() as u64,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
                 reset_at,
-                // These pools ARE Antigravity's general limits; it has no
-                // session window, so a spent pool must drive every surface.
-                window: MetricWindow::Long,
+                // A weekly pool IS Antigravity's general limit: a spent one
+                // must drive every surface.
+                window: if short {
+                    MetricWindow::Session
+                } else {
+                    MetricWindow::Long
+                },
                 unified_pool: false,
                 extra_only: false,
             });
@@ -775,6 +794,26 @@ mod tests {
     const SUMMARY: &str = ":retrieveUserQuotaSummary";
     const MODELS: &str = ":fetchAvailableModels";
     const LOAD_BODY: &str = r#"{"cloudaicompanionProject": "test-project"}"#;
+    /// The summary as it answered on 2026-11-21: one group, one bucket that
+    /// names its window. A weekly bucket is a long window; a five-hour one,
+    /// should it come, is a session window with a label of its own.
+    #[test]
+    fn a_bucket_says_its_window() {
+        let weekly = r#"{"description": "x", "groups": [{"description": "x", "displayName": "Gemini Models", "buckets": [{"bucketId": "b", "description": "x", "displayName": "Weekly Limit", "remainingFraction": 0.937382, "resetTime": "2099-11-28T00:07:14Z", "window": "weekly"}]}]}"#;
+        let m = parse_quota_summary(weekly).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].label, "Gemini");
+        assert_eq!(m[0].used, 6);
+        assert!(matches!(m[0].window, MetricWindow::Long));
+        let both = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingFraction": 0.5, "resetTime": "2099-01-01T05:00:00Z", "window": "five_hour"}, {"remainingFraction": 0.9, "resetTime": "2099-01-07T00:00:00Z", "window": "weekly"}]}]}"#;
+        let m = parse_quota_summary(both).unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].label, "Gemini 5h");
+        assert!(matches!(m[0].window, MetricWindow::Session));
+        assert_eq!(m[1].label, "Gemini");
+        assert!(matches!(m[1].window, MetricWindow::Long));
+    }
+
     const SUMMARY_BODY: &str = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingFraction": 0.7, "resetTime": "2099-01-01T00:00:00Z"}]}]}"#;
     const MODELS_BODY: &str = r#"{"models": {"gemini-2.5-pro": {"quotaInfo": {"remainingFraction": 0.63, "resetTime": "2099-01-01T00:00:00Z"}}}}"#;
 

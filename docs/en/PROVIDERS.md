@@ -335,7 +335,7 @@ Token source, the only one:
    `token.expiry` is in the past).
 2. A token exists but it is expired → `NetworkError("token expired")`:
    the last data stays, greyed with its age, until Antigravity refreshes the
-   token (the hover adds "run Antigravity"). This is deliberate (d6abbde): an
+   token (the hover adds "run agy"). This is deliberate (d6abbde): an
    expired token greys the row rather than hiding it. A credential that
    cannot be read → `NetworkError("credentials unreadable")`. No token →
    `NotConfigured` (the row is hidden).
@@ -373,7 +373,7 @@ Quota is a chain of sources (all verified live 2026-08-01):
    and without it the widget reports an honest error instead of quota — every
    endpoint answers an "everything full" default view when the project is
    missing, which is indistinguishable from an unused account. A 200 without
-   the field → `"no Code Assist project"` (the hover adds "run Antigravity":
+   the field → `"no Code Assist project"` (the hover adds "run agy":
    its first run sets the account up); no answer or any other status here
    (but 401/403) is not a missing project and reads as the shared words (see
    Error states).
@@ -393,12 +393,20 @@ Quota is a chain of sources (all verified live 2026-08-01):
    only `resetTime` — both mean zero remaining. A single `All Models` group is
    the project-less default view and is refused. These pools are Antigravity's
    general limits, so they are recorded as long-window metrics.
-   **To be verified with a live request:** Google's own `/usage` docs
-   describe a five-hour and a weekly limit per model group, while the parser
-   marks every bucket as a long window (`MetricWindow::Long`), whatever its
-   `window` says. Whether the summary returns a five-hour bucket beside the
-   weekly one, and how its `window` reads, is not verified yet; the parser
-   is unchanged until it is.
+   **Verified live 2026-11-21:** each bucket names its window:
+   `{"groups": [{"displayName": "...", "description": "...", "buckets":
+   [{"bucketId": "...", "displayName": "...", "description": "...",
+   "remainingFraction": 0.937382, "resetTime": "2026-11-28T00:07:14Z",
+   "window": "weekly"}]}]}`, one group with one weekly bucket on that
+   account. Google's own `/usage` docs also describe a five-hour limit per
+   group; none came back. A bucket whose `window` names hours or a session
+   is read as a session window labelled "<pool> 5h"; any other, or none, is
+   the weekly pool.
+   **The sign-in this reads is the Antigravity CLI's** (`agy`). Its access
+   token lasts about an hour and is renewed only when `agy` runs; the
+   Antigravity editor keeps a sign-in of its own (encrypted, never read), so
+   opening the editor does not renew it. Until `agy` runs again the row
+   reads "token expired" with the hover "run agy".
 3. Fallback: `fetchAvailableModels` (per-model `quotaInfo`; a spent model omits
    `remainingFraction` and keeps `resetTime`), on the same host. Asked only
    when the summary gave nothing usable: a 200 with an unknown or empty body,
@@ -416,7 +424,7 @@ consumption — for an account that only uses Antigravity, those buckets read
 
 used % = `(1 - remainingFraction) * 100`; the epoch placeholder
 (`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 on any
-of the calls → `"token rejected"` (the hover adds "run Antigravity"), and the
+of the calls → `"token rejected"` (the hover adds "run agy"), and the
 cached project id is forgotten, so after a switch to another Google account
 the next cycle asks `loadCodeAssist` again. A pool name the app does not know
 is shown as the server sent it, cleaned: no control characters, at most 32

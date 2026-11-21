@@ -118,6 +118,12 @@ Notable, user-visible changes. Dates are release dates.
   time is the shown window's own reset, compact like the clock beside it,
   and a dash when it is not known. The panel keeps its size, and the time is
   repainted only when it reads differently. Asked for in #2 by JCauz.
+- **Antigravity says what renews its sign-in.** The row reads the
+  Antigravity CLI's sign-in (`agy`), whose token lasts about an hour and is
+  renewed only when `agy` runs; the question, the hover ("run agy") and the
+  docs now say so, where they said "run Antigravity" (the editor does not
+  renew it). A bucket's own window is read: a weekly pool stays the long
+  window, a five-hour one would be a session window of its own.
 - **The tooltip's percentage and reset time, chosen.** Two ticks in *Rows
   and models*, Percent and Reset time, decide what each row of the taskbar
   panel's tooltip shows: the percentage, the time left until the limit it

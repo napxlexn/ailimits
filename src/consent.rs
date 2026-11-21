@@ -102,7 +102,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         id: "antigravity",
         tool: "Antigravity",
         tool_sign_in: true,
-        sign_in: &["its sign-in in Windows Credential Manager (gemini:antigravity)"],
+        sign_in: &["the Antigravity CLI's sign-in in Windows Credential Manager (gemini:antigravity). It lasts about an hour and is renewed only when you run agy; the Antigravity editor's own sign-in is never read"],
         hosts: &[
             "cloudcode-pa.googleapis.com",
             "daily-cloudcode-pa.googleapis.com",

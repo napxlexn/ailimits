@@ -100,6 +100,20 @@ pub enum PickerAction {
     /// The user allowed a read in the picker's question. Sent before the tick
     /// that needed it.
     Allow(ReadKind),
+    /// Take a provider's sign-in from this source from now on.
+    SetSignInSource {
+        provider: String,
+        source: SourceId,
+    },
+    /// Paste the chosen source's key or token from the clipboard: checked,
+    /// then stored in Credential Manager only if it works.
+    PasteSecret(String),
+    /// Remove the chosen source's stored key or token.
+    RemoveSecret(String),
+    /// Sign in to Cursor in the browser; cancel the wait; sign out.
+    CursorSignIn,
+    CursorCancel,
+    CursorSignOut,
     /// The welcome or the update notice was answered (a button, the cross,
     /// Esc, Alt+F4 or an answered question); it is not owed again. Losing
     /// the focus to another window is no answer.
@@ -128,6 +142,59 @@ pub struct RowChoice {
     /// The provider answered with data: only then can an extra row be said
     /// to be missing from it (not while it is still loading).
     pub provider_ok: bool,
+}
+
+/// One provider's sign-in, as the window shows it under the provider's own
+/// row: a line that opens to say where the sign-in comes from, to choose
+/// it, and to paste, remove or sign in (what the menu's Providers submenu
+/// did before).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignInChoice {
+    /// Config id.
+    pub provider: &'static str,
+    /// The closed line: where the sign-in comes from and how it went
+    /// ("Claude Code · works", "Not allowed yet").
+    pub summary: String,
+    /// The sources to choose from, in order; empty when there is one.
+    pub sources: Vec<SignInSource>,
+    /// What is read and where its token goes, for the source chosen.
+    pub detail: String,
+    /// The paste button's label, when the source chosen takes a pasted
+    /// secret.
+    pub paste: Option<&'static str>,
+    /// A pasted secret of the source chosen is stored: Remove can be used.
+    pub stored: bool,
+    /// What the last action came to ("Checking it...", "Refused, so not
+    /// stored"), until the next one.
+    pub note: Option<String>,
+    /// Cursor's sign-in of the app's own, for Cursor only.
+    pub cursor: Option<CursorState>,
+}
+
+/// One source a provider's sign-in can come from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignInSource {
+    pub id: SourceId,
+    pub label: &'static str,
+    pub on: bool,
+}
+
+/// Where a sign-in comes from: the tool's own, a usage token or a key the
+/// user pasted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceId {
+    Tool,
+    UsageToken,
+    Key,
+}
+
+/// Cursor's sign-in of the app's own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorState {
+    SignedOut,
+    /// The browser was opened; the app waits for the sign-in there.
+    Waiting,
+    SignedIn,
 }
 
 /// A model the picker offers to rename, under one tool's heading.
@@ -183,6 +250,8 @@ pub struct PickerInput {
     pub found_weak: Vec<&'static str>,
     /// Models that can be renamed, each listed under the tool offering it.
     pub models: Vec<ModelChoice>,
+    /// Each provider's sign-in, under its own row.
+    pub sign_in: Vec<SignInChoice>,
 }
 
 // ─── Events ──────────────────────────────────────────────────────
@@ -494,6 +563,14 @@ const MODEL_SHOWN: &str = "Model shown";
 const SOURCE_SET: &str = "As set in the tool";
 const SOURCE_LAST: &str = "Last used";
 const NAMES: &str = "Model names";
+const SIGN_IN: &str = "Sign-in";
+const SIGN_IN_HINT: &str = "Where AI Limits gets this provider's sign-in from, and how it went. Open it to choose, to paste a key or token of your own, or to remove one.";
+const REMOVE: &str = "Remove";
+const CURSOR_SIGN_IN: &str = "Sign in to Cursor...";
+const CURSOR_CANCEL: &str = "Cancel";
+const CURSOR_SIGN_OUT: &str = "Sign out";
+const CURSOR_WAITING: &str =
+    "Waiting for the sign-in in your browser. It is cancelled after 5 minutes.";
 const NAMES_OFF: &str = "Once a tool runs, its models are listed here to rename.";
 const NAMES_ON: &str =
     "Made from the id the tool stores. Click a field and type to rename; clear it to get the automatic name back. A model two tools share has one name.";
@@ -660,6 +737,16 @@ enum Target {
     NamesOf(String),
     /// A provider's tick in the Taskbar column (config id).
     Taskbar(String),
+    /// Open or close a provider's sign-in (config id).
+    SignIn(String),
+    /// A sign-in source's radio.
+    SignInSource(String, SourceId),
+    /// Paste or remove the chosen source's secret.
+    Paste(String),
+    Remove(String),
+    CursorSignIn,
+    CursorCancel,
+    CursorSignOut,
 }
 
 /// Keyboard grid position: (row, column).
@@ -717,7 +804,9 @@ enum El {
         rect: Rect,
         nav: Nav,
     },
-    /// A heading that opens and closes what is under it: "+ Model names".
+    /// A heading that opens and closes what is under it: "+ Model names",
+    /// or with `arrow` "▸ Sign-in" (a "+" there would read as one more
+    /// extra row).
     Toggle {
         target: Target,
         rect: Rect,
@@ -725,6 +814,7 @@ enum El {
         count: String,
         open: bool,
         bold: bool,
+        arrow: bool,
         nav: Nav,
     },
     /// What a part of the window is, shown while the pointer rests on it.
@@ -1104,6 +1194,8 @@ pub struct Picker {
     names_open: bool,
     /// The tools whose models are open in that list (config ids).
     open_names: Vec<String>,
+    /// The providers whose sign-in is open (config ids).
+    open_sign_in: Vec<String>,
     /// The update notice was answered with Review: the normal picker shows.
     reviewed: bool,
     /// `NoticeDone` was sent.
@@ -1145,6 +1237,8 @@ struct LayoutKey {
     field: Option<Target>,
     /// What is open in the list of names.
     names: (bool, Vec<String>),
+    /// The providers whose sign-in is open.
+    sign_in: Vec<String>,
 }
 
 /// What a point is over.
@@ -1185,6 +1279,7 @@ impl Picker {
             ask: None,
             names_open: false,
             open_names: Vec::new(),
+            open_sign_in: Vec::new(),
             reviewed: false,
             notice_done: false,
             opened_as,

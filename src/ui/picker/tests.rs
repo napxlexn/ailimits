@@ -96,6 +96,7 @@ fn input() -> PickerInput {
         model: UiModel::default(),
         tip: UiNumbers::default(),
         panel: UiNumbers::PERCENT_ONLY,
+        sign_in: Vec::new(),
         reads: Reads {
             sign_in: base.iter().map(|s| s.to_string()).collect(),
             ..Reads::default()
@@ -113,6 +114,85 @@ fn with_model() -> PickerInput {
     i.reads.tool_settings = true;
     i.model.tooltip = vec![ModelPart::Model];
     i
+}
+
+/// The sign-in of every provider, as the app would describe it on a PC
+/// where Claude and Codex run on their tools' sign-ins, Copilot on a pasted
+/// token, and Cursor is not signed in.
+fn sign_ins() -> Vec<SignInChoice> {
+    let src = |id, label, on| SignInSource { id, label, on };
+    vec![
+        SignInChoice {
+            provider: "claude",
+            summary: "Claude Code \u{b7} works".into(),
+            sources: vec![
+                src(SourceId::Tool, "Claude Code's sign-in", true),
+                src(SourceId::UsageToken, "A usage token you paste", false),
+                src(SourceId::Key, "An API key you paste", false),
+            ],
+            detail: "Reads %USERPROFILE%\\.claude\\.credentials.json; its token goes only to api.anthropic.com. Claude Code renews it as you use it.".into(),
+            paste: None,
+            stored: false,
+            note: None,
+            cursor: None,
+        },
+        SignInChoice {
+            provider: "codex",
+            summary: "Codex CLI \u{b7} works".into(),
+            sources: vec![
+                src(SourceId::Tool, "Codex CLI's sign-in", true),
+                src(SourceId::UsageToken, "A usage token you paste", false),
+            ],
+            detail: "Reads %USERPROFILE%\\.codex\\auth.json (in CODEX_HOME when it is set); its token goes only to chatgpt.com.".into(),
+            paste: None,
+            stored: false,
+            note: None,
+            cursor: None,
+        },
+        SignInChoice {
+            provider: "grok",
+            summary: "Grok CLI \u{b7} works".into(),
+            sources: Vec::new(),
+            detail: "Reads %USERPROFILE%\\.grok\\auth.json (in GROK_HOME when it is set); its token goes only to cli-chat-proxy.grok.com.".into(),
+            paste: None,
+            stored: false,
+            note: None,
+            cursor: None,
+        },
+        SignInChoice {
+            provider: "cursor",
+            summary: "Not signed in".into(),
+            sources: Vec::new(),
+            detail: "Signs in to Cursor in your browser, as the Cursor editor does, and keeps that session in Windows Credential Manager. Nothing of the editor's own sign-in is read.".into(),
+            paste: None,
+            stored: false,
+            note: None,
+            cursor: Some(CursorState::SignedOut),
+        },
+        SignInChoice {
+            provider: "antigravity",
+            summary: "Antigravity CLI \u{b7} token expired".into(),
+            sources: Vec::new(),
+            detail: "Reads the Antigravity CLI's sign-in in Windows Credential Manager (gemini:antigravity); its token goes only to cloudcode-pa.googleapis.com. It lasts about an hour: run agy to renew it.".into(),
+            paste: None,
+            stored: false,
+            note: None,
+            cursor: None,
+        },
+        SignInChoice {
+            provider: "copilot",
+            summary: "Your token \u{b7} works".into(),
+            sources: vec![
+                src(SourceId::Tool, "GitHub CLI's sign-in", false),
+                src(SourceId::Key, "A fine-grained token you paste", true),
+            ],
+            detail: "Kept in Windows Credential Manager; it goes only to api.github.com. It needs the Copilot Requests permission.".into(),
+            paste: Some("Paste token from clipboard"),
+            stored: true,
+            note: Some("Checked with GitHub: it works. Stored in Credential Manager.".into()),
+            cursor: None,
+        },
+    ]
 }
 
 fn picker(input: PickerInput) -> Picker {
@@ -2133,6 +2213,38 @@ fn visual_baseline_picker() {
     let (x, y) = spot(&mut chosen, &Target::Taskbar("codex".into()));
     chosen.handle(PickerEvent::PointerMove { x, y });
     items.push(("taskbar-chosen-dark".to_string(), draw(&chosen, false, 1.0)));
+
+    // Sign-in under each provider: every line closed; Claude open on
+    // its tool's sign-in; Copilot open on a pasted token; Cursor waiting
+    // for the browser.
+    let mut i = input();
+    i.sign_in = sign_ins();
+    let closed = make(i.clone());
+    items.push(("signin-closed-dark".to_string(), draw(&closed, false, 1.0)));
+    let mut claude = make(i.clone());
+    claude.open_sign_in = vec!["claude".into()];
+    items.push(("signin-claude-dark".to_string(), draw(&claude, false, 1.0)));
+    items.push(("signin-claude-light".to_string(), draw(&claude, true, 1.0)));
+    let mut copilot = make(i.clone());
+    copilot.open_sign_in = vec!["copilot".into()];
+    let (_, y) = spot(&mut copilot, &Target::SignIn("copilot".into()));
+    let _ = y;
+    items.push((
+        "signin-copilot-dark".to_string(),
+        draw(&copilot, false, 1.0),
+    ));
+    let mut waiting = i.clone();
+    if let Some(c) = waiting.sign_in.iter_mut().find(|s| s.provider == "cursor") {
+        c.summary = "Waiting for the browser".into();
+        c.cursor = Some(CursorState::Waiting);
+    }
+    let mut cursor = make(waiting);
+    cursor.open_sign_in = vec!["cursor".into()];
+    let _ = spot(&mut cursor, &Target::CursorCancel);
+    items.push((
+        "signin-cursor-waiting-dark".to_string(),
+        draw(&cursor, false, 1.0),
+    ));
 
     // Model names with Effort alone shown: the fields are there, and a
     // line says where the names show.
