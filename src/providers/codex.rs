@@ -421,6 +421,42 @@ mod tests {
         );
     }
 
+    /// A plan without a five-hour limit (`primary_window` null, absent or
+    /// without a number): the week alone, read as an answer - never an
+    /// error status, never a session number made up.
+    #[tokio::test]
+    async fn a_plan_without_a_session_window_shows_the_week_alone() {
+        let home = codex_home();
+        let week = r#""secondary_window": {"used_percent": 28, "reset_at": 4102444800}"#;
+        for session in [
+            r#""primary_window": null, "#,
+            "",
+            r#""primary_window": {"used_percent": null, "reset_at": null}, "#,
+        ] {
+            let body = format!("{{\"rate_limit\": {{{session}{week}}}}}");
+            let server = TestServer::start();
+            server.route("/backend-api/wham/usage", vec![Reply::ok(&body)]);
+            let p = CodexProvider::for_test(
+                config(true),
+                &server.base,
+                None,
+                Some(home.path().join("auth.json")),
+            );
+            let data = p.fetch().await.unwrap();
+            assert!(
+                matches!(data.status, ProviderStatus::Ok),
+                "{body}: {:?}",
+                data.status
+            );
+            let read: Vec<_> = data
+                .metrics
+                .iter()
+                .map(|m| (m.label.as_str(), m.used, m.window))
+                .collect();
+            assert_eq!(read, [("Weekly", 28, MetricWindow::Long)], "{body}");
+        }
+    }
+
     #[tokio::test]
     async fn no_answer_and_server_errors_read_honestly() {
         let home = codex_home();

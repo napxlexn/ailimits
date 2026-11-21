@@ -696,6 +696,37 @@ mod tests {
         assert!(!p.refused.paused("pasted-anew"));
     }
 
+    /// A plan without a five-hour window (`five_hour` null, absent or
+    /// without a number): the week alone, read as an answer - never an
+    /// error status, never a session number made up.
+    #[tokio::test]
+    async fn a_plan_without_a_session_window_shows_the_week_alone() {
+        let home = claude_code_home();
+        let week = r#""seven_day": {"utilization": 34.0, "resets_at": "2099-01-05T00:00:00Z"}"#;
+        for session in [
+            r#""five_hour": null, "#,
+            "",
+            r#""five_hour": {"utilization": null, "resets_at": null}, "#,
+        ] {
+            let body = format!("{{{session}{week}}}");
+            let server = TestServer::start();
+            server.route("/api/oauth/usage", vec![Reply::ok(&body)]);
+            let p = ClaudeProvider::for_test(config(true), &server.base, None, Some(home.path()));
+            let data = p.fetch().await.unwrap();
+            assert!(
+                matches!(data.status, ProviderStatus::Ok),
+                "{body}: {:?}",
+                data.status
+            );
+            let read: Vec<_> = data
+                .metrics
+                .iter()
+                .map(|m| (m.label.as_str(), m.used, m.window))
+                .collect();
+            assert_eq!(read, [("Weekly", 34, MetricWindow::Long)], "{body}");
+        }
+    }
+
     /// A refused usage token keeps its row, saying so, without a request
     /// each cycle.
     #[tokio::test]
