@@ -215,6 +215,9 @@ show_forecast = false
 # meters it on its own: claude.opus, claude.sonnet, claude.fable (weekly,
 # on plans that have them), antigravity.cg (the Claude and GPT pool), grok.build,
 # cursor.bot (Grok Bot; Cursor asks for it only while this row is chosen).
+# The week of a model Claude adds later becomes the row claude.<model name
+# in lowercase, words joined by "-"> (claude.haiku) without an update, as
+# soon as Claude reports it.
 # Once a provider has answered, the window offers only the extra rows it
 # reports (and those chosen already, to be unticked); before that, all.
 # The widget and the tooltip are chosen separately; the taskbar panel and

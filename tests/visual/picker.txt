@@ -23,6 +23,8 @@ notice-dark 458x406 187166c5c7404f6a
 notice-light 458x406 bd928e88f5994d71
 numbers-dark 458x584 c7f178f666743bf0
 numbers-light 458x584 e9c8272f643f5f96
+rows-new-models-dark 458x584 22b6900a1cca58fc
+rows-new-models-light 458x584 667eac1740503bba
 scrolled-dark 458x384 5ff56de6893dbc0b
 settings-file-dark 458x584 9b7bfc043bdf78e4
 settings-file-focus-dark 458x584 8fdc3ebb16f2c496

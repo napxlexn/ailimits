@@ -195,7 +195,7 @@ const TABLES: &[Table] = &[
                 "widget",
                 &[
                     "The widget's rows. Extra rows: claude.opus, claude.sonnet, claude.fable,",
-                    "antigravity.cg, grok.build, cursor.bot. Without it: one per provider.",
+                    "claude.<new model>, antigravity.cg, grok.build, cursor.bot. Unset: one each.",
                 ],
             ),
             (

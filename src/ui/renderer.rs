@@ -2289,6 +2289,16 @@ mod tests {
                         extra_only: true,
                         ..pct_reset("Fable", 37, Long, 4 * D + 15 * H)
                     },
+                    // Weeks of models Claude added later: rows made from
+                    // the reply (rows.rs `offered_rows`), one name cut.
+                    Metric {
+                        extra_only: true,
+                        ..pct_reset("Haiku", 41, Long, 4 * D + 15 * H)
+                    },
+                    Metric {
+                        extra_only: true,
+                        ..pct_reset("Mythos Preview Extended", 9, Long, 4 * D + 15 * H)
+                    },
                 ],
             ),
             of(
@@ -2495,6 +2505,23 @@ mod tests {
             items.push((
                 format!("extra-{name}"),
                 rows_widget(&renderer, &extra, &ui, false, None),
+            ));
+        }
+
+        // Rows of models Claude added later, in every layout, beside
+        // Fable's: named and stepped down as the catalogue's rows are.
+        let added = [
+            "claude",
+            "claude.fable",
+            "claude.haiku",
+            "claude.mythos-preview-extended",
+        ];
+        let new_models = widget_rows(&fixture, Some(&added), None);
+        assert_eq!(new_models.len(), added.len());
+        for (name, ui) in every_layout() {
+            items.push((
+                format!("new-models-{name}"),
+                rows_widget(&renderer, &new_models, &ui, false, None),
             ));
         }
 

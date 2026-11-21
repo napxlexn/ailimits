@@ -3,9 +3,10 @@
 //
 // One row per provider by default: exactly the rows there were before rows
 // could be chosen. Extra rows exist only where a provider meters a part on
-// its own (Claude's Opus, Sonnet and Fable weeks, Antigravity's second pool,
-// Grok Build, Cursor's Grok Bot). The taskbar panel and the tray icon keep one
-// entry per provider and do not use this.
+// its own (Claude's Opus, Sonnet and Fable weeks and the week of any model
+// Claude adds later, Antigravity's second pool, Grok Build, Cursor's Grok
+// Bot). The taskbar panel and the tray icon keep one entry per provider and
+// do not use this.
 
 use crate::config::schema::{Config, ModelPart, Surface};
 use crate::models::{self, ModelInfo, Models};
@@ -97,9 +98,132 @@ pub const SUB_ROWS: &[SubRow] = &[
     },
 ];
 
-/// The extra rows a provider can offer.
+/// The extra rows of the catalogue a provider can offer.
 pub fn sub_rows(provider: &ProviderId) -> impl Iterator<Item = &'static SubRow> + '_ {
     SUB_ROWS.iter().filter(move |s| s.provider == *provider)
+}
+
+/// The extra rows a provider offers with `data`: the catalogue's, then, for
+/// Claude, one for each week of a single model its reply reports that the
+/// catalogue does not name (`model_row`), in the reply's order. A model
+/// Claude adds later so gets a row of its own without an update.
+pub fn offered_rows(provider: &ProviderId, data: Option<&ProviderData>) -> Vec<&'static SubRow> {
+    let mut out: Vec<&'static SubRow> = sub_rows(provider).collect();
+    let Some(data) = data.filter(|_| *provider == ProviderId::Claude) else {
+        return out;
+    };
+    for m in data.metrics.iter().filter(|m| m.extra_only) {
+        if out.iter().any(|s| s.metric.eq_ignore_ascii_case(&m.label)) {
+            continue;
+        }
+        if let Some(row) = model_row(&m.label) {
+            if !out.iter().any(|s| s.id == row.id) {
+                out.push(row);
+            }
+        }
+    }
+    out
+}
+
+/// The rows `model_row` made, kept for the life of the process so a row's
+/// id and names are borrowed like the catalogue's.
+static MADE: std::sync::Mutex<Vec<&'static SubRow>> = std::sync::Mutex::new(Vec::new());
+/// The most rows `model_row` makes in one run: a reply naming more models
+/// than that gets rows for the first ones.
+const MADE_MAX: usize = 16;
+/// The longest model name a made row shows; a longer one ends in "…".
+const MADE_NAME_MAX: usize = 20;
+/// The shortest form of a made row's name: the model's first word, at most
+/// this many characters ("Sonnet", the catalogue's widest shortest form).
+const MADE_SHORT_MAX: usize = 6;
+/// The longest model name a made row's line under the bar shows; a longer
+/// one shows its shortest form there ("Claude/GPT", the catalogue's longest
+/// label, is 10).
+const MADE_LABEL_MAX: usize = 10;
+
+/// Whether `sub` is a row `model_row` made rather than the catalogue's.
+fn is_made(sub: &SubRow) -> bool {
+    !SUB_ROWS.iter().any(|s| s.id == sub.id)
+}
+
+/// The row of Claude's week of the model `label` names (its `display_name`,
+/// `providers::claude::model_weeks`), made once per model: id
+/// "claude.<name in lowercase, words joined by '-'>", names as the
+/// catalogue's ("Claude · Haiku", "Cl · Haiku", "Haiku"). None for a name
+/// with no letter or digit, or past `MADE_MAX`.
+fn model_row(label: &str) -> Option<&'static SubRow> {
+    let name = label.trim();
+    let mut slug = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        return None;
+    }
+    let id = format!("claude.{slug}");
+    let mut made = MADE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(row) = made.iter().find(|r| r.id == id) {
+        return Some(*row);
+    }
+    if made.len() >= MADE_MAX {
+        return None;
+    }
+    fn keep(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+    let cut = |s: &str, max: usize, end: &str| {
+        if s.chars().count() <= max {
+            s.to_string()
+        } else {
+            let head: String = s.chars().take(max - end.chars().count()).collect();
+            format!("{}{end}", head.trim_end())
+        }
+    };
+    let shown = cut(name, MADE_NAME_MAX, "…");
+    let mut names = vec![
+        keep(format!("Claude · {shown}")),
+        keep(format!("Cl · {shown}")),
+        keep(shown.clone()),
+    ];
+    let first_word = name.split_whitespace().next().unwrap_or(name);
+    let short = cut(first_word, MADE_SHORT_MAX, "");
+    if short != shown {
+        names.push(keep(short));
+    }
+    let row: &'static SubRow = Box::leak(Box::new(SubRow {
+        id: keep(id),
+        provider: ProviderId::Claude,
+        metric: keep(name.to_string()),
+        names: Box::leak(names.into_boxed_slice()),
+        note: "Weekly, a limit of its own",
+        hint: keep(format!(
+            "{shown}'s own weekly allowance, a share of the weekly limit: Current week ({shown}) in Claude Code's /usage."
+        )),
+        on_request: false,
+    }));
+    made.push(row);
+    Some(row)
+}
+
+/// Whether any row of `provider` is chosen for a surface: its own, one of
+/// the catalogue's, or one `offered_rows` makes from a reply (known by its
+/// id, "claude.haiku", before any reply names it).
+pub fn provider_row_chosen(config: &Config, surface: Surface, provider: &str) -> bool {
+    let chosen = match surface {
+        Surface::Widget => &config.ui.rows.widget,
+        Surface::Tooltip => &config.ui.rows.tooltip,
+    };
+    match chosen {
+        Some(list) => list.iter().any(|r| r.split('.').next() == Some(provider)),
+        None => true,
+    }
 }
 
 /// A provider's own row name, as a one-step list.
@@ -277,7 +401,7 @@ pub fn visible_rows(
                 model,
             });
         }
-        for sub in sub_rows(&provider) {
+        for sub in offered_rows(&provider, Some(data)) {
             if !row_chosen(config, surface, sub.id) {
                 continue;
             }
@@ -288,11 +412,20 @@ pub fn visible_rows(
             else {
                 continue;
             };
+            let mut row_data = extra_row_data(data, metric);
+            // A made row's long model name is too wide for the line under
+            // its bar ("Mythos Preview Extended: 9%"): its shortest form
+            // goes there instead.
+            if is_made(sub) && metric.label.chars().count() > MADE_LABEL_MAX {
+                if let (Some(m), Some(short)) = (row_data.metrics.first_mut(), sub.names.last()) {
+                    m.label = short.to_string();
+                }
+            }
             rows.push(RowView {
                 id: sub.id,
                 provider: provider.clone(),
                 names: sub.names,
-                data: extra_row_data(data, metric),
+                data: row_data,
                 model: None,
             });
         }
@@ -725,6 +858,108 @@ mod tests {
         config.ui.rows.widget = Some(vec!["claude".into(), "claude.haiku".into(), "x".into()]);
         let rows = visible_rows(&config, &sample(), Surface::Widget, &Models::new());
         assert_eq!(ids(&rows), ["claude"]);
+    }
+
+    /// Claude with a week of `label` only an extra row shows, as
+    /// `providers::claude::model_weeks` reports a model's week.
+    fn claude_with_week(label: &str, used: u64) -> ProviderData {
+        let mut d = sample().remove(0);
+        let mut week = metric(label, used, MetricWindow::Long);
+        week.extra_only = true;
+        d.metrics.push(week);
+        d
+    }
+
+    fn row_ids(rows: &[&'static SubRow]) -> Vec<&'static str> {
+        rows.iter().map(|s| s.id).collect()
+    }
+
+    /// A model Claude adds later gets a row of its own from the reply: not
+    /// shown until chosen, the Claude row as it was, named as the
+    /// catalogue's rows are.
+    #[test]
+    fn a_model_claude_adds_gets_a_row_of_its_own() {
+        let d = claude_with_week("Haiku", 44);
+        let one = std::slice::from_ref(&d);
+        let rows = visible_rows(&Config::default(), one, Surface::Widget, &Models::new());
+        assert_eq!(ids(&rows), ["claude"]);
+        let used: Vec<u64> = rows[0].data.metrics.iter().map(|m| m.used).collect();
+        assert_eq!(used, [25, 34, 61, 12], "the week is not the Claude row's");
+        let mut config = Config::default();
+        config.ui.rows.widget = Some(vec!["claude".into(), "claude.haiku".into()]);
+        let rows = visible_rows(&config, one, Surface::Widget, &Models::new());
+        assert_eq!(ids(&rows), ["claude", "claude.haiku"]);
+        assert_eq!(rows[1].names, ["Claude · Haiku", "Cl · Haiku", "Haiku"]);
+        assert_eq!(rows[1].data.metrics.len(), 1);
+        assert_eq!(rows[1].data.metrics[0].used, 44);
+        assert!(rows[1].model.is_none());
+        // A reply without the week: no row; the id stays in the file.
+        let rows = visible_rows(&config, &sample()[..1], Surface::Widget, &Models::new());
+        assert_eq!(ids(&rows), ["claude"]);
+    }
+
+    #[test]
+    fn made_rows_are_made_once_named_longest_first_and_only_for_claude() {
+        let long = claude_with_week("Mythos Preview Extended", 1);
+        let a = offered_rows(&ProviderId::Claude, Some(&long));
+        assert_eq!(
+            row_ids(&a),
+            [
+                "claude.opus",
+                "claude.sonnet",
+                "claude.fable",
+                "claude.mythos-preview-extended"
+            ]
+        );
+        let made = a[3];
+        assert_eq!(
+            made.names,
+            [
+                "Claude · Mythos Preview Exte…",
+                "Cl · Mythos Preview Exte…",
+                "Mythos Preview Exte…",
+                "Mythos"
+            ]
+        );
+        assert_eq!(made.metric, "Mythos Preview Extended");
+        assert!(!made.on_request);
+        assert!(made
+            .hint
+            .starts_with("Mythos Preview Exte…'s own weekly allowance"));
+        // Asked again: the same row, not another one.
+        let b = offered_rows(&ProviderId::Claude, Some(&long));
+        assert!(std::ptr::eq(a[3], b[3]));
+        // The line under its bar names it by its shortest form.
+        let mut config = Config::default();
+        config.ui.rows.widget = Some(vec!["claude.mythos-preview-extended".into()]);
+        let shown = visible_rows(
+            &config,
+            std::slice::from_ref(&long),
+            Surface::Widget,
+            &Models::new(),
+        );
+        assert_eq!(shown[0].data.metrics[0].label, "Mythos");
+        // A week the catalogue names keeps the catalogue's row.
+        let fable = claude_with_week("fable", 1);
+        assert_eq!(
+            row_ids(&offered_rows(&ProviderId::Claude, Some(&fable))),
+            ["claude.opus", "claude.sonnet", "claude.fable"]
+        );
+        // A name with no letter or digit: no row.
+        let blank = claude_with_week(" · ", 1);
+        assert_eq!(offered_rows(&ProviderId::Claude, Some(&blank)).len(), 3);
+        // Another provider's week of its own never makes one.
+        let mut grok = data(
+            ProviderId::Grok,
+            vec![metric("Weekly", 1, MetricWindow::Long)],
+        );
+        let mut heavy = metric("Heavy", 1, MetricWindow::Long);
+        heavy.extra_only = true;
+        grok.metrics.push(heavy);
+        assert_eq!(
+            row_ids(&offered_rows(&ProviderId::Grok, Some(&grok))),
+            ["grok.build"]
+        );
     }
 
     #[test]

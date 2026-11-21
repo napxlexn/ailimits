@@ -205,7 +205,12 @@ the model (`Fable`; `percent` is of that model's own allowance), only
 beside the windows above and never twice under one name. It is marked for
 its extra row only (`claude.fable`, off by default): it is never Claude's
 headline, its reset, its alerts or a part of its own row, so the Claude row
-looks exactly as before until that row is chosen.
+looks exactly as before until that row is chosen. A model the app does not
+name yet (one Claude adds later) gets an extra row of its own the same way,
+made from the reply: `claude.<name in lowercase, words joined by "-">`
+(`claude.haiku`), named "Claude · Haiku", "Cl · Haiku", "Haiku" as space
+allows, off by default. A name longer than 20 characters ends in "…" and
+steps down to its first word; at most 16 such rows are made in one run.
 
 **Rate limiting (verified 2026-07-09).** The endpoint's per-token bucket is
 shared with Claude Code's own polling: under an active session roughly one

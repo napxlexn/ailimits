@@ -62,6 +62,42 @@ fn rows() -> Vec<RowChoice> {
     out
 }
 
+/// The rows of two models Claude added later, as the app makes them from
+/// its reply (`rows::offered_rows`): one short name, one cut.
+fn made_rows() -> Vec<RowChoice> {
+    use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderStatus};
+    let week = |label: &str| Metric {
+        label: label.to_string(),
+        used: 10,
+        limit: Some(100),
+        unit: MetricUnit::Percent,
+        reset_at: None,
+        window: MetricWindow::Long,
+        unified_pool: false,
+        extra_only: true,
+    };
+    let data = ProviderData {
+        id: ProviderId::Claude,
+        status: ProviderStatus::Ok,
+        metrics: vec![week("Haiku"), week("Mythos Preview Extended")],
+        updated_at: crate::utc::now(),
+        received_at: None,
+    };
+    crate::rows::offered_rows(&ProviderId::Claude, Some(&data))
+        .into_iter()
+        .skip(crate::rows::sub_rows(&ProviderId::Claude).count())
+        .map(|s| RowChoice {
+            id: s.id,
+            provider: "claude",
+            name: s.names[0],
+            note: s.note.into(),
+            hint: s.hint,
+            has_data: true,
+            provider_ok: true,
+        })
+        .collect()
+}
+
 fn models() -> Vec<ModelChoice> {
     let m = |provider: &'static str, id: &str, key: &str, auto: &str| ModelChoice {
         provider,
@@ -2490,6 +2526,27 @@ fn visual_baseline_picker() {
     open_all(&mut shared);
     shared.handle(PickerEvent::Wheel { dy: -10_000.0 });
     items.push(("names-shared-dark".to_string(), draw(&shared, false, 1.0)));
+
+    // Weeks of models Claude added later, rows of their own after Fable's;
+    // a long name ends in "…" short of the tick columns.
+    let mut added = input();
+    let made = made_rows();
+    let at = added
+        .rows
+        .iter()
+        .position(|r| r.id == "claude.fable")
+        .unwrap()
+        + 1;
+    added.rows.splice(at..at, made);
+    added.widget_rows.push("claude.haiku".into());
+    items.push((
+        "rows-new-models-dark".to_string(),
+        draw(&make(added.clone()), false, 1.0),
+    ));
+    items.push((
+        "rows-new-models-light".to_string(),
+        draw(&make(added), true, 1.0),
+    ));
 
     vb::check("picker", items);
 }

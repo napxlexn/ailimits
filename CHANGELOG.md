@@ -70,7 +70,10 @@ Notable, user-visible changes. Dates are release dates.
   reset of their own never greys the provider's row; Claude's Opus and
   Sonnet weeks and Antigravity's Claude and GPT pool are their provider's
   own windows, as in 0.7.0, so a spent one can lead the provider's row. The
-  taskbar panel and the tray icon keep one entry per provider.
+  taskbar panel and the tray icon keep one entry per provider. A model
+  Claude adds later with a week of its own gets a row of its own the same
+  way, as soon as Claude reports it, without an update of the app
+  (`claude.haiku` in the config file, "Claude · Haiku" in the window).
 - **Model labels.** Three separate ticks - Model, Version, Effort - add the
   model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
   chosen separately for the widget and the tooltip. The model comes either

@@ -5,7 +5,7 @@
 use crate::config::schema::{Config, ModelPart, ModelSource, NumbersOn, PendingNotice, Surface};
 use crate::models::{self, Models};
 use crate::providers::{ProviderData, ProviderId, ProviderStatus};
-use crate::rows::{self, SUB_ROWS};
+use crate::rows;
 use crate::ui::picker::{
     CursorState, ModelChoice, PickerAction, PickerInput, PickerMode, ReadKind, RowChoice,
     SignInChoice, SignInSource, SourceId,
@@ -15,13 +15,20 @@ use std::collections::BTreeMap;
 /// Every row id there is, in display order: each provider of the config in
 /// its order, its own row first, then its extra rows.
 pub fn catalogue(config: &Config) -> Vec<&'static str> {
+    catalogue_with(config, &[])
+}
+
+/// `catalogue`, with the rows `display` adds: the week of a model Claude
+/// reports that the catalogue does not name (`rows::offered_rows`).
+fn catalogue_with(config: &Config, display: &[ProviderData]) -> Vec<&'static str> {
     let mut out = Vec::new();
     for pc in &config.providers {
         let Some(pid) = ProviderId::from_config_id(&pc.id) else {
             continue;
         };
         out.push(pid.config_id());
-        out.extend(rows::sub_rows(&pid).map(|s| s.id));
+        let data = display.iter().find(|d| d.id == pid);
+        out.extend(rows::offered_rows(&pid, data).into_iter().map(|s| s.id));
     }
     out
 }
@@ -43,7 +50,12 @@ fn active(config: &Config, provider: &str) -> bool {
 /// a fresh install that is nothing; with the default rows it is every
 /// running provider's own row.
 pub fn resolved_rows(config: &Config, surface: Surface) -> Vec<String> {
-    catalogue(config)
+    resolved_rows_with(config, surface, &[])
+}
+
+/// `resolved_rows`, with the rows `display` adds (`catalogue_with`).
+fn resolved_rows_with(config: &Config, surface: Surface, display: &[ProviderData]) -> Vec<String> {
+    catalogue_with(config, display)
         .into_iter()
         .filter(|id| active(config, provider_of(id)) && rows::row_chosen(config, surface, id))
         .map(String::from)
@@ -75,17 +87,15 @@ fn set_row(config: &mut Config, surface: Surface, row: &str, on: bool) {
     *rows_slot(config, surface) = Some(list);
 }
 
-/// Whether any row of a provider is chosen on either surface.
+/// Whether any row of a provider is chosen on either surface, a model's
+/// week Claude reported among them (`rows::provider_row_chosen`).
 fn has_any_row(config: &Config, provider: &str) -> bool {
     let Some(pid) = ProviderId::from_config_id(provider) else {
         return false;
     };
-    let ids: Vec<&str> = std::iter::once(pid.config_id())
-        .chain(rows::sub_rows(&pid).map(|s| s.id))
-        .collect();
     [Surface::Widget, Surface::Tooltip]
         .iter()
-        .any(|&surface| ids.iter().any(|id| rows::row_chosen(config, surface, id)))
+        .any(|&surface| rows::provider_row_chosen(config, surface, pid.config_id()))
         || rows::on_taskbar(config, pid.config_id())
 }
 
@@ -429,7 +439,7 @@ pub(crate) fn picker_input_with(
             has_data: ok,
             provider_ok: ok,
         });
-        for sub in SUB_ROWS.iter().filter(|s| s.provider == pid) {
+        for sub in rows::offered_rows(&pid, data) {
             let has = data.is_some_and(|d| {
                 d.metrics
                     .iter()
@@ -469,8 +479,8 @@ pub(crate) fn picker_input_with(
     PickerInput {
         mode,
         rows: rows_out,
-        widget_rows: resolved_rows(config, Surface::Widget),
-        tooltip_rows: resolved_rows(config, Surface::Tooltip),
+        widget_rows: resolved_rows_with(config, Surface::Widget, display),
+        tooltip_rows: resolved_rows_with(config, Surface::Tooltip, display),
         taskbar_rows: rows::taskbar_ticked(config)
             .into_iter()
             .map(String::from)
@@ -899,6 +909,72 @@ mod tests {
                 "cursor.bot"
             ]
         );
+    }
+
+    /// The week of a model the catalogue does not name (one Claude adds
+    /// later) is offered as a row of its own and ticks like any other; alone
+    /// it keeps Claude's sign-in when Claude's own row is unticked.
+    #[test]
+    fn a_model_claude_adds_is_offered_and_ticks_like_any_row() {
+        use crate::providers::{Metric, MetricUnit, MetricWindow};
+        let metric = |label: &str, extra_only: bool| Metric {
+            label: label.to_string(),
+            used: 10,
+            limit: Some(100),
+            unit: MetricUnit::Percent,
+            reset_at: None,
+            window: MetricWindow::Long,
+            unified_pool: false,
+            extra_only,
+        };
+        let mut config = Config::default();
+        config.allow_sign_in("claude");
+        let display = [ProviderData {
+            id: ProviderId::Claude,
+            status: ProviderStatus::Ok,
+            metrics: vec![
+                metric("Session", false),
+                metric("Weekly", false),
+                metric("Fable", true),
+                metric("Haiku", true),
+            ],
+            updated_at: crate::utc::now(),
+            received_at: None,
+        }];
+        let input = |config: &Config| {
+            picker_input_with(
+                config,
+                &display,
+                &Models::new(),
+                PickerMode::Normal,
+                &[],
+                |_| true,
+            )
+        };
+        let claude: Vec<&str> = input(&config)
+            .rows
+            .iter()
+            .map(|r| r.id)
+            .filter(|id| id.starts_with("claude"))
+            .collect();
+        assert_eq!(claude, ["claude", "claude.fable", "claude.haiku"]);
+        let haiku = input(&config)
+            .rows
+            .into_iter()
+            .find(|r| r.id == "claude.haiku")
+            .unwrap();
+        assert_eq!(haiku.name, "Claude · Haiku");
+        assert!(haiku.has_data && haiku.provider_ok);
+        apply(&mut config, &row(Surface::Widget, "claude.haiku", true));
+        assert_eq!(input(&config).widget_rows, ["claude", "claude.haiku"]);
+        // Claude's own row off both surfaces: the Haiku row keeps it running.
+        apply(&mut config, &row(Surface::Widget, "claude", false));
+        apply(&mut config, &row(Surface::Tooltip, "claude", false));
+        assert!(config.sign_in_allowed("claude"));
+        assert_eq!(input(&config).widget_rows, ["claude.haiku"]);
+        // Its last row off: done with Claude.
+        apply(&mut config, &row(Surface::Widget, "claude.haiku", false));
+        assert!(!config.sign_in_allowed("claude"));
     }
 
     /// The tooltip's Percent and Reset time: untouched, both and nothing
@@ -1398,7 +1474,7 @@ reset = false
         let input = input(&config, &models, &["codex"]);
         let ids: Vec<&str> = input.rows.iter().map(|r| r.id).collect();
         assert_eq!(&ids[..3], ["claude", "claude.opus", "claude.sonnet"]);
-        assert_eq!(ids.len(), 6 + SUB_ROWS.len());
+        assert_eq!(ids.len(), 6 + rows::SUB_ROWS.len());
         assert_eq!(input.widget_rows, ["codex"]);
         // Every model Codex is known to offer, the one in use first and
         // marked.
