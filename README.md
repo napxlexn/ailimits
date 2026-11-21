@@ -277,7 +277,7 @@ depend on CLI activity. What each option actually gives you:
 
 | Provider | Manual option | Where to get it | Shows the same as the subscription? |
 |---|---|---|---|
-| **Copilot** | A fine-grained Personal Access Token with the *Copilot Requests* permission (GitHub documents classic `ghp_` tokens as not supported for Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Not verified yet: no live request has checked a fine-grained token against GitHub's usage endpoint. It needs no gh, until the expiry you set. |
+| **Copilot** | A fine-grained Personal Access Token; it needs no permissions at all (leave them empty) | github.com/settings/personal-access-tokens, *Generate new token* | Verified live on 2026-11-21: a token with no permissions reads the same quotas as GitHub CLI's sign-in. It needs no gh, until the expiry you set. |
 | **Claude** | API key | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | No. It shows your API account rate limits, not your Pro or Max subscription usage. |
 | **Codex** | None | No separate stable token exists. A usage token you paste is the same kind of OAuth token as Codex CLI's. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |

@@ -32,7 +32,7 @@ settings-file-light 458x584 c0e9e5fcd42de061
 signin-claude-dark 458x584 af2106dc6dec7f3f
 signin-claude-light 458x584 d5ab1151e8008d6b
 signin-closed-dark 458x584 0d52f315d8fe6612
-signin-copilot-dark 458x584 801c15f9c4199896
+signin-copilot-dark 458x584 5c9d1749222ba629
 signin-cursor-waiting-dark 458x584 4072fbbc5b3d9b0e
 taskbar-chosen-dark 458x584 b49a7a23708ce669
 version-disabled-dark 458x584 d001ae560638531d

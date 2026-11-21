@@ -280,7 +280,7 @@ Manager, а legacy-файл Gemini CLI більше не читає. Google за
 
 | Провайдер | Ручний варіант | Звідки взяти | Показує те саме, що підписка? |
 |---|---|---|---|
-| **Copilot** | Fine-grained Personal Access Token із дозволом *Copilot Requests* (за документацією GitHub класичні токени `ghp_` не підтримуються для Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Ще не звірено: жоден живий запит не перевіряв fine-grained токен на usage-endpoint'і GitHub. Працює без gh, до терміну, який ти задаси. |
+| **Copilot** | Fine-grained Personal Access Token; дозволи йому не потрібні зовсім (лиши порожніми) | github.com/settings/personal-access-tokens, *Generate new token* | Перевірено живим запитом 2026-11-21: токен без жодного дозволу читає ті самі квоти, що й вхід GitHub CLI. Працює без gh, до терміну, який ти задаси. |
 | **Claude** | API ключ | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | Ні. Це ліміти твого API-акаунта, а не підписки Pro чи Max. |
 | **Codex** | Немає | Окремого стабільного токена не існує. Usage-токен, який ти вставляєш, — такий самий OAuth-токен, як у Codex CLI. | |
 | **Antigravity** | Немає | Квота прив'язана до OAuth-токена, який оновлює Antigravity CLI, і окремого ключа з тими самими цифрами не існує. | |

@@ -222,7 +222,7 @@ fn sign_ins() -> Vec<SignInChoice> {
                 src(SourceId::Tool, "GitHub CLI's sign-in", false),
                 src(SourceId::Key, "A fine-grained token you paste", true),
             ],
-            detail: "Kept in Windows Credential Manager; it goes only to api.github.com. It needs the Copilot Requests permission.".into(),
+            detail: "Kept in Windows Credential Manager; it goes only to api.github.com. It needs no permissions at all.".into(),
             paste: Some("Paste token from clipboard"),
             stored: true,
             note: Some("Checked with GitHub: it works. Stored in Credential Manager.".into()),

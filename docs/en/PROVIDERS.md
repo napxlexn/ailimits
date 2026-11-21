@@ -328,9 +328,17 @@ CLI's sign-in is chosen):
 2. **A fine-grained token you paste** (`"api_key"`) — label `copilot_pat`
    (Rows and models: Copilot, Sign-in, *Paste token from clipboard*; CLI:
    `ailimits-auth set copilot`). GitHub documents classic PATs (`ghp_...`)
-   as not supported for Copilot CLI; a fine-grained PAT (`github_pat_...`)
-   needs the *Copilot Requests* permission. Whether `copilot_internal/user`
-   answers a fine-grained PAT is not verified with a live request yet. None
+   as not supported for Copilot CLI. A fine-grained PAT (`github_pat_...`)
+   needs no permissions at all: verified live on 2026-11-21, a token with
+   *Plan* and *Copilot Requests* (read), with *Plan* alone and with none got
+   the same 200 and the same quotas from `copilot_internal/user` as GitHub
+   CLI's sign-in (the endpoint names no permission it accepts). *Copilot
+   Requests* also lets a token send Copilot requests, so it is not asked
+   for. GitHub's public premium-request usage report
+   (`/users/{user}/settings/billing/premium_request/usage`) needs *Plan*
+   (read): 403 without it; it answers `timePeriod`, `user` and a list of
+   the month's `usageItems` (empty on this account) and no quota at all,
+   so it is no replacement for the endpoint above. None
    stored → `NotConfigured` (the row is hidden).
 
 Endpoint (verified 2026-06-10 and 2026-11-21; the same one the Copilot

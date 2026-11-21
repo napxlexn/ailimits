@@ -335,9 +335,16 @@ auth.json чи дозволу його читати; не збережено usa
    `copilot_pat` (Rows and models: Copilot, Sign-in, *Paste token from
    clipboard*; CLI: `ailimits-auth set copilot`). За документацією GitHub
    класичні PAT (`ghp_...`) не підтримуються для Copilot CLI; fine-grained
-   PAT (`github_pat_...`) потребує дозволу *Copilot Requests*. Чи
-   відповідає `copilot_internal/user` на fine-grained PAT, живим запитом ще
-   не звірено. Не збережено → `NotConfigured` (рядок ховається).
+   PAT (`github_pat_...`) не потребує жодних дозволів: перевірено живим
+   запитом 2026-11-21, токен з *Plan* і *Copilot Requests* (читання), лише з
+   *Plan* і зовсім без дозволів отримав від `copilot_internal/user` ту саму
+   відповідь 200 і ті самі квоти, що й вхід GitHub CLI (endpoint не називає
+   дозволу, який приймає). *Copilot Requests* ще й дозволяє токену
+   надсилати запити до Copilot, тож його не просимо. Публічний звіт GitHub
+   про premium requests (`/users/{user}/settings/billing/premium_request/usage`)
+   потребує *Plan* (читання): без нього 403; він відповідає `timePeriod`,
+   `user` і списком `usageItems` за місяць (на цьому акаунті порожнім) і
+   жодної квоти, тож endpoint вище він не замінює. Не збережено → `NotConfigured` (рядок ховається).
 
 Endpoint (звірено 2026-06-10 і 2026-11-21; той самий, що в розширень
 Copilot):

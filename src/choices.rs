@@ -661,7 +661,7 @@ pub fn sign_in_choices(
                 info.secret()
             ),
             (SourceId::Key, Some(l)) if id == "copilot" => format!(
-                "Kept in Windows Credential Manager ({l}); it goes only to {hosts}. A fine-grained token needs the Copilot Requests permission."
+                "Kept in Windows Credential Manager ({l}); it goes only to {hosts}. A fine-grained token needs no permissions at all."
             ),
             (_, Some(l)) => format!(
                 "Kept in Windows Credential Manager ({l}); it goes only to {hosts}."
