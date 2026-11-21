@@ -22,7 +22,8 @@ Notable, user-visible changes. Dates are release dates.
   Usage page shows, read with the Grok CLI's own login
   (`%USERPROFILE%\.grok\auth.json`, or in `GROK_HOME`) and never refreshed:
   the CLI refreshes it whenever it runs. A product's share of the limit
-  (Grok Build) can be a row of its own. Asked for in #1 by KritBlade.
+  (Grok Build) can be a row of its own. Only a session issued by xAI is
+  ever sent to xAI. Asked for in #1 by KritBlade.
 - **Cursor.** The subscription's included usage, labelled with the plan,
   from the dashboard service the editor itself calls. Cursor has a sign-in
   of the app's own: in *Rows and models*, Cursor's *Sign-in*, *Sign in to
@@ -137,8 +138,9 @@ Notable, user-visible changes. Dates are release dates.
   PC; the token lasts about an hour and is renewed only when `agy` runs. The
   question, the hover ("run agy") and the docs now say so, where they said
   "run Antigravity" (the editor keeps a sign-in of its own, which is never
-  read, and opening it does not renew this one). A bucket's own window is read: a weekly pool stays the long
-  window, a five-hour one would be a session window of its own.
+  read, and opening it does not renew this one). A bucket's own window is
+  read: a weekly pool stays the long window, a five-hour one would be a
+  session window of its own.
 - **The tooltip's percentage and reset time, chosen.** Two ticks in the
   Tooltip column of *Rows and models*, Percent and Reset time
   (`[ui.tooltip]`), decide what each row of the taskbar panel's tooltip
@@ -170,8 +172,9 @@ Notable, user-visible changes. Dates are release dates.
   opens the file in Notepad. A line that does not read (a value of the
   wrong kind, a typo, a missing value) is left out and its default used:
   one message names the line, never its text, and the rest of the file
-  applies. An edit that does not read at all (a broken table header, say)
-  is not applied, and the file is never written over while it stays
+  applies. An edit that does not read at all (a stray line without `=`,
+  more than 8 lines that do not read, or bytes that are not text) is not
+  applied, and the file is never written over while it stays
   broken, not even when the app quits.
 - **Fine-tuning in `config.toml`.** Four tables that only the file holds
   tune what the menu does not reach: `[tune.widget]` (text size, the gap
@@ -232,23 +235,23 @@ Notable, user-visible changes. Dates are release dates.
   how it went ("Claude Code · works"), and opens to choose: Claude Code's
   sign-in, a usage token or an API key you paste (Claude); Codex CLI's
   sign-in or a usage token (Codex); GitHub CLI's sign-in or a fine-grained
-  token you paste (Copilot); the CLI's own sign-in (Antigravity, Grok);
-  *Sign in to Cursor...*, with a wait that *Cancel* ends, then *Sign out*
-  (Cursor). Only the source chosen is read or sent; none stands in for
-  another when it fails, so a refused pasted usage token says so ("usage
-  token rejected", now for Claude as for Codex) and the hover on a key or
-  token of your own says to paste a new one in *Rows and models*. A usage
-  token is checked with the provider before it is stored (Claude, Codex); a
-  key is stored, and the row says whether it works. *Remove* is offered
-  only while something is stored. What an action came to is said in the
-  window, and as a toast only while the window is closed. A provider runs
-  while a row of it is ticked, where the menu had an Enabled tick. Once,
-  on the first start after the update, a provider left on the tool's
-  sign-in while a usage token (Claude, Codex) or a Copilot token of yours
-  is stored is set to that token, the lead such a token had before; after
-  that the source you choose stays, whatever is stored. Claude with the API
-  key chosen and none stored hides its row instead of saying "check the
-  key".
+  token you paste, which needs no permissions (Copilot); the CLI's own
+  sign-in (Antigravity, Grok); *Sign in to Cursor...*, with a wait that
+  *Cancel* ends, then *Sign out* (Cursor). Only the source chosen is read or
+  sent; none stands in for another when it fails, so a refused pasted usage
+  token says so ("usage token rejected", for Claude and Codex) and the hover
+  on a key or token of your own says to paste a new one in *Rows and
+  models*. A usage token is checked with the provider before it is stored
+  (Claude, Codex); a key is stored, and the row says whether it works.
+  *Remove* is offered only while something is stored. What an action came to
+  is said in the window, and as a toast only while the window is closed. A
+  provider runs while a row of it is ticked, where the menu had an Enabled
+  tick. Once, on the first start after the update, a provider left on the
+  tool's sign-in while a usage token (Claude, Codex) or a Copilot token of
+  yours is stored is set to that token, the lead such a token had before;
+  after that the source you choose stays, whatever is stored. Claude with
+  the API key chosen and none stored hides its row instead of saying "check
+  the key".
 - **What looks different from 0.7.0, on purpose.** With the default rows,
   everything is drawn as in 0.7.0 except the panel's tooltip (its reset
   times, see "The tooltip's percentage and reset time" under Added) and
@@ -296,7 +299,7 @@ Notable, user-visible changes. Dates are release dates.
   documents it; the model label reads past them.
 - **A threshold alert comes once per limit window.** The toast and the
   `on_threshold` hook fire when usage reaches the threshold, and again only
-  after the window resets, or after usage fell 5 points or more below the
+  after the window resets, or after usage fell more than 5 points below the
   threshold and climbed back, not every 15 minutes while it stays up.
   `cooldown_minutes` is now the shortest time between two alerts of one
   provider. The alerts given are kept in `alerts.json`, so a restart does
@@ -359,12 +362,12 @@ Notable, user-visible changes. Dates are release dates.
 - **A long reason under a vertical bar stays under its own bar.** Hovering
   an Expanded column whose data had aged showed why ("rate-limited,
   retrying") on one line across the next column; it is now held to its
-  column ("rate-limited"), and so is the forecast. The whole text is still
-  in the taskbar panel's tooltip and in the rows layouts.
+  column ("rate-limited"), and so is the forecast. The whole text shows in
+  the Medium and Expanded rows and on the Compact rows' bottom line.
 - **The widget no longer freezes on a busy PC.** The window library could
   make the widget wait, for seconds on a loaded machine, for an update that
   was announced before it was handed over. Fixed with the upstream fix of
-  tao#1394 applied to the version the app uses.
+  tauri-apps/tao#1394 applied to the version the app uses.
 - **A table written twice in config.toml costs that table only.** Pasting a
   `[tune.widget]` under the one already there, or a header left unclosed,
   used to make the whole file unreadable: at the next start the app began
@@ -395,11 +398,15 @@ Notable, user-visible changes. Dates are release dates.
   only then skip the install; now the update check stops before any request.
 - **The updater runs only the `AiLimits-Setup-<version>.exe` asset**, never
   another `.exe` a release might carry.
+- **An update starts the copy it installed.** With AI Limits installed in a
+  folder of your own and an old copy left in the default folder, an update
+  could install one and start the other.
 - **Claude no longer reads "token expired" for a server error or when
   offline.** A 5xx or Anthropic's 529 reads "HTTP 529, retrying", no answer
   "offline, retrying"; "token expired" is left for a Claude Code sign-in
   that was refused, has expired or cannot be read (a refused pasted usage
-  token reads "usage token rejected").
+  token reads "usage token rejected", an answer of an unknown shape
+  "unrecognized usage schema").
 - **Copilot**: `gh` was run every minute when nobody was signed in, and is
   now asked at most every 15 minutes; it is asked for github.com only
   (`gh auth token --hostname github.com`), so a GitHub Enterprise token is
@@ -409,8 +416,8 @@ Notable, user-visible changes. Dates are release dates.
 - **Antigravity**: after a switch to another Google account the next cycle
   finds the new account's project instead of reading "token rejected" until
   a restart; offline no longer reads "open Antigravity once".
-- **Codex follows `CODEX_HOME` for its sign-in** too, not only for the model
-  label. `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only as absolute
+- **Codex follows `CODEX_HOME`**, for its sign-in and its model label.
+  `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only as absolute
   paths; a relative one means that tool's files are not read, never a folder
   relative to the app.
 - **A `config.toml` held by another program (right after an update, say)
@@ -418,15 +425,17 @@ Notable, user-visible changes. Dates are release dates.
   for about 2 seconds; if it still cannot be read, it is kept as it is and
   nothing is saved over it until a restart, and one message says so. A
   line that does not read costs only that line: it is left out, its default
-  used, and a message names it; the file as it was is kept beside it
-  (`config.toml.<date>-<time>.left-out`), since the next save writes it
-  without that line. One that cannot be understood at all (a broken table
-  header, say) is set aside under a name of its own
+  used, and a message names it. At start, the file as it was is kept
+  beside it (`config.toml.<date>-<time>.left-out`), since the next save
+  writes it without that line; after a live edit, mend the line in the file
+  itself. One that cannot be understood at all (a stray line without `=`,
+  say) is set aside under a name of its own
   (`config.toml.<date>-<time>.corrupt`), never replacing an earlier one, and
   a message names it. A config saved by Notepad as UTF-16 now reads.
 - **Hook commands with a quoted path work** (`"C:\Program Files\x\y.exe"
-  --flag`): they run as `cmd.exe /D /S /C "<command>"`. A failed hook is
-  logged by event name and exit code, never the command.
+  --flag`): they run as `cmd.exe /D /S /C "<command>"`. A command with a
+  line break is refused whole, never run in part. A failed hook is logged
+  by event name and exit code, never the command.
 - **Switching an account no longer brings its predecessor's numbers back.**
   A fetch that started before a sign-in or sign-out, a pasted or removed key
   or usage token, or a consent given or taken back is dropped when it lands.
@@ -458,9 +467,9 @@ Notable, user-visible changes. Dates are release dates.
 - **The TLS libraries are updated** for the October 2026 advisories.
 - **Libraries brought up to date** (the menu, tray, drawing, settings-file
   and Windows-binding crates among them; the installer is built with Inno
-  Setup 6.7.4). The import table, the look and the minimum Rust version are
-  unchanged. The `cargo audit` ignore list is trimmed to what still applies
-  (#4, zyl71).
+  Setup 6.7.4). No new DLLs come with them, and the look is unchanged. The
+  `cargo audit` ignore list is trimmed to what still applies. Reported in #4
+  by zyl71.
 
 ### Going back to 0.7.0
 

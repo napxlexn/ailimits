@@ -13,7 +13,7 @@ winget install napxlexn.AILimits
 > README/`.md` there makes validation fail. Keep `winget/` to the three YAML
 > files only.
 
-Three files make up one package version (manifest schema **1.6.0**):
+Three files make up one package version (manifest schema **1.12.0**):
 
 | File | Role |
 |---|---|
@@ -30,10 +30,19 @@ to each GitHub Release by `.github/workflows/release.yml`.
 The manifest must carry the **SHA256 of the exact published installer**, which
 does not exist until CI has built the release. So the order is:
 
-1. Bump the version in `Cargo.toml` and `installer/ailimits.iss`, update docs,
-   and bump `PackageVersion` + the `InstallerUrl` here (and `ReleaseDate`).
-2. Tag and push `vX.Y.Z` — CI builds `AiLimits-Setup-X.Y.Z.exe` and creates the
-   GitHub Release.
+1. Bump the version in `Cargo.toml`, `Cargo.lock` (every `--locked` build
+   fails otherwise) and `installer/ailimits.iss`, update docs,
+   and bump every field here that changes with each release:
+   - `PackageVersion`, in all three files;
+   - in `napxlexn.AILimits.installer.yaml`: `InstallerUrl`, `InstallerSha256`
+     (the all-zero placeholder until step 3, and the comment above it) and
+     `ReleaseDate`;
+   - in `napxlexn.AILimits.locale.en-US.yaml`: `LicenseUrl` and
+     `ReleaseNotesUrl`, which both name the tag.
+2. Tag and push `vX.Y.Z` — CI builds and signs `AiLimits-Setup-X.Y.Z.exe` and
+   creates a **draft** GitHub Release. Check its files (VirusTotal, a quick
+   install), then publish it by hand: `gh release edit vX.Y.Z --draft=false`.
+   Until then neither the download URL nor the asset's digest is public.
 3. Compute the installer's hash and paste it into `InstallerSha256` here:
 
    ```powershell

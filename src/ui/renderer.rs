@@ -911,7 +911,7 @@ impl Renderer {
             // pointer is on the column, it may take the column's whole width,
             // and no more: a long one ("rate-limited, retrying") never runs
             // over the next column (`fit_line`); the whole of it is in the
-            // panel's tooltip and the rows layouts.
+            // Medium and Expanded rows and in Compact's hint line.
             if let Some(text) = hovered_reason {
                 let text = self.fit_line(text, reset_size, col.w);
                 self.draw_text(

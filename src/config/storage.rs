@@ -300,8 +300,10 @@ const MAX_LEFT_OUT: usize = 8;
 /// out. Text in UTF-8 (with or without a BOM) or UTF-16 with a BOM, as
 /// Notepad saves it. A `key = value` line whose value does not read (a
 /// wrong type, a typo, a missing value) is left out and its default used,
-/// so a mistake costs that line, not the whole file; a broken table header
-/// or more than `MAX_LEFT_OUT` such lines still make it not understood.
+/// so a mistake costs that line, not the whole file. A table header that
+/// does not read costs its table (`without_line`). A mistake on any other
+/// line (one without `=`), one without a position, or more than
+/// `MAX_LEFT_OUT` left-out lines still make it not understood.
 fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize>), String> {
     let content = decode(bytes)?;
     let mut text = content.clone();
@@ -1206,8 +1208,8 @@ mod tests {
     }
 
     /// A value of the wrong type, a typo or a missing value costs its line:
-    /// the rest of the file is used, the line is named. A broken header
-    /// still makes the file not understood.
+    /// the rest of the file is used, the line is named. (A broken header
+    /// costs its table: the tests around this one.)
     #[test]
     fn a_mistyped_value_costs_only_its_line() {
         let text = "[reads]\nsign_in = [\"claude\"]\n\n[ui]\nbrightness = 50.5\npalette = \"ocean\"\n\n[tune.panel]\ntray_gap = \"wide\"\n\n[tune]\nformat = \"compact\"\n\n[window]\nopacity =\n";

@@ -148,9 +148,9 @@ fn is_made(sub: &SubRow) -> bool {
 
 /// The row of Claude's week of the model `label` names (its `display_name`,
 /// `providers::claude::model_weeks`), made once per model: id
-/// "claude.<name in lowercase, words joined by '-'>", names as the
-/// catalogue's ("Claude · Haiku", "Cl · Haiku", "Haiku"). None for a name
-/// with no letter or digit, or past `MADE_MAX`.
+/// "claude.<name in lowercase, each run of other characters as '-'>",
+/// names as the catalogue's ("Claude · Haiku", "Cl · Haiku", "Haiku").
+/// None for a name with no letter or digit, or past `MADE_MAX`.
 fn model_row(label: &str) -> Option<&'static SubRow> {
     let name = label.trim();
     let mut slug = String::new();

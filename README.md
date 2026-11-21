@@ -29,12 +29,12 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 <p align="center">
   <img src="docs/images/widget-detail.gif" width="380" alt="The floating widget switching live between the Compact, Medium and Expanded detail levels, with horizontal progress bars">
-  <br><sub>Three detail levels: Compact, Medium, Expanded. Switching is live; the optional burn-rate forecast (~time to limit) appears on the meta line. Horizontal bars here.</sub>
+  <br><sub>Three detail levels: Compact, Medium, Expanded. Switching is live; the optional burn-rate forecast (~time to limit) appears on the meta line where no reset time is known. Horizontal bars here.</sub>
 </p>
 
 <p align="center">
   <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the two busiest providers as two rings, or the two you choose. Hovering either gives the full list. Both follow the system light and dark theme.</sub>
+  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the two busiest providers as two rings, or the two you choose. Hovering the panel gives the full list; the tray icon's tooltip gives percentages only, and once you tick providers in the Taskbar column, only theirs. Both follow the system light and dark theme.</sub>
 </p>
 
 <table>
@@ -79,8 +79,9 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   Keys you add yourself, and that session, are stored in Windows Credential
   Manager. The app connects only to the providers' own endpoints (and, for
   an installer copy, GitHub for updates), makes one usage request per
-  provider per cycle, follows the proxy set in Windows, and sends no
-  telemetry.
+  provider per cycle (plus the few helper requests listed in
+  [docs/en/PROVIDERS.md](docs/en/PROVIDERS.md#requests-per-cycle)), follows
+  the proxy set in Windows, and sends no telemetry.
 - **Asks before it reads.** Nothing that belongs to another tool is read
   until you allow it, and each question names the file and where its token
   is sent. See [What is read, and when](docs/en/CONFIG.md#what-is-read-and-when).
@@ -123,7 +124,8 @@ From the terminal:
 winget install napxlexn.AILimits
 
 # one-line install: downloads the latest release, verifies its SHA-256
-# against the published digest, runs the silent per-user install
+# against the published digest (the SHA-256 only, not the .sig), runs the
+# silent per-user install (no admin rights)
 irm https://raw.githubusercontent.com/napxlexn/ailimits/master/install.ps1 | iex
 
 # Scoop, from the project's own bucket
@@ -144,19 +146,72 @@ release by a few days while a new package is certified).
 Or download `AiLimits-Setup-<version>.exe` from
 [Releases](https://github.com/napxlexn/ailimits/releases) and run it.
 No admin rights needed (installs to `%LOCALAPPDATA%\AiLimits`).
-Optional during setup: autostart with Windows, a desktop shortcut.
+Optional during setup: autostart with Windows (ticked by default), a desktop
+shortcut. winget and Chocolatey run this same installer, so their copy
+updates itself like any installer copy, and the package manager may list an
+older version than the one running.
 A portable zip (no installer) is attached to each release as well. A portable
-copy does not self-update: its package manager, or you, updates it.
+copy does not self-update: its package manager, or you, updates it. There is
+no portable mode for settings: every copy, portable included, keeps them in
+`%APPDATA%\AiLimits`.
 
 > The installer is **not code-signed** (Authenticode), so Windows
 > SmartScreen may show "Windows protected your PC". Click **More info → Run
 > anyway**. You can verify the download against the SHA-256 published on
-> each release. From 0.7.1 each release also carries an Ed25519 signature
-> (`.sig`) for the installer and the zip; the app's own updater installs
-> nothing without a valid one.
+> each release (below). From 0.7.1 each release also carries an Ed25519
+> signature (`.sig`) for the installer and the zip, and from 0.7.1 on the
+> app's own updater installs nothing without a valid one. The 0.7.0 updater
+> ignores the `.sig` and checks only the SHA-256 GitHub publishes for the
+> installer: its update to 0.7.1 rests on that digest.
+
+To check a download by hand, compare its SHA-256 with the `sha256:` digest
+shown beside the file on the release page; the two must match:
+
+```powershell
+(Get-FileHash .\AiLimits-Setup-0.7.1.exe -Algorithm SHA256).Hash
+```
+
+To check the signature as well, put the `.sig` beside the file, both under
+their published names (the signature covers the name). Then, in a clone of
+this repository switched to the release tag (`git checkout v0.7.1`), run the
+release signer's `verify`, which needs no key (Rust, as in
+[Build from source](#build-from-source)):
+
+```powershell
+cargo run --locked --release --manifest-path tools/release-signer/Cargo.toml -- verify $HOME\Downloads\AiLimits-Setup-0.7.1.exe
+```
+
+It prints `verified`, or `NOT verified` with the reason.
 
 The installer contains no keys or tokens. On first launch the widget reads
 none of the auth sources listed below until you allow it.
+
+### Uninstall
+
+Uninstalling in Windows Settings, Apps, with
+`winget uninstall napxlexn.AILimits` or with `choco uninstall ailimits` runs
+the installer's uninstaller. It closes AI Limits and removes, offline: its
+install folder, `%APPDATA%\AiLimits` (settings, cache, logs), every
+Credential Manager entry the app made (keys, tokens, the Cursor session),
+the autostart value and the notification registration.
+
+Removing a Scoop or portable copy takes none of that:
+`scoop uninstall ailimits`, or deleting the folder, removes only the app's
+own files. Before you remove it, quit AI Limits and run, in its folder (a
+command with nothing to remove does nothing):
+
+```
+ailimits-auth remove claude
+ailimits-auth remove copilot
+ailimits-auth remove-usage-token claude
+ailimits-auth remove-usage-token codex
+ailimits-auth logout cursor
+```
+
+Then delete `%APPDATA%\AiLimits` and the registry key
+`HKCU\Software\Classes\AppUserModelId\napxlexn.AILimits` (the name and icon
+the app's toasts show). A Microsoft Store copy: how to remove its keys
+first is in [docs/en/CONFIG.md](docs/en/CONFIG.md#secrets).
 
 ## Quick start
 
@@ -170,35 +225,56 @@ none of the auth sources listed below until you allow it.
    *Allow* starts the ticked ones; *Cancel* reads nothing and lets you tick
    what you want, each tool asking once. The window takes no keyboard focus
    (Enter allows nothing by accident) and waits while a fullscreen app is in
-   front. Cursor needs a sign-in of the app's own, once: in the same window,
-   open the *Sign-in* line under Cursor and click *Sign in to Cursor...*.
+   front. The cross closes it; Esc and a click elsewhere close it too once
+   you have clicked into it, as they close *Rows and models*. A welcome
+   closed by a click elsewhere opens again at the next start. Cursor needs
+   a sign-in of the app's own, once: in the same window, open the *Sign-in*
+   line under Cursor and click *Sign in to Cursor...*.
    Updating from 0.7.0 needs nothing: the providers you had keep working,
    and one window lists what is read.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
-   snap to the nearest screen edge. `Lock position` in the right-click menu
-   pins it.
+   pull it flush against the nearest edge of the monitor's work area (the
+   screen without the taskbar) once it is within 64 px of that edge.
+   `Lock position` in the right-click menu pins it.
 3. **Set the look.** Right-click for detail level (Compact, Medium, Expanded),
-   bar layout (vertical or horizontal), palette, opacity, brightness and
-   saturation. The animations above show each one. Resting the pointer on
-   one of these items shows it on the widget, the panel and the tray icon
-   before you click; leaving the menu without a click puts it back.
+   bar layout (vertical or horizontal), palette (monochrome or 8 colors),
+   opacity, brightness and saturation. The animations above show each one.
+   Resting the pointer on one of these items, or on Width, Arrangement or
+   Forecast, shows it on the widget, the panel and the tray icon before you
+   click, and so does moving to it with the keyboard; leaving the menu
+   without a click puts it back.
    *Rows and models...*
    picks the rows the widget and the panel's tooltip show (extra rows such as
    Claude's Opus week included), an optional label with the model in use
    (model, version, effort) and where each provider's sign-in comes from.
-   Its Taskbar column picks the two providers the panel and the tray icon
-   show; Percent and Reset time choose whether the panel and its tooltip
-   show the percentage, the time until the limit resets, or both, and
-   Progress bar (on by default) can leave the panel's bar out to take less
-   of the taskbar.
-4. **Hover a provider row** to swap its reset countdown for its weekly limit.
+   *Model shown* picks where the label's model comes from:
+   *As set in the tool*, or *Last used*, the model of the newest Claude Code
+   or Codex CLI session, read from the end of its file (at most the last
+   1 MB); other tools show the model as set.
+   The Taskbar column picks the two providers the panel and the tray icon
+   show; at least one stays ticked. Percent and Reset time are ticked
+   separately for the panel's tooltip (Tooltip column) and the panel
+   (Taskbar column): the percentage, the time until the limit resets, or
+   both; the last one left on cannot be unticked. Progress bar (on by
+   default) can leave the panel's bar out to take less of the taskbar.
+4. **Hover a provider row** to see its weekly limit, in place of its reset
+   countdown (in Compact, on the bottom line).
    A greyed or `≈` row shows the reason and the fix instead, for example
-   `token expired — run Claude Code`.
-5. **Playing something fullscreen?** Right-click, **Indicator**, then *Taskbar
-   panel* or *Tray icon*. Usage stays on the taskbar while the overlay is hidden or
-   covered. See [Taskbar indicator](#taskbar-indicator).
+   `token expired — run Claude Code`. The reason shows in full on Medium and
+   Expanded rows and in Compact's bottom line (at the 100% and 75% widths),
+   cut to fit under an Expanded column; Compact and Medium columns, and
+   Compact at 50%, show none.
+5. **Widget in the way?** Right-click, **Indicator**, then *Taskbar panel*
+   or *Tray icon*. With the widget hidden or covered by other windows, usage
+   stays on the taskbar; while a fullscreen app has the screen, it hides with
+   the taskbar and comes back when you leave the app. See
+   [Taskbar indicator](#taskbar-indicator).
 6. **Left-click the tray icon or the panel** to raise the widget or hide it.
    Right-click either one for the same menu.
+7. **A message instead of rows?** *Choose what to show* or
+   *Nothing to show yet*: click the widget to open *Rows and models*.
+   *Right-click → set up providers*: providers are ticked, but none of them
+   is signed in; check each provider's *Sign-in* in *Rows and models*.
 
 ## How authorization works
 
@@ -261,9 +337,10 @@ rate-limits the usage endpoint (HTTP 429, `Retry-After: 0`, verified
 2026-07-09), and the per-token budget is shared with Claude Code's own
 polling. While Claude Code is running, a Claude refresh can take 2 to 3
 minutes even on the 1-minute interval. The next cycle asks again at the
-update interval; only when no provider answered at all does the wait grow
-(2, 4, then at most 5 minutes at the 1-minute interval). Other providers
-are unaffected.
+update interval; the wait grows (2, 4, then at most 5 minutes at the
+1-minute interval) only when no provider brought data in a cycle, and a
+rate limit counts as none. Meanwhile, hovering the Claude row reads
+`rate-limited, retrying`. Other providers are unaffected.
 
 An expired Claude, Codex, Antigravity, Grok or Cursor token does not produce wrong numbers.
 The last value stays greyed with its age, a window that has provably reset
@@ -291,8 +368,9 @@ depend on CLI activity. What each option actually gives you:
    *An API key you paste*; Codex: *A usage token you paste*; Copilot: *A
    fine-grained token you paste*) and click *Paste token from clipboard*
    (*Paste key from clipboard* for Claude's API key). Only that kind of
-   secret is taken (`sk-ant-...`; `ghp_...` or `github_pat_...`; a ChatGPT
-   token `eyJ...`): anything else on the clipboard is refused without being
+   secret is taken (`sk-ant-...`; `ghp_...`, `github_pat_...`, `gho_...`,
+   `ghu_...` or a classic 40-character hex token; a ChatGPT token
+   `eyJ...`): anything else on the clipboard is refused without being
    sent, and never shown or logged. A usage token is checked with one
    request first: a refused one is not stored. A key is stored as it is, and
    the row says whether it works. The window says what came of it (a toast,
@@ -337,21 +415,27 @@ Arrangement (In a row / In a column, vertical bars only), `Lock position` and
 `Always on top` (two independent toggles), Indicator (Tray icon / Taskbar
 panel / Off), Forecast (burn-rate "~time to limit", off by default),
 `Automatic updates` (silent background self-update of an installer copy, on
-by default; Store, Scoop and portable copies have no such item), Palette
-(Monochrome + 8 colors), Background opacity, Brightness, Saturation, Update
-interval (1 / 5 / 15 / 30 min), `Rows and models...` (rows, model
+by default; Store, Scoop, portable and self-built copies have no such item),
+Palette (Monochrome + 8 colors), Background opacity, Brightness, Saturation,
+Update interval (1 / 5 / 15 / 30 min), `Rows and models...` (rows, model
 labels, model names, each provider's sign-in), Quit, and the version line,
 which opens the project page.
 
+Forecast shows its ~time on Medium and Expanded rows and on Expanded
+columns, only where no reset time is known, and never for data that has
+stopped updating.
+
 ### Taskbar indicator
 
-Even with the overlay hidden or covered by a fullscreen app, a compact usage
-readout stays visible. Right-click → **Indicator**:
+With the overlay hidden or covered by other windows, a compact usage
+readout stays on the taskbar; while a fullscreen app has the screen, it
+hides with the taskbar and comes back when you leave the app. Right-click →
+**Indicator**:
 
-- **Tray icon.** One 16px icon: two concentric rings, the busiest provider
-  outside and the runner-up inside (or the two ticked in the Taskbar column
-  of *Rows and models*), both filling clockwise from 12 o'clock.
-  Monochrome, drawn in the system taskbar theme.
+- **Tray icon** (the default). One 16px icon: two concentric rings, the
+  busiest provider outside and the runner-up inside (or the two ticked in the
+  Taskbar column of *Rows and models*), both filling clockwise from 12
+  o'clock. Monochrome, drawn in the system taskbar theme.
 - **Taskbar panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
@@ -362,7 +446,8 @@ readout stays visible. Right-click → **Indicator**:
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
   taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with
-  every provider, by default each with its percentage and when it resets.
+  the rows ticked in the Tooltip column (every provider by default), each
+  with its percentage and when it resets.
   If Start, Search or the auto-hide bar covers it, it hands over to the
   tray rings and comes back on its own. If a fullscreen app takes
   the screen, it hides with the taskbar and returns when you alt-tab out. It
@@ -375,7 +460,10 @@ readout stays visible. Right-click → **Indicator**:
 If Windows shows the taskbar on more than one display, **Indicator → Display**
 picks which taskbar the panel attaches to. The submenu only appears when a
 second taskbar exists; if the chosen display is later disconnected, the panel
-falls back to the primary taskbar.
+falls back to the primary taskbar. The menu is built when the app starts, so
+a display connected later shows up there after a restart. *Display 2*,
+*Display 3* and on are the other taskbars counted left to right, not
+Windows' own display numbers.
 
 Left-clicking the tray icon or the panel brings the widget to the front (or
 hides it if it is already there, on top); right-clicking **anywhere on the
@@ -402,8 +490,11 @@ failed says so in a message and in that file. Starting AI Limits again while
 it runs shows and raises the widget.
 
 A threshold toast comes once per limit window, when usage reaches the
-provider's threshold; again only after the window resets, or after usage
-fell well below and climbed back (`[notifications]` in the config).
+provider's `alert_threshold` (80% by default, 85% for Copilot); again only
+after the window resets, or after usage fell more than 5 points below the
+threshold and climbed back. `[notifications]` in the config turns toasts
+off (`enabled = false`) and sets the shortest gap between two toasts of one
+provider (`cooldown_minutes`).
 
 Requests follow the proxy set in Windows (Settings, Network, Proxy, "Use a
 proxy server"); `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` win, a proxy script (PAC) is
@@ -413,10 +504,17 @@ trusted: the rows read "untrusted certificate, retrying".
 
 ## Build from source
 
+Needs Rust 1.90 or newer with the MSVC toolchain: Visual Studio Build Tools
+with the C++ workload and the Windows SDK, whose `rc.exe` embeds the icon,
+the manifest and the version (see `build.rs`). The installer is built with
+Inno Setup 6.7.4 from the `release-min` exes. A copy run from `target\`
+does not update itself and has no *Automatic updates* item.
+
 ```
-# Rust 1.90+, Windows 11
+# Rust 1.90+ (MSVC), Windows 11
 cargo build --profile release-min --locked   # ~4 MB exe in target/release-min/
 cargo test --locked
+ISCC.exe installer\ailimits.iss              # the installer, in target/installer/
 ```
 
 Developer docs: [docs/en/](docs/en/) (English),

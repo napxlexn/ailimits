@@ -34,7 +34,8 @@ default and a note on its range:
 
 To use a key, delete the `# ` before it, change the value and save. A table
 may be in the file only once: put the keys under the table that is there,
-never add a second `[tune.widget]` (the file would then not read). A file
+never add a second `[tune.widget]` (the second one would be left out, with
+every key under it, and a notification would name its lines). A file
 the app has not saved since it was updated may not have the tables yet: add
 the one you need at the end of the file then.
 
@@ -70,10 +71,11 @@ in [CONFIG.md, Live edits](CONFIG.md#live-edits).
 
 ### When the file does not read
 
-A wrong `[tune]` value costs only its key. A line that does not read at
-all costs only that line: a missing quote (`low = "#4caf50`) or a colour
-without quotes (`low = #4caf50`, where the `#` starts a comment and leaves
-no value) is left out, its default used, and one notification names it:
+A wrong `[tune]` value costs only its key. A `key = value` line that does not
+read at all costs only that line: a missing quote (`low = "#4caf50`) or a
+colour without quotes (`low = #4caf50`, where the `#` starts a comment and
+leaves no value) is left out, its default used, and one notification names
+it:
 
 > In config.toml, line 12 does not read and is left out: the default is
 > used there, and everything else is in use. Fix it in the file.
@@ -86,8 +88,11 @@ A table written twice (a recipe pasted under the one already there) or a
 broken table header (`[tune.widget` without its `]`) costs that table: its
 header and its lines are left out, named in the same notification, and the
 rest of the file is used, so its keys never land in another table. Put the
-keys under the table that is there instead. Only a file with more than 8
-such lines, or bytes that are not text, is not applied at all: the app keeps
+keys under the table that is there instead. Only these two kinds of line
+are left out. A mistake on any other line (`text_scale 1.2`, with no `=`),
+a mistake TOML gives no line for, a mistake found after 8 lines were left out (a
+header counts every line of its table), or bytes that are not text make
+the file not read at all. Such an edit is not applied: the app keeps
 running on the settings it had, and one notification says so:
 
 > config.toml was saved, but it does not read: not a usable config at line
@@ -101,6 +106,9 @@ the line and save: a second notification says "config.toml reads again,
 and its settings apply now", and those changes are saved together with your
 edit. If you quit before
 fixing it, your text stays exactly as it is and those changes are lost.
+Such a file found at start is set aside as `config.toml.<stamp>.corrupt`
+instead, and the app starts as on a fresh install; the old settings stay
+in that file.
 
 A file emptied or removed is not applied (it would read as a fresh
 install): the app keeps its settings and writes them back with its next save
@@ -114,7 +122,11 @@ key commented out everything looks as before you started. The app's next
 save of its own writes such a key commented out again, with its default.
 
 Do not empty the file to start over: an emptied file is not applied (see
-above).
+above). Nor replace the file with a snippet: a file with a `[tune.widget]`
+alone, with neither `[reads]` nor any `[[providers]]`, reads as a fresh
+install and is applied, so every provider stops and every other setting
+returns to its default. Paste a snippet into the file, never in place of
+it.
 
 ## [tune.widget]: the floating widget
 
@@ -173,8 +185,8 @@ when the taskbar is full.
 | `bar_thickness` | The usage bar's thickness (half a digit's height). Its ends stay round. | factor | `1.0` | 0.25 to 2.0 |
 | `row_gap` | The space between the two providers' rows (0.4 of a digit's height lying down, 0.6 standing up). `0` puts the rows edge to edge. | factor | `1.0` | 0.0 to 2.0 |
 | `tray_gap` | The space between the panel and the notification area (the tray icons, the clock). It moves the panel and changes the room the panel needs. | screen pixels, whole numbers | `10` | 0 to 200 |
-| `ink_dark` | The colour of the digits and the bar on a dark taskbar, in place of the system's near-white `#ececec`. | `"#rrggbb"` | none | any colour |
-| `ink_light` | The same on a light taskbar, in place of the system's near-black `#242424`. | `"#rrggbb"` | none | any colour |
+| `ink_dark` | The colour of the digits and the bar on a dark taskbar, in place of the system's near-white `#ececec`. | `"#rrggbb"` | none (the file shows `"#ececec"`, which looks the same) | any colour |
+| `ink_light` | The same on a light taskbar, in place of the system's near-black `#242424`. | `"#rrggbb"` | none (the file shows `"#242424"`, which looks the same) | any colour |
 | `tooltip_size` | The size of the panel's tooltip (text, padding and corners together), against the shell's own tooltip (12 px text at 100% display scaling). | factor | `1.0` | 0.85 to 2.0 |
 
 - `tray_gap` is in screen pixels and does not follow the display scaling.
@@ -240,8 +252,10 @@ ring_gap = 3
 | `"long"` | 2d 5h 12min | 1h 12min | 12min | 45s |
 
 Where a long time does not fit (an Expanded column, say), the standard one
-shows. The tooltips of the tray icon and the panel, and the notifications,
-keep the standard style. `mid_at` and `high_at` change colours only; when a
+shows. The panel's tooltip and the notifications keep the standard style.
+The taskbar panel writes its own times, short like the clock beside it
+("3d4h", "2h14", "12m", "<1m"), whatever `countdown` says; the tray icon's
+tooltip shows no times. `mid_at` and `high_at` change colours only; when a
 notification comes is set elsewhere (see [Related settings](#related-settings)).
 
 ```toml
@@ -257,7 +271,8 @@ Each snippet names the table its keys go under. The file already has every
 `[tune]` table, so put the keys under the table of the same name (take the
 `# ` away from a key that is there, or write the key under the header) and
 save. Do not paste a second table of the same name: a table may appear only
-once in the file, and a second one makes it not read.
+once in the file, and a second one is left out with every key under it (a
+notification names its lines).
 
 ### Bigger text on a 4K screen
 
@@ -388,7 +403,7 @@ the file than the menu offers. They are described in the
 | `[ui.panel] percent`, `reset`, `bar` | What each row of the panel shows; also in *Rows and models*, Taskbar column. `[tune.panel]` sizes what they show. |
 | `alert_threshold` in each `[[providers]]` | The usage, in percent, at which that provider's notification comes. `[tune.format] mid_at` and `high_at` never change it. |
 | `[notifications] cooldown_minutes` | The shortest time between two notifications of one provider. |
-| `[general] update_interval_secs` | Seconds between updates: any value from 60 (a smaller one reads as 60), where the menu offers 1, 5, 15 and 30 minutes. It is also how often an edit is noticed when the file was not opened with *Settings file...*. |
+| `[general] update_interval_secs` | Seconds between updates: any value from 60 (a smaller one reads as 60), where the menu offers 1, 5, 15 and 30 minutes. |
 | `[window] opacity`, `[ui] brightness`, `[ui] saturation` | Any value in their range (0.10 to 0.85, 20 to 100, 0 to 100), not only the menu's steps. |
 
 ## Notes

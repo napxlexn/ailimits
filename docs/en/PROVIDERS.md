@@ -45,6 +45,14 @@ Ground rules that apply to every provider:
   `auth_method` (see CONFIG.md): the tool's own sign-in, or a key or usage
   token you pasted. No other source stands in when that one fails, so a
   refusal is shown as one, never hidden behind another account's numbers.
+  The closed Sign-in reads "Not allowed yet" until its sign-in is allowed
+  (`[reads]`), then "<source> · none stored" (a key or token chosen but not
+  stored), "<source> · off" (the provider is off), or "<source> · " and how
+  the last answer went: "works", "no sign-in found", "checking" or the
+  row's error words. `<source>` is the source's short name ("Claude Code",
+  "Your usage token", "Your API key"). Cursor's reads "Not signed in",
+  "Waiting for the browser" or "Signed in · " and the same words (only
+  "Signed in" while Cursor is off).
 
 ## Requests per cycle
 
@@ -62,7 +70,10 @@ requests, exactly:
   (`GetSandUsageStatus`) only while its row `cursor.bot` is chosen on the
   widget or the tooltip; the session refresh (`api2.cursor.sh/oauth/token`)
   only in the last 7 days before the session expires, never after it, at
-  most once a day, refusals and attempts that got no answer included. A
+  most once a day, refusals and attempts that got no answer included. When
+  the usage request is refused (401/403) in those 7 days and the day's
+  refresh is still due, the refresh is made then, and when it brings a new
+  token, `GetCurrentPeriodUsage` is asked once more in the same cycle. A
   rebuilt Cursor (Grok Bot ticked or
   unticked, a new sign-in) starts with no plan and asks for it again.
 - **Antigravity**: `loadCodeAssist` until an answer names the project, which
@@ -79,7 +90,13 @@ requests, exactly:
   usage token the server refused (401/403) is not sent again for 30 minutes
   (a newly pasted one is tried at once); its status meanwhile is "usage
   token rejected". A 429, a 5xx, an unknown body or no answer ends the
-  cycle with no second request.
+  cycle with no second request. Outside the cycle, a usage token you paste
+  (in the window or with `ailimits-auth set-usage-token`) is checked once
+  before it is stored, with a GET to the same usage endpoint: a 200 or a
+  429 accepts it; a 401/403 refuses it, and nothing is stored; anything
+  else (another status, no answer) stores it with a note that it was not
+  checked. `ailimits-auth set-usage-token` asks again after 2 s and 4 s
+  while the answer is neither, at most 3 requests.
 - **Copilot**: with GitHub CLI's sign-in chosen,
   `gh auth token --hostname github.com` at most once every 15 minutes, its
   failures included, plus one run right away when the server
@@ -146,7 +163,8 @@ keeps the one chosen, and only that one is used:
    `claude_usage_token` (Rows and models: Claude, Sign-in, *Paste token from
    clipboard*; CLI: `ailimits-auth set-usage-token claude`). Refused
    (401/403) → `AuthError("usage token rejected")`; it is then not sent again
-   for 30 minutes. Claude Code's sign-in is not read in its place.
+   for 30 minutes. Claude Code's sign-in is not read in its place. Before
+   it is stored, it is checked once (see Requests per cycle).
 3. **An API key you paste** (`"api_key"`) — see API key below.
 
 With source 1 or 2 (`fetch_via_subscription`):
@@ -183,6 +201,9 @@ Response (null windows are skipped):
 ```
 
 → metrics `Session`, `Weekly`, `Opus`, `Sonnet` (percent, limit 100).
+`Opus` and `Sonnet` can also be shown on extra rows of their own
+(`claude.opus`, `claude.sonnet`, off by default), offered when the plan
+has that week.
 
 **A model's own week (verified 2026-11-16, HTTP 200).** The same response
 also carries `limits[]`; Claude Code's `/usage` shows its model entry as
@@ -200,17 +221,22 @@ also carries `limits[]`; Claude Code's `/usage` shows its model entry as
 ```
 
 The `session` and `weekly_all` entries repeat `five_hour` and `seven_day`.
-Each `weekly_scoped` entry with a model name becomes a metric named after
-the model (`Fable`; `percent` is of that model's own allowance), only
-beside the windows above and never twice under one name. It is marked for
-its extra row only (`claude.fable`, off by default): it is never Claude's
-headline, its reset, its alerts or a part of its own row, so the Claude row
-looks exactly as before until that row is chosen. A model the app does not
-name yet (one Claude adds later) gets an extra row of its own the same way,
-made from the reply: `claude.<name in lowercase, words joined by "-">`
-(`claude.haiku`), named "Claude · Haiku", "Cl · Haiku", "Haiku" as space
-allows, off by default. A name longer than 20 characters ends in "…" and
-steps down to its first word; at most 16 such rows are made in one run.
+Each `weekly_scoped` entry with a model name becomes a metric named after the
+model (`Fable`; `percent` is of that model's own allowance), only beside the
+windows above and never twice under one name. It is marked for its extra row
+only (`claude.fable`, off by default): it is never Claude's headline, its
+reset, its alerts or a part of its own row, so the Claude row looks exactly
+as before until that row is chosen. A model the app does not name yet (one
+Claude adds later) gets an extra row of its own the same way, made from the
+reply: `claude.<name in lowercase, each run of other characters as "-">`
+(`claude.haiku`; "Opus 4.1" → `claude.opus-4-1`), named "Claude · Haiku", "Cl
+· Haiku", "Haiku" as space allows, off by default. A name longer than 20
+characters is cut to 20, ending in "…". When the name's first word, cut to 6
+characters, differs from the name shown, it is the shortest form ("Mythos
+Preview" → "Mythos"), and the line under the bar uses it for a name longer
+than 10 characters. A model name over 32 characters, or with control
+characters, makes no metric and no row. At most 16 such rows are made in one
+run.
 
 **Rate limiting (verified 2026-07-09).** The endpoint's per-token bucket is
 shared with Claude Code's own polling: under an active session roughly one
@@ -225,7 +251,10 @@ minutes — a server-side ceiling.
 
 `auth_method = "api_key"`, label `claude_api_key` (Rows and models: Claude,
 Sign-in, *An API key you paste*, *Paste key from clipboard*; CLI:
-`ailimits-auth set claude`). One request per cycle:
+`ailimits-auth set claude`). The key is read only while `credential_label`
+is `claude_api_key` (pasting sets it); any other value reads nothing, and
+the Sign-in then reads "Your API key · no sign-in found". One request per
+cycle:
 
 ```
 GET https://api.anthropic.com/v1/models
@@ -263,7 +292,8 @@ Token sources: Codex's Sign-in in Rows and models offers two;
    `ailimits-auth set-usage-token codex`). Refused (401/403) →
    `AuthError("usage token rejected")`, the row kept (greyed, last data
    kept); it is then not sent again for 30 minutes. Codex CLI's `auth.json`
-   is not read in its place.
+   is not read in its place. Before it is stored, it is checked once (see
+   Requests per cycle).
 
 Endpoint (verified 2026-06-10; the Codex CLI itself polls it):
 
@@ -290,16 +320,18 @@ the answer has `credits`, `model_usage`, `plan_type`,
 
 A window's own length (`limit_window_seconds`) names it: up to a day →
 `Session`, six days or more → `Weekly`, so a plan with no 5-hour limit that
-sends its week as `primary_window` still reads as the week; without the
-length, `primary_window` = the 5-hour session → `Session` and
-`secondary_window` = the week → `Weekly`. The session row comes first. `reset_at` is unix epoch seconds. 401/403 on the CLI
-token → `NetworkError("token expired")` (the hover adds "run Codex CLI";
-not "check the key": no key was given). A body that is not the known JSON →
-`"unrecognized wham/usage schema"`; other statuses and no answer → the
-shared words (see Error states). An unreadable auth.json →
-`NetworkError("auth.json unreadable")`. The source chosen is not there (no
-auth.json or no leave to read it; no usage token stored) → `NotConfigured`
-(the row is hidden).
+sends its week as `primary_window` still reads as the week. A length in
+between, zero or less, not a whole number, or none goes by the key:
+`primary_window` = the 5-hour session → `Session` and `secondary_window` =
+the week → `Weekly`. The session row comes first. `reset_at` is unix epoch
+seconds. 401/403 on the CLI token → `NetworkError("token expired")` (the
+hover adds "run Codex CLI"; not "check the key": no key was given). A body
+that is not the known JSON → `"unrecognized wham/usage schema"`; other
+statuses and no answer → the shared words (see Error states). An unreadable
+auth.json → `NetworkError("auth.json unreadable")`. The source chosen is not
+there (no auth.json or no leave to read it, or an auth.json without
+`tokens.access_token`, as an API-key login leaves it; no usage token stored)
+→ `NotConfigured` (the row is hidden).
 
 ## GitHub Copilot (subscription only)
 
@@ -327,19 +359,21 @@ CLI's sign-in is chosen):
    again for 15 minutes.
 2. **A fine-grained token you paste** (`"api_key"`) — label `copilot_pat`
    (Rows and models: Copilot, Sign-in, *Paste token from clipboard*; CLI:
-   `ailimits-auth set copilot`). GitHub documents classic PATs (`ghp_...`)
-   as not supported for Copilot CLI. A fine-grained PAT (`github_pat_...`)
-   needs no permissions at all: verified live on 2026-11-21, a token with
-   *Plan* and *Copilot Requests* (read), with *Plan* alone and with none got
-   the same 200 and the same quotas from `copilot_internal/user` as GitHub
-   CLI's sign-in (the endpoint names no permission it accepts). *Copilot
-   Requests* also lets a token send Copilot requests, so it is not asked
-   for. GitHub's public premium-request usage report
-   (`/users/{user}/settings/billing/premium_request/usage`) needs *Plan*
-   (read): 403 without it; it answers `timePeriod`, `user` and a list of
-   the month's `usageItems` (empty on this account) and no quota at all,
-   so it is no replacement for the endpoint above. None
-   stored → `NotConfigured` (the row is hidden).
+   `ailimits-auth set copilot`). The token is read only while
+   `credential_label` is `copilot_pat` (pasting sets it); any other value
+   reads nothing (the Sign-in then reads "... · no sign-in found"). GitHub
+   documents classic PATs (`ghp_...`) as not supported for Copilot CLI. A
+   fine-grained PAT (`github_pat_...`) needs no permissions at all: verified
+   live on 2026-11-21, a token with *Plan* and *Copilot Requests* (read),
+   with *Plan* alone and with none got the same 200 and the same quotas from
+   `copilot_internal/user` as GitHub CLI's sign-in (the endpoint names no
+   permission it accepts). *Copilot Requests* also lets a token send Copilot
+   requests, so it is not asked for. GitHub's public premium-request usage
+   report (`/users/{user}/settings/billing/premium_request/usage`) needs
+   *Plan* (read): 403 without it; it answers `timePeriod`, `user` and a list
+   of the month's `usageItems` (empty on this account) and no quota at all,
+   so it is no replacement for the endpoint above. None stored →
+   `NotConfigured` (the row is hidden).
 
 Endpoint (verified 2026-06-10 and 2026-11-21; the same one the Copilot
 extensions use):
@@ -432,13 +466,15 @@ Token source, the only one:
 1. **Antigravity CLI** — Windows Credential Manager target
    `gemini:antigravity` → JSON `token.access_token` (READ-ONLY; skipped when
    `token.expiry` is in the past).
-2. A token exists but it is expired → `NetworkError("token expired")`:
+2. A token exists but it is expired, or its `expiry` is missing or cannot
+   be read → `NetworkError("token expired")`:
    the last data stays, greyed with its age, until `agy` renews the token
    (the hover adds "run agy"); nothing else renews it, and no other source
    stands in. This is deliberate (d6abbde): an
    expired token greys the row rather than hiding it. A credential that
-   cannot be read → `NetworkError("credentials unreadable")`. No token →
-   `NotConfigured` (the row is hidden).
+   cannot be read, or is not UTF-8 JSON →
+   `NetworkError("credentials unreadable")`. No entry, or one without
+   `token.access_token` → `NotConfigured` (the row is hidden).
 
 The entry is read only when `[reads] sign_in` allows it.
 
@@ -464,7 +500,7 @@ is yours."
 
 Quota is a chain of sources (all verified live 2026-08-01):
 
-1. `loadCodeAssist` (empty body) → `cloudaicompanionProject`, kept for the
+1. `loadCodeAssist` (body `{}`) → `cloudaicompanionProject`, kept for the
    session once an answer names it, until a 401/403 (another Google account
    signed in: the next cycle asks again with the new token). After no
    answer, a status other than 200 or a 200 without the field nothing is
@@ -479,6 +515,19 @@ Quota is a chain of sources (all verified live 2026-08-01):
    its first run sets the account up); no answer or any other status here
    (but 401/403) is not a missing project and reads as the shared words (see
    Error states).
+
+   ```
+   POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist
+   Authorization: Bearer <token>
+   User-Agent: antigravity/1.0
+   X-Goog-Api-Client: gl-go antigravity
+   Content-Type: application/json
+
+   {}
+   ```
+
+   The two quota calls below go to its twin host,
+   `daily-cloudcode-pa.googleapis.com`.
 2. **`retrieveUserQuotaSummary`** — the shared pools Antigravity meters today:
 
    ```
@@ -494,7 +543,9 @@ Quota is a chain of sources (all verified live 2026-08-01):
    A spent pool may report `remainingFraction: 0` or omit the field and keep
    only `resetTime` — both mean zero remaining. A single `All Models` group is
    the project-less default view and is refused. These pools are Antigravity's
-   general limits, so they are recorded as long-window metrics.
+   general limits, so they are recorded as long-window metrics. The
+   Claude/GPT pool (see the labels below) also has an extra row of its own,
+   `antigravity.cg` (off by default).
    **Verified live 2026-11-21:** each bucket names its window:
    `{"groups": [{"displayName": "...", "description": "...", "buckets":
    [{"bucketId": "...", "displayName": "...", "description": "...",
@@ -516,7 +567,13 @@ Quota is a chain of sources (all verified live 2026-08-01):
    followed, another 2xx or a 4xx). Once it saved a cycle it goes first for
    an hour (the summary then becomes its fallback), so a cycle stays one
    request. A 429, a 5xx or no answer ends the cycle on the shared words
-   without the other endpoint: they say nothing about the body.
+   without the other endpoint: they say nothing about the body. It yields
+   only model ids that start with `gemini`. Models that share a fraction
+   and a reset are one pool, labelled after its best member (Pro before
+   Flash, the newest first: `2.5 Pro`); pools are ordered Pro, Flash,
+   Flash-Lite, then the others, at most 4, and recorded as session-window
+   metrics. It names no Claude/GPT pool, so `antigravity.cg` has nothing to
+   show meanwhile.
 
 If both `retrieveUserQuotaSummary` and `fetchAvailableModels` return nothing
 usable, the widget reports `"Antigravity quota unavailable"` instead of
@@ -529,7 +586,9 @@ used % = `(1 - remainingFraction) * 100`; the epoch placeholder
 (`1970-01-01…`) in `resetTime` is parsed as "no reset known". 401/403 on any
 of the calls → `"token rejected"` (the hover adds "run agy"), and the
 cached project id is forgotten, so after a switch to another Google account
-the next cycle asks `loadCodeAssist` again. A pool name the app does not know
+the next cycle asks `loadCodeAssist` again. A group whose name contains
+`gemini` (in any case) is labelled `Gemini`; one with `claude` or `gpt`,
+`Claude/GPT`. A pool name the app does not know
 is shown as the server sent it, cleaned: no control characters, at most 32
 characters, `Pool` when nothing is left. Parsers walk the JSON tolerantly so
 a shape change degrades to an honest error. The hosts (`cloudcode-pa` / `daily-` twin) are
@@ -558,7 +617,9 @@ each value a session record:
 `key` is the access token (a JWT that lives about 6 hours). Only xAI's
 sessions count: one whose `oidc_issuer` (or, without it, the issuer in its
 key) is not an https address on `x.ai` or `grok.com` is passed over, so a
-token another issuer gave never goes to xAI. Sessions past `expires_at` are
+token another issuer gave never goes to xAI. A session with neither
+`oidc_issuer` nor `::` in its key names no issuer to judge, and is used
+like an xAI one. Sessions past `expires_at` are
 skipped; of the rest the one valid longest is used, and a session with no
 stated expiry comes last (the server judges it). Then:
 
@@ -600,8 +661,9 @@ Accept: application/json
 SuperGrok Limit" that grok.com's Usage page shows. A period type other than
 weekly is labelled `Daily` / `Monthly`, or `Limit` when unknown. Each
 `productUsage` entry follows as its own long-window metric: that product's
-share of the same limit (`GrokBuild` → `Build`; other names, such as Chat,
-pass through, cleaned: no control characters, at most 32 characters). These
+share of the same limit, its name cleaned (no control characters, at most
+32 characters) and a leading `Grok` dropped from any name with more after
+it (`GrokBuild` → `Build`); other names, such as Chat, pass through. These
 shares are marked for their extra row only: never the Grok row's headline,
 its reset or its alerts. Build has a row of its own (`grok.build`) that can
 be ticked in *Rows and models...*; the other products stay in the data.
@@ -667,15 +729,17 @@ attempt, and whether Cursor ended it. In the widget the sign-in waits in a
 background task; meanwhile Cursor's Sign-in reads "Waiting for the browser"
 and offers *Cancel*. The end is said in the window ("Signed in.", "The
 sign-in timed out after 5 minutes. Try again.", "The sign-in did not work.
-Try again." or "Cancelled."), and as a toast only while the window is
-closed. A sign-in switches Cursor on and shows its row. Signing in again
-replaces the session (another account, or one Cursor ended); *Sign out*
-there or `ailimits-auth logout cursor` forgets it, and the installer's
-uninstaller runs the latter. From the window no restart is needed: the
-provider is rebuilt, and an update that was already under way for the
-previous session is dropped. `ailimits-auth login cursor` for a Cursor the
-widget does not run yet switches it on in the config, and a running widget
-takes that up within a few seconds: no restart either.
+Try again." or "Cancelled."; "The sign-in could not start. Try again." when
+no verifier could be made), and as a toast only while the window is closed. A
+sign-in switches Cursor on and shows its row. Signing in again replaces the
+session (another account, or one Cursor ended); *Sign out* there or
+`ailimits-auth logout cursor` forgets it, and the installer's uninstaller
+runs the latter. *Sign out* says "Signed out.", or "Windows Credential
+Manager did not remove the session." when it could not. From the window no
+restart is needed: the provider is rebuilt, and an update that was already
+under way for the previous session is dropped. `ailimits-auth login cursor`
+for a Cursor the widget does not run yet switches it on in the config, and a
+running widget takes that up within a few seconds: no restart either.
 
 ### Refresh (the own session only)
 
@@ -693,7 +757,8 @@ did not move, and the old token kept working. So the widget refreshes only
 in the last 7 days before `exp`, at most once a day, and stores the new
 `access_token` as both tokens. A session past its `exp` is not renewed: the
 row asks to sign in again, and nothing is sent for it.
-Only `shouldLogout: true` ends the session.
+Of the refresh's answers, only `shouldLogout: true` ends the session;
+three refused usage requests in a row end it too (see States below).
 A refused refresh (401/403, not seen yet) keeps the session: it is noted
 as the day's attempt, and the session is used until the service itself
 refuses it. A refresh that gets no answer at all (offline, a time-out)
@@ -785,10 +850,11 @@ Without a session (verified): HTTP 401
 
 States (every error keeps the last data greyed with its age):
 
-- the own session refused (401/403): within 7 days of `exp`, one refresh
-  (at most one a day) and one more try; while the refusals in a row are
-  fewer than three → `"token rejected, retrying"`; the third ends the
-  session → `"sign in to Cursor again"`. Any other answer breaks the run;
+- the own session refused (401/403): within 7 days of `exp`, one refresh (at
+  most one a day) and, when it brings a new token, one more try; while the
+  refusals in a row are fewer than three → `"token rejected, retrying"`; the
+  third ends the session → `"sign in to Cursor again"`. Any other answer
+  breaks the run;
 - the own session past `exp`, or ended by `shouldLogout`, or a stored
   record this version cannot read → `"sign in to Cursor again"`, with no
   usage request and no refresh sent;
@@ -892,16 +958,21 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   `%USERPROFILE%\.cursor\cli-config.json` (with the account's e-mail beside
   it); it is not read.
 
-  **Nothing is ever written to or created in `%APPDATA%\Cursor`.** The
-  database belongs to the editor, which may hold it open and write to it
-  (it runs in WAL mode). It is read through the SQLite that ships with
-  Windows (`System32\winsqlite3.dll`, loaded on first use) with a 200 ms
-  busy timeout, in one of three ways: while Cursor is closed (no
-  `state.vscdb-wal` beside it) as `file:...?immutable=1`, read-only, with no
-  lock and no `-wal` or `-shm` created; while Cursor runs, read-only, reading
-  Cursor's own `-wal` and `-shm` as they are and creating nothing; a
-  rollback-journal database read-only the plain way. A held lock is a
-  transient error that the next cycle retries.
+  **Nothing is ever written to or created in `%APPDATA%\Cursor`, with one
+  known exception (below).** The database belongs to the editor, which may
+  hold it open and write to it (it runs in WAL mode). It is read through the
+  SQLite that ships with Windows (`System32\winsqlite3.dll`, loaded on first
+  use) with a 200 ms busy timeout, in one of three ways: while Cursor is
+  closed (no `state.vscdb-wal` beside it) as `file:...?immutable=1`,
+  read-only, with no lock and no `-wal` or `-shm` created; while Cursor runs,
+  read-only, reading Cursor's own `-wal` and `-shm` as they are and creating
+  nothing; a rollback-journal database read-only the plain way. A held lock
+  is a transient error that the next cycle retries. Known limit: the
+  `immutable=1` form needs a path on a drive letter that is valid UTF-8. On a
+  UNC path (a redirected `%APPDATA%`) or a path that is not UTF-8, the
+  database is opened read-only the plain way, and while Cursor is closed that
+  can leave `state.vscdb-wal` and `state.vscdb-shm` beside it. The app opens
+  no other SQLite database.
 
 A file with an effort but no model gives the effort alone ("xhigh"), and no
 name to rename.

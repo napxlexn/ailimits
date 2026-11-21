@@ -1,11 +1,16 @@
 # CONFIG.md — the configuration file
 
 Location: `%APPDATA%\AiLimits\config.toml`. Created automatically on the
-first launch; every context-menu change is persisted here, and edits saved
-in it apply while the app runs (see "Live edits" below). Unknown fields
-and providers are ignored (old configs never break parsing). UTF-8 with or
-without a BOM and UTF-16 with a BOM (Notepad's encodings) are read.
-Fine-tuning beyond the menu, the `[tune]` tables, has a guide of its own: [TUNING.md](TUNING.md).
+first launch; every context-menu change is persisted here, and edits saved in
+it apply while the app runs (see "Live edits" below). There is no portable
+mode: a copy from the installer, the portable zip or Scoop uses this same
+folder, and only the installer's uninstaller removes it. Unknown fields and
+providers are ignored (old configs never break parsing). An unknown field is
+also dropped at the app's next save; an unknown provider's table and an
+unknown row id are kept. A second `[[providers]]` table with an id already
+used is skipped. UTF-8 with or without a BOM and UTF-16 with a BOM (Notepad's
+encodings) are read. Fine-tuning beyond the menu, the `[tune]` tables, has a
+guide of its own: [TUNING.md](TUNING.md).
 
 The file explains itself. The app writes a short note before each table
 and each setting: what it does, the values or the range it takes, its
@@ -23,13 +28,19 @@ When the file cannot be used, it is never overwritten with defaults:
   and saves nothing over it until it is restarted. One message says so.
 - **A line does not read** (a `key = value` line whose value is of the
   wrong kind, a typo, a missing value): that line is left out and its
-  default used; the rest of the file applies. One message names the line
+  default used; the rest of the file applies. A table header that does not
+  read (a table written twice, a header without its `]`) is left out with
+  its keys, up to the next header. Only these two kinds of line are left
+  out. One message names the line
   numbers, never the text. The file as it was is kept beside it as
   `config.toml.<UTC yyyymmdd-hhmmss>.left-out`, since the app's next save
-  writes the config without that line.
-- **It cannot be understood** (broken TOML that leaving a line out does not
-  mend, such as a broken table header; more than 8 lines that do not read;
-  text that is not UTF-8 or UTF-16): it is set aside as
+  writes the config without that line. The file is not rewritten before the
+  app has a change of its own to save, so while the line is still in it,
+  every start keeps a new copy, under the time of that start.
+- **It cannot be understood** (a mistake on any other line, such as
+  `text_scale 1.2` with no `=`, or one TOML gives no line for; a mistake
+  found after 8 lines were left out, a header counting every line of its
+  table; text that is not UTF-8 or UTF-16): it is set aside as
   `config.toml.<UTC yyyymmdd-hhmmss>.corrupt`
   (with `-2`, `-3`... when that name is taken; an earlier one is never
   replaced). The app starts as on a new install, and the old settings remain
@@ -45,6 +56,7 @@ uninstaller together with the folder):
 | `provider-cache.json` | the last known metrics with a future reset, so they survive restarts. Written when the values, limits or resets change (to the minute), otherwise at most every 10 minutes to refresh the fetch times, and at exit. After a crash a cached row can read at most 10 minutes older than it is, never younger. |
 | `alerts.json` | which threshold alerts were given, per provider (the windows alerted and the last alert), so a restart does not repeat them. Entries older than a day are dropped. |
 | `update-attempt.json` | the last self-update attempt: the version and the downloaded installer's path, and whether an unfinished attempt was told. Installer copies only. |
+| `icon.png` | the app's icon for its notifications. Every copy not from the Microsoft Store writes it here, and writes it again when its size differs from the icon the app carries. |
 | `crash.log` | one line per crash: UTC time, version, thread, source file:line:column. The panic's text is never written. Rotates at 64 KB into `crash.log.1`. A start that failed writes `could not start: <error>` (which may name a local path, such as config.toml's). |
 | `ailimits.log` | only while `AILIMITS_LOG` or `RUST_LOG` is set; rotates at 5 MB into `ailimits.log.1`. Tokens are never written. |
 | `config.toml.<stamp>.corrupt` | a config that could not be understood, set aside as above. |
@@ -96,7 +108,11 @@ The welcome has no such link.
   `app_sign_in`, `tool_settings`, `last_session`) counts as your choice, as
   a tick in Rows and models does: the files it names are read from the next
   fetch on, without a question. A provider taken out of `[reads]` by hand
-  stops at once.
+  stops at once. A provider allowed by hand also needs `enabled = true` in
+  its `[[providers]]` table: it runs only with both. Deleting the whole
+  `[reads]` table by hand makes the file read as a 0.7.0 config: every
+  provider with `enabled = true` is then allowed at once, without a
+  question.
 - **A line that does not read** is left out, as at start (see the top):
   its default applies, the rest of the edit applies, and one message names
   the line. The file stays as you saved it until the app has a change of
@@ -112,6 +128,10 @@ The welcome has no such link.
 - **A file emptied or removed** is not applied (it would read as a fresh
   install): the app keeps its settings and writes them back with its next
   save, or when it quits. To start over, quit the app first.
+- **A file with text but neither `[reads]` nor any `[[providers]]`** (only
+  comments, or only a pasted `[tune.widget]` snippet) reads as a fresh
+  install and is applied: every provider stops and every setting returns to
+  its default, the snippet's keys included. Keep both tables in the file.
 - **A file kept as it was at start** (one that could not be read, or
   neither understood nor set aside: see the top) is not looked at: that
   session still needs a restart, as its message says.
@@ -134,7 +154,8 @@ update_interval_secs = 60
 # system taskbar theme; "panel_rows" / "panel_grid" (legacy alias) — a transparent
 # overlay left of the tray: a per-pixel-alpha layered window, only digits
 # and bars are painted. Shows the first two providers in the widget's order
-# (percent + bar, clock-sized), monochrome, following the SYSTEM light/dark
+# (clock-sized; by default percent + bar, see [ui.panel]), monochrome,
+# following the SYSTEM light/dark
 # theme; the rest stay in the tooltip. Tracks the taskbar's auto-hide and
 # tray width event-driven, no polling. "bars" — legacy tray icon;
 # "off" — nothing. Supersedes the legacy show_tray_icon flag (ignored).
@@ -283,11 +304,12 @@ reset   = true
 # with its bar (as in 0.7.0), the time alone before the bar ("2h14 ▬▬"), or
 # both with the bar between them ("25% ▬▬ 2h14"; on a side taskbar the time
 # under the percentage). Compact like the clock: 3d4h, 2h14, 12m, <1m; a
-# dash when the row's own reset is not known. Never neither number.
+# dash when the row's own reset is not known.
 # `bar = false` leaves the bar out for a narrower panel ("25%", "2h14",
 # "25%  2h14"); without the key the bar is on. Written only once changed;
 # without it, the percentage with its bar, and a key left out of the table
-# keeps that default. The panel is as long as what it
+# keeps that default. Both numbers false read as that default too, and a
+# `bar = false` beside them is dropped. The panel is as long as what it
 # shows (119 px at 100% for a number and the bar, 161 px with both numbers,
 # 50 px for one number alone); with no room for it on the taskbar the tray
 # icon stands in. While it shows a time it repaints when the time next reads
@@ -303,7 +325,14 @@ bar     = true
 # is a legacy id, renamed to "antigravity" on load). A default provider missing
 # from an older config is appended on load, switched off: the version that
 # wrote the file did not know it, and ticking it asks first.
+# The order of these tables is the order everywhere (the widget, the
+# tooltip, the panel's first two): no menu changes it, an edit of the file
+# does, and the order of the ids in [ui.rows] is ignored (extra rows follow
+# their provider).
 id = "claude"
+# Switched on. A provider runs when it is switched on AND allowed in
+# [reads]. Ticking a row of it switches it on; unticking its last row
+# switches it off and removes it from [reads].
 enabled = true
 # Where the sign-in comes from: chosen under the provider's rows in Rows
 # and models (Sign-in). Only this source is used, never another as a
@@ -314,9 +343,12 @@ enabled = true
 # An older version reads "usage_token" as "subscription".
 auth_method = "subscription"
 # Credential Manager label of the pasted key with "api_key"
-# (claude_api_key, copilot_pat); empty otherwise.
+# (claude_api_key, copilot_pat); empty otherwise. The key is read only while
+# this is exactly the provider's own label: any other value, or an empty
+# one, reads nothing, and the row stays hidden.
 credential_label = ""
-# Notification threshold, %.
+# Notification threshold: the usage, in percent from 0 to 100, at which the
+# alert comes (over 100: never). Default 80, 85 for copilot. No menu item.
 alert_threshold = 80
 
 [[providers]]
@@ -354,13 +386,14 @@ auth_method = "subscription"
 alert_threshold = 80
 
 [notifications]
+# false turns off the toasts only: the on_threshold hook still runs.
 enabled = true
 # The shortest time between two threshold alerts of one provider, minutes.
 # An alert (the toast and the on_threshold hook) comes once per limit
 # window, when the headline usage reaches the threshold; again only after
-# the window resets and the new one reaches it, or after usage fell 5 points
-# or more below the threshold and climbed back. Kept across restarts in
-# alerts.json. A provider switched off alerts nothing.
+# the window resets and the new one reaches it, or after usage fell more
+# than 5 points below the threshold and climbed back. Kept across restarts in
+# alerts.json. A provider switched off alerts nothing. 0 reads as 1.
 cooldown_minutes = 15
 
 [hooks]
@@ -501,10 +534,20 @@ Every read of another tool's file is optional and asked for first:
   and one window lists every file read and every host contacted, once. A
   provider the old version did not have (Grok and Cursor, for 0.7.0) is
   added switched off and asks when you tick it.
+- **A downgrade to 0.7.0 and back.** When 0.7.0 saves the file, it drops
+  `[reads]`, `[ui.rows]`, `[ui.model]`, `[ui.tooltip]`, `[ui.panel]` and
+  `[tune]`, and writes `"usage_token"` as `"subscription"`. The next 0.7.1
+  start takes the file for an upgrade: it allows every provider switched on
+  and shows the update notice again. Its record of the sources settled is
+  gone too, so a stored usage token or Copilot token becomes the source
+  again.
 - **A config that cannot be understood** is set aside (see the top) and the
   app starts as a fresh install: what the lost file allowed is unknown, so
-  nothing is read until chosen again. An empty config, or one with no
-  `[[providers]]`, counts as a fresh install too. One that cannot be read is
+  nothing is read until chosen again. A config with neither `[reads]` nor
+  `[[providers]]` (an empty one, say) counts as a fresh install too, and
+  everything else in it is dropped. One with `[reads]` but no
+  `[[providers]]` is no fresh install: it gets the six default providers,
+  and `[reads]` decides which run. One that cannot be read is
   kept, and the app runs with nothing switched on until restarted.
 - **A fresh install switches every provider off** as well as allowing
   nothing, so even an older version started on the same config afterwards
@@ -535,8 +578,11 @@ Every read of another tool's file is optional and asked for first:
 - **`ailimits-auth status`** is a diagnostic you run yourself. It changes
   nothing: it never creates, renames or writes `config.toml`. It reads
   another tool's sign-in only where the widget may (`[reads] sign_in`), and
-  otherwise prints "found (not read: ...)". Codex's `auth.json` is only
-  checked for existence (the legacy Gemini `oauth_creds.json` is no longer
+  otherwise prints "found (not read: ...)". Where it may read Claude Code's
+  `.credentials.json`, it shows the subscription type with the token's
+  expiry. Codex's `auth.json` and Claude Code's
+  `%USERPROFILE%\.claude\stats-cache.json` are only checked for existence,
+  never opened (the legacy Gemini `oauth_creds.json` is no longer
   looked at); gh is
   asked for github.com only (`gh auth token --hostname github.com`, 10 s
   time-out, its output discarded); of Cursor only the widget's own session
@@ -550,7 +596,9 @@ Every read of another tool's file is optional and asked for first:
   they name the lines ("config.toml line 12 does not read; fix it first").
   `set` and `set-usage-token` then store nothing ("nothing was changed"); `remove`
   removes the key all the same and leaves the config as it is; `login`
-  keeps the session it got and says the config could not be updated. A
+  keeps the session it got and says the config could not be updated. With
+  no `config.toml` yet, `set`, `set-usage-token`, `remove` and `login`
+  create one as a first start would, with their own change in it. A
   running widget picks up what they change by itself, with no restart (see
   Live edits): a changed setting within a few seconds, a new or removed key
   or token at its next update, since the stored keys, tokens and the Cursor

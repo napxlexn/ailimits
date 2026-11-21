@@ -19,8 +19,11 @@ and the licensing in one place.
   and what happened versus what you expected. A debug log helps most: set
   `AILIMITS_LOG=ailimits=debug`, reproduce, and attach
   `%APPDATA%\AiLimits\ailimits.log`. The log never contains tokens. If the
-  widget vanished on its own, attach `%APPDATA%\AiLimits\crash.log` too: it
-  holds only the version, the thread and the place in the code.
+  widget vanished on its own, attach `%APPDATA%\AiLimits\crash.log` too:
+  each crash adds one line with the UTC time, the version, the thread and
+  the place in the code. After a start that failed it also holds a
+  `could not start: <error>` line, which can name a path on your PC, so
+  look the file over before you attach it.
 - **Ideas and new providers.** Open an issue. For a provider, say which plan
   you are on and where the provider itself shows your usage (a web page, a CLI
   command).

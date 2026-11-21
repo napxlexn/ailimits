@@ -122,6 +122,9 @@ app.
    [event loop: UpdateProvider handler]
    ├─ serial no longer the provider's? → dropped (not shown, cached or alerted)
    ├─ threshold alert + on_threshold hook (once per limit window, alerts.json)
+   ├─ on_reset hook (a drop of over 30 points from at or above the threshold)
+   ├─ burn-rate trend and forecast (shown while Forecast is on)
+   ├─ on_startup hook (once a run, on the first Ok answer)
    ├─ provider-cache merge (unexpired metrics survive restarts)
    ├─ stale-data retention (errors never wipe real data)
    └─ active_data() → rows::visible_rows() → layout::Shape;
@@ -147,7 +150,9 @@ refusal count, Antigravity's project; a rebuilt instance starts those over.
 each row on its own (a provider's own row by its own windows, an extra row
 by its own metric), so a reset of an extra-only metric (Claude's Fable week,
 say) never greys the provider's own row. The tray and the panel take
-`visible_data` = the active data aged for display.
+`visible_data` = the active data aged for display, and once the picker's
+Taskbar column was touched (`ui.rows.taskbar` set), only the providers
+ticked there (`rows::taskbar_ticked`, at most two).
 
 The model labels are read on the same cycle:
 
@@ -234,6 +239,14 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   the exe's import table as it is (the least antivirus risk); such networks
   read "untrusted certificate, retrying", and the picker's window title
   names its mode for Narrator.
+- **tao held at 0.37.0, with one fix patched in.** `Cargo.toml` pins
+  `tao = "=0.37.0"`: from 0.37.1 on, `set_visible(true)` on a window built
+  with `with_focused(false)` takes the focus (the picker's `open_quietly`
+  would take the keyboard), and 0.37.3 adds the import
+  `imm32!ImmSetCandidateWindow`. `[patch.crates-io]` builds it from
+  `vendor/tao`: 0.37.0 as published plus the fix of tao#1394 (an event sent
+  through `EventLoopProxy` could freeze the event loop). See
+  `vendor/README.md`.
 - **SQLite through Windows' own `winsqlite3.dll`, not a bundled engine** —
   Cursor keeps the model chosen for its Agent in a SQLite database, and one
   indexed SELECT a minute does not justify compiling SQLite in: `rusqlite`
@@ -329,7 +342,9 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   (UTC time, version, thread, `file:line:col`, dependency paths cut to
   `crate-x.y.z\src\...`) and never the panic's message, which can quote the
   text it was slicing. A start that fails writes `could not start: <error>`
-  there and shows "AI Limits could not start." with the file's path.
+  there and shows "AI Limits could not start." with the file's path. Past
+  64 KB the file becomes `crash.log.1` (replacing the one before) and
+  starts over.
 - **The default look is pinned.** With `[ui.rows]` and `[ui.model]` unset,
   `rows::visible_rows` yields one row per provider carrying its data
   untouched. The panel's tooltip is the one default that changed: with
@@ -348,8 +363,9 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `PickerEvent`s and returns `PickerAction`s plus a `PickerScene` of shapes,
   all unit-tested without a window; `PickerWindow` presents it through
   softbuffer like the widget, repaints only on input and has no timer. It
-  reads the clipboard only on Ctrl+V into a name field being edited (a
-  Sign-in's paste is read by the app, `app/clipboard.rs`). It
+  reads the clipboard only on Ctrl+V or Shift+Insert into a name field
+  being edited (a Sign-in's paste is read by the app, `app/clipboard.rs`).
+  It
   follows the apps' light or dark mode (`AppsUseLightTheme`), high contrast
   (the system colors) and Windows' Text size; its question scrolls with the
   buttons always in view; a row's description shows on hover and on keyboard
@@ -367,19 +383,60 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `Installer` copy goes on.
 - **Check, wait, verify.** About 30 s after start, then daily, the updater
   asks the GitHub Releases API for the latest release (through the Windows
-  proxy, as the providers do). It takes only an `AiLimits-Setup-<v>.exe`
-  asset with its `.sig`. A newer one waits until the user has been away for
-  5 minutes (no input, or the session locked, `platform::user_idle_secs`),
-  checked every minute; then the installer is downloaded and checked twice:
-  against the SHA-256 GitHub publishes for the asset, and against the
-  Ed25519 signature by a key built into the app (`RELEASE_KEYS`, key id
-  `1507bd92b1a4bb7b`). The signature covers the file name and its SHA-256,
-  so a signed installer cannot pass for another version. No signature, or
-  one that does not verify: no install. If the user came back during the
-  download, it waits again. Every answer is read up to a cap (the release
-  1 MiB, the signature 1 KiB, the installer 64 MiB; it is about 4 MB), and
-  a redirect is followed only to https on github.com, api.github.com or a
-  `*.githubusercontent.com` asset host, five at most.
+  proxy, as the providers do). Ticking *Automatic updates* does not check
+  at once: the next check is the daily one or the next start. The updater
+  takes only an `AiLimits-Setup-<v>.exe` asset with its `.sig`. A newer one
+  waits until the user has been away for 5 minutes (no input, or the
+  session locked, `platform::user_idle_secs`), checked every minute
+  (switching *Automatic updates* off meanwhile cancels it; no daily check
+  runs while it waits, so a release published meanwhile comes with the
+  next check after this install); then the
+  installer is downloaded and checked twice: against the SHA-256 GitHub
+  publishes for the asset, and against the Ed25519 signature by a key
+  built into the app (`RELEASE_KEYS`, key id `1507bd92b1a4bb7b`). The
+  signature covers the file name and its SHA-256, so a signed installer
+  cannot pass for another version. No signature, or one that does not
+  verify: no install. If the user came back during the download, it waits
+  again. Every request, the download included, times out after 120 s, and
+  every answer is read up to a cap (the release 1 MiB, the signature 1 KiB,
+  the installer 64 MiB; it is about 4 MB). The API's URL is fixed and the
+  download URLs are the answer's `browser_download_url` as given; a
+  redirect after any of them is followed only to https on the default port
+  at github.com, api.github.com or a `*.githubusercontent.com` asset host,
+  five at most.
+- **The signature file.** A `.sig` is one line,
+  `ailimits-signature-v1 <key id> <signature>`: the key id in 16 hex
+  digits, the first 8 bytes of the SHA-256 of the public key, then the
+  Ed25519 signature in 128. What is signed is exactly the text
+  `signature::signed_message` builds,
+  `"AI Limits release signature v1\nfile <name>\nsha256 <hex>\n"`, where
+  `<name>` is the file's published name, `<hex>` the SHA-256 of its bytes
+  in lower-case hex, and `\n` a line feed. The key built in today
+  (`RELEASE_KEYS`) is
+  `8691886023426a4f882779d754feaf850e977d5e70710013c092e4aca02c0dd9`, id
+  `1507bd92b1a4bb7b`. Anyone can check a download, no key needed:
+  `cargo run --locked --release --manifest-path tools/release-signer/Cargo.toml -- verify <file>`,
+  with its `.sig` beside it and the file under its published name.
+- **A refused update is quiet.** A release without
+  `AiLimits-Setup-<v>.exe`, its SHA-256 digest or its `.sig` is refused
+  before anything is downloaded; a signature that does not read, before
+  the installer is; an installer whose digest or signature does not match,
+  after its download. Each refusal is one debug-level log line
+  (`auto-update check skipped: ...`): nothing tells the user and no
+  `update-attempt.json` is written, so the same check runs again at the
+  next daily check and at every start. After a key rotation, a copy that
+  trusts only the old key and missed the bridging release (signed with the
+  old key, trusting both) is refused every time and has to be updated by
+  hand.
+- **Signatures protect updates from 0.7.1 on.** A 0.6.0-0.7.0 copy updates
+  with its own updater (`git show v0.7.0:src/updater.rs`): it takes the
+  first release asset whose name ends in `.exe`, checks only the SHA-256
+  digest GitHub reports for it, never the `.sig`, and installs at once,
+  without waiting for the user to be away, through
+  `%TEMP%\ailimits-update.cmd`. So the update to 0.7.1 rests on that digest
+  alone, and while such copies exist a release must carry exactly one
+  `.exe`, the installer. `release.yml` attaches exactly one: the other exes
+  travel inside the zip.
 - **The file run is the file checked.** The verified installer is written
   into a folder made new for that download, `%TEMP%\AiLimits-update-<random>`
   (`create_new`), and held from its last check until it runs: opened with
@@ -403,23 +460,35 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   deleted, and the next start shows one message
   (`updater::unfinished_update_note`, marked `told`).
 - **The release pipeline** (`.github/workflows/release.yml`, on a `v*` tag):
-  every action pinned to a commit SHA, checkout without a persisted token,
-  no build cache, Inno Setup 6.7.4 pinned by SHA-256, and three jobs, each
-  on a fresh machine. *build* (no secret, a read-only token) runs fmt,
-  clippy and the tests, checks that the tag, `Cargo.toml` and
-  `installer/ailimits.iss` agree, builds the exes with the build machine's
-  paths rewritten (`--remap-path-prefix`; a check fails the release if one
-  is left), and builds the installer and the portable zip. *sign* (the
-  `release` environment, the only job with the key) fails at once without
-  the secret, builds `tools/release-signer` from a clean checkout before the
-  key is in reach, signs the files *build* handed over (artifact digests
-  checked) and checks each signature against `RELEASE_KEYS`, so a wrong
-  secret fails the release, not users' updates. None of the app's other
-  dependencies ever runs where the key is. *publish* (the only write token)
-  makes sure every file has its signature and creates a **draft** release
-  with the CHANGELOG section of that version as its notes. The maintainer
-  checks the files (VirusTotal, a quick install) and publishes it by hand:
-  `gh release edit vX.Y.Z --draft=false`.
+  every action pinned to a commit SHA, checkout without a persisted token, no
+  build cache, Inno Setup 6.7.4 pinned by SHA-256, and three jobs, each on a
+  fresh machine. *build* (no secret, a read-only token) runs fmt, clippy and
+  the tests, checks that the tag, `Cargo.toml` and `installer/ailimits.iss`
+  agree, builds the exes with the build machine's paths rewritten to `~`
+  (`USERPROFILE`) and `ailimits` (`GITHUB_WORKSPACE`) by
+  `--remap-path-prefix`, added with `--config` so that `.cargo/config.toml`'s
+  `+crt-static` stays (the `RUSTFLAGS` variables would replace it); the next
+  step fails the release if an exe still names `VCRUNTIME140`,
+  `api-ms-win-crt-` or a build path. It then builds the installer and the
+  portable zip. A local build, or one by ci.yml, is not remapped. *sign* (the
+  `release` environment, the only job with the key) fails at once without the
+  secret, builds `tools/release-signer` from a clean checkout before the key
+  is in reach, signs the files *build* handed over (artifact digests checked)
+  and checks each signature against `RELEASE_KEYS`, so a wrong secret fails
+  the release, not users' updates. None of the app's other dependencies ever
+  runs where the key is. *publish* (the only write token) makes sure every
+  file has its signature and creates a **draft** release with the CHANGELOG
+  section of that version as its notes. The maintainer checks the files
+  (VirusTotal, a quick install) and publishes it by hand: `gh release edit
+  vX.Y.Z --draft=false`. A tag without a `## <version>` section in
+  CHANGELOG.md gets GitHub's generated notes instead.
+- **A run by hand** (`workflow_dispatch`) runs *build* alone, without the
+  tag's version check: nothing is signed or published. Its files are the
+  run's `release-files` artifact, kept 7 days, to check before the tag.
+- **The Rust version.** There is no `rust-toolchain` file: CI and the
+  release build with the stable Rust of the day, which decides the exes'
+  import tables. The minimum, 1.90 (`rust-version` in Cargo.toml), is held
+  by `cargo check` in ci.yml.
 - **The signing key.** The private key is kept offline by the maintainer
   and in the secret `AILIMITS_RELEASE_SIGNING_KEY` of the `release`
   environment. Adding it, once, passes the key on stdin so it never appears
@@ -451,7 +520,7 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   data greys before its reset (ac17bd2); the panel inks a stale or
   estimated row dimmer (a755fe3); data is stale once the update interval
   plus a minute has passed (9eada81); a provably passed reset reads as
-  about 0 at once (387fc59); the hover over a stale row whose error retries
+  about 0 at once (387fc59); the hover over a stale row whose error passes
   by itself shows just that, where 0.7.0 added the provider's action
   ("offline, retrying — check gh auth"), advice that did not help (3d6093c).
   Rendered against the 0.7.0 tag with the same fixtures cut down to what

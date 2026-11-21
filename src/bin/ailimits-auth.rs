@@ -36,7 +36,9 @@ const KEYRING_SERVICE: &str = "ailimits";
 /// Providers that accept a stored key (Codex uses a usage token instead).
 const PROVIDERS: &[(&str, &str)] = &[("claude", "claude_api_key"), ("copilot", "copilot_pat")];
 
-/// Manual usage tokens: tried by the widget BEFORE the CLI-owned token files.
+/// Manual usage tokens: used by the widget only while the provider's source
+/// is the usage token (`auth_method = "usage_token"`), never with a fallback
+/// to the CLI-owned token files or from them.
 const USAGE_TOKEN_PROVIDERS: &[(&str, &str)] = &[
     ("claude", "claude_usage_token"),
     ("codex", "codex_usage_token"),

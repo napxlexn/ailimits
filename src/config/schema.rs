@@ -237,8 +237,8 @@ fn default_providers() -> Vec<ProviderConfig> {
         base("antigravity", true, AuthMethod::Subscription, "", 80),
         // Grok — SuperGrok subscription via the Grok CLI's auth.json.
         base("grok", true, AuthMethod::Subscription, "", 80),
-        // Cursor — the widget's own session only (menu: Sign in to
-        // Cursor..., or ailimits-auth login cursor). Hidden until it exists.
+        // Cursor — the widget's own session only (its Sign-in in Rows and
+        // models, or ailimits-auth login cursor). Hidden until it exists.
         base("cursor", true, AuthMethod::Subscription, "", 80),
     ]
 }
@@ -694,8 +694,9 @@ pub enum DetailLevel {
 
 /// The taskbar usage indicator: a tray ring icon, a 16px tray icon with
 /// stacked bars (legacy, config-only), a transparent overlay painted over
-/// the taskbar next to the tray (monochrome, system-theme-following; the
-/// two busiest providers as clock-sized "percent + bar" rows), or none.
+/// the taskbar next to the tray (monochrome, system-theme-following; two
+/// providers as clock-sized rows: the first two in the widget's order, or
+/// the two ticked in the Taskbar column), or none.
 /// `PanelGrid` is a legacy alias of `PanelRows` — the overlay renders both
 /// identically; old configs keep parsing.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
