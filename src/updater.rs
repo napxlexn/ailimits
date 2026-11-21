@@ -39,13 +39,20 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use ring::digest::{digest, SHA256};
-use ring::signature::{UnparsedPublicKey, ED25519};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+// The release keys and the signature format live in a file of their own,
+// shared with the release signer (tools/release-signer).
+mod signature;
+pub use signature::{
+    encode_signature, hex_decode, hex_lower, key_id, signed_message, RELEASE_KEYS, SIGNATURE_SUFFIX,
+};
+use signature::{verify_with_keys, ReleaseSignature};
 
 /// GitHub repository that publishes releases.
 const REPO: &str = "napxlexn/ailimits";
@@ -62,29 +69,6 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 const IDLE_BEFORE_INSTALL_SECS: u64 = 300;
 /// While an update waits for that, how often to look again.
 const IDLE_RECHECK: Duration = Duration::from_secs(60);
-
-/// The release signing keys this build trusts: Ed25519 public keys. A
-/// signature names its key by `key_id`, so a later key can be added here
-/// (and the old one dropped a release after) without breaking an update.
-/// The private key is never in the repository: the owner keeps it, and the
-/// release workflow signs with it from the `AILIMITS_RELEASE_SIGNING_KEY`
-/// secret (tools/release_sign.rs).
-pub const RELEASE_KEYS: &[[u8; 32]] = &[
-    // Key id 1507bd92b1a4bb7b, made 2026-11-16.
-    [
-        0x86, 0x91, 0x88, 0x60, 0x23, 0x42, 0x6a, 0x4f, 0x88, 0x27, 0x79, 0xd7, 0x54, 0xfe, 0xaf,
-        0x85, 0x0e, 0x97, 0x7d, 0x5e, 0x70, 0x71, 0x00, 0x13, 0xc0, 0x92, 0xe4, 0xac, 0xa0, 0x2c,
-        0x0d, 0xd9,
-    ],
-];
-
-/// What a signature asset's name adds to the signed file's:
-/// `AiLimits-Setup-0.7.1.exe.sig`.
-pub const SIGNATURE_SUFFIX: &str = ".sig";
-
-/// The first word of a signature file: its format, so a later one can be told
-/// apart.
-const SIGNATURE_FORMAT: &str = "ailimits-signature-v1";
 
 /// A signature file is one short line; anything longer is not one.
 const SIGNATURE_MAX_BYTES: usize = 1024;
@@ -505,7 +489,7 @@ async fn download_and_verify(client: &reqwest::Client, update: &Update) -> Resul
     let signature = String::from_utf8(signature)
         .map_err(|_| anyhow!("the installer's signature file is not text — refusing"))?;
     // Read before the 4 MB download: a malformed signature fails here.
-    ReleaseSignature::parse(&signature)?;
+    ReleaseSignature::parse(&signature).map_err(anyhow::Error::msg)?;
 
     let bytes = download(
         client,
@@ -623,81 +607,10 @@ fn open_unchanged(path: &Path, sha256: &str) -> Result<std::fs::File> {
 
 // ─── Release signatures ──────────────────────────────────────────
 
-/// What a release signature signs: the published file's name and the SHA-256
-/// of its bytes. The name carries the version, so a signed installer cannot
-/// be passed off as another version.
-pub fn signed_message(file_name: &str, sha256: &[u8]) -> Vec<u8> {
-    format!(
-        "AI Limits release signature v1\nfile {file_name}\nsha256 {}\n",
-        hex_lower(sha256)
-    )
-    .into_bytes()
-}
-
-/// A key's id: the first 8 bytes of the SHA-256 of the public key.
-pub fn key_id(public_key: &[u8; 32]) -> [u8; 8] {
-    let mut id = [0u8; 8];
-    id.copy_from_slice(&digest(&SHA256, public_key).as_ref()[..8]);
-    id
-}
-
-/// The text of a signature file: format, key id and signature, one line.
-pub fn encode_signature(key: &[u8; 8], signature: &[u8; 64]) -> String {
-    format!(
-        "{SIGNATURE_FORMAT} {} {}\n",
-        hex_lower(key),
-        hex_lower(signature)
-    )
-}
-
-/// A signature file, read.
-struct ReleaseSignature {
-    key: [u8; 8],
-    signature: [u8; 64],
-}
-
-impl ReleaseSignature {
-    fn parse(text: &str) -> Result<Self> {
-        let mut parts = text.split_whitespace();
-        let (Some(format), Some(key), Some(signature), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            bail!("not a release signature");
-        };
-        if format != SIGNATURE_FORMAT {
-            bail!("unknown release signature format {format:?}");
-        }
-        let key = hex_decode(key)
-            .and_then(|k| <[u8; 8]>::try_from(k).ok())
-            .context("release signature has no readable key id")?;
-        let signature = hex_decode(signature)
-            .and_then(|s| <[u8; 64]>::try_from(s).ok())
-            .context("release signature is not readable")?;
-        Ok(Self { key, signature })
-    }
-}
-
 /// Check `bytes`, published as `file_name`, against the text of its
 /// signature file, with the release keys built into this exe.
 pub fn verify_release(file_name: &str, bytes: &[u8], signature: &str) -> Result<()> {
-    verify_with_keys(RELEASE_KEYS, file_name, bytes, signature)
-}
-
-fn verify_with_keys(
-    keys: &[[u8; 32]],
-    file_name: &str,
-    bytes: &[u8],
-    signature: &str,
-) -> Result<()> {
-    let signature = ReleaseSignature::parse(signature)?;
-    let key = keys
-        .iter()
-        .find(|k| key_id(k) == signature.key)
-        .context("signed with a key this build does not trust")?;
-    let message = signed_message(file_name, digest(&SHA256, bytes).as_ref());
-    UnparsedPublicKey::new(&ED25519, key)
-        .verify(&message, &signature.signature)
-        .map_err(|_| anyhow!("the signature does not match {file_name}"))
+    verify_with_keys(RELEASE_KEYS, file_name, bytes, signature).map_err(anyhow::Error::msg)
 }
 
 // ─── Attempts ────────────────────────────────────────────────────
@@ -967,34 +880,6 @@ fn parse_version(tag: &str) -> Option<Version> {
 /// The version string without a leading `v`, for display and the file name.
 fn normalize(tag: &str) -> String {
     tag.trim().trim_start_matches(['v', 'V']).to_string()
-}
-
-/// Lower-case hex of `bytes`.
-pub fn hex_lower(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(s, "{b:02x}");
-    }
-    s
-}
-
-/// Bytes from hex (either case); None on an odd length or a non-hex digit.
-pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
-    let (pairs, odd) = text.as_bytes().as_chunks::<2>();
-    if !odd.is_empty() {
-        return None;
-    }
-    let nibble = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    };
-    pairs
-        .iter()
-        .map(|&[high, low]| Some((nibble(high)? << 4) | nibble(low)?))
-        .collect()
 }
 
 #[cfg(test)]

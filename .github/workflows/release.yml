@@ -5,20 +5,34 @@
 # owner checks the files (VirusTotal, a quick install) and publishes it by
 # hand: `gh release edit <tag> --draft=false`.
 #
+# Three jobs, each on a fresh machine, each with only what it needs:
+# - build: the checks, the exes, the installer and the zip. It runs every
+#   dependency's build script, so it gets no secret and only a read token.
+# - sign: the signing key, and nothing built by the build job's dependency
+#   tree: from a clean checkout it builds the release signer
+#   (tools/release-signer, ring as its one dependency), signs the files the
+#   build job uploaded and checks each signature against the keys built into
+#   the app. It fails without the key, so nothing is ever published unsigned.
+# - publish: the draft release, with the only write token.
+#
 # Hardening: every action is pinned to a full commit SHA (the tag it was
-# taken from is in the comment); no build cache is restored into a job that
-# can write releases; checkout keeps no token in .git/config, so only the
-# release step ever sees GITHUB_TOKEN; Inno Setup is a pinned version checked
-# against its SHA-256; the signing key only reaches the signing step, and the
-# job fails without it — nothing is ever published unsigned.
+# taken from is in the comment); no build cache is restored; checkout keeps
+# no token in .git/config; Inno Setup is a pinned version checked against its
+# SHA-256; the files pass between the jobs as artifacts whose digests the
+# download checks.
 name: release
 
 on:
   push:
     tags: ["v*"]
+  # By hand (Actions, "Run workflow"): the build job alone, nothing signed
+  # or published, so the very files a release would carry can be checked
+  # (VirusTotal, a quick install) before a tag. They are the run's
+  # `release-files` artifact.
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   # Inno Setup, pinned: the official installer from the jrsoftware/issrc
@@ -29,11 +43,10 @@ env:
   INNO_SHA256: A549929319F9120716677C685535CA4671E4B937B5FDC87E2585F32D8EB30E8C
 
 jobs:
-  build-installer:
+  build:
     runs-on: windows-latest
-    # The signing key is a secret of this environment (or of the repository);
-    # see the notes in tools/release_sign.rs.
-    environment: release
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,18 +57,6 @@ jobs:
         with:
           toolchain: stable
           components: clippy, rustfmt
-
-      # Before any build work: a tag without the signing key would end in an
-      # unsigned release, so it ends here instead.
-      - name: Require the signing key
-        shell: pwsh
-        env:
-          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
-        run: |
-          if (-not $env:AILIMITS_RELEASE_SIGNING_KEY) {
-            Write-Error "The AILIMITS_RELEASE_SIGNING_KEY secret is missing: no release is built unsigned."
-            exit 1
-          }
 
       # A tag must never ship a build that fails the project's own gate.
       - name: Formatting
@@ -72,6 +73,7 @@ jobs:
       # attach it to the <new> release (then the winget URL 404s, the About
       # version is wrong, and the signature names the wrong file).
       - name: Verify version matches the tag
+        if: github.event_name == 'push'
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}" -replace '^v',''
@@ -83,8 +85,37 @@ jobs:
             exit 1
           }
 
+      # No path of the build machine in the exes: the panic locations of the
+      # dependencies would otherwise carry C:\Users\runneradmin\.cargo\... (a
+      # few hundred strings that machine-learning scanners count against a
+      # file). The paths are rewritten to `~` and `ailimits`; the check
+      # after the build fails the release if one is left.
       - name: Build (release-min)
-        run: cargo build --profile release-min --locked
+        shell: pwsh
+        run: |
+          $sep = [char]0x1f
+          $env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~$sep--remap-path-prefix=$env:GITHUB_WORKSPACE=ailimits"
+          cargo build --profile release-min --locked
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: No build-machine paths in the exes
+        shell: pwsh
+        run: |
+          $names = @($env:USERPROFILE, $env:GITHUB_WORKSPACE, 'runneradmin')
+          foreach ($exe in 'target\release-min\ailimits.exe', 'target\release-min\ailimits-auth.exe') {
+            $bytes = [IO.File]::ReadAllBytes($exe)
+            foreach ($text in [Text.Encoding]::Latin1.GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes)) {
+              foreach ($name in $names) {
+                foreach ($form in $name, $name.Replace('\', '/'), $name.Replace('\', '\\')) {
+                  if ($text.IndexOf($form, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    Write-Error "$exe still names $form"
+                    exit 1
+                  }
+                }
+              }
+            }
+          }
+          Write-Host "no build-machine paths"
 
       # A portable zip alongside the installer: what Scoop installs, and the
       # no-install option generally. The exe is statically linked, so the zip
@@ -94,7 +125,12 @@ jobs:
       - name: Portable zip
         shell: pwsh
         run: |
-          $v = "${{ github.ref_name }}" -replace '^v',''
+          # The tag's version; by hand, Cargo.toml's.
+          if ("${{ github.event_name }}" -eq "push") {
+            $v = "${{ github.ref_name }}" -replace '^v',''
+          } else {
+            $v = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          }
           New-Item -ItemType Directory -Force target\installer, target\portable | Out-Null
           Copy-Item target\release-min\ailimits.exe, target\release-min\ailimits-auth.exe, LICENSE, TRADEMARKS.md, README.md target\portable\
           Compress-Archive -Path target\portable\* -DestinationPath "target\installer\AiLimits-Portable-$v.zip" -Force
@@ -124,21 +160,6 @@ jobs:
           & $env:ISCC "installer\ailimits.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      # The updater refuses an installer without a valid signature by the key
-      # built into the app (src/updater.rs, RELEASE_KEYS). The tool checks
-      # each signature against those very keys before writing it, so a wrong
-      # secret fails here, not on users' machines.
-      - name: Sign
-        shell: pwsh
-        env:
-          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
-        run: |
-          $files = (Get-ChildItem target/installer/*.exe, target/installer/*.zip).FullName
-          cargo run --locked --quiet --example release-sign -- sign @files
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo run --locked --quiet --example release-sign -- verify @files
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
       # Surface the installer's SHA256 so the winget manifest hash can be
       # filled/verified against the exact published binary without guesswork.
       - name: Installer SHA256
@@ -150,6 +171,121 @@ jobs:
           Write-Host "SHA256:    $hash"
           "### Installer SHA256`n`n``$hash```n`nfor ``$(Split-Path $exe -Leaf)`` — paste into installer/winget/*.installer.yaml" |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Hand the files to the signing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            target/installer/*.exe
+            target/installer/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  sign:
+    needs: build
+    # A tag only: a run by hand stops after the build.
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    # The signing key is a secret of this environment (or of the repository);
+    # see the notes in tools/release-signer/src/main.rs.
+    environment: release
+    steps:
+      - name: Require the signing key
+        shell: pwsh
+        env:
+          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
+        run: |
+          if (-not $env:AILIMITS_RELEASE_SIGNING_KEY) {
+            Write-Error "The AILIMITS_RELEASE_SIGNING_KEY secret is missing: no release is built unsigned."
+            exit 1
+          }
+
+      # Only for the signer's source: nothing of the app is built here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+
+      # Built before the key is in reach: ring and its own few dependencies,
+      # at the versions of the app's Cargo.lock (tools/release-signer/Cargo.lock).
+      - name: Build the release signer
+        run: cargo build --locked --release --manifest-path tools/release-signer/Cargo.toml
+
+      - name: The files to sign
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
+
+      # The updater refuses an installer without a valid signature by the key
+      # built into the app (src/updater/signature.rs, RELEASE_KEYS). The
+      # signer checks each signature against those very keys before writing
+      # it, so a wrong secret fails here, not on users' machines.
+      - name: Sign
+        shell: pwsh
+        env:
+          AILIMITS_RELEASE_SIGNING_KEY: ${{ secrets.AILIMITS_RELEASE_SIGNING_KEY }}
+        run: |
+          $signer = "tools\release-signer\target\release\release-signer.exe"
+          $files = (Get-ChildItem release-files/*.exe, release-files/*.zip).FullName
+          & $signer sign @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify
+        shell: pwsh
+        run: |
+          $signer = "tools\release-signer\target\release\release-signer.exe"
+          $files = (Get-ChildItem release-files/*.exe, release-files/*.zip).FullName
+          & $signer verify @files
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Hand the signatures to the publishing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signatures
+          path: release-files/*.sig
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: sign
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      # For CHANGELOG.md only.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release
+
+      - name: Their signatures
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signatures
+          path: release
+
+      # Every file has its signature, or nothing is published.
+      - name: Every file is signed
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem release/*.exe, release/*.zip
+          if ($files.Count -lt 2) { Write-Error "expected the installer and the zip"; exit 1 }
+          foreach ($f in $files) {
+            if (-not (Test-Path "$($f.FullName).sig")) { Write-Error "$($f.Name) has no signature"; exit 1 }
+          }
 
       # Release notes come from CHANGELOG.md, not from the commit log: the
       # changelog is written for users ("what changed for me"), --generate-notes
@@ -192,7 +328,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          $assets = (Get-ChildItem target/installer/*.exe, target/installer/*.zip, target/installer/*.sig).FullName
+          $assets = (Get-ChildItem release/*.exe, release/*.zip, release/*.sig).FullName
           if ("${{ steps.notes.outputs.found }}" -eq "true") {
             gh release create "${{ github.ref_name }}" @assets --draft `
               --title "AI Limits ${{ github.ref_name }}" `

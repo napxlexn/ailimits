@@ -98,6 +98,30 @@ jobs:
       - name: Build (release-min)
         run: cargo build --profile release-min --locked
 
+  # The release signer (its own crate, sharing src/updater/signature.rs with
+  # the app): a change that breaks it would otherwise surface on the tag.
+  release-signer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Formatting
+        run: cargo fmt --manifest-path tools/release-signer/Cargo.toml -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --locked --all-targets --manifest-path tools/release-signer/Cargo.toml -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked --manifest-path tools/release-signer/Cargo.toml
+
   # Known advisories in the dependency tree. Non-blocking: an advisory needs a
   # decision, not a red build. The tool is cached by its pinned version.
   audit:
@@ -128,3 +152,6 @@ jobs:
 
       - name: Advisories
         run: cargo audit
+
+      - name: Advisories (release signer)
+        run: cargo audit --file tools/release-signer/Cargo.lock

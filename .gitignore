@@ -15,3 +15,4 @@
 # Chocolatey pack output - built from a release, never committed.
 installer/choco/build
 installer/choco/*.nupkg
+/tools/release-signer/target

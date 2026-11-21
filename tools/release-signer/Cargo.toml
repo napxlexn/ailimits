@@ -1,0 +1,23 @@
+# The release signer: makes the release key, signs a release's files with
+# it, checks a signature. A crate of its own with one dependency, ring, so
+# the release workflow's signing job builds ring and nothing else of the
+# app's dependency tree before it holds the key (.github/workflows/release.yml).
+# The keys and the signature format come from the app's own file,
+# src/updater/signature.rs, included as is: the two can never disagree.
+[package]
+name = "release-signer"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+license = "GPL-3.0-or-later"
+
+# Its own workspace: never a member of the app's.
+[workspace]
+
+[dependencies]
+# The same version as the app's Cargo.lock (0.17.14).
+ring = "=0.17.14"
+
+[profile.release]
+debug = false

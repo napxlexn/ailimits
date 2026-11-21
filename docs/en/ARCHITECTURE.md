@@ -77,6 +77,8 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── updater.rs             daily GitHub Releases poll (installer copies only),
    │                          SHA-256 + Ed25519 signature check, silent install
    │                          (menu: Automatic updates)
+   ├── updater/signature.rs   the release keys and the signature format, shared
+   │                          as is with tools/release-signer
    ├── hooks.rs               the user's commands on usage events (cmd.exe /D /S /C)
    ├── utc.rs                 instants in UTC (jiff, no time zones) and the
    │                          exact text they are read from and written in
@@ -102,9 +104,12 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
 storing and removing keys and usage tokens; Cursor's login and logout). It
 uses the library's providers and config but not the widget's event loop,
 and it never calls `follow_windows_proxy`, so it follows only the
-proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`). `tools/release_sign.rs` (the Cargo example
-`release-sign`) makes and checks release signatures; it is never built into
-the app.
+proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`).
+`tools/release-signer` (a crate of its own, ring its one dependency) makes
+the release key and makes and checks release signatures; it includes the
+app's `updater/signature.rs` (the keys, the signed message, the file
+format) as is, so the two never disagree, and it is never built into the
+app.
 
 ## Data flow
 
@@ -399,13 +404,19 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   (`updater::unfinished_update_note`, marked `told`).
 - **The release pipeline** (`.github/workflows/release.yml`, on a `v*` tag):
   every action pinned to a commit SHA, checkout without a persisted token,
-  no build cache in the job that writes releases, Inno Setup 6.7.4 pinned by
-  SHA-256. It fails before building when the signing secret is missing, runs
-  fmt, clippy and the tests, checks that the tag, `Cargo.toml` and
-  `installer/ailimits.iss` agree, builds the installer and the portable zip,
-  signs both (`cargo run --example release-sign -- sign`, which checks each
-  signature against `RELEASE_KEYS` before writing it, so a wrong secret
-  fails the release, not users' updates), and creates a **draft** release
+  no build cache, Inno Setup 6.7.4 pinned by SHA-256, and three jobs, each
+  on a fresh machine. *build* (no secret, a read-only token) runs fmt,
+  clippy and the tests, checks that the tag, `Cargo.toml` and
+  `installer/ailimits.iss` agree, builds the exes with the build machine's
+  paths rewritten (`--remap-path-prefix`; a check fails the release if one
+  is left), and builds the installer and the portable zip. *sign* (the
+  `release` environment, the only job with the key) fails at once without
+  the secret, builds `tools/release-signer` from a clean checkout before the
+  key is in reach, signs the files *build* handed over (artifact digests
+  checked) and checks each signature against `RELEASE_KEYS`, so a wrong
+  secret fails the release, not users' updates. None of the app's other
+  dependencies ever runs where the key is. *publish* (the only write token)
+  makes sure every file has its signature and creates a **draft** release
   with the CHANGELOG section of that version as its notes. The maintainer
   checks the files (VirusTotal, a quick install) and publishes it by hand:
   `gh release edit vX.Y.Z --draft=false`.
@@ -422,10 +433,11 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
 
   Back it up offline (an encrypted drive or a password manager): without it
   no release can be signed for 0.7.1 and later, and every user would have to
-  update once by hand. A new key: `release-sign keygen` into a new folder,
-  add its public key to `RELEASE_KEYS` beside the old one, ship a release
-  signed with the OLD key, switch the secret, and drop the old key from
-  `RELEASE_KEYS` a release later. Details in `tools/release_sign.rs`.
+  update once by hand. A new key: `release-signer keygen` into a new
+  folder, add its public key to `RELEASE_KEYS` beside the old one, ship a
+  release signed with the OLD key, switch the secret, and drop the old key
+  from `RELEASE_KEYS` a release later. Details in
+  `tools/release-signer/src/main.rs`.
 
 ## Visual baseline
 

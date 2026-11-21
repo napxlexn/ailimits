@@ -336,6 +336,13 @@ Notable, user-visible changes. Dates are release dates.
 - **The exes and the installer describe themselves in full**: product name
   AI Limits, publisher, copyright and version in their file properties
   (Task Manager now names the process "AI Limits").
+- **The exes carry a standard application manifest**: they run as the user
+  who starts them, never asking for administrator rights, and say they are
+  made for Windows 10 and 11. Nothing a user sees changes.
+- **Release builds no longer contain paths of the machine they were built
+  on**, and the release is signed in a job of its own, on a fresh machine
+  that builds only the signer: none of the app's other dependencies ever
+  runs where the release key is.
 
 ### Removed
 

@@ -26,12 +26,6 @@ path = "src/bin/ailimits-auth.rs"
 name = "ailimits"
 path = "src/lib.rs"
 
-[[example]]
-# The release signing tool (the release workflow, the owner's key setup).
-# An example, so it is never built into the app or shipped.
-name = "release-sign"
-path = "tools/release_sign.rs"
-
 [dependencies]
 # --- Window and UI ---
 # Cross-platform event loop and windows.
