@@ -63,12 +63,42 @@ pub enum LoadProblem {
     /// The file could not be understood, nor set aside: left as it is,
     /// nothing saved over it until the app restarts, as for `Unreadable`.
     Unparsable { error: String },
+    /// The file was used, but these lines (1-based) did not read (a value
+    /// of the wrong type, a typo) and were left out: their defaults apply.
+    /// A mistake costs that line, not the whole file.
+    LeftOut {
+        lines: Vec<usize>,
+        /// A copy of the file as it was, kept beside it before the app saves
+        /// over it (`config.toml.<stamp>.left-out`); None if it could not be
+        /// made.
+        copy: Option<PathBuf>,
+    },
+}
+
+/// What is said when lines of config.toml were left out: where, never what.
+pub fn left_out_message(lines: &[usize]) -> String {
+    let list = lines
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let which = if lines.len() == 1 {
+        format!("line {list} does not read and is left out")
+    } else {
+        format!("lines {list} do not read and are left out")
+    };
+    format!(
+        "In config.toml, {which}: the default is used there, and everything else is in use. Fix it in the file."
+    )
 }
 
 impl LoadProblem {
     /// Whether saving is off for this session (the file is kept as it is).
     pub fn saving_off(&self) -> bool {
-        !matches!(self, LoadProblem::SetAside { .. })
+        !matches!(
+            self,
+            LoadProblem::SetAside { .. } | LoadProblem::LeftOut { .. }
+        )
     }
 
     /// The one message for the user about it.
@@ -83,6 +113,14 @@ impl LoadProblem {
                     .unwrap_or_else(|| backup.display().to_string())
             ),
             LoadProblem::Unparsable { .. } => "AI Limits could not understand its settings file (config.toml), and could not set it aside, so it is running with nothing switched on. The file is kept as it is: changes made now are not saved. Fix or remove it, then restart AI Limits.".to_string(),
+            LoadProblem::LeftOut { lines, copy } => match copy.as_ref().and_then(|c| c.file_name()) {
+                Some(name) => format!(
+                    "{} The file as it was is kept as {}.",
+                    left_out_message(lines),
+                    name.to_string_lossy()
+                ),
+                None => left_out_message(lines),
+            },
         }
     }
 }
@@ -131,14 +169,25 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
             };
         }
     };
-    match parse(&bytes) {
-        Ok((config, origin)) => {
+    match parse_keeping(&bytes) {
+        Ok((config, origin, left_out)) => {
             let mut config = config;
             migrate(&mut config, origin);
+            // Lines left out: the file as it was is kept beside it, since the
+            // next save writes the config without them.
+            let problem = if left_out.is_empty() {
+                None
+            } else {
+                let copy = keep_copy(path, "left-out").await.ok();
+                Some(LoadProblem::LeftOut {
+                    lines: left_out,
+                    copy,
+                })
+            };
             Loaded {
                 on_disk: stamp.map(|s| (s, config.clone())),
                 config,
-                problem: None,
+                problem,
             }
         }
         Err(error) => {
@@ -225,19 +274,77 @@ async fn read_with_retries(path: &Path, retries: &[Duration]) -> FileRead {
     }
 }
 
-/// The config in the file's bytes, and where it came from. Text in UTF-8
-/// (with or without a BOM) or UTF-16 with a BOM, as Notepad saves it.
+/// The config in the file's bytes, and where it came from (`parse_keeping`
+/// without the lines left out).
 fn parse(bytes: &[u8]) -> std::result::Result<(Config, Origin), String> {
+    parse_keeping(bytes).map(|(config, origin, _)| (config, origin))
+}
+
+/// At most this many lines are left out of one file before it counts as
+/// not understood.
+const MAX_LEFT_OUT: usize = 8;
+
+/// The config in the file's bytes, where it came from, and the lines left
+/// out. Text in UTF-8 (with or without a BOM) or UTF-16 with a BOM, as
+/// Notepad saves it. A `key = value` line whose value does not read (a
+/// wrong type, a typo, a missing value) is left out and its default used,
+/// so a mistake costs that line, not the whole file; a broken table header
+/// or more than `MAX_LEFT_OUT` such lines still make it not understood.
+fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize>), String> {
     let content = decode(bytes)?;
-    let config =
-        toml::from_str::<Config>(&content).map_err(|e| toml_error_position(&e, &content))?;
-    Ok(match origin_of(&content) {
-        Some(origin) => (config, origin),
+    let mut text = content.clone();
+    let mut left_out = Vec::new();
+    let config = loop {
+        match toml::from_str::<Config>(&text) {
+            Ok(config) => break config,
+            Err(e) => {
+                let first = toml_error_position(&e, &text);
+                let Some(span) = e.span() else {
+                    return Err(first);
+                };
+                let (line, _) = line_and_column(&text, span.start);
+                match without_line(&text, line) {
+                    Some(next) if left_out.len() < MAX_LEFT_OUT => {
+                        left_out.push(line);
+                        text = next;
+                    }
+                    _ => return Err(first),
+                }
+            }
+        }
+    };
+    left_out.sort_unstable();
+    if !left_out.is_empty() {
+        tracing::warn!("config.toml: left out line(s) {left_out:?}");
+    }
+    // Judged on the text that read: the lines left out are not in it.
+    Ok(match origin_of(&text) {
+        Some(origin) => (config, origin, left_out),
         // Neither [reads] nor [[providers]]: an empty file, or one written by
         // something else before the first start. Every version that read
         // without asking wrote its providers, so this is no upgrade.
-        None => (Config::default(), Origin::FreshInstall),
+        None => (Config::default(), Origin::FreshInstall, left_out),
     })
+}
+
+/// `text` with its `line` (1-based) commented out, when that line is a
+/// `key = value` line; None for a table header, a comment, a blank line or
+/// the inside of a multi-line value. Line numbers stay as they were.
+fn without_line(text: &str, line: usize) -> Option<String> {
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let target = lines.get(line.checked_sub(1)?)?;
+    let t = target.trim_start();
+    if t.is_empty() || t.starts_with('[') || t.starts_with('#') || !t.contains('=') {
+        return None;
+    }
+    let mut out = String::with_capacity(text.len() + 1);
+    for (i, l) in lines.iter().enumerate() {
+        if i + 1 == line {
+            out.push('#');
+        }
+        out.push_str(l);
+    }
+    Some(out)
 }
 
 /// Where in the config a TOML error is, never what: toml's own message
@@ -303,6 +410,33 @@ fn decode(bytes: &[u8]) -> std::result::Result<String, String> {
 /// `config.toml.<date>-<time>.corrupt` (UTC: the local clock would pull in
 /// the time-zone APIs for a file name), with `-2`, `-3`... when that is
 /// taken. Never replaces a file.
+/// A copy of the config beside it, under a name of its own
+/// (`config.toml.<UTC stamp>.<what>`, never replacing an earlier one).
+async fn keep_copy(path: &Path, what: &str) -> std::io::Result<PathBuf> {
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    for n in 1..=100u32 {
+        let mut name = path.as_os_str().to_owned();
+        if n == 1 {
+            name.push(format!(".{stamp}.{what}"));
+        } else {
+            name.push(format!(".{stamp}-{n}.{what}"));
+        }
+        let copy = PathBuf::from(name);
+        if tokio::fs::try_exists(&copy).await.unwrap_or(true) {
+            continue;
+        }
+        // Read and written, not copied: a file copy would add CopyFileExW
+        // to the exe's imports (the least-antivirus-risk rule).
+        let bytes = tokio::fs::read(path).await?;
+        tokio::fs::write(&copy, bytes).await?;
+        return Ok(copy);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "no free name for a copy of the config",
+    ))
+}
+
 async fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let base = path.as_os_str().to_owned();
@@ -771,6 +905,8 @@ pub enum Change {
     Edited {
         config: Box<Config>,
         base: Option<Box<Config>>,
+        /// Lines that did not read and were left out (`parse_keeping`).
+        left_out: Vec<usize>,
     },
     /// Edited elsewhere and not understood: where (line and column, never
     /// the text). Nothing is written over it while it stays so.
@@ -891,8 +1027,8 @@ impl ConfigFile {
             disk.broken = false;
             return Change::Gone;
         }
-        match parse(&bytes) {
-            Ok((mut config, origin)) => {
+        match parse_keeping(&bytes) {
+            Ok((mut config, origin, left_out)) => {
                 migrate(&mut config, origin);
                 let base = disk.config.replace(config.clone());
                 disk.broken = false;
@@ -900,6 +1036,7 @@ impl ConfigFile {
                 Change::Edited {
                     config: Box::new(config),
                     base: base.map(Box::new),
+                    left_out,
                 }
             }
             Err(error) => {
@@ -1009,6 +1146,30 @@ pub async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::config::schema::{ModelPart, PendingNotice};
+
+    /// A value of the wrong type, a typo or a missing value costs its line:
+    /// the rest of the file is used, the line is named. A broken header
+    /// still makes the file not understood.
+    #[test]
+    fn a_mistyped_value_costs_only_its_line() {
+        let text = "[reads]\nsign_in = [\"claude\"]\n\n[ui]\nbrightness = 50.5\npalette = \"ocean\"\n\n[tune.panel]\ntray_gap = \"wide\"\n\n[tune]\nformat = \"compact\"\n\n[window]\nopacity =\n";
+        let (config, _, left_out) = parse_keeping(text.as_bytes()).expect("used");
+        assert_eq!(left_out, [5, 12, 15]);
+        assert_eq!(config.ui.palette, crate::config::schema::Palette::Ocean);
+        assert_eq!(
+            config.ui.brightness,
+            crate::config::schema::UIConfig::default().brightness
+        );
+        assert!(config.sign_in_allowed("claude"));
+        // tray_gap of the wrong type was already read as unset by [tune].
+        assert!(config.tune.panel.is_default());
+        let message = left_out_message(&left_out);
+        assert!(
+            message.contains("lines 5, 12, 15") && !message.contains("50.5"),
+            "{message}"
+        );
+        assert!(parse_keeping(b"[ui\nbrightness = 50\n").is_err());
+    }
 
     /// What loading does with config text, minus the disk (the disk is
     /// tested below, through `load_with`).
@@ -1180,14 +1341,23 @@ mod tests {
         assert!(!first.problem.as_ref().unwrap().saving_off());
         assert_eq!(first.config, Config::fresh_install());
         assert!(!dir.config().exists());
-        std::fs::write(dir.config(), "pos_x = = 2").unwrap();
+        std::fs::write(
+            dir.config(),
+            "[[providers
+pos_x = 2",
+        )
+        .unwrap();
         let second = block(load_with(&dir.config(), &QUICK));
         let Some(LoadProblem::SetAside { backup: two, .. }) = second.problem.clone() else {
             panic!("{:?}", second.problem);
         };
         assert_ne!(one, two);
         assert_eq!(std::fs::read_to_string(&one).unwrap(), "[window\npos_x = 1");
-        assert_eq!(std::fs::read_to_string(&two).unwrap(), "pos_x = = 2");
+        assert_eq!(
+            std::fs::read_to_string(&two).unwrap(),
+            "[[providers
+pos_x = 2"
+        );
         for backup in [&one, &two] {
             let name = backup.file_name().unwrap().to_string_lossy().into_owned();
             assert!(
@@ -1293,7 +1463,7 @@ mod tests {
         )
         .unwrap();
         assert!(file.changed());
-        let Change::Edited { config, base } = file.check() else {
+        let Change::Edited { config, base, .. } = file.check() else {
             panic!("no edit read");
         };
         assert_eq!(config.window.pos_x, 33);
@@ -1366,7 +1536,7 @@ mod tests {
         // Fixed: read, with the last config that read as the base.
         let fixed = current_text().replace("pos_y = 80", "pos_y = 81");
         std::fs::write(dir.config(), &fixed).unwrap();
-        let Change::Edited { config, base } = file.check() else {
+        let Change::Edited { config, base, .. } = file.check() else {
             panic!("the fix was not read");
         };
         assert_eq!(config.window.pos_y, 81);
@@ -1453,9 +1623,10 @@ mod tests {
             // An unclosed string after non-ASCII text.
             ("[hooks]\non_reset = \"Вася sk-ant-SECRET\n", 2),
         ] {
-            let Err(error) = parse(text.as_bytes()) else {
+            let Err(e) = toml::from_str::<Config>(text) else {
                 panic!("{text:?} parsed");
             };
+            let error = toml_error_position(&e, text);
             assert!(!error.contains("SECRET"), "{error}");
             assert!(!error.contains("Вася"), "{error}");
             assert!(

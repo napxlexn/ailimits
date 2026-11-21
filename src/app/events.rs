@@ -144,9 +144,10 @@ impl App {
         if self.panel.next_tick().is_some_and(|t| now >= t) {
             self.panel.redraw(&self.visible());
         }
-        // config.toml, opened from Rows and models a while ago: one metadata
-        // call, and the edit applied when it changed.
-        if self.config_watch.due(now) {
+        // config.toml: one metadata call every 2 seconds while the user is
+        // at the PC (every 30 while away), and the edit applied when it
+        // changed.
+        if self.config_watch.due(now, crate::platform::user_idle_secs) {
             self.check_config_file();
         }
         if let Some(t) = self.indicator.recheck_at {

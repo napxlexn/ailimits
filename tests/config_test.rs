@@ -343,7 +343,7 @@ fn a_saved_config_loads_back_as_it_was() {
 fn two_broken_configs_are_both_kept() {
     let dir = Dir::new("broken");
     let mut backups = Vec::new();
-    for text in ["[ui\npalette = 1", "x = = 2"] {
+    for text in ["[ui\npalette = 1", "[[x\nid = 2"] {
         std::fs::write(dir.config(), text).unwrap();
         let loaded = block(storage::load_from(&dir.config()));
         let Some(LoadProblem::SetAside { backup, .. }) = loaded.problem else {
@@ -355,6 +355,30 @@ fn two_broken_configs_are_both_kept() {
     }
     assert_ne!(backups[0], backups[1]);
     assert_eq!(dir.names().len(), 2);
+}
+
+/// A line that does not read costs that line: the file is used, the line
+/// named, and a copy of the file as it was kept beside it.
+#[test]
+fn a_bad_line_is_left_out_and_the_file_kept() {
+    let dir = Dir::new("left-out");
+    let text = "[reads]\nsign_in = [\"claude\"]\n\n[ui]\nbrightness = 50.5\npalette = \"ocean\"\n";
+    std::fs::write(dir.config(), text).unwrap();
+    let loaded = block(storage::load_from(&dir.config()));
+    let Some(LoadProblem::LeftOut { lines, copy }) = loaded.problem.clone() else {
+        panic!("{:?}", loaded.problem);
+    };
+    assert_eq!(lines, [5]);
+    assert!(!loaded.problem.as_ref().unwrap().saving_off());
+    assert!(loaded.config.sign_in_allowed("claude"));
+    let copy = copy.expect("a copy");
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), text);
+    assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), text);
+    let message = loaded.problem.unwrap().message();
+    assert!(
+        message.contains("line 5") && message.contains(".left-out"),
+        "{message}"
+    );
 }
 
 /// `peek` — what `ailimits-auth status` uses — never creates, renames or

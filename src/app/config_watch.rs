@@ -24,10 +24,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-/// How long the file is looked at often after it was opened from the window.
+/// How long the file is looked at often after it was opened from the window,
+/// whether or not the user is at the PC.
 pub(super) const FAST_FOR: Duration = Duration::from_secs(30 * 60);
-/// How often, in that time.
+/// How often the file is looked at while the user is at the PC (or in the
+/// half hour after it was opened from the window): an edit shows within
+/// about two seconds of its save. One metadata call each time.
 pub(super) const FAST_EVERY: Duration = Duration::from_secs(2);
+/// How often while nobody is at the PC (no input for `AWAY_AFTER_SECS`).
+pub(super) const SLOW_EVERY: Duration = Duration::from_secs(30);
+/// No input for this long: the user is away (the scheduler pauses polling
+/// at the same mark).
+pub(super) const AWAY_AFTER_SECS: u64 = 300;
 /// A look that found the file busy (being written) comes again this soon,
 /// at most `RETRIES` times in a row.
 const RETRY_IN: Duration = Duration::from_millis(300);
@@ -317,7 +325,7 @@ impl ConfigWatch {
         Self {
             file,
             fast_until: None,
-            next_look: None,
+            next_look: Some(Instant::now() + FAST_EVERY),
             retries: 0,
             broken: None,
         }
@@ -335,18 +343,23 @@ impl ConfigWatch {
         self.next_look = Some(now + FAST_EVERY);
     }
 
-    /// Whether a look is due at `now`; the next one is set (or none, once
-    /// the often looks are over).
-    pub(super) fn due(&mut self, now: Instant) -> bool {
+    /// Whether a look is due at `now`; the next one is set: in
+    /// `FAST_EVERY` while the user is at the PC (`idle_secs`, asked only
+    /// when a look is due) or the file was opened from the window lately,
+    /// else in `SLOW_EVERY`.
+    pub(super) fn due(&mut self, now: Instant, idle_secs: impl FnOnce() -> u64) -> bool {
         match self.next_look {
             Some(t) if now >= t => {
-                self.next_look = match self.fast_until {
-                    Some(end) if now < end => Some(now + FAST_EVERY),
-                    _ => {
-                        self.fast_until = None;
-                        None
-                    }
+                let opened = self.fast_until.is_some_and(|end| now < end);
+                if !opened {
+                    self.fast_until = None;
+                }
+                let every = if opened || idle_secs() < AWAY_AFTER_SECS {
+                    FAST_EVERY
+                } else {
+                    SLOW_EVERY
                 };
+                self.next_look = Some(now + every);
                 true
             }
             _ => false,
@@ -408,10 +421,16 @@ impl App {
                     self.config_watch.broken = Some(error);
                 }
             }
-            Change::Edited { config, base } => {
+            Change::Edited {
+                config,
+                base,
+                left_out,
+            } => {
                 let was_broken = self.config_watch.broken.take().is_some();
                 self.on_config_edited(*config, base.map(|b| *b));
-                if was_broken {
+                if !left_out.is_empty() {
+                    feedback("AI Limits", &storage::left_out_message(&left_out));
+                } else if was_broken {
                     feedback("AI Limits", READS_AGAIN);
                 }
             }
@@ -594,7 +613,7 @@ impl App {
         if self.menu_preview.is_some() || self.look_base.is_some() {
             return;
         }
-        if let Change::Edited { config, base } = self.config_watch.file.check() {
+        if let Change::Edited { config, base, .. } = self.config_watch.file.check() {
             let (merged, _) = merge(base.as_deref(), &self.config, &config);
             self.config = merged;
         }
@@ -797,39 +816,47 @@ mod tests {
         assert!(e.relayout && e.repaint && e.tune && !e.providers && !e.models);
     }
 
-    /// Opened from the window: every 2 seconds for 30 minutes, then only
-    /// the cycle and the actions.
+    /// Every 2 seconds while the user is at the PC, every 30 while away;
+    /// opened from the window, every 2 seconds for 30 minutes either way.
     #[test]
-    fn the_file_is_looked_at_often_for_half_an_hour_after_it_was_opened() {
+    fn the_file_is_looked_at_often_while_the_user_is_there() {
         let file = Arc::new(ConfigFile::new(
             std::env::temp_dir().join("ailimits-watch-timing-none.toml"),
             None,
         ));
         let mut w = ConfigWatch::new(file);
-        let t0 = Instant::now();
-        assert_eq!(w.next_wake(), None);
-        assert!(!w.due(t0 + Duration::from_secs(3600)));
-        w.look_often(t0);
+        let t0 = Instant::now() + FAST_EVERY;
+        // From the start: looked at.
+        assert!(w.next_wake().is_some_and(|t| t <= t0));
+        assert!(w.due(t0, || 0));
         assert_eq!(w.next_wake(), Some(t0 + FAST_EVERY));
-        assert!(!w.due(t0 + Duration::from_secs(1)));
-        assert!(w.due(t0 + FAST_EVERY));
-        assert_eq!(w.next_wake(), Some(t0 + FAST_EVERY * 2));
-        // Late in the window: still often.
-        let late = t0 + FAST_FOR - Duration::from_secs(1);
-        assert!(w.due(late));
+        assert!(!w.due(t0 + Duration::from_secs(1), || 0));
+        // Away: every 30 seconds.
+        let t1 = t0 + FAST_EVERY;
+        assert!(w.due(t1, || AWAY_AFTER_SECS));
+        assert_eq!(w.next_wake(), Some(t1 + SLOW_EVERY));
+        // Opened from the window: often though away, for half an hour.
+        w.look_often(t1);
+        assert_eq!(w.next_wake(), Some(t1 + FAST_EVERY));
+        assert!(w.due(t1 + FAST_EVERY, || 9999));
+        assert_eq!(w.next_wake(), Some(t1 + FAST_EVERY * 2));
+        let late = t1 + FAST_FOR - Duration::from_secs(1);
+        assert!(w.due(late, || 9999));
         assert_eq!(w.next_wake(), Some(late + FAST_EVERY));
-        // Past it: one last look, then none.
-        assert!(w.due(t0 + FAST_FOR + Duration::from_secs(1)));
-        assert_eq!(w.next_wake(), None);
+        // Past it, still away: slow again.
+        let past = t1 + FAST_FOR + Duration::from_secs(1);
+        assert!(w.due(past, || 9999));
+        assert_eq!(w.next_wake(), Some(past + SLOW_EVERY));
         // A busy file: a few quick looks, not forever.
         let t1 = Instant::now();
         for _ in 0..RETRIES {
             w.retry(t1);
             assert_eq!(w.next_wake(), Some(t1 + RETRY_IN));
-            assert!(w.due(t1 + RETRY_IN));
+            assert!(w.due(t1 + RETRY_IN, || 0));
         }
+        // Past the retries: the next look is the usual one.
         w.retry(t1);
-        assert_eq!(w.next_wake(), None);
+        assert_eq!(w.next_wake(), Some(t1 + RETRY_IN + FAST_EVERY));
     }
 
     /// One metadata call: what each look costs while nothing changed.
