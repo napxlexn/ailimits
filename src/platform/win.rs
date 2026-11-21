@@ -612,25 +612,33 @@ pub fn raise_panel_topmost(hwnd: isize) {
     }
 }
 
-/// Raise a window to the top of its z-order band and show it, without
-/// activating it — so a no-activate overlay comes to the front on a tray/panel
-/// click without stealing focus. Uses HWND_TOP (not HWND_TOPMOST), so it does
-/// not force the always-on-top band: it respects the window's pin state.
-pub fn bring_to_front(hwnd: isize) {
+/// Show a window above every other one, without activating it — so a
+/// no-activate overlay comes to the front on a tray/panel click without
+/// stealing focus. HWND_TOP alone is not enough: Windows keeps a window that
+/// is not activated below the foreground one. So the window is made topmost
+/// for a moment, which lifts it over everything, and then, unless it is
+/// pinned (`topmost`), put back among ordinary windows with HWND_NOTOPMOST,
+/// which leaves it at the top of them. The pin state ends as it was.
+pub fn bring_to_front(hwnd: isize, topmost: bool) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOP, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        SetWindowPos, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW,
     };
+    let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE;
     unsafe {
         let _ = SetWindowPos(
             HWND(hwnd as _),
-            Some(HWND_TOP),
+            Some(HWND_TOPMOST),
             0,
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            flags | SWP_SHOWWINDOW,
         );
+        if !topmost {
+            let _ = SetWindowPos(HWND(hwnd as _), Some(HWND_NOTOPMOST), 0, 0, 0, 0, flags);
+        }
     }
 }
 

@@ -148,13 +148,13 @@ pub(super) fn toggle_or_raise_widget(
         *window_visible = false;
         window.set_visible(false);
     } else {
-        show_widget(window, window_visible);
+        show_widget(window, win_state.pinned, window_visible);
     }
 }
 
-/// Show the overlay and raise it to the front of its band, without taking
-/// the focus.
-pub(super) fn show_widget(window: &tao::window::Window, window_visible: &mut bool) {
+/// Show the overlay above every other window, without taking the focus;
+/// `pinned` (Always on top) is left as it is.
+pub(super) fn show_widget(window: &tao::window::Window, pinned: bool, window_visible: &mut bool) {
     #[cfg(target_os = "windows")]
     use tao::platform::windows::WindowExtWindows;
     *window_visible = true;
@@ -162,8 +162,10 @@ pub(super) fn show_widget(window: &tao::window::Window, window_visible: &mut boo
     #[cfg(target_os = "windows")]
     {
         apply_windows_glass(window);
-        crate::platform::bring_to_front(window.hwnd());
+        crate::platform::bring_to_front(window.hwnd(), pinned);
     }
+    #[cfg(not(target_os = "windows"))]
+    let _ = pinned;
     window.request_redraw();
 }
 

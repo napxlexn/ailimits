@@ -445,7 +445,11 @@ impl App {
             UserEvent::PanelRaise => self.on_foreground_changed(target),
 
             UserEvent::ShowWidget => {
-                show_widget(&self.window, &mut self.window_visible);
+                show_widget(
+                    &self.window,
+                    self.win_state.pinned,
+                    &mut self.window_visible,
+                );
                 // Started again by hand: the user is at the desktop, not in a
                 // fullscreen app, so an owed window that waited opens now.
                 self.try_auto_open(target, || false);

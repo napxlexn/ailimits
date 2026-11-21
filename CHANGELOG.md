@@ -311,6 +311,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **A click on the tray icon or the taskbar panel brings the widget in
+  front of every window.** Shown again after being tucked away, or while
+  another window covered it, the widget could stay behind the window in
+  use. It now comes up above it, without taking the focus; Always on top
+  stays as it was set.
 - **Auto-update no longer closes the widget when the user profile or TEMP
   path has letters outside English, `&` or `%` in it.** The updater used to
   hand over to a script in `%TEMP%`, which failed on such paths, so the app
