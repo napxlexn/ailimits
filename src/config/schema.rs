@@ -40,6 +40,9 @@ pub struct Config {
     /// of theirs is read before it is allowed here.
     #[serde(default)]
     pub reads: Reads,
+    /// Fine-tuning that lives only in this file (`config::tune`).
+    #[serde(default, skip_serializing_if = "crate::config::tune::Tune::is_default")]
+    pub tune: crate::config::tune::Tune,
 }
 
 impl Default for Config {
@@ -54,6 +57,7 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             hooks: HooksConfig::default(),
             reads: Reads::default(),
+            tune: Default::default(),
         }
     }
 }
