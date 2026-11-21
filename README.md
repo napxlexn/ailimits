@@ -90,7 +90,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   there is nothing else to configure. Only Cursor asks you to sign in once,
   in *Rows and models*.
 - **Low load, measured on the running app.** 0.0097% of one CPU core, no GPU
-  use (it renders on the CPU), about 45 MB of memory, no raised timer
+  use (it renders on the CPU), a 54 MB working set, no raised timer
   resolution (measured for 0.7.1 on 2026-11-21), a 4 MB exe. Reproduce it with
   `bench/perf_audit.ps1`; the full numbers are in
   [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
@@ -356,8 +356,9 @@ readout stays visible. Right-click → **Indicator**:
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
   providers in the widget's order, or the two ticked in the Taskbar column of
-  *Rows and models*, with their percentage, the time until their limit
-  resets, or both (a value that has stopped updating, or an
+  *Rows and models*, with their percentage (and its bar, unless Progress
+  bar is unticked there), the time until their limit resets, or both (a
+  value that has stopped updating, or an
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
   taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with
@@ -383,7 +384,10 @@ panel** opens this same menu.
 ## Config & diagnostics
 
 `%APPDATA%\AiLimits\config.toml` is created automatically, and every menu change
-is persisted there. Format reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
+is persisted there. Edits saved in it apply while the app runs, within about
+two seconds, with no restart; *Settings file...* at the end of *Rows and
+models* opens it in Notepad. A line that does not read is left out and
+named, its default used. Format reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
 Fine-tuning beyond the menu (sizes, colours, thresholds): [docs/en/TUNING.md](docs/en/TUNING.md).
 
 Set `AILIMITS_LOG=ailimits=debug` or `RUST_LOG=ailimits=debug` to write a
@@ -400,7 +404,7 @@ provider's threshold; again only after the window resets, or after usage
 fell well below and climbed back (`[notifications]` in the config).
 
 Requests follow the proxy set in Windows (Settings, Network, Proxy, "Use a
-proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` win, a proxy script (PAC) is
+proxy server"); `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` win, a proxy script (PAC) is
 not followed. `ailimits-auth` follows only the variables, not the Windows
 setting. A network that inspects TLS with its own root certificate is not
 trusted: the rows read "untrusted certificate, retrying".
