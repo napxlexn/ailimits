@@ -452,14 +452,14 @@ html[data-jump] .tb-stage { visibility: hidden; }
   width: max-content; max-width: 100%; }
 /* the palette is nine chips, Mono and the eight palettes, so it runs three by three */
 .seg-wrap { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* The six providers, three to a line, exactly the rail's width. */
+.seg-rows { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+.seg.seg-rows button { padding-left: 4px; padding-right: 4px; }
 /* The rows: every extra row stands right after its provider and never on the
    next line. Claude and its Fable week share the first line with Codex and
    Copilot, which have none; the three providers whose extra row has a longer
    name take a line each, in halves. Four lines where one row a line took
    five, and the narrow quarters give up some side padding to hold "+ Fable". */
-.seg-rows { grid-auto-flow: row; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
-.seg.seg-rows button { padding-left: 4px; padding-right: 4px; }
-.seg-rows .half { grid-column: span 2; }
 .seg button { min-width: 0; }
 .seg button {
   font: 500 0.8rem var(--font); color: var(--ink-2);
