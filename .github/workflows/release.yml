@@ -88,23 +88,33 @@ jobs:
       # No path of the build machine in the exes: the panic locations of the
       # dependencies would otherwise carry C:\Users\runneradmin\.cargo\... (a
       # few hundred strings that machine-learning scanners count against a
-      # file). The paths are rewritten to `~` and `ailimits`; the check
-      # after the build fails the release if one is left.
+      # file). The paths are rewritten to `~` and `ailimits`. Added with
+      # --config, which joins them to .cargo/config.toml's rustflags: the
+      # RUSTFLAGS variables would replace those, and +crt-static with them
+      # (the exe would then need the Visual C++ runtime). The check after the
+      # build fails the release on either.
       - name: Build (release-min)
         shell: pwsh
         run: |
-          $sep = [char]0x1f
-          $env:CARGO_ENCODED_RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~$sep--remap-path-prefix=$env:GITHUB_WORKSPACE=ailimits"
-          cargo build --profile release-min --locked
+          $remap = "target.x86_64-pc-windows-msvc.rustflags=['--remap-path-prefix=$env:USERPROFILE=~', '--remap-path-prefix=$env:GITHUB_WORKSPACE=ailimits']"
+          cargo build --profile release-min --locked --config $remap
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: No build-machine paths in the exes
+      - name: Self-contained, no build-machine paths
         shell: pwsh
         run: |
           $names = @($env:USERPROFILE, $env:GITHUB_WORKSPACE, 'runneradmin')
           foreach ($exe in 'target\release-min\ailimits.exe', 'target\release-min\ailimits-auth.exe') {
             $bytes = [IO.File]::ReadAllBytes($exe)
-            foreach ($text in [Text.Encoding]::Latin1.GetString($bytes), [Text.Encoding]::Unicode.GetString($bytes)) {
+            $latin = [Text.Encoding]::Latin1.GetString($bytes)
+            # The C runtime is linked in (+crt-static): no import of it.
+            foreach ($dll in 'VCRUNTIME140', 'api-ms-win-crt-') {
+              if ($latin.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                Write-Error "$exe needs $dll — the static C runtime is missing"
+                exit 1
+              }
+            }
+            foreach ($text in $latin, [Text.Encoding]::Unicode.GetString($bytes)) {
               foreach ($name in $names) {
                 foreach ($form in $name, $name.Replace('\', '/'), $name.Replace('\', '\\')) {
                   if ($text.IndexOf($form, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
@@ -115,7 +125,7 @@ jobs:
               }
             }
           }
-          Write-Host "no build-machine paths"
+          Write-Host "self-contained, no build-machine paths"
 
       # A portable zip alongside the installer: what Scoop installs, and the
       # no-install option generally. The exe is statically linked, so the zip
