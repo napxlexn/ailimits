@@ -344,6 +344,10 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **Codex names a window by its length.** The window that lasts five hours
+  is the session and the one that lasts a week is the week, whichever field
+  the answer sends it in: a plan with no five-hour limit no longer shows its
+  weekly usage as "Session".
 - **The widget keeps its place after a hard restart.** When the display it
   was on was not awake yet at start (or was unplugged), the widget opened on
   another one and that place was saved over the one you chose. Now the

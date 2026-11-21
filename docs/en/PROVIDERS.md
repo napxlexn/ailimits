@@ -283,8 +283,11 @@ the answer has `credits`, `model_usage`, `plan_type`,
 `rate_limit_reset_credits` and `spend_control`. Only `used_percent` and
 `reset_at` of the two windows are read.
 
-`primary_window` = the 5-hour session → `Session`; `secondary_window` =
-the week → `Weekly`. `reset_at` is unix epoch seconds. 401/403 on the CLI
+A window's own length (`limit_window_seconds`) names it: up to a day →
+`Session`, six days or more → `Weekly`, so a plan with no 5-hour limit that
+sends its week as `primary_window` still reads as the week; without the
+length, `primary_window` = the 5-hour session → `Session` and
+`secondary_window` = the week → `Weekly`. The session row comes first. `reset_at` is unix epoch seconds. 401/403 on the CLI
 token → `NetworkError("token expired")` (the hover adds "run Codex CLI";
 not "check the key": no key was given). A body that is not the known JSON →
 `"unrecognized wham/usage schema"`; other statuses and no answer → the

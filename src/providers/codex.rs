@@ -295,6 +295,17 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
             Some(w) if w.is_object() => w,
             _ => return,
         };
+        // The window's own length decides what it is, where it says one
+        // (verified 2026-11-21: limit_window_seconds, 18000 and 604800 on
+        // Plus): a plan with no five-hour limit that sends its week as the
+        // primary window is still the week. The key is the fallback.
+        let (label, window) = match field.get("limit_window_seconds").and_then(|v| v.as_i64()) {
+            Some(secs) if secs > 0 && secs <= SESSION_MAX_SECS => {
+                ("Session", MetricWindow::Session)
+            }
+            Some(secs) if secs >= WEEK_MIN_SECS => ("Weekly", MetricWindow::Long),
+            _ => (label, window),
+        };
         let pct = field
             .get("used_percent")
             .and_then(|v| v.as_f64())
@@ -318,12 +329,19 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
         }
     };
 
-    // Order matters: the first metric drives the progress bar.
     push_window("primary_window", "Session", MetricWindow::Session);
     push_window("secondary_window", "Weekly", MetricWindow::Long);
+    // Order matters: the first metric drives the progress bar. The session
+    // comes first, as it always did; a week alone is the only row.
+    metrics.sort_by_key(|m| m.window != MetricWindow::Session);
 
     Ok(metrics)
 }
+
+/// A window this long or shorter is the session (five hours today).
+const SESSION_MAX_SECS: i64 = 24 * 3600;
+/// A window this long or longer is the week.
+const WEEK_MIN_SECS: i64 = 6 * 24 * 3600;
 
 #[cfg(test)]
 mod tests {
@@ -418,6 +436,33 @@ mod tests {
             matches!(&data.status, ProviderStatus::NetworkError(m) if m == "token expired"),
             "{:?}",
             data.status
+        );
+    }
+
+    /// The window's length decides its label: the week sent as the primary
+    /// window (a plan with no five-hour limit) is the week, and the session
+    /// leads whichever key it came in.
+    #[test]
+    fn a_window_is_named_by_its_length() {
+        let week_first = r#"{"rate_limit": {"primary_window": {"used_percent": 28, "reset_at": 4102444800, "limit_window_seconds": 604800}}}"#;
+        let read: Vec<_> = parse_wham_usage(week_first)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.label, m.used, m.window))
+            .collect();
+        assert_eq!(read, [("Weekly".to_string(), 28, MetricWindow::Long)]);
+        let swapped = r#"{"rate_limit": {"primary_window": {"used_percent": 28, "reset_at": 4102444800, "limit_window_seconds": 604800}, "secondary_window": {"used_percent": 3, "reset_at": 4102444800, "limit_window_seconds": 18000}}}"#;
+        let read: Vec<_> = parse_wham_usage(swapped)
+            .unwrap()
+            .into_iter()
+            .map(|m| (m.label, m.window))
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("Session".to_string(), MetricWindow::Session),
+                ("Weekly".to_string(), MetricWindow::Long)
+            ]
         );
     }
 

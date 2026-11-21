@@ -288,8 +288,11 @@ User-Agent: ailimits-widget
 `rate_limit_reset_credits` і `spend_control`. Із двох вікон читаються лише
 `used_percent` і `reset_at`.
 
-`primary_window` = 5-годинна сесія → `Session`; `secondary_window` =
-тиждень → `Weekly`. `reset_at` — unix epoch секунди. 401/403 на токені CLI
+Вікно називає його власна тривалість (`limit_window_seconds`): до доби →
+`Session`, шість днів і більше → `Weekly`, тож план без 5-годинного ліміту,
+що надсилає тиждень як `primary_window`, усе одно читається як тиждень; без
+тривалості `primary_window` = 5-годинна сесія → `Session`, а
+`secondary_window` = тиждень → `Weekly`. Рядок сесії йде першим. `reset_at` — unix epoch секунди. 401/403 на токені CLI
 → `NetworkError("token expired")` (підказка додає "run Codex CLI"; не
 "check the key": ключа ніхто не давав). Тіло, що не є відомим JSON, →
 `"unrecognized wham/usage schema"`; інші статуси й відсутність відповіді →
