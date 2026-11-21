@@ -63,7 +63,9 @@ pub const READ_INFO: &[ReadInfo] = &[
         sign_in: &[r"%USERPROFILE%\.claude\.credentials.json"],
         hosts: &["api.anthropic.com"],
         pages: &[],
-        settings: Some(r"%USERPROFILE%\.claude\settings.json: model, effortLevel"),
+        settings: Some(
+            r"%USERPROFILE%\.claude\settings.json: model, env.ANTHROPIC_MODEL, effortLevel, modelSettings.<model>.effortLevel",
+        ),
         session: Some(r"%USERPROFILE%\.claude\projects\...\*.jsonl (the end of the newest)"),
         risk: None,
     },
@@ -75,7 +77,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         hosts: &["chatgpt.com"],
         pages: &[],
         settings: Some(
-            r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort (in CODEX_HOME when it is set)",
+            r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort, profile, [profiles.<name>] (in CODEX_HOME when it is set)",
         ),
         session: Some(
             r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest; in CODEX_HOME when it is set)",
@@ -396,6 +398,35 @@ mod tests {
                     text.contains(&name),
                     "{} reads {name}, which the consent text does not name",
                     path.display()
+                );
+            }
+        }
+    }
+
+    /// The keys the model labels' readers take from a tool's settings file
+    /// (models/settings.rs) are named in its consent text.
+    #[test]
+    fn the_settings_keys_read_are_named() {
+        for (id, keys) in [
+            (
+                "claude",
+                &["model", "ANTHROPIC_MODEL", "effortLevel", "modelSettings"][..],
+            ),
+            (
+                "codex",
+                &["model", "model_reasoning_effort", "profile", "[profiles."][..],
+            ),
+            ("copilot", &["model", "effortLevel"][..]),
+            (
+                "grok",
+                &["[models] default", "default_reasoning_effort"][..],
+            ),
+        ] {
+            let text = read_info(id).unwrap().settings.unwrap();
+            for key in keys {
+                assert!(
+                    text.contains(key),
+                    "{id}: the settings text does not name {key}"
                 );
             }
         }
