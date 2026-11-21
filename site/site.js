@@ -1273,6 +1273,11 @@ function pgRender() {
     if (!beside && need > desk.clientHeight) desk.style.minHeight = need + "px";
   }
   renderWidget(playEl, st, k);
+  /* A rail cut to the desk's height scrolls inside itself (site.css): the
+     wheel over it goes to it then, past the smooth scroll; a rail with
+     nothing to scroll leaves the wheel to the page as everywhere else */
+  const rail = $(".pg-rail");
+  if (rail) rail.toggleAttribute("data-lenis-prevent", rail.scrollHeight > rail.clientHeight + 1);
   /* Width means something only with horizontal bars, Arrangement only with
      vertical ones: the menu greys the other, and so does this */
   $$(".pg [data-only]").forEach((g) => g.toggleAttribute("data-hidden", g.getAttribute("data-only") !== pg.bars));

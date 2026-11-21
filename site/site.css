@@ -495,6 +495,26 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
 @media (min-width: 981px) {
   .pg { align-items: start; }
   .pg-desk { position: sticky; top: 72px; height: calc(100vh - 104px); min-height: 540px; }
+  /* The rail no taller than the desk beside it: where the screen is too
+     short for every option, the rail scrolls inside itself and the widget
+     stays in view next to whatever is being changed (pgRender lets the wheel
+     through to it only while it has something to scroll). */
+  .pg-rail { max-height: max(calc(100vh - 104px), 540px); overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.22) transparent; }
+}
+/* The options in two halves: the widget's shape (detail to model label) and
+   its look (palette to desktop). In one column the halves are not boxes at
+   all and the groups stand in the rail's own grid. */
+.pg-col { display: contents; }
+/* A screen too short for the options in one column (a 1080p display, a
+   laptop), but wide enough: the halves side by side, so all of them and the
+   widget fit at once. A screen tall enough keeps the one column. Each half
+   is the one-column rail's width inside (256px holds Compact / Medium /
+   Expanded). */
+@media (min-width: 1200px) and (max-height: 1199px) {
+  .pg { grid-template-columns: 578px 1fr; }
+  .pg-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 22px; align-items: start; }
+  .pg-col { display: grid; gap: 20px; }
 }
 .pg-desk .aw.dragging { cursor: grabbing; }
 /* the reader's own desktop, so the acrylic has something real to sit on */
