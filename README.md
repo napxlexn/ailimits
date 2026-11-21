@@ -316,10 +316,11 @@ depend on CLI activity. What each option actually gives you:
    usage endpoint: a refused one (401/403) is not stored; a rate limit (429)
    counts as accepted; with no answer that says either way it asks again
    after 2 and 4 seconds, then stores it with a note. `status` changes
-   nothing and reads another tool's sign-in only where the widget may. The
-   widget writes its settings when it quits: quit it before `set`, `remove`,
-   `set-usage-token` or `login`, then start it again. `set` and
-   `set-usage-token` make what they store the provider's source.
+   nothing and reads another tool's sign-in only where the widget may. A
+   running widget picks up what the other commands change by itself, with no
+   restart: a changed setting within a few seconds, a new or removed key or
+   token at its next update. `set` and `set-usage-token` make what they
+   store the provider's source.
 
 **To go back to the tool's sign-in:** in the provider's *Sign-in*, choose
 the tool's sign-in. Your key or token stays stored but unused; *Remove*,

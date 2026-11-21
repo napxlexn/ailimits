@@ -655,8 +655,8 @@ there or `ailimits-auth logout cursor` forgets it, and the installer's
 uninstaller runs the latter. From the window no restart is needed: the
 provider is rebuilt, and an update that was already under way for the
 previous session is dropped. `ailimits-auth login cursor` for a Cursor the
-widget does not run yet writes the config and asks for a restart (quit the widget first: it
-writes its own settings when it quits).
+widget does not run yet switches it on in the config, and a running widget
+takes that up within a few seconds: no restart either.
 
 ### Refresh (the own session only)
 

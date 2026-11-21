@@ -49,8 +49,12 @@ const GH_TIMEOUT: Duration = Duration::from_secs(10);
 /// nothing about the token (a server error, no answer).
 const CHECK_RETRIES: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(4)];
 
-/// The line every command that changed the config ends with.
-const RESTART_HINT: &str = "→ Restart the widget to apply. If it was running, it writes its own settings when it quits: quit it, run this command again, then start it.";
+/// The line every command that changed the config or a stored secret ends
+/// with. A running widget looks at config.toml every 2 seconds while the
+/// user is at the PC and merges an edit with its own changes (also when it
+/// quits); it reads the stored keys, tokens and its Cursor session anew on
+/// every update (`providers::pasted_key`, `keyring_secret`).
+const PICKED_UP_HINT: &str = "→ A running widget picks this up by itself, no restart needed: a changed setting within a few seconds, a new or removed key or token at its next update.";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -395,7 +399,7 @@ fn set(provider: Option<&str>) -> Result<()> {
     save_config(&config)?;
 
     println!("Key for '{provider}' stored in Credential Manager (label: {label})");
-    println!("{RESTART_HINT}");
+    println!("{PICKED_UP_HINT}");
     Ok(())
 }
 
@@ -438,7 +442,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     if let Some(why) = unchecked {
         println!("  It could not be checked ({why}), so it was stored as it is. If the row shows an error later, run this command again.");
     }
-    println!("{RESTART_HINT}");
+    println!("{PICKED_UP_HINT}");
     Ok(())
 }
 
@@ -480,7 +484,7 @@ fn remove_usage_token(provider: Option<&str>) -> Result<()> {
         Err(e) => bail!("failed to remove the usage token: {e}"),
     }
 
-    println!("{RESTART_HINT}");
+    println!("{PICKED_UP_HINT}");
     Ok(())
 }
 
@@ -511,7 +515,7 @@ fn remove(provider: Option<&str>) -> Result<()> {
         Err(e) => println!("config.toml left as it is ({e}); the key is removed all the same"),
     }
 
-    println!("{RESTART_HINT}");
+    println!("{PICKED_UP_HINT}");
     Ok(())
 }
 
@@ -567,7 +571,7 @@ fn login(provider: Option<&str>) -> Result<()> {
         }
         config.allow_app_sign_in("cursor");
         save_config(&config)?;
-        println!("{RESTART_HINT}");
+        println!("{PICKED_UP_HINT}");
     }
     Ok(())
 }

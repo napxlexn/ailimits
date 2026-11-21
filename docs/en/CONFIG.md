@@ -513,9 +513,11 @@ Every read of another tool's file is optional and asked for first:
   or rename a `config.toml` they cannot read or understand. `set` and
   `set-usage-token` then store nothing ("nothing was changed"); `remove`
   removes the key all the same and leaves the config as it is; `login`
-  keeps the session it got and says the config could not be updated. The
-  widget writes its own settings back when it quits, so quit it before
-  running one of them, then start it. What they store becomes the source:
+  keeps the session it got and says the config could not be updated. A
+  running widget picks up what they change by itself, with no restart (see
+  Live edits): a changed setting within a few seconds, a new or removed key
+  or token at its next update, since the stored keys, tokens and the Cursor
+  session are read anew on every update. What they store becomes the source:
   `set claude|copilot` sets `auth_method = "api_key"` (with
   `credential_label`), `set-usage-token` sets `"usage_token"`; `remove
   claude|copilot` sets `"subscription"`. `remove-usage-token` deletes the
