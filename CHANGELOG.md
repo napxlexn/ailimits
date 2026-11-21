@@ -43,7 +43,8 @@ Notable, user-visible changes. Dates are release dates.
   and the tray icon show (untouched, they show what they did in 0.7.0: the
   panel the first two, the tray rings the two busiest). A tick shows at
   once, with no restart. The window opens clear of the taskbar, also of an
-  auto-hidden one that would slide over it. The window also
+  auto-hidden one that would slide over it, and keeps 16 px (scaled with
+  the display) from the screen's edges, also when it grows. The window also
   opens by itself on a first start, and from a click on the widget while
   nothing is chosen yet ("Choose what to show"), or while the rows chosen
   have no data yet ("Nothing to show yet"). Resting the pointer on a model

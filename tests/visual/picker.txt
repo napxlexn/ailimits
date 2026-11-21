@@ -34,9 +34,9 @@ version-disabled-dark 458x584 42bf5176a6f78ec6
 version-disabled-light 458x584 f722c684c1bdb53d
 welcome-all-found-125 573x730 07a1caf0a0d80145
 welcome-all-found-150 687x876 8c69be924717618d
-welcome-all-found-175 802x1005 7ee96adf5b30ec2c
-welcome-all-found-200 916x1000 360e90c6b686dbff
-welcome-all-found-200-end 916x1000 6e90c6a1ccfd7ef7
+welcome-all-found-175 802x949 747c8dd13e1acf82
+welcome-all-found-200 916x936 ac8735afba17fd74
+welcome-all-found-200-end 916x936 7c7864c691470d30
 welcome-all-found-dark 458x584 de78eb3172807a2e
 welcome-cancelled-dark 458x584 2f8164e09385017a
 welcome-contrast-black 458x584 845cd39c2aeb8ead

@@ -1178,6 +1178,27 @@ fn the_box_goes_beside_the_anchor_inside_the_work_area() {
     assert!(x + 12 >= 0 && x + 12 + 380 <= 1920 && y + 12 >= 0 && y + 12 + 560 <= 1032);
 }
 
+/// Opened from the tray icon in the corner, or from a widget against the
+/// screen's edge, the box keeps 16 px (at 100%; 24 at 150%) from the work
+/// area's edges, the taskbar's among them.
+#[test]
+fn the_box_keeps_clear_of_the_screens_edges() {
+    use super::window::place_window;
+    let size = (404, 584);
+    // The tray icon in the corner: left of it, and off the taskbar.
+    let (x, y) = place_window(at(1840, 1040, 24, 40), size, 1.0, Some(WORK));
+    assert_eq!((x + 12 + 380, y + 12 + 560), (1840 - 8, 1032 - 16));
+    // A widget flush with the top-left corner: beside it, off the top.
+    let (x, y) = place_window(at(0, 0, 278, 200), size, 1.0, Some(WORK));
+    assert_eq!((x + 12, y + 12), (278 + 8, 16));
+    // A widget as wide as the screen: below it, off the left edge.
+    let (x, _) = place_window(at(0, 50, 1920, 100), size, 1.0, Some(WORK));
+    assert_eq!(x + 12, 16);
+    // At 150% the room scales.
+    let (x, y) = place_window(at(1840, 1040, 24, 40), (606, 876), 1.5, Some(WORK));
+    assert_eq!((x + 18 + 570, y + 18 + 840), (1840 - 12, 1032 - 24));
+}
+
 #[test]
 fn room_text_reads_well() {
     assert_eq!(

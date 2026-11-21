@@ -68,6 +68,10 @@ pub fn place(
 const WHEEL_NOTCH: f32 = 48.0;
 /// Between the anchor and the box, logical pixels.
 const GAP: f32 = 8.0;
+/// Between the box and the edges of the work area (the screen's, or the
+/// taskbar's), logical pixels: never flush against them, a little wider
+/// than the 12 px the shell's own flyouts keep.
+const EDGE: f32 = 16.0;
 
 /// The picker's own window: borderless, transparent, on top, out of the
 /// taskbar, presented through softbuffer exactly like the widget. It exists
@@ -447,7 +451,11 @@ impl PickerWindow {
             self.pixmap = pm;
         }
         if let Some((l, t, r, b)) = self.work {
+            // Grown or shrunk: held in as when it opened, `EDGE` off the
+            // work area's edges.
             let m = (MARGIN as f64 * self.draw_scale()).round() as i32;
+            let e = (EDGE as f64 * self.draw_scale()).round() as i32;
+            let (l, t, r, b) = (l + e, t + e, r - e, b - e);
             let x = self.pos.0.min(r - want.0 as i32 + m).max(l - m);
             let y = self.pos.1.min(b - want.1 as i32 + m).max(t - m);
             if (x, y) != self.pos {
@@ -672,10 +680,12 @@ fn physical(size: (f32, f32), scale: f64) -> (u32, u32) {
 
 /// The tallest box the work area allows, logical pixels.
 pub(super) fn max_box_height(work: (i32, i32, i32, i32), scale: f64) -> f32 {
-    ((work.3 - work.1) as f64 / scale) as f32 - MARGIN * 2.0 - GAP * 2.0
+    ((work.3 - work.1) as f64 / scale) as f32 - MARGIN * 2.0 - GAP * 2.0 - EDGE * 2.0
 }
 
-fn place_window(
+/// The window's corner: `place` inside the work area drawn in by `EDGE` on
+/// every side, so the box never touches the screen's edge or the taskbar.
+pub(super) fn place_window(
     anchor: ScreenRect,
     size: (u32, u32),
     scale: f64,
@@ -683,7 +693,11 @@ fn place_window(
 ) -> (i32, i32) {
     let margin = (MARGIN as f64 * scale).round() as i32;
     let gap = (GAP as f64 * scale).round() as i32;
+    let edge = (EDGE as f64 * scale).round() as i32;
     // Without a work area (the query failed) nothing holds it in.
-    let work = work.unwrap_or((i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4));
+    let work = match work {
+        Some((l, t, r, b)) => (l + edge, t + edge, r - edge, b - edge),
+        None => (i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4),
+    };
     place(anchor, (size.0 as i32, size.1 as i32), margin, gap, work)
 }
