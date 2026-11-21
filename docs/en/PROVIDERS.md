@@ -303,7 +303,10 @@ CLI's sign-in is chosen):
 1. **GitHub CLI's sign-in** (`"subscription"`, the default) —
    `gh auth token --hostname github.com` (never another host,
    so a GitHub Enterprise sign-in or `GH_HOST` is not sent to github.com),
-   spawned with `CREATE_NO_WINDOW` from System32, killed after 15 s; only
+   spawned with `CREATE_NO_WINDOW` (found by Rust's own lookup: the app's
+  folder, System32, the Windows folder, then PATH, never the working
+  folder; System32 is only the working folder it runs in), killed after
+  15 s; only
    when `[reads] sign_in` allows it. gh's answer stands for 15 minutes, its
    failures included: gh not installed or nobody signed in to github.com →
    the row is hidden (`NotConfigured`) and gh is asked again in 15 minutes;
@@ -952,8 +955,10 @@ What a label cannot know:
   file that was read decides the label.
 - A file that was read is read again only when its modification time or
   length changed.
-- Read once per update cycle (60 s minimum) from the scheduler: no
-  watchers, threads or timers. Finding the newest session is one folder
+- Read once per update cycle (60 s minimum): the scheduler starts the read
+  on one of the runtime's blocking threads (`spawn_blocking`), one read at
+  a time (`ReadGate`: a cycle that finds a read still running only asks it
+  to read once more); no watchers, timers or threads of its own. Finding the newest session is one folder
   listing per folder looked into, never a walk of every session. Measured
   2026-11-11 on the owner's PC (debug build): Claude Code 872 session files
   in 122 folders (a full walk 5.4 ms warm, the bounded search 0.7 ms);
