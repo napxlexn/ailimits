@@ -174,7 +174,7 @@ mod tests {
     /// what stands between those two.
     /// Run: `cargo test uia_survives_a_dead_bar -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "asks the real taskbar through UI Automation"]
     fn uia_survives_a_dead_bar() {
         use windows::core::w;
         use windows::Win32::UI::WindowsAndMessaging::FindWindowW;
@@ -201,7 +201,7 @@ mod tests {
     /// the wall and CPU time of 50 queries against the primary taskbar.
     /// Run: `cargo test uia_query_cost -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "times UI Automation queries on the real taskbar"]
     fn uia_query_cost() {
         use windows::core::w;
         use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, SetCursorPos};

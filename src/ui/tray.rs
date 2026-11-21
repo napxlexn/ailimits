@@ -1682,7 +1682,7 @@ mod tests {
     /// text was dimmer when the stems were in fact identical.
     /// Run: `cargo test preview_tooltip -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_tooltip() {
         let text = std::env::var("TIP_TEXT")
             .unwrap_or_else(|_| "Realtek Digital Output (Realtek USB Audio): 12%".to_string());
@@ -2198,7 +2198,7 @@ mod tests {
     /// the eye to confirm what the contrast test measures.
     /// Run: `cargo test preview_tooltip_themes -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_tooltip_themes() {
         let text = "Claude 68%  ·  Codex 100%";
         for (light, back, name) in [
@@ -2219,7 +2219,7 @@ mod tests {
     /// scale (90/95/99/100) is the pair worth staring at.
     /// Run: `cargo test preview_rings -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_rings() {
         let dir = std::env::temp_dir();
         for (name, providers) in [
@@ -2268,7 +2268,7 @@ mod tests {
     /// visual check (the tray square is too small to judge live). Run
     /// explicitly: `cargo test preview_stacked -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_stacked_icons() {
         let theme = ComputedTheme::compute(&crate::config::schema::UIConfig::default());
         let dir = std::env::temp_dir();

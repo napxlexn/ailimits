@@ -1660,7 +1660,7 @@ mod tests {
     /// the 100% and 200% bar sizes, to %TEMP%:
     /// `cargo test preview_panel -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_panel() {
         let rows = [data(ProviderId::Claude, 16), stale(ProviderId::Codex, 64)];
         let top: Vec<&ProviderData> = rows.iter().collect();

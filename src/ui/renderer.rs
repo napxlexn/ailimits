@@ -1637,7 +1637,7 @@ mod tests {
     /// itself is not unit tested. Run explicitly:
     /// `cargo test preview_width_steps -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_width_steps() {
         use crate::config::schema::{Layout, UIConfig, WidthScale};
         use crate::ui::layout;
@@ -1714,7 +1714,7 @@ mod tests {
     /// Design preview for the column arrangement, same purpose as
     /// `preview_width_steps`. Run: `cargo test preview_arrangement -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_arrangement() {
         use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
         use crate::ui::layout;
@@ -1792,7 +1792,7 @@ mod tests {
     /// each of its states (live, unlimited, a token that expired before any
     /// data arrived). Run: `cargo test preview_five_providers -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_five_providers() {
         use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
         use crate::ui::layout;
@@ -1889,7 +1889,7 @@ mod tests {
     /// window provably reset (the `≈0%` estimate). Every layout and detail
     /// level. Run: `cargo test preview_stale_rows -- --ignored`.
     #[test]
-    #[ignore]
+    #[ignore = "writes design previews to %TEMP%"]
     fn preview_stale_rows() {
         use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
         use crate::ui::layout;
@@ -3054,7 +3054,7 @@ mod tests {
     /// label on; and the shape, which the app builds on a data update only.
     /// Run: `cargo test --release time_draw -- --ignored --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "a timing, for --release by hand"]
     fn time_draw() {
         use crate::config::schema::{ColumnFlow, Config, Layout, Surface, UIConfig, WidthScale};
         use crate::ui::layout::{compute, Shape};

@@ -35,7 +35,7 @@ mod tests {
     /// `cargo test preview_toast -- --ignored`. The header must read
     /// "AI Limits" with the app icon, not "Windows PowerShell".
     #[test]
-    #[ignore]
+    #[ignore = "shows a real toast"]
     fn preview_toast() {
         crate::platform::register_toast_identity();
         super::ToastNotifier::show("AI Limits", "Toast identity check").unwrap();

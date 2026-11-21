@@ -566,7 +566,7 @@ mod tests {
     /// `cargo test grok_live_fetch -- --ignored --nocapture`. Prints the
     /// parsed numbers only; the token never leaves the provider.
     #[tokio::test]
-    #[ignore]
+    #[ignore = "one live request with this PC's Grok CLI sign-in"]
     async fn grok_live_fetch() {
         let provider = GrokProvider::new(ProviderConfig {
             id: "grok".to_string(),

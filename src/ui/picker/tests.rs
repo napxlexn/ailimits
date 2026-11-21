@@ -1326,7 +1326,7 @@ fn wrapping_breaks_long_paths() {
 /// shape) and a repaint at 150%. `cargo test --release picker_input_cost
 /// -- --ignored --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "a timing, for --release by hand"]
 fn picker_input_cost() {
     let renderer = Rc::new(Renderer::new().expect("a system font"));
     let r = renderer.clone();
