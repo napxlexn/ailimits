@@ -1256,8 +1256,9 @@ function pgRender() {
     providers: PG_ROWS.filter((r) => pg.rows.has(r.id)).map((r) => Object.assign({}, r, { model: pgLabel(r.label) })),
   });
   /* The widget is drawn at 115% and kept whole on the glass: narrower where
-     the desk is narrow, and, beside the rail, shorter where the desk (as tall
-     as the rail) is short; stacked, the desk grows to the widget instead. Both
+     the desk is narrow, and, beside the rail, shorter where the desk (the
+     window's height, less a margin) is short; stacked, the desk grows to the
+     widget instead. Both
      read the viewport, so they are worked out again on every resize. */
   const desk = $("[data-pg-desk]");
   let k = 1.15;
@@ -1973,6 +1974,54 @@ if (typeof gsap !== "undefined" && !reduced) {
       jumpEnd = setTimeout(endJump, 1300);
     });
   });
+
+  /* The playground lands whole by itself. Wheel steps and the smooth scroll
+     rarely stop exactly where all of it (options and glass) is in view, so
+     when the wheel stops while the block is coming into view, more than half
+     of it in, it is brought the rest of the way, centred under the bar
+     (landing above). Only in the direction the reader was going, so a block
+     being left is never pulled back and the page can always be scrolled on
+     past it, a notch at a time; any wheel or key meanwhile takes over at
+     once. Only beside the desk, where all of it fits the window, and only
+     after the reader's own scrolling: not after a jump, a reload or a key
+     that did not scroll. */
+  if (lenis && !reduced) {
+    const block = $(".playground .pg"), bar = $(".top");
+    let idle = 0, dir = 0;
+    /* where the block will stand once the smooth scroll has caught up with
+       the wheel, and the way the reader was going: judged 220 ms after the
+       last notch or key, while the page is still gliding, so the block is
+       taken over mid-glide rather than after it */
+    const settle = () => {
+      idle = 0;
+      if (!block || document.documentElement.dataset.jump) return;
+      const centred = landing("playground");
+      if (centred == null) return;
+      const ahead = lenis.targetScroll - scrollY;
+      const box = block.getBoundingClientRect();
+      const top = box.top - ahead, bottom = box.bottom - ahead;
+      const under = bar ? bar.getBoundingClientRect().bottom : 0;
+      if (box.height > innerHeight - under - 24) return;
+      const seen = (Math.min(bottom, innerHeight) - Math.max(top, under)) / box.height;
+      const coming = dir > 0
+        ? bottom > innerHeight && top > under
+        : top < under && bottom < innerHeight;
+      if (!coming || seen < 0.5) return;
+      lenis.scrollTo(centred, { duration: 0.6, easing: (t) => 1 - Math.pow(1 - t, 3) });
+    };
+    const arm = (way) => {
+      dir = way;
+      clearTimeout(idle);
+      idle = setTimeout(settle, 220);
+    };
+    addEventListener("wheel", (e) => { if (e.deltaY && !e.ctrlKey) arm(Math.sign(e.deltaY)); }, { passive: true });
+    const keys = { ArrowDown: 1, PageDown: 1, " ": 1, ArrowUp: -1, PageUp: -1 };
+    addEventListener("keydown", (e) => {
+      const way = e.key === " " && e.shiftKey ? -1 : keys[e.key];
+      const typing = e.target instanceof HTMLElement && e.target.closest("input, textarea, select, [contenteditable]");
+      if (way && !typing) arm(way);
+    });
+  }
 
   /* An answer that opens below the fold is an answer nobody reads: the page
      stays where it was and the text arrives off screen. So opening one brings

@@ -492,40 +492,25 @@ input[type="range"] { width: 100%; accent-color: #d7dde2; }
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
   padding: 6px 10px; border-radius: 6px; }
 .pg-desk .aw { position: absolute; left: 56%; top: 44%; transform: translate(-50%, -50%); cursor: grab; }
-/* Beside the desk (981 and wider) the playground is one block clearly
-   shorter than the window: the options, at most 640 px and never taller than
-   the window under the bar, and the desk as tall as they are. A block as tall
-   as the screen showed whole at one exact scroll position, and the wheel
-   steps past it; this one stays whole over a few turns of the wheel, so it is
-   easy to land on (and its links land it in the middle, site.js). Where the
-   options do not fit (one column, a short window) the rail scrolls inside
-   itself, the widget in view beside it (pgRender lets the wheel through to
-   the rail only while it has something to scroll). Stacked (980 and under)
-   the desk leads the section and grows to the widget instead (pgRender). */
+/* Beside the desk (981 and wider) the playground is one block the height of
+   the window under the bar, less a margin above and below
+   (calc(100vh - 104px), at least 540 px): the glass as large as it always
+   was, and all of the block in view at once, which lets the page bring it to
+   the middle of the window when the wheel stops on it (site.js). The options
+   are no taller than the glass: where they are longer (a 1080p window), the
+   rail scrolls inside itself, the widget in view beside it (pgRender lets the
+   wheel through to the rail only while it has something to scroll). Stacked
+   (980 and under) the desk leads the section and grows to the widget instead
+   (pgRender). */
 @media (min-width: 981px) {
-  .pg-desk { min-height: 420px; }
-  .pg-rail { max-height: min(calc(100vh - 104px), 640px); overflow-y: auto;
+  .pg-desk { height: max(calc(100vh - 104px), 540px); }
+  .pg-rail { align-self: start; max-height: max(calc(100vh - 104px), 540px); overflow-y: auto;
     scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, 0.22) transparent; }
 }
-/* The options in two halves: the widget's shape (detail to model label) and
-   its look (palette to desktop). In one column the halves are not boxes at
-   all and the groups stand in the rail's own grid. */
-.pg-col { display: contents; }
-/* Wide enough (1200 and up, whatever the height): the halves side by side,
-   about 600 px tall, so every option and the widget are in view at once.
-   Each half is the one-column rail's width inside (256px holds Compact /
-   Medium / Expanded). */
-@media (min-width: 1200px) {
-  .pg { grid-template-columns: 578px 1fr; }
-  .pg-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 22px; align-items: start; }
-  .pg-col { display: grid; gap: 20px; }
-}
 /* A short window (a laptop, 860 px of page and less): the same options with
-   less air between them, some 80 px shorter, so the block still leaves the
-   wheel room to land on it whole. */
+   less air between them, so less of the rail is out of view. */
 @media (min-width: 981px) and (max-height: 860px) {
   .pg-rail { padding: 16px 22px; gap: 14px; }
-  .pg-col { gap: 14px; }
   .pg-rail .pg-group .hud { margin-bottom: 6px; }
   .pg-rail .pg-note { margin-top: 5px; }
   .pg-rail .seg button { padding-top: 5px; padding-bottom: 5px; }
