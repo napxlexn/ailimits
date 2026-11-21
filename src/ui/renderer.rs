@@ -907,11 +907,16 @@ impl Renderer {
         if let Some(reset_size) = reset_size {
             let reset_y = col.y + col.h - m.t(10.0);
             // Same slot ownership as the vertical layout, but the hover reason
-            // beats both (the user is asking "why").
+            // beats both (the user is asking "why"). Shown only while the
+            // pointer is on the column, it may take the column's whole width,
+            // and no more: a long one ("rate-limited, retrying") never runs
+            // over the next column (`fit_line`); the whole of it is in the
+            // panel's tooltip and the rows layouts.
             if let Some(text) = hovered_reason {
+                let text = self.fit_line(text, reset_size, col.w);
                 self.draw_text(
                     pixmap,
-                    text,
+                    &text,
                     col.x,
                     reset_y,
                     reset_size,
@@ -937,9 +942,10 @@ impl Renderer {
                     col.w,
                 );
             } else if let Some(fc) = forecast {
+                let fc = self.fit_line(fc, reset_size, name_room());
                 self.draw_text(
                     pixmap,
-                    fc,
+                    &fc,
                     col.x,
                     reset_y,
                     reset_size,
@@ -948,6 +954,40 @@ impl Renderer {
                     col.w,
                 );
             }
+        }
+    }
+
+    /// `text` as it fits `room` on one line at `size`: whole; else the part
+    /// before its first ", " ("rate-limited, retrying" -> "rate-limited");
+    /// else as many of that part's words as fit, then "…"; else as many of
+    /// its characters. Empty when not even one character fits.
+    fn fit_line(&self, text: &str, size: f32, room: f32) -> String {
+        let fits = |t: &str| self.text_width(t, size) <= room;
+        if fits(text) {
+            return text.to_string();
+        }
+        let head = text.split_once(", ").map_or(text, |(head, _)| head);
+        if fits(head) {
+            return head.to_string();
+        }
+        let words: Vec<&str> = head.split_whitespace().collect();
+        for n in (1..words.len()).rev() {
+            let cut = format!("{}…", words[..n].join(" "));
+            if fits(&cut) {
+                return cut;
+            }
+        }
+        let mut kept = String::new();
+        for c in head.chars() {
+            if !fits(&format!("{kept}{c}…")) {
+                break;
+            }
+            kept.push(c);
+        }
+        if kept.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{}…", kept.trim_end())
         }
     }
 
@@ -2508,6 +2548,53 @@ mod tests {
             ));
         }
 
+        // A row whose last answers were turned away (rate-limited) and whose
+        // data has aged, beside two live ones, in every layout: as it stands,
+        // and with the pointer on it, when its reason takes the reset slot.
+        // In a column the reason is held to the column, never written over
+        // its neighbours.
+        {
+            use crate::ui::layout::{compute, BodyLayout, Shape};
+            let mut three: Vec<ProviderData> = fixture.iter().take(3).cloned().collect();
+            three[0].updated_at = utc::now() - SignedDuration::from_secs(2 * 3600 + 30 * 60 + 30);
+            three[0].received_at = None;
+            let rows = widget_rows(&three, None, None);
+            let mut errors = HashMap::new();
+            errors.insert(ProviderId::Claude, "rate-limited, retrying".to_string());
+            for (name, ui) in every_layout() {
+                let shape = Shape::of(&ui, &rows, false, |t, s| renderer.text_width(t, s));
+                let win = compute(
+                    &ui.layout,
+                    &ui.detail,
+                    &ui.width_scale,
+                    &ui.column_flow,
+                    &shape,
+                );
+                let first = match &win.body {
+                    BodyLayout::Vertical { rows, .. } => rows[0],
+                    BodyLayout::Horizontal { cols } => cols[0],
+                    BodyLayout::Choose { .. } | BodyLayout::Unshown { .. } => unreachable!(),
+                };
+                let on_it = (first.x + first.w / 2.0, first.y + first.h / 2.0);
+                for (hname, cursor) in [("", None), ("-hover", Some(on_it))] {
+                    let mut pm =
+                        Pixmap::new(win.width.ceil() as u32, win.height.ceil() as u32).unwrap();
+                    renderer.draw(
+                        &mut pm,
+                        &win,
+                        &ComputedTheme::compute(&ui),
+                        &rows,
+                        0.45,
+                        &ui.detail,
+                        cursor,
+                        &HashMap::new(),
+                        &errors,
+                    );
+                    items.push((format!("rate-limited-{name}{hname}"), pm));
+                }
+            }
+        }
+
         // Rows of models Claude added later, in every layout, beside
         // Fable's: named and stepped down as the catalogue's rows are.
         let added = [
@@ -3328,6 +3415,32 @@ mod tests {
         for (title, line) in [(CHOOSE_TITLE, CHOOSE_LINE), (UNSHOWN_TITLE, UNSHOWN_LINE)] {
             assert!(renderer.text_width(title, 12.0) <= area.w, "{title}");
             assert!(renderer.text_width(line, META_SIZE) <= area.w, "{line}");
+        }
+    }
+
+    /// A line held to a column: whole when it fits, then the part before its
+    /// comma, then whole words and "…", then characters; never wider than
+    /// its room. The rate-limit reason under an Expanded column is the case
+    /// that ran over the next column.
+    #[test]
+    fn a_line_held_to_a_column_never_runs_past_it() {
+        let r = Renderer::new().expect("a system font");
+        let size = 11.0;
+        let text = "rate-limited, retrying";
+        let w = |t: &str| r.text_width(t, size);
+        assert_eq!(r.fit_line(text, size, w(text)), text);
+        assert_eq!(r.fit_line(text, size, w("rate-limited")), "rate-limited");
+        assert_eq!(
+            r.fit_line("state database busy, retrying", size, w("state database…")),
+            "state database…"
+        );
+        let cut = r.fit_line(text, size, w("rate-l…"));
+        assert_eq!(cut, "rate-l…");
+        assert_eq!(r.fit_line(text, size, 1.0), "");
+        // Whatever the room, what comes back fits it.
+        for room in (4..120).map(|x| x as f32) {
+            let line = r.fit_line(text, size, room);
+            assert!(w(&line) <= room, "{line:?} in {room}");
         }
     }
 

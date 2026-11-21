@@ -356,6 +356,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **A long reason under a vertical bar stays under its own bar.** Hovering
+  an Expanded column whose data had aged showed why ("rate-limited,
+  retrying") on one line across the next column; it is now held to its
+  column ("rate-limited"), and so is the forecast. The whole text is still
+  in the taskbar panel's tooltip and in the rows layouts.
 - **The widget no longer freezes on a busy PC.** The window library could
   make the widget wait, for seconds on a loaded machine, for an update that
   was announced before it was handed over. Fixed with the upstream fix of
