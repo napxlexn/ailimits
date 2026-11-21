@@ -11,8 +11,14 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │       run() builds it, the event loop is one App::handle() call
    ├── app/events.rs          the event loop's arms: provider updates, windows,
    │                          timers, shutdown
-   ├── app/menu.rs            menu actions: toggles, keys and usage tokens,
-   │                          the Cursor sign-in
+   ├── app/menu.rs            menu actions: the look, the toggles, the
+   │                          indicator, the interval, opening the picker
+   ├── app/sign_in.rs         each provider's Sign-in in the picker: the source
+   │                          chosen, a key or usage token pasted (a usage
+   │                          token checked first) or removed, Cursor's
+   │                          sign-in; results said in the window (a toast
+   │                          while it is closed); settle_sources_once at
+   │                          start (only a config from before the choice)
    ├── app/menu_preview.rs    the look item under the pointer shown on the
    │                          widget, the panel and the tray before a click;
    │                          back as it was when the menu closes without one
@@ -54,6 +60,8 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── ui/theme.rs            all colors (the ONLY source of colors), the
    │                          picker's levels, the tray's and the panel's inks
    ├── ui/context_menu.rs     native muda menu
+   ├── ui/window.rs           the widget window's drag (it starts past 4 px),
+   │                          the Shift magnet to the edges, the work-area clamp
    ├── ui/tray.rs             tray icon, shared glyph + tooltip painting
    ├── ui/taskbar_panel.rs    taskbar overlay indicator (layered window)
    ├── ui/visual_baseline.rs  (tests only) the pinned look of every surface
@@ -61,6 +69,8 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── platform/win.rs        Win32 glue: taskbar/tray WinEvent watch,
    │                          layered presents, tray-icon promotion, the
    │                          fullscreen check, waking the running instance
+   ├── platform/win_uia.rs    where the taskbar's app buttons end and the tray
+   │                          begins, asked of UI Automation (no pixel scan)
    ├── updater.rs             daily GitHub Releases poll (installer copies only),
    │                          SHA-256 + Ed25519 signature check, silent install
    │                          (menu: Automatic updates)
@@ -78,8 +88,13 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
                               per limit window, kept in alerts.json)
 ```
 
-`tools/release_sign.rs` (the Cargo example `release-sign`) makes and
-checks release signatures; it is never built into the app.
+`bin/ailimits-auth.rs` is the console tool `ailimits-auth.exe` (status;
+storing and removing keys and usage tokens; Cursor's login and logout). It
+uses the library's providers and config but not the widget's event loop,
+and it never calls `follow_windows_proxy`, so it follows only the
+`HTTP(S)_PROXY` variables. `tools/release_sign.rs` (the Cargo example
+`release-sign`) makes and checks release signatures; it is never built into
+the app.
 
 ## Data flow
 
@@ -101,15 +116,17 @@ checks release signatures; it is never built into the app.
 `SharedProviders` is an `Arc<RwLock<Vec<ProviderSlot>>>` shared with the
 scheduler, where `ProviderSlot { serial, provider }`. Menu clicks travel the
 same way: `muda::MenuEvent` → proxy → `UserEvent::Menu` → handlers mutate the
-config, rebuild the providers whose `BuildKey` changed (or, for a change of
-account: a Cursor sign-in or sign-out, a key or usage token pasted or
-removed, a change of method, the Enabled switch, a consent given or taken
-back, the one provider concerned, with a new serial), save the config, and
-request a redraw. A rebuilt provider's cached numbers, last error, trend and
-alert marks are cleared, and its row reads Loading until the first answer.
-The other providers keep their instances, and with them what they keep
-between cycles: gh's answer, Cursor's plan and refusal count, Antigravity's
-project.
+config, save it, and request a redraw. The picker's actions (below) rebuild
+the providers whose `BuildKey` changed (or, for a change of account: a
+Cursor sign-in or sign-out, a key or usage token pasted or removed, another
+source chosen in a Sign-in, a provider switched on or off by its rows, a
+consent given or taken back, the one provider concerned, with a new serial)
+and fetch each rebuilt one at once. When its source or account changed, a
+rebuilt provider's cached numbers, last error, trend and alert marks are
+cleared, and its row reads Loading until the first answer; a rebuild for
+Grok Bot alone keeps them. The other providers keep their instances, and
+with them what they keep between cycles: gh's answer, Cursor's plan and
+refusal count, Antigravity's project; a rebuilt instance starts those over.
 
 `surface_rows` takes the active data as it came; `rows::visible_rows` ages
 each row on its own (a provider's own row by its own windows, an extra row
@@ -147,12 +164,15 @@ are matched by `WindowId` ahead of the widget's arms and go to
 `PickerAction`s. `choices::apply` turns each into a config change plus an
 `Applied` (rebuild and fetch a provider, re-read the models, save and
 re-lay, close); the app then updates the widget, the panel, the tray and the
-menu at once and hands the picker a fresh `PickerInput`. The picker never
-touches a file. It opens from the menu (*Rows and models...*), from a click
-on the widget's "Choose what to show" or "Nothing to show yet", by itself at
-start while `[reads] pending` owes the welcome or the update notice, and
-from the Providers menu when a provider never allowed is ticked (on that
-provider's question). Opened by itself it opens quietly
+menu at once and hands the picker a fresh `PickerInput`. The Sign-in
+block's actions (choose a source, paste, remove, Cursor's sign-in, cancel,
+sign-out) go to `app/sign_in.rs` instead, which reaches the clipboard,
+Credential Manager and the browser and puts its result in the
+`PickerInput` (`choices::SignInState`). The picker never touches a file.
+It opens from the menu (*Rows and models...*), from a click on the widget's
+"Choose what to show" or "Nothing to show yet", and by itself at start
+while `[reads] pending` owes the welcome or the update notice. Opened by
+itself it opens quietly
 (`PickerWindow::open_quietly`, no activation), and waits while a fullscreen
 window fills its monitor (`platform::foreground_fills_its_monitor`); it
 opens at the next change of the foreground window, the next provider
@@ -162,7 +182,8 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
 ## Key decisions
 
 - **softbuffer + tiny-skia, not DirectX/OpenGL** — for bars and text a GPU
-  is pure overhead; the framebuffer copy is trivially cheap, idle CPU is 0%.
+  is pure overhead; the framebuffer copy is trivially cheap (0.012% of one
+  core at idle for 0.7.0, see Resource footprint).
 - **Blur via `SetWindowCompositionAttribute` ACCENT_ENABLE_BLURBEHIND (3)** —
   acrylic (4) has a known DWM bug (drops blur on drag/monitor change).
   The accent is re-applied off→on after drag end, on focus, and on DPI
@@ -178,8 +199,9 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   running widget is shown and raised without activation, and a welcome or
   update notice that was waiting opens.
 - **One usage request per provider per cycle.** The helper requests
-  (Cursor's plan hourly, Grok Bot only while its row is chosen, the session
-  refresh near its expiry, Antigravity's project once a session, the
+  (Cursor's plan hourly, ten minutes after one that brought none, Grok Bot
+  only while its row is chosen, the session refresh near its expiry and
+  never after it, Antigravity's project until an answer names it, the
   per-model fallback only after an unusable summary, a refused usage token
   paused 30 minutes, gh at most every 15 minutes and once more right after
   a kept token is refused) are listed in PROVIDERS.md, "Requests per cycle".
@@ -241,11 +263,16 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   the keyring, `gh` or the network. `provider_set` also sets
   `ProviderConfig::tool_files` from `sign_in` alone (never saved), and each
   provider checks it before any source that belongs to the other tool: its
-  token file, its Credential Manager entry, `gh auth token`. A provider set
-  up only with the app's own sign-in (a pasted key or usage token, the
-  menu's Cursor sign-in) uses that and never falls back to the tool's
-  sign-in; its settings file is still read for the model label under
-  `[reads] tool_settings`, as for every provider that runs. Unticking every
+  token file, its Credential Manager entry, `gh auth token`. Within what is
+  allowed, `ProviderConfig::auth_method` (`AuthMethod::{Subscription,
+  ApiKey, UsageToken}`, the source chosen in the provider's Sign-in) picks
+  the one source the provider uses: a pasted key or usage token is never
+  backed by the tool's sign-in, nor the tool's sign-in by a stored token. A
+  provider set up only with the app's own sign-in (a pasted key or usage
+  token, Cursor's own sign-in) never reads the tool's sign-in; its settings
+  file is still read for the model label under `[reads] tool_settings`, and
+  its newest session under `last_session`, as for every provider that
+  runs. Unticking every
   row of a provider in the picker calls `Config::revoke`. The text of each
   question comes from `consent::READ_INFO`; tests hold its hosts to the URLs
   in every file under `src/providers` (both ways: every host called is named,
@@ -287,8 +314,10 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   there and shows "AI Limits could not start." with the file's path.
 - **The default look is pinned.** With `[ui.rows]` and `[ui.model]` unset,
   `rows::visible_rows` yields one row per provider carrying its data
-  untouched, and the panel's tooltip is the old single line. See "Visual
-  baseline" below.
+  untouched. The panel's tooltip is the one default that changed: with
+  `[ui.tooltip]` unset (Percent and Reset time both on) it gives each
+  provider a line with its reset; Percent alone gives 0.7.0's single line.
+  See "Visual baseline" below.
 - **Model names are held to real widths, not a character count.**
   `rows::NAME_SLOTS` lists the narrowest places the renderer draws a model
   name (width and font size); `name_fits` measures with
@@ -301,7 +330,8 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `PickerEvent`s and returns `PickerAction`s plus a `PickerScene` of shapes,
   all unit-tested without a window; `PickerWindow` presents it through
   softbuffer like the widget, repaints only on input and has no timer. It
-  reads the clipboard only on Ctrl+V into a name field being edited. It
+  reads the clipboard only on Ctrl+V into a name field being edited (a
+  Sign-in's paste is read by the app, `app/clipboard.rs`). It
   follows the apps' light or dark mode (`AppsUseLightTheme`), high contrast
   (the system colors) and Windows' Text size; its question scrolls with the
   buttons always in view; a row's description shows on hover and on keyboard
@@ -396,7 +426,8 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   (9eada81 and 387fc59 change rules, not drawing). They change only on the
   owner's decision (`UPDATE_PINNED_BASELINE=1`); never re-record them to
   make a test pass.
-- **Other groups** (`picker`, `widget-rows`, `tooltip-rows`) cover new
+- **Other groups** (`picker`, `widget-rows`, `tooltip-rows`,
+  `panel-numbers`: the panel's percentage, reset time or both) cover new
   looks; they are re-recorded with `UPDATE_BASELINE=1` only for an intended
   change, said in the commit.
 - **The font.** Every hash depends on the UI font (the first of
@@ -410,19 +441,22 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
 
 ## Resource footprint (measured, not estimated)
 
-Audited 2026-08-23 with `bench/perf_audit.ps1` (5 min at 1 Hz, running
-`release-min`, Win11 26200, Ryzen 9 9950X3D / 32 threads, elevated). CPU is
-exact kernel accounting, not sampling. Report:
-`bench/results/perf-audit-published-2026-08-23.json`. The 2026-07-08 run, kept
-beside it as `perf-audit-published-2026-07-08.json`, read 0.024% of one core
-and 61 MB — the same window on the same machine, five releases earlier.
-
-Re-measured 2026-09-23 for 0.7.0, 254 s on a quiet machine (a video playing,
+The reference figures, quoted in the README and CLAUDE.md, are the 0.7.0
+measurement of 2026-09-23: 254 s on a quiet machine (a video playing,
 nothing else; unelevated, so the timer-resolution and SRUM rows are carried
 from the August run; `bench/results/perf-audit-2026-09-23_0424.json`). The
 panel had asked the shell for the bar's room at least once, which is the
-state it is in whenever it is on screen. 0.7.1 is measured the same way
+state it is in whenever it is on screen; about 20 MB of the memory is UI
+Automation, loaded for that question. 0.7.1 is measured the same way
 before its release.
+
+The earlier column is the 0.6.3 audit of 2026-08-23 with
+`bench/perf_audit.ps1` (5 min at 1 Hz, running `release-min`, Win11 26200,
+Ryzen 9 9950X3D / 32 threads, elevated; report
+`bench/results/perf-audit-published-2026-08-23.json`), before the panel
+asked UI Automation anything. CPU is exact kernel accounting, not sampling.
+The 2026-07-08 run, kept beside it as `perf-audit-published-2026-07-08.json`,
+read 0.024% of one core and 61 MB, five releases before that.
 
 | Metric | 0.7.0 (2026-09-23) | 0.6.3 (2026-08-23) |
 |---|---|---|

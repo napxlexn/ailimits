@@ -25,13 +25,14 @@ Notable, user-visible changes. Dates are release dates.
   (Grok Build) can be a row of its own. Asked for in #1 by KritBlade.
 - **Cursor.** The subscription's included usage, labelled with the plan,
   from the dashboard service the editor itself calls. Cursor has a sign-in
-  of the app's own: right-click, **Providers**, **Cursor**, *Sign in to
+  of the app's own: in *Rows and models*, Cursor's *Sign-in*, *Sign in to
   Cursor...* (or `ailimits-auth login cursor`) opens Cursor's own sign-in
   page in the browser. Cursor has no sign-in for other apps, so the app
   signs in as the Cursor editor's client; it keeps that session (about 60
   days) in Windows Credential Manager (`cursor_session`) and renews it in its
-  last week, at most once a day. Nothing of the editor is read for it, and
-  the editor's own sign-in is never touched. *Sign out of Cursor* or
+  last week, at most once a day, never once it has expired (the row then
+  asks for a new sign-in). Nothing of the editor is read for it, and the
+  editor's own sign-in is never touched. *Sign out* there or
   `ailimits-auth logout cursor` forgets the session; the uninstaller removes
   it too. Grok Bot's share is an extra row, asked for only while that row is
   chosen.
@@ -52,7 +53,8 @@ Notable, user-visible changes. Dates are release dates.
   dark mode, high contrast and Windows' text size, and puts the IME
   candidates beside the caret. With the rows and labels left as they are,
   the widget, the panel and the tray look as in 0.7.0, except for stale and
-  estimated data (see Changed).
+  estimated data and the panel's tooltip, which now gives each provider a
+  line with its reset time (see Changed and the tooltip entry below).
 - **Extra rows where a provider meters a part on its own.** Claude's Opus,
   Sonnet and Fable weeks (on plans that have them; Fable is the "Current
   week (Fable)" of Claude Code's `/usage`), Antigravity's Claude and GPT
@@ -61,10 +63,12 @@ Notable, user-visible changes. Dates are release dates.
   the rows it reports, so a plan without an Opus or Sonnet week of its own
   (where they count toward the weekly limit) lists Fable alone; a row chosen
   earlier stays listed so it can be unticked, and Grok Bot, asked for only
-  while chosen, is always offered. An extra row's numbers
-  never become its provider's headline, reset or alert, and a reset of its
-  own never greys the provider's row. The taskbar panel and the tray icon
-  keep one entry per provider.
+  while chosen, is always offered. Fable's, Grok Build's and Grok Bot's
+  numbers never become their provider's headline, reset or alert, and a
+  reset of their own never greys the provider's row; Claude's Opus and
+  Sonnet weeks and Antigravity's Claude and GPT pool are their provider's
+  own windows, as in 0.7.0, so a spent one can lead the provider's row. The
+  taskbar panel and the tray icon keep one entry per provider.
 - **Model labels.** Three separate ticks - Model, Version, Effort - add the
   model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
   chosen separately for the widget and the tooltip. The model comes either
@@ -77,8 +81,8 @@ Notable, user-visible changes. Dates are release dates.
   model chosen for its Agent ("Grok 4.7 · high"), taken from the editor's
   state database as one value; nothing else of it is read, and nothing is
   ever written or created in Cursor's folder. The settings file is read for
-  every tool that runs, also one set up with a pasted key or the menu's
-  Cursor sign-in, and only once you allow it. A tool left on its default
+  every tool that runs, also one set up with a pasted key or token or
+  Cursor's own sign-in, and only once you allow it. A tool left on its default
   model, which it does not write down, shows its effort alone. Expanded
   rows and the columns layout give the label a line of its own, Medium puts
   it beside the reset (on a line of its own where that leaves too little
@@ -106,7 +110,8 @@ Notable, user-visible changes. Dates are release dates.
   another version. Releases are published only after the files are checked.
 - **The proxy set in Windows is followed.** The providers, the Cursor
   sign-in and the updater use the proxy from Settings, Network, Proxy ("Use
-  a proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` still win. A proxy script
+  a proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` still win, and
+  `ailimits-auth` follows only those. A proxy script
   (PAC) is not followed, and a network that inspects TLS with its own root
   certificate is not trusted: its rows say so ("untrusted certificate,
   retrying").
@@ -119,10 +124,11 @@ Notable, user-visible changes. Dates are release dates.
   and a dash when it is not known. The panel keeps its size, and the time is
   repainted only when it reads differently. Asked for in #2 by JCauz.
 - **Antigravity says what renews its sign-in.** The row reads the
-  Antigravity CLI's sign-in (`agy`), whose token lasts about an hour and is
-  renewed only when `agy` runs; the question, the hover ("run agy") and the
-  docs now say so, where they said "run Antigravity" (the editor does not
-  renew it). A bucket's own window is read: a weekly pool stays the long
+  Antigravity CLI's sign-in (`agy`), so it needs that CLI signed in on this
+  PC; the token lasts about an hour and is renewed only when `agy` runs. The
+  question, the hover ("run agy") and the docs now say so, where they said
+  "run Antigravity" (the editor keeps a sign-in of its own, which is never
+  read, and opening it does not renew this one). A bucket's own window is read: a weekly pool stays the long
   window, a five-hour one would be a session window of its own.
 - **The tooltip's percentage and reset time, chosen.** Two ticks in *Rows
   and models*, Percent and Reset time, decide what each row of the taskbar
@@ -160,8 +166,8 @@ Notable, user-visible changes. Dates are release dates.
   the ticked ones, *Cancel* reads nothing and leaves the choice to you.
   Later, a tool's own question offers *Allow all* while other tools found
   by their own folder have not been allowed yet, and switches them on; a
-  tool you allowed and then switched off in the Providers menu is left
-  alone. The welcome and the update notice take no keyboard
+  tool already allowed is left as it is. The welcome and the update notice
+  take no keyboard
   focus, so a stray Enter allows nothing, keep their buttons in view at any
   size and scaling, and wait while a fullscreen app is in front. A fresh
   install also switches every provider off, so an older version started on
@@ -175,10 +181,36 @@ Notable, user-visible changes. Dates are release dates.
   numbers are cleared too. Unticking Model, Version and Effort takes back
   the settings and session reads, and switching back to "As set in the
   tool" takes back the session read; the next tick asks again. A key or
-  usage token you paste, or the menu's Cursor sign-in, allows that alone:
-  such a provider never falls back to the tool's own sign-in.
+  usage token you paste, or Cursor's sign-in, allows that alone: such a
+  provider never falls back to the tool's own sign-in.
+- **Sign-in moves into *Rows and models*; the source you choose is the only
+  one.** The context menu's Providers submenu is gone. Each provider has a
+  *Sign-in* line under its rows that says where its sign-in comes from and
+  how it went ("Claude Code · works"), and opens to choose: Claude Code's
+  sign-in, a usage token or an API key you paste (Claude); Codex CLI's
+  sign-in or a usage token (Codex); GitHub CLI's sign-in or a fine-grained
+  token you paste (Copilot); the CLI's own sign-in (Antigravity, Grok);
+  *Sign in to Cursor...*, with a wait that *Cancel* ends, then *Sign out*
+  (Cursor). Only the source chosen is read or sent; none stands in for
+  another when it fails, so a refused pasted usage token says so ("usage
+  token rejected", now for Claude as for Codex) and the hover on a key or
+  token of your own says to paste a new one in *Rows and models*. A usage
+  token is checked with the provider before it is stored (Claude, Codex); a
+  key is stored, and the row says whether it works. *Remove* is offered
+  only while something is stored. What an action came to is said in the
+  window, and as a toast only while the window is closed. A provider runs
+  while a row of it is ticked, where the menu had an Enabled tick. Once,
+  on the first start after the update, a provider left on the tool's
+  sign-in while a usage token (Claude, Codex) or a Copilot token of yours
+  is stored is set to that token, the lead such a token had before; after
+  that the source you choose stays, whatever is stored. Claude with the API
+  key chosen and none stored hides its row instead of saying "check the
+  key".
 - **What looks different from 0.7.0, on purpose.** With the default rows,
-  everything is drawn as in 0.7.0 except stale and estimated data:
+  everything is drawn as in 0.7.0 except the panel's tooltip, which by
+  default gives each provider a line with its reset time (Percent and Reset
+  time both ticked; untick Reset time for 0.7.0's one line), and stale and
+  estimated data:
   stale data greys as soon as it misses its refresh, even while its reset
   is still ahead (ac17bd2); data counts as stale once the update interval
   plus a minute has passed, never under 5 minutes, instead of after a fixed
@@ -199,10 +231,12 @@ Notable, user-visible changes. Dates are release dates.
   expired" instead of hiding it, and a stored usage token that stopped
   working keeps its row, so the cause stays visible.
 - **One usage request per provider per cycle.** Cursor asks for its plan at
-  most hourly and for Grok Bot only while that row is chosen; Antigravity
-  asks for its project once a session and its second quota endpoint only
-  after an unusable answer, never after a rate limit, a server error or no
-  answer; a stored usage token the server refused is not sent again for 30
+  most hourly (again ten minutes after a request that brought none) and for
+  Grok Bot only while that row is chosen; Antigravity asks for its project
+  until an answer names it, then keeps it for the session, and asks its
+  second quota endpoint only after an unusable answer, never after a rate
+  limit, a server error or no answer; a stored usage token the server
+  refused is not sent again for 30
   minutes; `gh` runs at most once every 15 minutes, failures included, and
   once more right away when GitHub refuses the token it gave earlier: gh
   2.103 and newer sign in with expiring tokens that `gh auth token` renews,
@@ -214,7 +248,8 @@ Notable, user-visible changes. Dates are release dates.
   once per update, but the risk is yours.
 - **Copilot reads the newer usage answer.** Plans billed in AI Credits
   (GitHub's usage-based billing since June 2026) may count in decimals; a
-  quota with nothing in it (`has_quota: false`) is left out. The Copilot
+  quota with nothing in it (`has_quota: false`) is left out, and when every
+  quota is unlimited or left out the row says "no limited quota". The Copilot
   CLI's `settings.json` may hold comments and trailing commas, as GitHub
   documents it; the model label reads past them.
 - **A threshold alert comes once per limit window.** The toast and the
@@ -231,8 +266,8 @@ Notable, user-visible changes. Dates are release dates.
   by itself, and the next start says so once. Store, Scoop, portable and
   self-built copies have no *Automatic updates* item, as something else
   updates them.
-- **Pasting a key or usage token checks it first.** From the menu, only a
-  secret of the kind asked for is taken (`sk-ant-...`; `ghp_...`,
+- **Pasting a key or usage token checks it first.** In *Rows and models*,
+  only a secret of the kind asked for is taken (`sk-ant-...`; `ghp_...`,
   `github_pat_...`, `gho_...`, `ghu_...` or a classic GitHub token; a
   ChatGPT token `eyJ...`, now also when it is longer than 500 characters);
   anything else is refused without being sent, and the message never quotes
@@ -256,7 +291,8 @@ Notable, user-visible changes. Dates are release dates.
   `%USERPROFILE%\.gemini\oauth_creds.json` was a fallback when Antigravity's
   own sign-in (Windows Credential Manager, `gemini:antigravity`) had no
   usable token. Google stopped serving individual, Google AI Pro and Ultra
-  accounts through Gemini CLI on June 18, 2026; run Antigravity once instead.
+  accounts through Gemini CLI on June 18, 2026; run `agy`, the Antigravity
+  CLI, instead.
   The `.gemini` folder still marks Antigravity as possibly installed.
 
 ### Fixed
@@ -274,7 +310,9 @@ Notable, user-visible changes. Dates are release dates.
   another `.exe` a release might carry.
 - **Claude no longer reads "token expired" for a server error or when
   offline.** A 5xx or Anthropic's 529 reads "HTTP 529, retrying", no answer
-  "offline, retrying"; "token expired" is left for a refused token.
+  "offline, retrying"; "token expired" is left for a Claude Code sign-in
+  that was refused, has expired or cannot be read (a refused pasted usage
+  token reads "usage token rejected").
 - **Copilot**: `gh` was run every minute when nobody was signed in, and is
   now asked at most every 15 minutes; it is asked for github.com only
   (`gh auth token --hostname github.com`), so a GitHub Enterprise token is
@@ -303,8 +341,11 @@ Notable, user-visible changes. Dates are release dates.
   or usage token, or a consent given or taken back is dropped when it lands.
 - **`ailimits-auth status` changes nothing**: it no longer creates or sets
   aside `config.toml`, and reads another tool's sign-in only where the
-  widget may. `set`, `remove`, `set-usage-token` and `login` refuse a config
-  they cannot read instead of replacing it.
+  widget may. None of the commands replaces a config it cannot read: `set`
+  and `set-usage-token` store nothing then; `remove` still removes the key
+  and leaves the config as it is; `login` keeps the session it got and says
+  the config could not be updated. `set` and `set-usage-token` make what
+  they store the provider's source (`api_key`, `usage_token`).
 - **The TLS libraries are updated** for the October 2026 advisories.
 - **Libraries brought up to date** (the menu, tray, drawing, settings-file
   and Windows-binding crates among them; the installer is built with Inno
@@ -315,11 +356,14 @@ Notable, user-visible changes. Dates are release dates.
 ### Going back to 0.7.0
 
 Not supported. 0.7.0 cannot read a cache that has Grok or Cursor in it, so
-it shows no cached readings, and when it saves its settings it drops
-`[ui.rows]`, `[ui.model]`, `[reads]` and the Grok and Cursor entries. Back on
-0.7.1, the providers 0.7.0 had switched on keep reading and the update
-notice shows once more; the rows, labels, names, Grok and Cursor are chosen
-again (the Cursor sign-in stays in Credential Manager).
+it shows no cached readings. It keeps the Grok and Cursor entries in the
+config but shows neither, and when it saves its settings it drops
+`[ui.rows]`, `[ui.model]`, `[ui.tooltip]`, `[ui.panel]` and `[reads]`, and
+writes a usage token's source as `subscription`. Back on 0.7.1, the
+providers switched on in the config keep reading (Grok and Cursor among
+them, if they were on; the Cursor sign-in stays in Credential Manager), the
+update notice shows once more, a stored usage token or Copilot token is
+the source again, and the rows, labels and names are chosen again.
 
 ## 0.7.0 - 2026-09-23
 

@@ -57,11 +57,12 @@ indicator = "tray"
 # Automatic updates (menu: Automatic updates). Only a copy our installer put
 # on disk updates itself; a Store, Scoop, portable or self-built copy never
 # asks GitHub anything, and its menu has no such item. When true, the app
-# checks GitHub for a newer release (~30 s after start, then daily),
-# downloads the installer and checks both the SHA-256 GitHub publishes for
-# it and the release's Ed25519 signature, waits until you have been away for
-# 5 minutes (no input, or the session locked), installs it silently and
-# starts again. A version whose update did not finish is not tried again by
+# checks GitHub for a newer release (~30 s after start, then daily). A
+# newer one waits until you have been away for 5 minutes (no input, or the
+# session locked); then the installer is downloaded and checked against
+# both the SHA-256 GitHub publishes for it and the release's Ed25519
+# signature, and installed silently if you are still away (otherwise it
+# waits again); the app starts again afterwards. A version whose update did not finish is not tried again by
 # itself; the next start says so once. Missing in old configs → true.
 auto_update = true
 # Manual nudge for the panel's position, in pixels, applied after the
@@ -196,19 +197,6 @@ reset   = true
 percent = true
 reset   = true
 
-# What each row of the taskbar panel shows (menu: Rows and models...,
-# Percent and Reset time, Taskbar column): the percentage with its bar (as
-# in 0.7.0), the time left until the limit the row shows resets in the
-# bar's place ("25%  2h14"), or the time alone before the bar ("2h14 ▬▬").
-# Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the row's own
-# reset is not known. Never neither. Written only once changed; without
-# it, the percentage alone. The panel keeps its size either way; while it
-# shows a time it repaints when the time next reads differently (once a
-# minute, once an hour past a day), and asks the shell nothing for it.
-[ui.panel]
-percent = true
-reset   = true
-
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"
 # is a legacy id, renamed to "antigravity" on load). A default provider missing
@@ -216,9 +204,16 @@ reset   = true
 # wrote the file did not know it, and ticking it asks first.
 id = "claude"
 enabled = true
-# Method: "subscription" (default) or "api_key" — only Claude has a choice.
+# Where the sign-in comes from: chosen under the provider's rows in Rows
+# and models (Sign-in). Only this source is used, never another as a
+# fallback. "subscription" (default): the tool's own sign-in (Claude Code,
+# Codex CLI, GitHub CLI, ...). "usage_token": a usage token you pasted
+# (Claude, Codex). "api_key": a key you pasted (Claude's API key, Copilot's
+# fine-grained token). Antigravity, Grok and Cursor have one source each.
+# An older version reads "usage_token" as "subscription".
 auth_method = "subscription"
-# Credential Manager key label; empty for the subscription method.
+# Credential Manager label of the pasted key with "api_key"
+# (claude_api_key, copilot_pat); empty otherwise.
 credential_label = ""
 # Notification threshold, %.
 alert_threshold = 80
@@ -248,10 +243,10 @@ auth_method = "subscription"
 alert_threshold = 80
 
 [[providers]]
-# Cursor: only the widget's own session (menu: Providers > Cursor > Sign in
-# to Cursor..., or ailimits-auth login cursor), kept in Credential Manager.
-# Nothing of the Cursor editor is read for it. The row stays hidden until
-# you sign in.
+# Cursor: only the widget's own session (Rows and models: Cursor, Sign-in,
+# Sign in to Cursor..., or ailimits-auth login cursor), kept in Credential
+# Manager. Nothing of the Cursor editor is read for it. The row stays
+# hidden until you sign in.
 id = "cursor"
 enabled = true
 auth_method = "subscription"
@@ -292,12 +287,12 @@ on_startup = ""
 # before it is allowed here, and each is asked once, naming the file and the
 # only hosts the token goes to (see "What is read, and when" below).
 [reads]
-# Providers whose sign-in may be read. Ticking a provider in the picker or
-# in the Providers menu asks first; unticking every row of a provider in the
-# picker removes it from here again (and switches it off).
+# Providers whose sign-in may be read. Ticking a provider's row in the
+# picker asks first; unticking every row of a provider in the picker
+# removes it from here again (and switches it off).
 sign_in       = ["claude", "codex", "grok"]
 # Providers set up only with the app's own sign-in: a key or usage token you
-# pasted (kept in Credential Manager) or the menu's Cursor sign-in. They use
+# pasted (kept in Credential Manager) or Cursor's own sign-in. They use
 # that and never the tool's sign-in; when it is removed they show nothing
 # rather than fall back to the tool's sign-in. Their settings file is still
 # read for the model label when tool_settings allows it, and their newest
@@ -315,6 +310,11 @@ last_session  = false
 # A one-time window still owed: "welcome" (fresh install), "update_notice"
 # (the first start after updating from 0.7.0 or older), or "none".
 pending       = "none"
+# The sign-in sources were settled, once (see "Secrets" below): a key or
+# token pasted before the source could be chosen kept the lead it had.
+# Never again after that, so a source chosen in the window stays. Written
+# only when true; a fresh install writes it at once.
+sources_settled = true
 ```
 
 ## Secrets
@@ -327,25 +327,40 @@ in the Windows Credential Manager under service `ailimits`:
 | `claude_api_key` | Claude API key (the api_key method) |
 | `claude_usage_token` | manual Claude subscription usage token |
 | `codex_usage_token` | manual ChatGPT/Codex usage token |
-| `copilot_pat` | GitHub PAT (used instead of the gh CLI) |
-| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (menu: *Sign in to Cursor...* / *Sign out of Cursor*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
+| `copilot_pat` | GitHub fine-grained token (the "api_key" source, instead of the gh CLI) |
+| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Rows and models, Cursor's Sign-in: *Sign in to Cursor...* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
 The installer's uninstaller removes all five (with `ailimits-auth`, locally,
 no network). A Microsoft Store copy has no uninstall step of ours: before
-removing it, use the menu's *Sign out of Cursor*, *Remove key* and *Remove
-usage token*, or delete the `ailimits` entries under *Windows Credentials*
-in Credential Manager.
+removing it, use *Sign out* and *Remove* in each provider's Sign-in in Rows
+and models (*Remove* acts on the source chosen, so choose each pasted source
+in turn), or delete the `ailimits` entries under *Windows Credentials* in
+Credential Manager.
 
-A key or usage token pasted from the menu is taken only in the shape of what
+A key or usage token is pasted in Rows and models: in the provider's
+Sign-in, with its source chosen, *Paste token from clipboard* (*Paste key
+from clipboard* for Claude's API key). It is taken only in the shape of what
 was asked for: a Claude API key or usage token starts `sk-ant-`; a Copilot
 token is `ghp_...`, `github_pat_...`, `gho_...`, `ghu_...` or a classic
 40-character hex token; a Codex usage token is a JWT (`eyJ...`, three parts).
 10 bytes to 8 KB, no spaces. The message says what was expected and never
 quotes the clipboard, which is never logged. A usage token is then checked
 with one request to the same host the provider sends it to: refused (401/403)
-it is not stored; with no answer that says either way it is stored with a
-toast "stored, but not checked: ...". A second paste or a removal while one
-is checked replaces it.
+it is not stored; with no answer that says either way it is stored with the
+note "Stored, but not checked: ...". A key is stored without a check, and
+the row says whether it works. What came of it is said in the window, and
+as a toast only while the window is closed. A second paste or a removal
+while one is checked replaces it. A key or token stored sets the provider
+to that source and switches it on.
+
+Once, for a config from before the source could be chosen (`[reads]
+sources_settled` not yet true), the first start sets a provider left on
+`"subscription"` while a usage token (Claude, Codex) or a Copilot token is
+stored to that token (`app/sign_in.rs`, `settle_sources_once`): such a
+token took the lead over the tool's sign-in then, and keeps it. After that
+the source chosen in the window stays, though a token is still stored: a
+stored key or token that is not the source chosen is not used. A fresh
+install has nothing to settle.
 
 ## What is read, and when
 
@@ -369,9 +384,8 @@ Every read of another tool's file is optional and asked for first:
   While other tools found on this PC by a folder of their own have not been
   allowed yet, that question offers *Allow all*: it starts those too and
   switches them on, as a fresh install and an update leave every unused
-  provider switched off. A tool you allowed and then switched off in the
-  Providers menu keeps its consent and is left alone. It is not offered in
-  a window where the welcome's question was already answered.
+  provider switched off. A tool already allowed is left as it is. It is not
+  offered in a window where the welcome's question was already answered.
 - **The welcome and the update notice open quietly.** They take no keyboard
   focus, so Enter or Space allows nothing until Tab or an arrow key moves to
   a button. They wait while a fullscreen window (a game, a video, a browser
@@ -393,16 +407,21 @@ Every read of another tool's file is optional and asked for first:
 - **A fresh install switches every provider off** as well as allowing
   nothing, so even an older version started on the same config afterwards
   reads only what was allowed.
-- **To stop reading a tool**, untick all of its rows in Rows and models (or
-  untick Enabled in the Providers menu). Its cached numbers, last error,
+- **To stop reading a tool**, untick all of its rows in Rows and models,
+  the Taskbar column included. Its cached numbers, last error,
   trend and alert marks are cleared. Unticking the last of Model, Version and
   Effort on both surfaces takes back the settings and session reads
   (`tool_settings` and `last_session` become false); switching back to "As
   set in the tool" takes back the session read. The next tick asks again.
 - **A provider set up with the app's own sign-in** (a pasted key or usage
-  token, the menu's Cursor sign-in) never has the tool's own sign-in read.
-  Its settings file is read for the model label when `tool_settings` allows
-  it, as for every running provider.
+  token, Cursor's own sign-in) never has the tool's own sign-in read. Its
+  settings file is read for the model label when `tool_settings` allows it,
+  and its newest session when `last_session` does, as for every running
+  provider.
+- **Only the source chosen is read.** With a pasted key or usage token
+  chosen as the source (`auth_method`), the tool's own sign-in is not read
+  even where `[reads] sign_in` allows it; with the tool's sign-in chosen, a
+  stored key or token is not sent.
 - **Where the tools keep their files** can be moved by `CODEX_HOME`,
   `GROK_HOME` and `COPILOT_HOME`. Each moves every file of its tool the app
   reads: Codex's `auth.json`, `config.toml` and sessions; Grok's `auth.json`
@@ -422,9 +441,18 @@ Every read of another tool's file is optional and asked for first:
   is shown. It prints each provider's read mode and the `[reads]` state, and
   never a token.
 - **The other `ailimits-auth` commands** (`set`, `remove`,
-  `set-usage-token`, `login`) refuse a `config.toml` they cannot read or
-  understand ("nothing was changed"). The widget writes its own settings back
-  when it quits, so quit it before running one of them, then start it.
+  `set-usage-token`, `remove-usage-token`, `login`, `logout`) never replace
+  or rename a `config.toml` they cannot read or understand. `set` and
+  `set-usage-token` then store nothing ("nothing was changed"); `remove`
+  removes the key all the same and leaves the config as it is; `login`
+  keeps the session it got and says the config could not be updated. The
+  widget writes its own settings back when it quits, so quit it before
+  running one of them, then start it. What they store becomes the source:
+  `set claude|copilot` sets `auth_method = "api_key"` (with
+  `credential_label`), `set-usage-token` sets `"usage_token"`; `remove
+  claude|copilot` sets `"subscription"`. `remove-usage-token` deletes the
+  token and leaves the config alone, so a provider whose source was that
+  token is hidden until another source is chosen in the window.
 
 The files and hosts per provider are in [PROVIDERS.md](PROVIDERS.md) and in
 `src/consent.rs`, the text the questions show; the paths are resolved in

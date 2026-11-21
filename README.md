@@ -34,7 +34,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 <p align="center">
   <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the two busiest providers as two rings. Hovering either gives the full list. Both follow the system light and dark theme.</sub>
+  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the two busiest providers as two rings, or the two you choose. Hovering either gives the full list. Both follow the system light and dark theme.</sub>
 </p>
 
 <table>
@@ -88,7 +88,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   ticked, and one question names every sign-in file it would read: *Allow*
   is enough. After that your normal CLI use keeps their tokens valid, so
   there is nothing else to configure. Only Cursor asks you to sign in once,
-  from the menu.
+  in *Rows and models*.
 - **Low load, measured on the running app.** 0.012% of one CPU core, no GPU
   use (it renders on the CPU), about 45 MB of memory, no raised timer
   resolution (measured for 0.7.0), a 4 MB exe. Reproduce it with
@@ -170,10 +170,10 @@ none of the auth sources listed below until you allow it.
    *Allow* starts the ticked ones; *Cancel* reads nothing and lets you tick
    what you want, each tool asking once. The window takes no keyboard focus
    (Enter allows nothing by accident) and waits while a fullscreen app is in
-   front. Cursor needs a sign-in of the app's own: right-click,
-   **Providers**, **Cursor**, *Sign in to Cursor...* once. Updating from
-   0.7.0 needs nothing: the providers you had keep working, and one window
-   lists what is read.
+   front. Cursor needs a sign-in of the app's own, once: in the same window,
+   open the *Sign-in* line under Cursor and click *Sign in to Cursor...*.
+   Updating from 0.7.0 needs nothing: the providers you had keep working,
+   and one window lists what is read.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
    snap to the nearest screen edge. `Lock position` in the right-click menu
    pins it.
@@ -184,13 +184,16 @@ none of the auth sources listed below until you allow it.
    before you click; leaving the menu without a click puts it back.
    *Rows and models...*
    picks the rows the widget and the panel's tooltip show (extra rows such as
-   Claude's Opus week included) and an optional label with the model in use:
-   model, version, effort.
+   Claude's Opus week included), an optional label with the model in use
+   (model, version, effort) and where each provider's sign-in comes from.
+   Its Taskbar column picks the two providers the panel and the tray icon
+   show; Percent and Reset time choose whether the panel and its tooltip
+   show the percentage, the time until the limit resets, or both.
 4. **Hover a provider row** to swap its reset countdown for its weekly limit.
    A greyed or `≈` row shows the reason and the fix instead, for example
-   `token expired, run Claude Code`.
-5. **Playing something fullscreen?** Right-click, **Indicator**, then *Panel*
-   or *Tray*. Usage stays on the taskbar while the overlay is hidden or
+   `token expired — run Claude Code`.
+5. **Playing something fullscreen?** Right-click, **Indicator**, then *Taskbar
+   panel* or *Tray icon*. Usage stays on the taskbar while the overlay is hidden or
    covered. See [Taskbar indicator](#taskbar-indicator).
 6. **Left-click the tray icon or the panel** to raise the widget or hide it.
    Right-click either one for the same menu.
@@ -208,7 +211,19 @@ your machine, strictly read-only and only once you allow each one:
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity` | run `agy`, the Antigravity CLI; its token lasts about an hour and only `agy` renews it (opening the editor does not) |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
-| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor from the menu once (or `ailimits-auth login cursor`): Cursor's own sign-in page opens in the browser; ~60-day session |
+| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor once in *Rows and models* (Cursor's *Sign-in*, *Sign in to Cursor...*) or with `ailimits-auth login cursor`: Cursor's own sign-in page opens in the browser; ~60-day session |
+
+Under each provider's rows, *Rows and models* has a *Sign-in* line that
+says where the sign-in comes from and how it went ("Claude Code · works").
+Open it to choose the source: the tool's sign-in above or, for Claude,
+Codex and Copilot, a key or token of your own (see Manual authorization
+below). Only the source chosen is used; no other one stands in when it
+fails.
+
+Codex CLI writes `auth.json` only when it keeps its sign-in in a file: with
+`cli_auth_credentials_store = "keyring"` or `"auto"` in its `config.toml`
+there is no `auth.json`, and its sign-in cannot be read. Set it to `"file"`,
+or paste a usage token instead.
 
 These are OAuth access tokens, short-lived except Cursor's. The CLI that
 owns each one refreshes it whenever you use it. The widget never refreshes
@@ -225,9 +240,9 @@ are absolute paths.
 | Provider | Live data lasts | After that |
 |---|---|---|
 | **Claude** | ~8 hours after your last Claude Code session (the token's real lifetime) | shows the last value greyed, with its age |
-| **Codex** | while you actively use Codex CLI (its token is shorter-lived) | the last value greyed, with its age |
+| **Codex** | while you use Codex CLI (how long its token lasts is not measured yet) | the last value greyed, with its age |
 | **Copilot** | Indefinitely. gh keeps its token fresh while you stay logged in. | |
-| **Antigravity** | while Antigravity CLI refreshes its keyring token | the last value greyed, with its age |
+| **Antigravity** | about an hour after `agy` last ran (only `agy` renews its token) | the last value greyed, with its age |
 | **Grok** | up to ~6 hours after your last Grok CLI session (the token's real lifetime) | the last value greyed, with its age |
 | **Cursor** | about 60 days after you sign in (the session's lifetime) | the last value greyed, and `sign in to Cursor again` |
 
@@ -243,8 +258,10 @@ that asks to read Antigravity's sign-in says so.
 rate-limits the usage endpoint (HTTP 429, `Retry-After: 0`, verified
 2026-07-09), and the per-token budget is shared with Claude Code's own
 polling. While Claude Code is running, a Claude refresh can take 2 to 3
-minutes even on the 1-minute interval. The rejected cycle retries a minute
-later. Other providers are unaffected.
+minutes even on the 1-minute interval. The next cycle asks again at the
+update interval; only when no provider answered at all does the wait grow
+(2, 4, then at most 5 minutes at the 1-minute interval). Other providers
+are unaffected.
 
 An expired Claude, Codex, Antigravity, Grok or Cursor token does not produce wrong numbers.
 The last value stays greyed with its age, a window that has provably reset
@@ -258,25 +275,29 @@ depend on CLI activity. What each option actually gives you:
 
 | Provider | Manual option | Where to get it | Shows the same as the subscription? |
 |---|---|---|---|
-| **Copilot** | A fine-grained Personal Access Token with the *Copilot Requests* permission (GitHub documents classic `ghp_` tokens as not supported for Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Yes. It works without gh, until the expiry you set. |
+| **Copilot** | A fine-grained Personal Access Token with the *Copilot Requests* permission (GitHub documents classic `ghp_` tokens as not supported for Copilot CLI) | github.com/settings/personal-access-tokens, *Generate new token* | Not verified yet: no live request has checked a fine-grained token against GitHub's usage endpoint. It needs no gh, until the expiry you set. |
 | **Claude** | API key | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | No. It shows your API account rate limits, not your Pro or Max subscription usage. |
-| **Codex** | None | No separate stable token exists. The usage token is the same short-lived OAuth token. | |
+| **Codex** | None | No separate stable token exists. A usage token you paste is the same kind of OAuth token as Codex CLI's. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
-| **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login. An xAI API key reports API spend, not that limit. | |
-| **Cursor** | Its own sign-in, about 60 days | Right-click, **Providers**, **Cursor**, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
+| **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login only. | |
+| **Cursor** | Its own sign-in, about 60 days | *Rows and models*, Cursor's *Sign-in*, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
 
 **Two ways to add a credential:**
 
-1. **From the clipboard.** Copy the key or token, then right-click the widget,
-   **Providers**, the provider, and the matching `Paste … from clipboard`
-   item. Copilot takes a PAT; Claude takes an API key (which switches the
-   method) or a usage token, which is tried before the auto-detected one;
-   Codex takes a usage token. Only that kind of secret is taken (`sk-ant-...`;
-   `ghp_...` or `github_pat_...`; a ChatGPT token `eyJ...`): anything else on
-   the clipboard is refused without being sent, and never shown or logged. A
-   usage token is checked with one request first: a refused one is not
-   stored. A toast confirms, and the secret goes straight into Credential
-   Manager.
+1. **In *Rows and models*.** Copy the key or token. Open the provider's
+   *Sign-in* line, choose the source (Claude: *A usage token you paste* or
+   *An API key you paste*; Codex: *A usage token you paste*; Copilot: *A
+   fine-grained token you paste*) and click *Paste token from clipboard*
+   (*Paste key from clipboard* for Claude's API key). Only that kind of
+   secret is taken (`sk-ant-...`; `ghp_...` or `github_pat_...`; a ChatGPT
+   token `eyJ...`): anything else on the clipboard is refused without being
+   sent, and never shown or logged. A usage token is checked with one
+   request first: a refused one is not stored. A key is stored as it is, and
+   the row says whether it works. The window says what came of it (a toast,
+   if the window was closed meanwhile), and the secret goes straight into
+   Credential Manager. Only the source chosen is used: the tool's sign-in
+   is not read while your token or key is chosen, and a stored token is not
+   sent while the tool's sign-in is chosen.
 2. **From the terminal.** `ailimits-auth.exe` sits next to the widget in
    `%LOCALAPPDATA%\AiLimits`:
    ```
@@ -295,22 +316,29 @@ depend on CLI activity. What each option actually gives you:
    after 2 and 4 seconds, then stores it with a note. `status` changes
    nothing and reads another tool's sign-in only where the widget may. The
    widget writes its settings when it quits: quit it before `set`, `remove`,
-   `set-usage-token` or `login`, then start it again.
+   `set-usage-token` or `login`, then start it again. `set` and
+   `set-usage-token` make what they store the provider's source.
 
-**To go back to automatic:** remove the key with `Remove key` in the menu or
-with the CLI. The provider returns to its subscription sources.
+**To go back to the tool's sign-in:** in the provider's *Sign-in*, choose
+the tool's sign-in. Your key or token stays stored but unused; *Remove*,
+with its source chosen, deletes it. From the terminal,
+`ailimits-auth remove claude|copilot` deletes the key and switches back;
+`remove-usage-token` deletes the token but leaves the source on it, so the
+row hides until you choose the tool's sign-in in the window.
 
 ## The context menu
 
 Right-click the widget: detail level (Compact / Medium / Expanded), layout
 (Vertical / Horizontal), Width (100 / 75 / 50%, horizontal bars only),
-Arrangement (in a row / in a column, vertical bars only), `Lock position` and
-`Always on top` (two independent toggles), Palette (monochrome + 8 colors), Background opacity, Brightness,
-Saturation, Forecast (burn-rate "~time to limit", off by default), Update
-interval (1 / 5 / 15 / 30 min), `Automatic updates` (silent background
-self-update of an installer copy, on by default; Store, Scoop and portable
-copies have no such item), Indicator, `Rows and models...` (rows, model
-labels, model names), per-provider settings, Quit.
+Arrangement (In a row / In a column, vertical bars only), `Lock position` and
+`Always on top` (two independent toggles), Indicator (Tray icon / Taskbar
+panel / Off), Forecast (burn-rate "~time to limit", off by default),
+`Automatic updates` (silent background self-update of an installer copy, on
+by default; Store, Scoop and portable copies have no such item), Palette
+(Monochrome + 8 colors), Background opacity, Brightness, Saturation, Update
+interval (1 / 5 / 15 / 30 min), `Rows and models...` (rows, model
+labels, model names, each provider's sign-in), Quit, and the version line,
+which opens the project page.
 
 ### Taskbar indicator
 
@@ -318,9 +346,10 @@ Even with the overlay hidden or covered by a fullscreen app, a compact usage
 readout stays visible. Right-click → **Indicator**:
 
 - **Tray icon.** One 16px icon: two concentric rings, the busiest provider
-  outside and the runner-up inside, both filling clockwise from 12 o'clock.
+  outside and the runner-up inside (or the two ticked in the Taskbar column
+  of *Rows and models*), both filling clockwise from 12 o'clock.
   Monochrome, drawn in the system taskbar theme.
-- **Panel.** A transparent overlay next to the clock. There is no window or
+- **Taskbar panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
   providers in the widget's order, or the two ticked in the Taskbar column of
@@ -329,8 +358,9 @@ readout stays visible. Right-click → **Indicator**:
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
   taskbar as it moves
   (auto-hide, resolution changes, tray width). Hover it for a tooltip with
-  every provider. If Start, Search or the auto-hide bar covers it, it hands
-  over to the tray rings and comes back on its own. If a fullscreen app takes
+  every provider, by default each with its percentage and when it resets.
+  If Start, Search or the auto-hide bar covers it, it hands over to the
+  tray rings and comes back on its own. If a fullscreen app takes
   the screen, it hides with the taskbar and returns when you alt-tab out. It
   works on a taskbar at any edge of the screen: on a side bar the two
   providers stack, percent over bar, above the tray. A bar with no free
@@ -367,8 +397,9 @@ fell well below and climbed back (`[notifications]` in the config).
 
 Requests follow the proxy set in Windows (Settings, Network, Proxy, "Use a
 proxy server"); `HTTPS_PROXY` / `HTTP_PROXY` win, a proxy script (PAC) is
-not followed. A network that inspects TLS with its own root certificate is
-not trusted: the rows read "untrusted certificate, retrying".
+not followed. `ailimits-auth` follows only the variables, not the Windows
+setting. A network that inspects TLS with its own root certificate is not
+trusted: the rows read "untrusted certificate, retrying".
 
 ## Build from source
 
