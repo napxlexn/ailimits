@@ -448,9 +448,6 @@ struct App {
     // ── The picker: open only while in use ──
     found_tools: Vec<&'static str>,
     picker_mode: PickerMode,
-    /// A provider the Providers menu asked about: once allowed, its own row
-    /// comes back wherever rows were chosen.
-    menu_asked: Option<String>,
     picker: Option<PickerWindow>,
     /// An owed window held back while a fullscreen app is in front; it opens
     /// when that app is no longer in front (a foreground change, the next
@@ -798,7 +795,6 @@ pub fn run() -> Result<()> {
         look_base: None,
         found_tools: Vec::new(),
         picker_mode,
-        menu_asked: None,
         picker: None,
         auto_open_waiting: false,
     };
@@ -816,7 +812,7 @@ pub fn run() -> Result<()> {
         false,
         crate::platform::foreground_fills_its_monitor,
     ) {
-        AutoOpen::Now => app.open_picker(&event_loop, None, false),
+        AutoOpen::Now => app.open_picker(&event_loop, false),
         AutoOpen::Later => {
             info!("a fullscreen app is in front: the owed window waits for it");
             app.auto_open_waiting = true;

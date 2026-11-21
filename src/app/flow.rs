@@ -12,7 +12,7 @@ use super::{
 use crate::{
     providers::ProviderData,
     rows,
-    ui::picker::{PickerAction, PickerInput, PickerMode, ReadKind},
+    ui::picker::{PickerAction, PickerInput, PickerMode},
 };
 use tao::event_loop::EventLoopWindowTarget;
 use tracing::info;
@@ -160,15 +160,13 @@ impl App {
         }
     }
 
-    /// Open the picker (or bring it forward), asking about `ask`'s sign-in
-    /// at once when given. `activate`: the user opened it (the menu, a
-    /// click), so it takes the keyboard focus; the welcome or the update
-    /// notice opening by itself does not, and a focus it never had cannot
-    /// close it (`PickerWindow::open_quietly`).
+    /// Open the picker (or bring it forward). `activate`: the user opened
+    /// it (the menu, a click), so it takes the keyboard focus; the welcome
+    /// or the update notice opening by itself does not, and a focus it
+    /// never had cannot close it (`PickerWindow::open_quietly`).
     pub(super) fn open_picker(
         &mut self,
         target: &EventLoopWindowTarget<UserEvent>,
-        ask: Option<String>,
         activate: bool,
     ) {
         // Opened now, by whatever path: an owed window that waited has had
@@ -187,9 +185,6 @@ impl App {
         } else if let Some(p) = self.picker.as_ref().filter(|_| activate) {
             p.focus();
         }
-        if let (Some(p), Some(id)) = (self.picker.as_mut(), ask) {
-            p.ask_sign_in(&id);
-        }
     }
 
     /// An owed window that waited for a fullscreen app opens once the app
@@ -205,7 +200,7 @@ impl App {
         match auto_open(self.config.reads.pending, self.picker.is_some(), fullscreen) {
             AutoOpen::Now => {
                 info!("the fullscreen app is gone: the owed window opens");
-                self.open_picker(target, None, false);
+                self.open_picker(target, false);
             }
             AutoOpen::No => self.auto_open_waiting = false,
             AutoOpen::Later => {}
@@ -237,9 +232,6 @@ impl App {
         // An edit of config.toml made meanwhile first: the actions apply on
         // top of the file as it is now (app/config_watch.rs).
         self.check_config_file();
-        // The menu's question sends its Allow alone; a row's Allow comes
-        // with the row it was asked for.
-        let lone = actions.len() == 1;
         let mut changed = false;
         for action in actions {
             // The Sign-in block's actions reach the Credential Manager, the
@@ -253,21 +245,13 @@ impl App {
                 continue;
             }
             let done = crate::choices::apply(&mut self.config, &action);
-            match &action {
-                PickerAction::NoticeDone => self.picker_mode = PickerMode::Normal,
-                PickerAction::Allow(ReadKind::SignIn(p))
-                    if lone && self.menu_asked.as_deref() == Some(p.as_str()) =>
-                {
-                    crate::choices::show_provider_rows(&mut self.config, p);
-                    self.menu_asked = None;
-                }
-                _ => {}
+            if action == PickerAction::NoticeDone {
+                self.picker_mode = PickerMode::Normal;
             }
             if done.close {
                 if let Some(p) = self.picker.take() {
                     p.close();
                 }
-                self.menu_asked = None;
             }
             if let Some(pid) = &done.provider {
                 self.sync_providers(Some(pid.as_str()));
@@ -280,9 +264,6 @@ impl App {
         // Whatever else the actions changed for the providers: several tools
         // allowed at once, the Grok Bot row chosen or not.
         self.sync_providers(None);
-        // The menu's question is answered in the first actions after it
-        // (Cancel sends none): whatever comes next is not it.
-        self.menu_asked = None;
         if changed {
             self.save_config();
             self.relayout();

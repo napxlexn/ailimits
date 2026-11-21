@@ -121,9 +121,9 @@ fn set_taskbar(config: &mut Config, provider: &str, on: bool) -> bool {
     true
 }
 
-/// A provider switched on from outside the picker (the Providers menu, a
-/// pasted key, a Cursor sign-in) also gets its own row back on every
-/// surface whose rows were chosen.
+/// A provider set up with the app's own sign-in (a pasted key or usage
+/// token, a Cursor sign-in) also gets its own row back on every surface
+/// whose rows were chosen.
 pub fn show_provider_rows(config: &mut Config, provider: &str) {
     let Some(pid) = ProviderId::from_config_id(provider) else {
         return;

@@ -153,8 +153,7 @@ pub struct RowChoice {
 
 /// One provider's sign-in, as the window shows it under the provider's own
 /// row: a line that opens to say where the sign-in comes from, to choose
-/// it, and to paste, remove or sign in (what the menu's Providers submenu
-/// did before).
+/// it, and to paste, remove or sign in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SignInChoice {
     /// Config id.
@@ -1157,7 +1156,7 @@ enum View {
 /// What an open question asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Question {
-    /// One read: for a tick that needs it, or from the Providers menu.
+    /// One read: for a tick or a sign-in choice that needs it.
     Read(ReadKind),
     /// The welcome's: the sign-ins of the tools found on this PC, each
     /// with a tick of its own (`Ask::tools`, `Ask::picked`).
@@ -1240,10 +1239,6 @@ pub struct Picker {
     /// left unticked was left on purpose, so Allow all is not offered
     /// while the window stays open.
     found_answered: bool,
-    /// A question in the welcome was answered with the welcome still owed
-    /// (the Providers menu's, whose Allow goes alone): `NoticeDone` goes
-    /// with the window's close.
-    welcome_answered: bool,
     /// A scroll bar's thumb held down.
     drag: Option<Drag>,
     dirty: bool,
@@ -1317,7 +1312,6 @@ impl Picker {
             notice_done: false,
             opened_as,
             found_answered: false,
-            welcome_answered: false,
             drag: None,
             dirty: true,
             input_gen: 0,
@@ -1334,9 +1328,9 @@ impl Picker {
     /// show ticked behind it as its ticks go. Allow starts the tools ticked;
     /// Cancel leaves nothing ticked and nothing read, and the user ticks
     /// what they use. Nothing is read before the answer. A tool allowed
-    /// already is not asked about (one the user switched off in the
-    /// Providers menu keeps its consent, so it is left alone too); a fresh
-    /// install has every provider switched off and is asked all the same.
+    /// already is not asked about (one whose rows the user unticked keeps
+    /// its consent, so it is left alone too); a fresh install has every
+    /// provider switched off and is asked all the same.
     /// With nothing found surely, nothing is asked and the rows are only
     /// marked.
     fn ask_found_tools(&mut self) {
@@ -1446,25 +1440,6 @@ impl Picker {
             View::Rows { welcome: false } => TITLE_ROWS,
             View::Notice => TITLE_NOTICE,
         }
-    }
-
-    /// Ask about a provider's sign-in at once, as ticking its row would: for
-    /// the Providers menu's Enabled tick. Allow then sends only
-    /// `Allow(SignIn)`; nothing is asked when it is allowed already. The
-    /// user asked for it, so Allow has the focus.
-    pub fn ask_sign_in(&mut self, provider: &str) {
-        let row = canonical(provider).to_string();
-        if self.allowed(&row) {
-            return;
-        }
-        self.open_question(
-            ReadKind::SignIn(row.clone()),
-            Vec::new(),
-            Target::Row {
-                row,
-                surface: Surface::Widget,
-            },
-        );
     }
 
     /// Whether anything visible changed since the last call.

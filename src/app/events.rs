@@ -347,7 +347,7 @@ impl App {
                     // the picker, with the focus.
                     let dragged = self.win_state.end_drag();
                     if !dragged && (rows::nothing_chosen(&self.config) || self.shape.unshown) {
-                        self.open_picker(target, None, true);
+                        self.open_picker(target, true);
                     }
                     if dragged {
                         // Persist the position to the config.

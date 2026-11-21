@@ -380,15 +380,6 @@ impl PickerWindow {
         let _ = on;
     }
 
-    /// Ask about a provider's sign-in at once (`Picker::ask_sign_in`), and
-    /// bring the window forward.
-    pub fn ask_sign_in(&mut self, provider: &str) {
-        self.picker.ask_sign_in(provider);
-        self.picker.take_dirty();
-        self.window.set_focus();
-        self.window.request_redraw();
-    }
-
     /// Bring the window forward (opened again from the menu).
     pub fn focus(&self) {
         self.window.set_focus();

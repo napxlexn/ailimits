@@ -322,29 +322,6 @@ fn the_settings_file_link_opens_config_toml() {
     assert!(!texts(&p).contains(SETTINGS_FILE));
 }
 
-/// The Providers menu's Enabled tick asks the same question; Allow sends
-/// only the allowance, Cancel nothing, and an allowed provider is not
-/// asked at all.
-#[test]
-fn the_menu_can_ask_for_a_sign_in() {
-    let mut p = picker(input());
-    p.ask_sign_in("claude");
-    assert!(p.ask.is_none(), "claude is allowed already");
-    p.ask_sign_in("cursor");
-    assert!(p.ask.is_some());
-    assert_eq!(
-        click(&mut p, &Target::Allow),
-        [PickerAction::Allow(ReadKind::SignIn("cursor".into()))]
-    );
-    assert!(p.ask.is_none());
-    // The old id of an allowed provider is allowed too.
-    p.ask_sign_in("gemini");
-    assert!(p.ask.is_none());
-    p.ask_sign_in("cursor");
-    assert!(click(&mut p, &Target::Cancel).is_empty());
-    assert!(p.ask.is_none());
-}
-
 fn key(p: &mut Picker, k: PickerKey) -> Vec<PickerAction> {
     p.handle(PickerEvent::Key(k))
 }
@@ -894,7 +871,7 @@ fn the_welcome_ticks_the_tools_found_and_asks_once_for_all() {
 }
 
 /// A tool's question offers Allow all while other tools found on this
-/// PC are not running; it names their files and starts them all.
+/// PC are not allowed; it names their files and allows them all.
 #[test]
 fn allow_all_starts_every_tool_found() {
     let mut i = welcome(vec!["claude", "codex", "grok"]);
@@ -1455,10 +1432,10 @@ fn a_tool_found_by_a_related_folder_starts_unticked() {
     assert!(area(&p, &Target::AllowAll).is_none());
 }
 
-/// Allow all starts every other tool found that was never allowed, also
-/// one switched off in the Providers menu (a fresh install and an update
-/// leave every unused provider off), and switches it on; a tool the user
-/// allowed and then switched off keeps its consent and is left alone.
+/// Allow all allows every other tool found that was never allowed, also
+/// one switched off (a fresh install and an update leave every unused
+/// provider off), without switching it on; a tool the user allowed and
+/// then switched off keeps its consent and is left alone.
 /// Once the welcome's question was answered, Allow all is not offered
 /// while the window stays open.
 #[test]
@@ -1669,16 +1646,6 @@ fn losing_the_focus_answers_nothing() {
             [PickerAction::NoticeDone, PickerAction::Close]
         );
     }
-    // The Providers menu's question in the welcome: its Allow goes alone
-    // (the app shows the provider's rows for it), the welcome's answer
-    // with the close.
-    let mut p = picker(welcome(Vec::new()));
-    p.ask_sign_in("codex");
-    assert_eq!(click(&mut p, &Target::Allow), [allow("codex")]);
-    assert_eq!(
-        p.handle(PickerEvent::FocusLost),
-        [PickerAction::NoticeDone, PickerAction::Close]
-    );
 }
 
 /// Typing a name, the focus may go to a shell panel (Win+V, Win+.)

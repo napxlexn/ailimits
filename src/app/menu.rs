@@ -29,7 +29,7 @@ impl App {
         // preview uses (`context_menu::look`); the arms below repaint and save.
         crate::ui::context_menu::look(&mut self.config, &action);
         match action {
-            MenuAction::OpenPicker => self.open_picker(target, None, true),
+            MenuAction::OpenPicker => self.open_picker(target, true),
             MenuAction::Quit => *control_flow = ControlFlow::Exit,
             MenuAction::OpenProjectPage => {
                 crate::platform::open_url(crate::ui::context_menu::PROJECT_URL);

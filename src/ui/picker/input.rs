@@ -259,7 +259,7 @@ impl Picker {
                     return Vec::new();
                 };
                 self.set_focus(ask.from.clone());
-                let (mut out, alone) = match ask.question {
+                let mut out = match ask.question {
                     Question::Found => {
                         self.found_answered = true;
                         let mut out: Vec<PickerAction> = ask
@@ -270,18 +270,15 @@ impl Picker {
                         for p in &ask.picked {
                             out.extend(Self::own_rows_on(p));
                         }
-                        (out, false)
+                        out
                     }
                     Question::Read(kind) => {
-                        // The Providers menu's question: its Allow goes alone
-                        // (the app then shows the provider's rows).
-                        let alone = ask.then.is_empty();
                         let mut out = vec![PickerAction::Allow(kind)];
                         out.extend(ask.then);
-                        (out, alone)
+                        out
                     }
                 };
-                out.extend(self.answered(alone));
+                out.extend(self.answered());
                 out
             }
             Target::AllowAll => {
@@ -305,7 +302,7 @@ impl Picker {
                     out.extend(ask.then);
                 }
                 out.extend(others.iter().map(|o| PickerAction::Consent(o.clone())));
-                out.extend(self.answered(false));
+                out.extend(self.answered());
                 out
             }
             Target::Names => {
@@ -375,7 +372,7 @@ impl Picker {
                     self.found_answered = true;
                 }
                 self.set_focus(ask.from);
-                self.answered(false)
+                self.answered()
             }
             Target::NoticeOk => {
                 self.notice_done = true;
@@ -391,8 +388,8 @@ impl Picker {
         }
     }
 
-    /// A question the user's own click or the Providers menu opened: Allow
-    /// has the focus, as the mock's question does.
+    /// A question the user's own click opened: Allow has the focus, as the
+    /// mock's question does.
     pub(super) fn open_question(&mut self, kind: ReadKind, then: Vec<PickerAction>, from: Target) {
         self.ask = Some(Ask {
             question: Question::Read(kind),
@@ -407,14 +404,9 @@ impl Picker {
     }
 
     /// Any question answered in the welcome answers the welcome: it is not
-    /// owed again. Sent at once, or with the window's close when the answer
-    /// goes alone (`alone`: the Providers menu's question).
-    pub(super) fn answered(&mut self, alone: bool) -> Vec<PickerAction> {
+    /// owed again, and `NoticeDone` is sent at once.
+    pub(super) fn answered(&mut self) -> Vec<PickerAction> {
         if self.opened_as != PickerMode::Welcome || self.notice_done {
-            return Vec::new();
-        }
-        if alone {
-            self.welcome_answered = true;
             return Vec::new();
         }
         self.notice_done = true;
@@ -439,17 +431,11 @@ impl Picker {
     }
 
     /// A click outside or the focus gone to another window: the window
-    /// closes, but the welcome and the notice are owed still, unless a
-    /// question in the welcome was answered.
+    /// closes, but the welcome and the notice are owed still (a question
+    /// answered in the welcome has answered it already, `answered`).
     pub(super) fn dismiss(&mut self) -> Vec<PickerAction> {
-        let mut out = Vec::new();
-        if self.welcome_answered && !self.notice_done {
-            self.notice_done = true;
-            out.push(PickerAction::NoticeDone);
-        }
         self.ask = None;
-        out.push(PickerAction::Close);
-        out
+        vec![PickerAction::Close]
     }
 
     /// The focus went to another window. Typing a name, that may be a shell
