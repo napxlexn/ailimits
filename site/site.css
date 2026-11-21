@@ -77,7 +77,13 @@ html.js.wall-in .wall, html.js.wall-in .rings-bg { opacity: 1; transition: opaci
    window and the backing store scales inside it. */
 .fx-tokens { position: fixed; inset: 0; width: 100%; height: 100%;
   z-index: 2; pointer-events: none; display: block; }
-main { position: relative; z-index: 3; }
+/* Whatever hangs past the window on purpose (03's ghost figure, 01's
+   satellite at about 1000 px) is cut at main's edge, which is the window's:
+   it was out of sight anyway, and the document no longer grows wider than
+   the window, so no touch screen can pan the page sideways onto a strip the
+   fixed acrylic does not cover. clip, not hidden: no scroll container, so
+   sticky scenes and pins work as before. */
+main { position: relative; z-index: 3; overflow-x: clip; }
 @media (min-width: 1181px) { main { padding-right: 132px; } }
 .grain-top { position: fixed; inset: -60px; z-index: 40; pointer-events: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
