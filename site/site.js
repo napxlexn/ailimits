@@ -1236,7 +1236,8 @@ const PG_ROWS = [
 const pg = {
   detail: "medium", bars: "horizontal", width: "full", flow: "row",
   palette: "default", monochrome: true, opacity: 50, brightness: 100, saturation: 50,
-  rows: new Set(["claude", "codex", "copilot", "antigravity", "grok", "cursor"]),
+  /* The key three to start with; the other three are a click away. */
+  rows: new Set(["claude", "codex", "grok"]),
   model: new Set(),
 };
 /* rows.rs model_label: the version needs the model, the effort can go alone */
