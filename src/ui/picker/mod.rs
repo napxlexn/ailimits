@@ -240,7 +240,7 @@ pub struct PickerInput {
     /// The same for each row of the taskbar panel.
     pub panel: UiNumbers,
     pub reads: Reads,
-    /// Providers switched on in the config (the Providers menu).
+    /// Providers switched on in the config.
     pub enabled: Vec<&'static str>,
     /// Providers whose tool folder exists on this PC (`consent::found_tools`).
     pub found: Vec<&'static str>,

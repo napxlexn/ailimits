@@ -1,8 +1,8 @@
 // ui/context_menu.rs — the right-click context menu.
 //
-// A NATIVE menu via muda — no custom popup window. Provider authorization
-// lives in the "Providers" submenu: keys and tokens are pasted FROM THE
-// CLIPBOARD (a native menu has no text input).
+// A NATIVE menu via muda — no custom popup window. The look, the indicator
+// and the window's options; each provider's sign-in is in the picker
+// (Rows and models, its Sign-in).
 
 use crate::config::schema::{
     ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay, WidthScale,

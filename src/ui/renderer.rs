@@ -1331,7 +1331,11 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
     // once", "sign in to Cursor again"); a transient error that retries by
     // itself ("rate-limited, retrying", "state database busy, retrying")
     // needs no action at all.
-    if cause.contains("run ") || cause.starts_with("sign in") || cause.ends_with(", retrying") {
+    if cause.contains("run ")
+        || cause.starts_with("sign in")
+        || cause.ends_with(", retrying")
+        || cause == "no limited quota"
+    {
         return Some(cause);
     }
     // A key or token the user pasted: running the tool would not mend it.

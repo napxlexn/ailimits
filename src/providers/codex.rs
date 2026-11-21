@@ -88,12 +88,10 @@ impl CodexProvider {
     /// ChatGPT subscription usage. The CLI token is read-only: Codex CLI
     /// refreshes it itself, the widget must never rotate it.
     async fn fetch_via_subscription(&self, use_usage_token: bool) -> ProviderData {
-        // 1. Manual usage token, if stored. Refused → fall through to
-        // auth.json, keeping the reason for when nothing stands behind it;
-        // a token refused lately is not sent again (`REFUSED_TOKEN_PAUSE`).
-        // Any other outcome ends the cycle: an answer is the row, and a
-        // request that got no answer says nothing about the token — the
-        // CLI's would go to the same host. One usage request per cycle.
+        // The source chosen, and only that one. 1. The usage token the user
+        // pasted: refused, it reads "usage token rejected" and is not sent
+        // again for `REFUSED_TOKEN_PAUSE`; any other outcome ends the cycle.
+        // 2. Codex CLI's auth.json. One usage request per cycle.
         let mut usage_token_failure = None;
         if let Some(token) = (self.usage_token)().filter(|_| use_usage_token) {
             let refused = ProviderStatus::AuthError("usage token rejected".to_string());

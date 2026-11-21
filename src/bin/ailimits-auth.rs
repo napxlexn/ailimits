@@ -382,14 +382,12 @@ fn set(provider: Option<&str>) -> Result<()> {
         .set_password(key)
         .context("failed to store the key in Credential Manager")?;
 
-    // Claude: a key implies the api_key method. Copilot: the PAT is just
-    // a token source for the subscription method.
+    // The key stored is the source chosen (Claude's API key, Copilot's
+    // token): only it is used from now on.
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
         p.enabled = true;
         p.credential_label = label.to_string();
-        if provider == "claude" {
-            p.auth_method = AuthMethod::ApiKey;
-        }
+        p.auth_method = AuthMethod::ApiKey;
     }
     // Setting a key up is the user asking for the provider, with the app's
     // own key: that allows the key, not the tool's files.
@@ -401,8 +399,7 @@ fn set(provider: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Store a manual usage token. The auth method is left alone: the token is a
-/// source the provider tries first, under either method.
+/// Store a manual usage token, and make it the source chosen.
 fn set_usage_token(provider: Option<&str>) -> Result<()> {
     let provider =
         provider.context("specify a provider: ailimits-auth set-usage-token <claude|codex>")?;
@@ -426,10 +423,13 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
         .set_password(token)
         .context("failed to store the usage token in Credential Manager")?;
 
-    // The token is the app's own source: storing it sets the provider up
-    // with it, as a key does, and allows nothing of the tool's files.
+    // The token is the app's own source and the one chosen now: storing it
+    // sets the provider up with it, as a key does, and allows nothing of
+    // the tool's files.
     if let Some(p) = config.providers.iter_mut().find(|p| p.id == provider) {
         p.enabled = true;
+        p.auth_method = AuthMethod::UsageToken;
+        p.credential_label.clear();
     }
     config.allow_app_sign_in(provider);
     save_config(&config)?;

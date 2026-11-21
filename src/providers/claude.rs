@@ -166,18 +166,18 @@ impl ClaudeProvider {
         Ok(self.data(ProviderStatus::Ok, metrics))
     }
 
-    /// Method B: subscription — a chain of sources.
+    /// Method B: the usage token the user pasted (`use_usage_token`), or
+    /// Claude Code's own sign-in: the source chosen, and only that one.
     ///
-    /// 0. manual usage token from Credential Manager
-    /// 1. OAuth /api/oauth/usage with the Claude Code token — live server-side %
-    /// 2. an honest NetworkError when a source exists but has no fresh data
-    /// 3. NotConfigured — "run Claude Code at least once"
+    /// - the usage token: /api/oauth/usage; refused, it reads "usage token
+    ///   rejected" and is left out for `REFUSED_TOKEN_PAUSE`;
+    /// - Claude Code's token: /api/oauth/usage, live server-side %;
+    /// - an honest NetworkError when the source exists but has no fresh
+    ///   data; NotConfigured when there is none ("run Claude Code").
     ///
-    /// One usage request per cycle as a rule: only a refused stored usage
-    /// token (401/403) falls through to Claude Code's token, and it is then
-    /// left out for `REFUSED_TOKEN_PAUSE`, so only a fresh refusal costs a
-    /// second request. A rate limit, a server error or no answer ends the
-    /// cycle on its honest status: none of them says the token is bad.
+    /// One usage request per cycle. A rate limit, a server error or no
+    /// answer ends the cycle on its honest status: none of them says the
+    /// token is bad.
     ///
     /// (A statusline.jsonl snapshot used to sit between 1 and 2. Claude Code
     /// stopped writing that file in 2026; the reader went with 0.7.0.)

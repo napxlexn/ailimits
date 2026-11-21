@@ -170,6 +170,11 @@ pub struct Reads {
     /// notice after the update that introduced `[reads]`.
     #[serde(default, deserialize_with = "de_enum_or_default")]
     pub pending: PendingNotice,
+    /// The sign-in sources were settled, once: a key or token pasted before
+    /// the source could be chosen keeps the lead it had (app/sign_in.rs).
+    /// Never again after that, so a source chosen in the window stays.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sources_settled: bool,
 }
 
 /// The one-time window the app still has to show.

@@ -261,8 +261,8 @@ impl AntigravityProvider {
 
     /// The single message produced when Antigravity rejects the token — used
     /// at every request site so the wording never drifts. A short message
-    /// the row shows as it is; the hover adds "run Antigravity", which
-    /// refreshes the token. Not "check the key": no key was given.
+    /// the row shows as it is; the hover adds "run agy", which renews the
+    /// token. Not "check the key": no key was given.
     ///
     /// Also forgets the cached project id: after a switch to another Google
     /// account the old account's project is what gets refused, and only a
@@ -339,8 +339,7 @@ impl AntigravityProvider {
         let project = match self.resolve_project(&token).await {
             ProjectResolution::Project(p) => p,
             ProjectResolution::TokenRejected => return Ok(self.token_rejected()),
-            // The hover adds "run Antigravity": its first run sets the
-            // account up.
+            // The hover adds "run agy": its first run sets the account up.
             ProjectResolution::NoProject => {
                 return Ok(self.data(
                     ProviderStatus::NetworkError("no Code Assist project".to_string()),

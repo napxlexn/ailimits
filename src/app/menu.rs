@@ -1,5 +1,6 @@
 // app/menu.rs — the context menu's actions (the widget's, the panel's and
-// the tray icon's menu are one), and the Cursor sign-in it starts.
+// the tray icon's menu are one). Sign-in lives in the picker
+// (app/sign_in.rs).
 
 use super::{App, UserEvent};
 use crate::ui::context_menu::MenuAction;

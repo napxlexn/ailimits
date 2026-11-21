@@ -80,9 +80,26 @@ fn stored_secrets() -> Vec<&'static str> {
         .collect()
 }
 
+/// Once, for a config from before the source could be chosen: a key or
+/// token pasted then took the lead over the tool's own sign-in, and the
+/// source now says so, so nothing changes for the user. Never again after
+/// that (`Reads::sources_settled`): a source chosen in the window stays,
+/// though a token is still stored. Returns whether the config changed.
+pub(super) fn settle_sources_once(
+    config: &mut crate::config::schema::Config,
+    stored: &[&'static str],
+) -> bool {
+    if config.reads.sources_settled {
+        return false;
+    }
+    settle_sources(config, stored);
+    config.reads.sources_settled = true;
+    true
+}
+
 /// A key or token pasted before the source could be chosen took the lead
-/// over the tool's own sign-in; the source now says so, so nothing changes
-/// for the user. Returns whether the config changed.
+/// over the tool's own sign-in; the source now says so. Returns whether a
+/// source changed.
 pub(super) fn settle_sources(
     config: &mut crate::config::schema::Config,
     stored: &[&'static str],
@@ -122,7 +139,7 @@ impl App {
     /// tokens, Cursor's session; a source left to the old order settled.
     pub(super) fn init_sign_in_state(&mut self) {
         let stored = stored_secrets();
-        if settle_sources(&mut self.config, &stored) {
+        if settle_sources_once(&mut self.config, &stored) {
             self.save_config();
         }
         self.sign_in = SignInState {
@@ -559,5 +576,20 @@ mod tests {
         let mut config = Config::default();
         config.providers[0].auth_method = AuthMethod::ApiKey;
         assert!(!settle_sources(&mut config, &["claude_usage_token"]));
+    }
+
+    /// Settled once, never again: the tool's sign-in chosen in the window
+    /// stays, though the old token is still stored.
+    #[test]
+    fn the_sources_are_settled_once() {
+        let mut config = Config::default();
+        let stored = ["claude_usage_token"];
+        assert!(settle_sources_once(&mut config, &stored));
+        assert!(config.reads.sources_settled);
+        config.providers[0].auth_method = AuthMethod::Subscription;
+        assert!(!settle_sources_once(&mut config, &stored));
+        assert_eq!(config.providers[0].auth_method, AuthMethod::Subscription);
+        // A fresh install has nothing to settle.
+        assert!(Config::fresh_install().reads.sources_settled);
     }
 }

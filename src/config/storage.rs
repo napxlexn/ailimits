@@ -400,6 +400,8 @@ pub(crate) fn settle_reads(config: &mut Config, origin: Origin) {
         Origin::FreshInstall => {
             config.reads = Default::default();
             config.reads.pending = super::schema::PendingNotice::Welcome;
+            // Nothing pasted before on a fresh install: nothing to settle.
+            config.reads.sources_settled = true;
             // Switched off as well as not allowed: a version that knows no
             // [reads] (a downgrade to 0.7.0) then reads nothing either.
             // Allowing a provider switches it on.

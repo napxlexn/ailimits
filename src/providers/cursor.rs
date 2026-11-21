@@ -149,7 +149,7 @@ impl CursorProvider {
         // A synchronous read, like the other providers' keyring reads.
         match self.store.load() {
             Ok(Some(own)) => self.fetch_with_own_session(own).await,
-            // Not signed in from the menu: the row stays hidden.
+            // Not signed in (Rows and models, Cursor's Sign-in): hidden.
             Ok(None) => self.data(ProviderStatus::NotConfigured, vec![]),
             // A record this version cannot read: a new sign-in replaces it.
             Err(StoreError::Corrupt) => {
@@ -225,8 +225,15 @@ impl CursorProvider {
     /// token. The result is kept; `true` when a new token came.
     async fn refresh(&self, own: OwnSession) -> (OwnSession, bool) {
         let Some(answer) = session::request_refresh(&self.net, &own).await else {
-            // No answer at all: nothing learnt, a later cycle tries again.
-            return (own, false);
+            // No answer at all (offline, a timeout): nothing learnt, but the
+            // attempt counts, so it waits a day like any other and a PC that
+            // is offline does not try each cycle.
+            let next = OwnSession {
+                refreshed_at: Some(Utc::now()),
+                ..own.clone()
+            };
+            self.keep(&own.access_token, &next);
+            return (next, false);
         };
         let next = own.after_refresh(&answer, Utc::now());
         self.keep(&own.access_token, &next);
@@ -949,6 +956,29 @@ mod tests {
         // The next cycle does not ask again.
         let _ = p.fetch().await.unwrap();
         assert_eq!(server.count("/oauth/token"), 1);
+    }
+
+    /// A refresh that gets no answer is an attempt too: the next cycle does
+    /// not try again, so an offline PC sends nothing each cycle.
+    #[tokio::test]
+    async fn an_unanswered_refresh_waits_a_day() {
+        let server = TestServer::start();
+        server.route("/oauth/token", vec![Reply::Hangup]);
+        server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
+        server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
+        let mut near = session();
+        near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+        let (p, store) = signed_in(&server, Some(near));
+        let _ = p.fetch().await.unwrap();
+        let kept = store.kept.lock().unwrap().clone().unwrap();
+        assert!(kept.refreshed_at.is_some());
+        let tries = server.count("/oauth/token");
+        let _ = p.fetch().await.unwrap();
+        assert_eq!(
+            server.count("/oauth/token"),
+            tries,
+            "no second try the same day"
+        );
     }
 
     /// Refused near its expiry: one refresh is tried, not one each cycle,
