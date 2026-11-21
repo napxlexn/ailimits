@@ -423,14 +423,7 @@ impl App {
     /// monitor comes back), applied, and saved when the app had something
     /// the file did not.
     fn on_config_edited(&mut self, theirs: Config, base: Option<Config>) {
-        let (mut merged, kept) = merge(base.as_ref(), &self.config, &theirs);
-        #[cfg(target_os = "windows")]
-        {
-            let (x, y) =
-                crate::platform::ensure_on_screen(merged.window.pos_x, merged.window.pos_y);
-            merged.window.pos_x = x;
-            merged.window.pos_y = y;
-        }
+        let (merged, kept) = merge(base.as_ref(), &self.config, &theirs);
         if !kept.is_empty() {
             info!("config.toml edited; kept from the app: {kept:?}");
         }
@@ -468,7 +461,11 @@ impl App {
             self.win_state.end_drag();
         }
         if e.position {
+            // On screen as a start would put it; the position written stays
+            // as written, so its display coming back brings the widget there.
             let (x, y) = (self.config.window.pos_x, self.config.window.pos_y);
+            #[cfg(target_os = "windows")]
+            let (x, y) = crate::platform::ensure_on_screen(x, y);
             self.window
                 .set_outer_position(tao::dpi::PhysicalPosition::new(x, y));
             self.win_state.pos = (x as f64, y as f64);

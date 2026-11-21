@@ -475,7 +475,7 @@ pub fn run() -> Result<()> {
     // is (storage.rs); the app then runs on a config in memory and says so
     // once, below.
     let loaded = runtime.block_on(storage::load());
-    let mut config = loaded.config;
+    let config = loaded.config;
     info!("Config loaded: {} providers", config.providers.len());
     // The file as it was found: the writer replaces only that, and the
     // watch takes every other change for an edit (app/config_watch.rs).
@@ -494,15 +494,15 @@ pub fn run() -> Result<()> {
         feedback("AI Limits", &note);
     }
 
-    // Rescue a saved position that now lands on no monitor (a display was
-    // unplugged/resized since last run): a borderless, taskbar-skipped overlay
-    // off every screen is invisible and un-draggable. Snap it back on-screen.
+    // A saved position on no monitor now (a display unplugged, or one not
+    // awake yet after a hard restart): a borderless, taskbar-skipped overlay
+    // off every screen is invisible and un-draggable, so it opens on screen.
+    // The saved position stays the user's: it is not overwritten, and the
+    // widget goes back to it when its display comes (`on_displays_changed`).
     #[cfg(target_os = "windows")]
-    {
-        let (cx, cy) = crate::platform::ensure_on_screen(config.window.pos_x, config.window.pos_y);
-        config.window.pos_x = cx;
-        config.window.pos_y = cy;
-    }
+    let start = crate::platform::ensure_on_screen(config.window.pos_x, config.window.pos_y);
+    #[cfg(not(target_os = "windows"))]
+    let start = (config.window.pos_x, config.window.pos_y);
 
     // 2. The event loop with user events.
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
@@ -626,10 +626,7 @@ pub fn run() -> Result<()> {
             win_layout.width as u32,
             win_layout.height as u32,
         ))
-        .with_position(PhysicalPosition::new(
-            config.window.pos_x,
-            config.window.pos_y,
-        ));
+        .with_position(PhysicalPosition::new(start.0, start.1));
 
     #[cfg(target_os = "windows")]
     {
@@ -740,7 +737,7 @@ pub fn run() -> Result<()> {
 
     // 10. The window state.
     let win_state = WindowState {
-        pos: (config.window.pos_x as f64, config.window.pos_y as f64),
+        pos: (start.0 as f64, start.1 as f64),
         size: (win_layout.width as f64, win_layout.height as f64),
         pinned: config.window.pinned,
         ..Default::default()

@@ -541,15 +541,19 @@ impl App {
     #[cfg(target_os = "windows")]
     fn on_displays_changed(&mut self) {
         if let Ok(wp) = self.window.outer_position() {
-            let (nx, ny) = crate::platform::ensure_on_screen(wp.x, wp.y);
-            if (nx, ny) != (wp.x, wp.y) {
+            let home = (self.config.window.pos_x, self.config.window.pos_y);
+            let at = (wp.x, wp.y);
+            if let Some((nx, ny)) = display_move(home, at, crate::platform::ensure_on_screen) {
+                // Only the window moves: the saved position is the user's,
+                // so a display that comes back brings the widget home.
                 self.window
                     .set_outer_position(PhysicalPosition::new(nx, ny));
                 self.win_state.pos = (nx as f64, ny as f64);
-                self.config.window.pos_x = nx;
-                self.config.window.pos_y = ny;
-                self.save_config();
-                tracing::info!("the overlay was on no monitor; moved to {nx},{ny}");
+                if (nx, ny) == home {
+                    tracing::info!("the overlay's display is back; home at {nx},{ny}");
+                } else {
+                    tracing::info!("the overlay was on no monitor; shown at {nx},{ny}");
+                }
                 apply_windows_glass(&self.window);
                 self.window.request_redraw();
             }
@@ -804,5 +808,61 @@ impl App {
         if let Some(writer) = self.alert_writer.take() {
             writer.shutdown(None, self.runtime.handle());
         }
+    }
+}
+
+/// Where the widget goes when the displays change, if anywhere: back to its
+/// saved position (`home`) once that is on a monitor again, or onto a
+/// monitor when where it is now (`at`) is on none. `on_screen` is
+/// `platform::ensure_on_screen`. None: it stays.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn display_move(
+    home: (i32, i32),
+    at: (i32, i32),
+    on_screen: impl Fn(i32, i32) -> (i32, i32),
+) -> Option<(i32, i32)> {
+    let target = on_screen(home.0, home.1);
+    let lost = on_screen(at.0, at.1) != at;
+    (target != at && (target == home || lost)).then_some(target)
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::display_move;
+
+    /// One monitor at 0..1920 x 0..1080; anything else is pulled to it.
+    fn primary_only(x: i32, y: i32) -> (i32, i32) {
+        (x.clamp(0, 1700), y.clamp(0, 900))
+    }
+
+    /// Both monitors: the second at 1920..4480.
+    fn both(x: i32, y: i32) -> (i32, i32) {
+        (x.clamp(0, 4300), y.clamp(0, 900))
+    }
+
+    /// After a hard restart the second display wakes late: the widget
+    /// opened on the first, its saved place untouched; when the second one
+    /// comes, the widget goes home.
+    #[test]
+    fn a_display_that_comes_back_brings_the_widget_home() {
+        let home = (3000, 500);
+        let shown = primary_only(home.0, home.1);
+        assert_eq!(shown, (1700, 500));
+        assert_eq!(display_move(home, shown, both), Some(home));
+        // At home already: nothing to do.
+        assert_eq!(display_move(home, home, both), None);
+    }
+
+    /// The home display goes away: the widget is pulled onto a monitor; a
+    /// widget that is on one stays where it is.
+    #[test]
+    fn a_display_that_goes_takes_the_widget_onto_a_monitor() {
+        let home = (3000, 500);
+        assert_eq!(display_move(home, home, primary_only), Some((1700, 500)));
+        // Moved by hand meanwhile onto the first monitor (that is its home
+        // now, saved by the drag): it stays.
+        assert_eq!(display_move((800, 300), (800, 300), primary_only), None);
+        // Shown on the first monitor while home is still away: it stays.
+        assert_eq!(display_move(home, (1700, 500), primary_only), None);
     }
 }
