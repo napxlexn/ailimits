@@ -10,9 +10,9 @@ use super::{
     Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::{paths::ToolPaths, schema::ProviderConfig};
+use crate::utc::{self, Timestamp};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
@@ -46,7 +46,7 @@ pub enum GrokLogin {
     /// A usable access token, with its expiry when the file states one.
     Token {
         key: String,
-        expires_at: Option<DateTime<Utc>>,
+        expires_at: Option<Timestamp>,
     },
 }
 
@@ -89,7 +89,7 @@ impl GrokProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -188,7 +188,7 @@ async fn read_grok_login(path: &Path) -> Result<GrokLogin> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(GrokLogin::Missing),
         Err(e) => return Err(e.into()),
     };
-    parse_grok_auth(&content, Utc::now())
+    parse_grok_auth(&content, utc::now())
 }
 
 /// Pick a usable session from the Grok CLI's auth.json.
@@ -202,14 +202,14 @@ async fn read_grok_login(path: &Path) -> Result<GrokLogin> {
 /// those a 30-day lifetime of its own) comes last and is left to the server
 /// to judge. A session another issuer gave (not xAI's) is never sent to
 /// xAI: it is passed over as if it were not there.
-pub fn parse_grok_auth(body: &str, now: DateTime<Utc>) -> Result<GrokLogin> {
+pub fn parse_grok_auth(body: &str, now: Timestamp) -> Result<GrokLogin> {
     let value: serde_json::Value = serde_json::from_str(body)?;
     let Some(sessions) = value.as_object() else {
         return Ok(GrokLogin::Missing);
     };
 
     let mut any_session = false;
-    let mut best: Option<(Option<DateTime<Utc>>, &str)> = None;
+    let mut best: Option<(Option<Timestamp>, &str)> = None;
     for (name, record) in sessions {
         let issuer = record
             .get("oidc_issuer")
@@ -394,10 +394,8 @@ pub fn parse_billing_credits(body: &str) -> Result<Vec<Metric>> {
 }
 
 /// An RFC 3339 timestamp field.
-fn rfc3339(v: &serde_json::Value) -> Option<DateTime<Utc>> {
-    v.as_str()
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc))
+fn rfc3339(v: &serde_json::Value) -> Option<Timestamp> {
+    v.as_str().and_then(utc::parse_rfc3339)
 }
 
 /// A protobuf-JSON number: a JSON number as a rule, though the encoder may

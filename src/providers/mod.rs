@@ -12,9 +12,9 @@ mod test_server;
 
 pub use proxy::follow_windows_proxy;
 
+use crate::utc::{self, SignedDuration, Timestamp};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
@@ -491,7 +491,8 @@ pub struct Metric {
     pub limit: Option<u64>,
     pub unit: MetricUnit,
     /// Reset time, when known.
-    pub reset_at: Option<DateTime<Utc>>,
+    #[serde(default, with = "crate::utc::as_text::option")]
+    pub reset_at: Option<Timestamp>,
     /// Which limit window this measures. Providers classify their own windows;
     /// never infer it from the label.
     #[serde(default)]
@@ -685,7 +686,8 @@ pub struct ProviderData {
     pub metrics: Vec<Metric>,
     /// Last update time (wall clock) — used for the displayed "x ago" age and
     /// the reset countdowns.
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "crate::utc::as_text")]
+    pub updated_at: Timestamp,
     /// Monotonic stamp of when this data was RECEIVED LIVE this session.
     /// SESSION-LOCAL: it survives in-process moves (the mpsc channel) but is
     /// intentionally NOT serialized (`#[serde(skip)]` ⇒ `None` after a disk
@@ -726,8 +728,8 @@ impl ProviderData {
     /// the past (stale data whose window rolled over) is not "next": it would
     /// read as "resets in 0" in notifications and make the burn-rate forecast
     /// suppress itself against a moment that is already gone.
-    pub fn next_reset(&self) -> Option<DateTime<Utc>> {
-        let now = Utc::now();
+    pub fn next_reset(&self) -> Option<Timestamp> {
+        let now = utc::now();
         self.metrics
             .iter()
             .filter(|m| !m.extra_only)
@@ -742,8 +744,8 @@ impl ProviderData {
     /// long window has taken over the headline: the session window resets far
     /// sooner and quoting it tells the user they are unblocked when they are
     /// not. Falls back to the nearest future reset when the headline has none.
-    pub fn headline_reset(&self) -> Option<DateTime<Utc>> {
-        let now = Utc::now();
+    pub fn headline_reset(&self) -> Option<Timestamp> {
+        let now = utc::now();
         self.headline_metric()
             .and_then(|m| m.reset_at)
             .filter(|t| *t > now)
@@ -766,10 +768,7 @@ impl ProviderData {
     /// wall-clock age. The returned NUMBER is always the wall-clock age, for
     /// an honest "x ago" label.
     pub fn stale_age_secs_after(&self, stale_after: i64) -> Option<i64> {
-        let wall_age = Utc::now()
-            .signed_duration_since(self.updated_at)
-            .num_seconds()
-            .max(0);
+        let wall_age = (utc::now() - self.updated_at).as_secs().max(0);
         let is_stale = match self.received_at {
             Some(inst) => polling_pause().is_stale(inst, Instant::now(), stale_after),
             None => wall_age > stale_after,
@@ -805,7 +804,7 @@ impl ProviderData {
         // A reset only counts as provably-passed once it is past by more than
         // the grace window — so a small wall-clock skew can't manufacture an
         // ≈0% estimate. A reset in the (now-GRACE, now] band stays grey-stale.
-        let cutoff = Utc::now() - chrono::Duration::seconds(RESET_GRACE_SECS);
+        let cutoff = utc::earlier(utc::now(), SignedDuration::from_secs(RESET_GRACE_SECS));
         let mut any_reset_passed = false;
         let metrics: Vec<Metric> = self
             .metrics
@@ -1148,7 +1147,7 @@ mod live_tests {
             Box::new(grok::GrokProvider::new(config("grok"))),
             Box::new(cursor::CursorProvider::new(config("cursor"))),
         ];
-        println!("LIVE at {}", chrono::Utc::now().to_rfc3339());
+        println!("LIVE at {}", utc::to_rfc3339(utc::now()));
         for p in providers {
             match p.fetch().await {
                 Ok(data) => {

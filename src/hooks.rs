@@ -12,7 +12,7 @@
 // travel in environment variables only.
 
 use crate::providers::ProviderId;
-use chrono::{DateTime, Utc};
+use crate::utc::{self, Timestamp};
 
 /// Absolute path to the system command interpreter, so a planted cmd.exe in
 /// the working/app directory cannot hijack a hook. Falls back to the bare
@@ -82,7 +82,7 @@ fn hook_command(
     event: HookEvent,
     provider: &ProviderId,
     percent: Option<f32>,
-    reset_at: Option<DateTime<Utc>>,
+    reset_at: Option<Timestamp>,
 ) -> Option<tokio::process::Command> {
     let args = cmd_arguments(command)?;
     let mut cmd = tokio::process::Command::new(system_cmd_exe());
@@ -96,7 +96,7 @@ fn hook_command(
         cmd.env("AILIMITS_PERCENT", (p.round() as u32).to_string());
     }
     if let Some(r) = reset_at {
-        cmd.env("AILIMITS_RESET_AT", r.to_rfc3339());
+        cmd.env("AILIMITS_RESET_AT", utc::to_rfc3339(r));
     }
     // CREATE_NO_WINDOW: no console flash from a GUI app.
     #[cfg(target_os = "windows")]
@@ -145,7 +145,7 @@ pub fn run(
     event: HookEvent,
     provider: ProviderId,
     percent: Option<f32>,
-    reset_at: Option<DateTime<Utc>>,
+    reset_at: Option<Timestamp>,
 ) {
     if command.trim().is_empty() {
         return;

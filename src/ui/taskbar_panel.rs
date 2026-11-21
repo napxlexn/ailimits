@@ -26,6 +26,7 @@ use crate::ui::tray::{
     countdown_changes_in, countdown_compact, draw_digits_fit, draw_text_like_digits,
     fill_round_rect, own_reset, provider_pct,
 };
+use crate::utc;
 use anyhow::{Context as AnyhowContext, Result};
 use std::rc::Rc;
 use tao::window::{Window, WindowId};
@@ -164,7 +165,7 @@ type DrawnRow = (Option<u8>, bool, Option<String>);
 /// headline window's reset is not known.
 fn countdown_of(data: &ProviderData) -> String {
     match own_reset(data) {
-        Some(t) => countdown_compact(t.signed_duration_since(chrono::Utc::now()).num_seconds()),
+        Some(t) => countdown_compact((t - utc::now()).as_secs()),
         None => NO_TIME.to_string(),
     }
 }
@@ -179,10 +180,10 @@ fn next_countdown_tick(top: &[&ProviderData], numbers: &UiNumbers) -> Option<std
     if !numbers.reset {
         return None;
     }
-    let now = chrono::Utc::now();
+    let now = utc::now();
     top.iter()
         .filter_map(|d| own_reset(d))
-        .map(|t| countdown_changes_in(t.signed_duration_since(now).num_seconds()))
+        .map(|t| countdown_changes_in((t - now).as_secs()))
         .min()
         .map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s.max(1) as u64))
 }
@@ -1227,7 +1228,7 @@ mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderId, ProviderStatus};
     use crate::ui::tray::color;
-    use chrono::Utc;
+    use crate::utc::SignedDuration;
 
     /// The taskbar panel, pinned: every fixture set on a bottom bar at 100%
     /// and 150% and on a side bar, dark and light, painted the way `redraw`
@@ -1636,7 +1637,7 @@ mod tests {
                 unified_pool: false,
                 extra_only: false,
             }],
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -1645,7 +1646,7 @@ mod tests {
     /// wall-clock age, whatever the scheduler is doing.
     fn stale(id: ProviderId, pct: u64) -> ProviderData {
         ProviderData {
-            updated_at: Utc::now() - chrono::Duration::hours(1),
+            updated_at: utc::now() - SignedDuration::from_hours(1),
             received_at: None,
             ..data(id, pct)
         }

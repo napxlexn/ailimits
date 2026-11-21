@@ -19,6 +19,7 @@ use crate::config::tune::TuneTray;
 use crate::providers::{ProviderData, ProviderStatus};
 use crate::rows::{ModelLabel, RowView};
 use crate::ui::theme::{ComputedTheme, UsageLevel};
+use crate::utc::{self, Timestamp};
 use anyhow::{Context, Result};
 use tiny_skia::{LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
@@ -329,7 +330,7 @@ pub(crate) fn tooltip_lines(
             indent: false,
         }];
     }
-    let now = chrono::Utc::now();
+    let now = utc::now();
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
         let mut line = row.name().to_string();
@@ -342,7 +343,7 @@ pub(crate) fn tooltip_lines(
             None => {}
         }
         if let Some(reset) = reset {
-            let secs = reset.signed_duration_since(now).num_seconds();
+            let secs = (reset - now).as_secs();
             line.push_str(if pct.is_some() { " · " } else { " " });
             line.push_str(&crate::ui::renderer::format_duration(secs));
         }
@@ -859,11 +860,9 @@ pub(crate) fn draw_text_like_digits(
 /// the future. Never another window's (`ProviderData::headline_reset` falls
 /// back to the nearest reset of any window, which would put a weekly's
 /// "3d 4h" beside a session's "0%"). None without a usable percentage.
-pub(crate) fn own_reset(data: &ProviderData) -> Option<chrono::DateTime<chrono::Utc>> {
+pub(crate) fn own_reset(data: &ProviderData) -> Option<Timestamp> {
     provider_pct(data)?;
-    data.headline_metric()?
-        .reset_at
-        .filter(|t| *t > chrono::Utc::now())
+    data.headline_metric()?.reset_at.filter(|t| *t > utc::now())
 }
 
 const MIN: i64 = 60;
@@ -1292,7 +1291,6 @@ fn demultiply(pm: &Pixmap) -> Vec<u8> {
 mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderData, ProviderId};
-    use chrono::Utc;
 
     /// The tray, pinned: the neutral dot, the rings and the stacked icon for
     /// every fixture set, and the hover tooltip at three bar heights, on a
@@ -1338,7 +1336,7 @@ mod tests {
                 unified_pool: false,
                 extra_only: false,
             }],
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }

@@ -53,7 +53,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use chrono::{DateTime, Duration, Utc};
+use crate::utc::{self, SignedDuration, Timestamp};
 use ring::digest::{digest as sha256, SHA256};
 use tiny_skia::Pixmap;
 
@@ -276,8 +276,8 @@ pub(crate) fn check(group: &str, items: Vec<(String, Pixmap)>) {
 
 /// A moment `secs` from now plus half a minute, so a countdown read a few
 /// milliseconds later still shows the same whole minute.
-fn at(secs: i64) -> Option<DateTime<Utc>> {
-    Some(Utc::now() + Duration::seconds(secs + 30))
+fn at(secs: i64) -> Option<Timestamp> {
+    Some(utc::now() + SignedDuration::from_secs(secs + 30))
 }
 
 const MIN: i64 = 60;
@@ -302,7 +302,7 @@ fn provider(id: ProviderId, status: ProviderStatus, metrics: Vec<Metric>) -> Pro
         id,
         status,
         metrics,
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(Instant::now()),
     }
 }
@@ -397,7 +397,7 @@ pub(crate) fn states() -> Vec<ProviderData> {
     );
     // A disk-cache entry two and a half hours old: wall-clock age, no
     // monotonic anchor, so the countdown and the age text are stable.
-    aged.updated_at = Utc::now() - Duration::seconds(2 * HOUR + 30 * MIN + 30);
+    aged.updated_at = utc::now() - SignedDuration::from_secs(2 * HOUR + 30 * MIN + 30);
     aged.received_at = None;
     vec![
         provider(ProviderId::Claude, ProviderStatus::Loading, vec![]),

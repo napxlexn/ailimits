@@ -18,9 +18,9 @@ use crate::config::{
     paths::ToolPaths,
     schema::{AuthMethod, ProviderConfig},
 };
+use crate::utc;
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
@@ -81,7 +81,7 @@ impl CodexProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -315,7 +315,7 @@ pub fn parse_wham_usage(body: &str) -> Result<Vec<Metric>> {
             let reset_at = field
                 .get("reset_at")
                 .and_then(|v| v.as_i64())
-                .and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
+                .and_then(utc::from_unix_secs);
             metrics.push(Metric {
                 label: label.to_string(),
                 used: pct,

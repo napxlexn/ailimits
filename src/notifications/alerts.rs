@@ -10,7 +10,7 @@
 // of one provider.
 
 use crate::providers::ProviderId;
-use chrono::{DateTime, Duration, Utc};
+use crate::utc::{self, SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -38,10 +38,10 @@ const KEEP_DAYS: i64 = 1;
 /// the provider gives one) and when the last alert was.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Entry {
-    #[serde(default)]
-    windows: Vec<Option<DateTime<Utc>>>,
-    #[serde(default)]
-    last: Option<DateTime<Utc>>,
+    #[serde(default, with = "crate::utc::as_text::vec_option")]
+    windows: Vec<Option<Timestamp>>,
+    #[serde(default, with = "crate::utc::as_text::option")]
+    last: Option<Timestamp>,
 }
 
 /// The alerts given, by provider (its config id, so a provider a newer
@@ -68,10 +68,10 @@ fn key(id: &ProviderId) -> String {
         .unwrap_or_default()
 }
 
-fn same_window(a: Option<DateTime<Utc>>, b: Option<DateTime<Utc>>) -> bool {
+fn same_window(a: Option<Timestamp>, b: Option<Timestamp>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => (a - b).num_minutes().abs() <= SAME_WINDOW_SLACK_MINUTES,
+        (Some(a), Some(b)) => (a - b).as_mins().abs() <= SAME_WINDOW_SLACK_MINUTES,
         _ => false,
     }
 }
@@ -98,17 +98,17 @@ impl AlertBook {
         id: &ProviderId,
         pct: f32,
         threshold: f32,
-        reset_at: Option<DateTime<Utc>>,
-        now: DateTime<Utc>,
-        cooldown: Duration,
+        reset_at: Option<Timestamp>,
+        now: Timestamp,
+        cooldown: SignedDuration,
     ) -> Seen {
         let k = key(id);
         let before = self.providers.get(&k).cloned();
         let mut entry = before.clone().unwrap_or_default();
-        let keep = Duration::days(KEEP_DAYS);
+        let keep = SignedDuration::from_hours(KEEP_DAYS * 24);
         entry
             .windows
-            .retain(|w| w.is_none_or(|reset| reset + keep > now));
+            .retain(|w| w.is_none_or(|reset| reset > utc::earlier(now, keep)));
         // Well under the threshold again: the next crossing is news.
         if pct < threshold - REARM_BELOW_POINTS {
             entry.windows.clear();
@@ -129,7 +129,9 @@ impl AlertBook {
                 fire = true;
             }
         }
-        let recent = entry.last.is_some_and(|last| now < last + keep);
+        let recent = entry
+            .last
+            .is_some_and(|last| utc::earlier(now, keep) < last);
         let after = (!entry.windows.is_empty() || recent).then_some(entry);
         let changed = after != before;
         match after {
@@ -156,21 +158,19 @@ mod tests {
 
     const COOLDOWN: i64 = 15;
 
-    fn at(minutes: i64) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-11-16T10:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc)
-            + Duration::minutes(minutes)
+    fn at(minutes: i64) -> Timestamp {
+        crate::utc::parse_rfc3339("2026-11-16T10:00:00Z").unwrap()
+            + SignedDuration::from_mins(minutes)
     }
 
-    fn see(book: &mut AlertBook, pct: f32, reset: Option<DateTime<Utc>>, minute: i64) -> bool {
+    fn see(book: &mut AlertBook, pct: f32, reset: Option<Timestamp>, minute: i64) -> bool {
         book.observe(
             &ProviderId::Claude,
             pct,
             80.0,
             reset,
             at(minute),
-            Duration::minutes(COOLDOWN),
+            SignedDuration::from_mins(COOLDOWN),
         )
         .fire
     }
@@ -197,7 +197,7 @@ mod tests {
     fn a_reset_time_that_drifts_by_seconds_is_the_same_window() {
         let mut book = AlertBook::default();
         assert!(see(&mut book, 85.0, Some(at(300)), 0));
-        let drifted = Some(at(300) + Duration::seconds(7));
+        let drifted = Some(at(300) + SignedDuration::from_secs(7));
         assert!(!see(&mut book, 86.0, drifted, 20));
     }
 
@@ -263,7 +263,7 @@ mod tests {
             80.0,
             None,
             at(0),
-            Duration::minutes(COOLDOWN),
+            SignedDuration::from_mins(COOLDOWN),
         );
         assert_eq!(
             seen,

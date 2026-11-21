@@ -10,9 +10,9 @@ use super::{
     MAX_ANSWER_BYTES,
 };
 use crate::config::schema::{AuthMethod, ProviderConfig};
+use crate::utc;
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -132,7 +132,7 @@ impl CopilotProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -430,15 +430,12 @@ pub fn parse_copilot_quotas(body: &str) -> Result<Vec<Metric>> {
     let reset_at = value
         .get("quota_reset_date_utc")
         .and_then(|v| v.as_str())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc))
+        .and_then(utc::parse_rfc3339)
         .or_else(|| {
             value
                 .get("quota_reset_date")
                 .and_then(|v| v.as_str())
-                .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-                .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+                .and_then(utc::parse_date)
         });
 
     let mut metrics = Vec::new();
@@ -855,9 +852,7 @@ mod tests {
             got,
             [("Chat", 0, Some(200)), ("Completions", 21, Some(2000))]
         );
-        let reset = DateTime::parse_from_rfc3339("2026-12-01T00:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let reset = utc::parse_rfc3339("2026-12-01T00:00:00Z").unwrap();
         assert!(metrics.iter().all(|m| m.reset_at == Some(reset)));
         assert!(metrics
             .iter()

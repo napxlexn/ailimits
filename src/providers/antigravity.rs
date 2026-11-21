@@ -10,9 +10,9 @@ use super::{
     Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::schema::ProviderConfig;
+use crate::utc;
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -297,7 +297,7 @@ impl AntigravityProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -516,10 +516,9 @@ pub fn parse_antigravity_keyring_token(body: &str) -> Result<AntigravityLogin> {
     let expires_at = token
         .get("expiry")
         .and_then(|v| v.as_str())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc));
+        .and_then(utc::parse_rfc3339);
     Ok(match expires_at {
-        Some(expiry) if expiry > Utc::now() => AntigravityLogin::Token(access_token.to_string()),
+        Some(expiry) if expiry > utc::now() => AntigravityLogin::Token(access_token.to_string()),
         _ => AntigravityLogin::Expired,
     })
 }
@@ -552,9 +551,8 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
             let reset_at = bucket
                 .get("resetTime")
                 .and_then(|v| v.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc))
-                .filter(|dt| dt.timestamp() > 0);
+                .and_then(utc::parse_rfc3339)
+                .filter(|dt| utc::unix_secs(*dt) > 0);
             // A spent pool drops remainingFraction and keeps only the reset —
             // that is zero remaining, not an unknown quota.
             let frac = match bucket.get("remainingFraction").and_then(|v| v.as_f64()) {
@@ -646,10 +644,7 @@ pub fn parse_available_models_quota(body: &str) -> Result<Vec<Metric>> {
             None if !reset_str.is_empty() => 0.0,
             None => continue,
         };
-        let reset_at = DateTime::parse_from_rfc3339(&reset_str)
-            .ok()
-            .map(|dt| dt.with_timezone(&Utc))
-            .filter(|dt| dt.timestamp() > 0);
+        let reset_at = utc::parse_rfc3339(&reset_str).filter(|dt| utc::unix_secs(*dt) > 0);
         let label = model_label(model_id);
         let metric = Metric {
             label: label.clone(),

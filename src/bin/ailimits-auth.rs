@@ -25,8 +25,8 @@ use ailimits::config::{
 use ailimits::providers::cursor::session;
 use ailimits::providers::grok::{self, GrokLogin};
 use ailimits::providers::{self, TokenCheck};
+use ailimits::utc::{self, Timestamp};
 use anyhow::{bail, Context, Result};
-use chrono::{DateTime, Utc};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -229,13 +229,10 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
     } else {
         match read_oauth_expiry(&creds) {
             Some((expires_at, sub_type)) => {
-                let valid = expires_at > Utc::now();
+                let valid = expires_at > utc::now();
                 let mark = if valid { "OK" } else { "no (expired)" };
                 println!("Claude OAuth ({sub_type} subscription): {mark}");
-                println!(
-                    "  token valid until {} UTC",
-                    expires_at.format("%Y-%m-%d %H:%M")
-                );
+                println!("  token valid until {} UTC", utc::minute_text(expires_at));
                 if !valid {
                     println!("  → run Claude Code, it refreshes the token automatically");
                 }
@@ -296,11 +293,11 @@ fn tool_sources(paths: &ToolPaths, allowed: &dyn Fn(&str) -> bool) {
         }
         Some(_) if !allowed("grok") => println!("Grok auth.json: found ({NOT_ALLOWED})"),
         Some(auth) => match std::fs::read_to_string(&auth) {
-            Ok(content) => match grok::parse_grok_auth(&content, Utc::now()) {
+            Ok(content) => match grok::parse_grok_auth(&content, utc::now()) {
                 Ok(GrokLogin::Token { expires_at, .. }) => {
                     println!("Grok auth.json: OK");
                     if let Some(t) = expires_at {
-                        println!("  token valid until {} UTC", t.format("%Y-%m-%d %H:%M"));
+                        println!("  token valid until {} UTC", utc::minute_text(t));
                     }
                 }
                 Ok(GrokLogin::Expired) => {
@@ -569,7 +566,7 @@ fn login(provider: Option<&str>) -> Result<()> {
     match outcome {
         session::SignInOutcome::SignedIn(Some(exp)) => println!(
             "Signed in to Cursor, session valid until {} UTC",
-            exp.format("%Y-%m-%d %H:%M")
+            utc::minute_text(exp)
         ),
         session::SignInOutcome::SignedIn(None) => println!("Signed in to Cursor"),
         session::SignInOutcome::TimedOut => {
@@ -615,18 +612,17 @@ fn logout(provider: Option<&str>) -> Result<()> {
 /// The widget's own Cursor session, as `status` shows it: its state and
 /// expiry, never the token.
 fn own_cursor_session() -> String {
-    let now = Utc::now();
+    let now = utc::now();
     match session::load() {
         Ok(None) => {
             "— (sign in with ailimits-auth login cursor, or in Rows and models)".to_string()
         }
         Ok(Some(s)) if s.ended => "ended by Cursor — sign in again".to_string(),
         Ok(Some(s)) => match s.expires_at {
-            Some(exp) if s.is_expired(now) => format!(
-                "expired {} UTC — sign in again",
-                exp.format("%Y-%m-%d %H:%M")
-            ),
-            Some(exp) => format!("OK, valid until {} UTC", exp.format("%Y-%m-%d %H:%M")),
+            Some(exp) if s.is_expired(now) => {
+                format!("expired {} UTC — sign in again", utc::minute_text(exp))
+            }
+            Some(exp) => format!("OK, valid until {} UTC", utc::minute_text(exp)),
             None => "OK".to_string(),
         },
         Err(e) => format!("no ({e})"),
@@ -634,7 +630,7 @@ fn own_cursor_session() -> String {
 }
 
 /// Read expiresAt and the subscription type from .credentials.json.
-fn read_oauth_expiry(path: &Path) -> Option<(DateTime<Utc>, String)> {
+fn read_oauth_expiry(path: &Path) -> Option<(Timestamp, String)> {
     let content = std::fs::read_to_string(path).ok()?;
     let value: serde_json::Value = serde_json::from_str(&content).ok()?;
     let oauth = value.get("claudeAiOauth")?;
@@ -644,7 +640,7 @@ fn read_oauth_expiry(path: &Path) -> Option<(DateTime<Utc>, String)> {
         .and_then(|v| v.as_str())
         .unwrap_or("?")
         .to_string();
-    DateTime::<Utc>::from_timestamp_millis(ms).map(|dt| (dt, sub))
+    utc::from_unix_millis(ms).map(|dt| (dt, sub))
 }
 
 /// The config a command changes: the file as it stands, or a first start's

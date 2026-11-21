@@ -10,9 +10,9 @@ use crate::config::{
     paths::ToolPaths,
     schema::{AuthMethod, ProviderConfig},
 };
+use crate::utc::{self, Timestamp};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
@@ -328,7 +328,7 @@ impl ClaudeProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             // Live fetch — monotonically anchored against wall-clock jumps.
             received_at: Some(std::time::Instant::now()),
         }
@@ -429,7 +429,7 @@ async fn read_oauth_token(path: &Path) -> Result<Option<String>> {
 
     // Never use an expired token — Claude Code refreshes it itself.
     let expires_at_ms = oauth.get("expiresAt").and_then(|v| v.as_i64()).unwrap_or(0);
-    if expires_at_ms <= Utc::now().timestamp_millis() {
+    if expires_at_ms <= utc::now().as_millisecond() {
         return Ok(None);
     }
 
@@ -463,8 +463,7 @@ pub fn parse_oauth_usage(body: &str) -> Result<Vec<Metric>> {
             let reset_at = field
                 .get("resets_at")
                 .and_then(|v| v.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+                .and_then(utc::parse_rfc3339);
             metrics.push(pct_metric(label, pct, reset_at, window));
         }
     };
@@ -524,8 +523,7 @@ fn model_weeks(value: &serde_json::Value) -> Vec<Metric> {
             let reset_at = l
                 .get("resets_at")
                 .and_then(|v| v.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&Utc));
+                .and_then(utc::parse_rfc3339);
             Some(Metric {
                 extra_only: true,
                 ..pct_metric(name, pct, reset_at, MetricWindow::Long)
@@ -535,12 +533,7 @@ fn model_weeks(value: &serde_json::Value) -> Vec<Metric> {
 }
 
 /// Percentage metric.
-fn pct_metric(
-    label: &str,
-    pct: u64,
-    reset_at: Option<DateTime<Utc>>,
-    window: MetricWindow,
-) -> Metric {
+fn pct_metric(label: &str, pct: u64, reset_at: Option<Timestamp>, window: MetricWindow) -> Metric {
     Metric {
         label: label.to_string(),
         used: pct.min(100),
@@ -562,12 +555,11 @@ fn header_u64(resp: &reqwest::Response, name: &str) -> Option<u64> {
 }
 
 /// Reset time header — RFC3339.
-fn header_datetime(resp: &reqwest::Response, name: &str) -> Option<DateTime<Utc>> {
+fn header_datetime(resp: &reqwest::Response, name: &str) -> Option<Timestamp> {
     resp.headers()
         .get(name)
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-        .map(|dt| dt.with_timezone(&Utc))
+        .and_then(utc::parse_rfc3339)
 }
 
 #[async_trait]
@@ -582,7 +574,7 @@ impl Provider for ClaudeProvider {
                 id: self.id(),
                 status: ProviderStatus::NotConfigured,
                 metrics: vec![],
-                updated_at: Utc::now(),
+                updated_at: utc::now(),
                 received_at: Some(std::time::Instant::now()),
             });
         }

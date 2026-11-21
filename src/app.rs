@@ -33,6 +33,7 @@ mod provider_set;
 mod sign_in;
 mod widget;
 
+use crate::utc::{self, Timestamp};
 use crate::{
     config::{
         schema::{Config, PendingNotice, Surface},
@@ -60,7 +61,6 @@ use crate::{
 };
 use anyhow::{Context as AnyhowContext, Result};
 use cache::{load_provider_cache, CacheLedger, FileWriter};
-use chrono::Utc;
 use model_job::{spawn_model_read, ModelJob, SharedModelJob};
 use provider_set::ProviderSet;
 use std::collections::HashMap;
@@ -163,7 +163,7 @@ fn loading_data(id: ProviderId) -> ProviderData {
         id,
         status: ProviderStatus::Loading,
         metrics: vec![],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     }
 }
@@ -391,8 +391,8 @@ struct App {
     /// its own instead of freezing at the duration computed on the last
     /// fetch.
     trends: HashMap<ProviderId, Trend>,
-    forecasts: HashMap<ProviderId, chrono::DateTime<Utc>>,
-    empty_forecasts: HashMap<ProviderId, chrono::DateTime<Utc>>,
+    forecasts: HashMap<ProviderId, Timestamp>,
+    empty_forecasts: HashMap<ProviderId, Timestamp>,
     /// Last fetch error per provider, kept after retention replaces the slot
     /// with old data: hovering a greyed/estimated row shows this as the
     /// "why" (the slot itself only knows the retained values, not the cause).
@@ -871,6 +871,7 @@ pub fn run() -> Result<()> {
 mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow};
+    use crate::utc::SignedDuration;
 
     fn metric(label: &str, used: u64, reset_in_min: Option<i64>, extra_only: bool) -> Metric {
         Metric {
@@ -878,7 +879,7 @@ mod tests {
             used,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: reset_in_min.map(|m| Utc::now() + chrono::Duration::minutes(m)),
+            reset_at: reset_in_min.map(|m| utc::now() + SignedDuration::from_mins(m)),
             window: MetricWindow::Long,
             unified_pool: false,
             extra_only,
@@ -890,7 +891,7 @@ mod tests {
             id: ProviderId::Claude,
             status: ProviderStatus::Ok,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }

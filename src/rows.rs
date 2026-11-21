@@ -442,7 +442,7 @@ pub fn fit_name(name: &str, measure: impl Fn(&str, f32) -> f32) -> String {
 mod tests {
     use super::*;
     use crate::providers::{Metric, MetricUnit, MetricWindow, ProviderStatus};
-    use chrono::Utc;
+    use crate::utc::{self, SignedDuration};
 
     fn metric(label: &str, used: u64, window: MetricWindow) -> Metric {
         Metric {
@@ -450,7 +450,7 @@ mod tests {
             used,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() + chrono::Duration::hours(3)),
+            reset_at: Some(utc::now() + SignedDuration::from_hours(3)),
             window,
             unified_pool: false,
             extra_only: false,
@@ -462,7 +462,7 @@ mod tests {
             id,
             status: ProviderStatus::Ok,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: None,
         }
     }
@@ -545,7 +545,7 @@ mod tests {
         let before = sample();
         let mut after = before.clone();
         let mut fable = metric("Fable", 100, MetricWindow::Long);
-        fable.reset_at = Some(Utc::now() + chrono::Duration::minutes(5));
+        fable.reset_at = Some(utc::now() + SignedDuration::from_mins(5));
         fable.extra_only = true;
         after[0].metrics.push(fable);
         let config = Config::default();
@@ -585,13 +585,13 @@ mod tests {
     /// Claude with a Fable week whose reset is `fable_reset` from now and a
     /// session whose reset is `session_reset` from now.
     fn claude_with_fable(
-        session_reset: chrono::Duration,
-        fable_reset: chrono::Duration,
+        session_reset: SignedDuration,
+        fable_reset: SignedDuration,
     ) -> ProviderData {
         let mut d = sample().remove(0);
-        d.metrics[0].reset_at = Some(Utc::now() + session_reset);
+        d.metrics[0].reset_at = Some(utc::now() + session_reset);
         let mut fable = metric("Fable", 40, MetricWindow::Long);
-        fable.reset_at = Some(Utc::now() + fable_reset);
+        fable.reset_at = Some(utc::now() + fable_reset);
         fable.extra_only = true;
         d.metrics.push(fable);
         d
@@ -605,7 +605,7 @@ mod tests {
     /// the tray and the panel read exactly as before — live, not "≈".
     #[test]
     fn a_passed_fable_reset_leaves_the_claude_row_live() {
-        let raw = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+        let raw = claude_with_fable(SignedDuration::from_hours(2), -SignedDuration::from_mins(5));
         // What the tray and the panel get (app.rs `visible_data`).
         let shown = raw.aged_for_display();
         assert!(matches!(shown.status, ProviderStatus::Ok));
@@ -652,7 +652,10 @@ mod tests {
         };
 
         // The session rolled over, Fable's week did not.
-        let d = claude_with_fable(-chrono::Duration::minutes(5), chrono::Duration::days(3));
+        let d = claude_with_fable(
+            -SignedDuration::from_mins(5),
+            SignedDuration::from_hours(3 * 24),
+        );
         for rows in <[_; 2]>::from(rows_of(&d)) {
             assert_eq!(ids(&rows), ["claude", "claude.fable"]);
             assert!(is_estimate(&rows[0].data), "the session reset: ≈0%");
@@ -661,7 +664,7 @@ mod tests {
         }
 
         // Fable's week rolled over, the session did not.
-        let d = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+        let d = claude_with_fable(SignedDuration::from_hours(2), -SignedDuration::from_mins(5));
         for rows in <[_; 2]>::from(rows_of(&d)) {
             assert!(!is_estimate(&rows[0].data));
             assert!(is_estimate(&rows[1].data));
@@ -686,7 +689,7 @@ mod tests {
         };
 
         let mut session_reset = sample().remove(0);
-        session_reset.metrics[0].reset_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        session_reset.metrics[0].reset_at = Some(utc::now() - SignedDuration::from_mins(5));
         for input in [session_reset.clone(), session_reset.aged_for_display()] {
             let r = rows(&input);
             assert!(is_estimate(&r[0].data));
@@ -695,7 +698,7 @@ mod tests {
         }
 
         let mut opus_reset = sample().remove(0);
-        opus_reset.metrics[2].reset_at = Some(Utc::now() - chrono::Duration::minutes(5));
+        opus_reset.metrics[2].reset_at = Some(utc::now() - SignedDuration::from_mins(5));
         for input in [opus_reset.clone(), opus_reset.aged_for_display()] {
             let r = rows(&input);
             assert!(is_estimate(&r[1].data));

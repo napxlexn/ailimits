@@ -14,6 +14,7 @@ use super::{
     widget::{show_widget, toggle_or_raise_widget},
     App, AppCommand, TrayKind, UserEvent,
 };
+use crate::utc::{self, SignedDuration};
 use crate::{
     config::schema::Surface,
     hooks,
@@ -23,7 +24,6 @@ use crate::{
     rows,
     ui::renderer::format_duration,
 };
-use chrono::Utc;
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, MouseButton, WindowEvent},
@@ -618,7 +618,7 @@ impl App {
         if let Some(pct) = data.primary_percentage() {
             let threshold = self.providers.threshold(&data.id) as f32;
             let cooldown =
-                chrono::Duration::minutes(self.config.notifications.cooldown_minutes.max(1) as i64);
+                SignedDuration::from_mins(self.config.notifications.cooldown_minutes.max(1) as i64);
             // A provider switched off meanwhile alerts nothing.
             let seen = active.then(|| {
                 self.alert_book.observe(
@@ -626,7 +626,7 @@ impl App {
                     pct,
                     threshold,
                     data.headline_reset(),
-                    Utc::now(),
+                    utc::now(),
                     cooldown,
                 )
             });
@@ -637,7 +637,7 @@ impl App {
                 if self.config.notifications.enabled {
                     let body = match data.headline_reset() {
                         Some(t) => {
-                            let secs = t.signed_duration_since(Utc::now()).num_seconds().max(0);
+                            let secs = (t - utc::now()).as_secs().max(0);
                             format!(
                                 "{}% used, resets in {}",
                                 pct.round() as u32,
@@ -683,9 +683,9 @@ impl App {
             // provider's forecast (suppressed if the window resets before the
             // projected hit).
             let trend = self.trends.entry(data.id.clone()).or_default();
-            trend.push(Utc::now(), pct);
+            trend.push(utc::now(), pct);
             match trend.forecast(data.headline_reset()) {
-                Some(f) if f.hit_at > Utc::now() => {
+                Some(f) if f.hit_at > utc::now() => {
                     self.forecasts.insert(data.id.clone(), f.hit_at);
                 }
                 _ => {

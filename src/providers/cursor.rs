@@ -14,9 +14,9 @@ use super::{
     Provider, ProviderData, ProviderId, ProviderStatus, MAX_ANSWER_BYTES,
 };
 use crate::config::schema::ProviderConfig;
+use crate::utc::{self, Timestamp};
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use session::{OwnSession, RefreshAnswer, StoreError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -88,7 +88,7 @@ pub struct CursorProvider {
     /// session notes the attempt too (`OwnSession::refreshed_at`), but only
     /// once it is saved: should Credential Manager not take it, this still
     /// holds the next attempt off for a day.
-    last_refresh: Mutex<Option<DateTime<Utc>>>,
+    last_refresh: Mutex<Option<Timestamp>>,
 }
 
 /// One cached plan answer.
@@ -133,7 +133,7 @@ impl CursorProvider {
             id: self.id(),
             status,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(Instant::now()),
         }
     }
@@ -175,11 +175,11 @@ impl CursorProvider {
             return self.sign_in_again();
         }
         let mut renewed = false;
-        if self.refresh_due(&own, Utc::now()) {
+        if self.refresh_due(&own, utc::now()) {
             (own, renewed) = self.refresh(own).await;
         }
         // An expired token is never sent; a refresh could not renew it.
-        if own.ended || own.is_expired(Utc::now()) {
+        if own.ended || own.is_expired(utc::now()) {
             return self.sign_in_again();
         }
 
@@ -188,7 +188,7 @@ impl CursorProvider {
             // Refused. Near its expiry one refresh may still save the
             // session — at most one a day, like any refresh, so a run of
             // refusals costs no refresh each cycle.
-            if !renewed && self.refresh_due(&own, Utc::now()) {
+            if !renewed && self.refresh_due(&own, utc::now()) {
                 (own, renewed) = self.refresh(own).await;
                 if renewed {
                     answer = self.call(CURRENT_PERIOD_USAGE, &own.access_token).await;
@@ -230,7 +230,7 @@ impl CursorProvider {
     /// Whether `own` is to be refreshed at `now`: near its expiry with no
     /// attempt noted in the kept session for a day (`needs_refresh`), and
     /// none made by this instance for a day either, kept or not.
-    fn refresh_due(&self, own: &OwnSession, now: DateTime<Utc>) -> bool {
+    fn refresh_due(&self, own: &OwnSession, now: Timestamp) -> bool {
         own.needs_refresh(now)
             && session::attempt_due(
                 *self
@@ -249,19 +249,19 @@ impl CursorProvider {
         *self
             .last_refresh
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(Utc::now());
+            .unwrap_or_else(PoisonError::into_inner) = Some(utc::now());
         let Some(answer) = session::request_refresh(&self.net, &own).await else {
             // No answer at all (offline, a timeout): nothing learnt, but the
             // attempt counts, so it waits a day like any other and a PC that
             // is offline does not try each cycle.
             let next = OwnSession {
-                refreshed_at: Some(Utc::now()),
+                refreshed_at: Some(utc::now()),
                 ..own.clone()
             };
             self.keep(&own.access_token, &next);
             return (next, false);
         };
-        let next = own.after_refresh(&answer, Utc::now());
+        let next = own.after_refresh(&answer, utc::now());
         self.keep(&own.access_token, &next);
         (next, matches!(answer, RefreshAnswer::Renewed(_)))
     }
@@ -445,13 +445,13 @@ pub struct SessionClaims {
     /// provider, then the account id). It tells accounts apart.
     pub subject: String,
     /// `exp`, when the token states one.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
 }
 
 impl SessionClaims {
     /// Whether the token is past its `exp`. A token without one is left for
     /// the server to judge.
-    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired(&self, now: Timestamp) -> bool {
         self.expires_at.is_some_and(|exp| exp <= now)
     }
 }
@@ -470,7 +470,7 @@ pub fn parse_session_claims(token: &str) -> Option<SessionClaims> {
     let expires_at = value
         .get("exp")
         .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
-        .and_then(|secs| DateTime::<Utc>::from_timestamp(secs, 0));
+        .and_then(utc::from_unix_secs);
     Some(SessionClaims {
         subject: sub.to_string(),
         expires_at,
@@ -531,9 +531,9 @@ pub struct PeriodUsage {
     /// `planUsage.totalPercentUsed`, rounded and clamped to 0–100.
     pub used: u64,
     /// `billingCycleStart`.
-    pub start: Option<DateTime<Utc>>,
+    pub start: Option<Timestamp>,
     /// `billingCycleEnd`: the reset.
-    pub end: Option<DateTime<Utc>>,
+    pub end: Option<Timestamp>,
 }
 
 /// Why a usage answer brought no usage.
@@ -636,7 +636,7 @@ fn usage_label(usage: &PeriodUsage, plan: Option<&PlanInfo>) -> String {
         return period.label().to_string();
     }
     let label = match (usage.start, usage.end) {
-        (Some(start), Some(end)) => match (end - start).num_days() {
+        (Some(start), Some(end)) => match (end - start).as_secs() / 86_400 {
             6..=8 => "Weekly",
             27..=32 => "Monthly",
             _ => "Included",
@@ -714,7 +714,7 @@ pub struct SandUsage {
     /// `usagePercent`, rounded and clamped to 0–100.
     pub used: u64,
     /// `nextResetTimestampUtc`.
-    pub reset_at: Option<DateTime<Utc>>,
+    pub reset_at: Option<Timestamp>,
     /// `isUnified`: Grok, Cursor and Grok Bot draw on one pool.
     pub unified: bool,
 }
@@ -770,23 +770,21 @@ pub fn sand_metric(sand: &SandUsage) -> Metric {
 }
 
 /// RFC3339 text, or epoch seconds / milliseconds (as a number or digits).
-fn parse_instant(v: &serde_json::Value) -> Option<DateTime<Utc>> {
+fn parse_instant(v: &serde_json::Value) -> Option<Timestamp> {
     let from_epoch = |n: i64| {
         if n.abs() >= 100_000_000_000 {
-            DateTime::<Utc>::from_timestamp_millis(n)
+            utc::from_unix_millis(n)
         } else {
-            DateTime::<Utc>::from_timestamp(n, 0)
+            utc::from_unix_secs(n)
         }
     };
     let dt = match v {
-        serde_json::Value::String(s) => DateTime::parse_from_rfc3339(s.trim())
-            .ok()
-            .map(|dt| dt.with_timezone(&Utc))
+        serde_json::Value::String(s) => utc::parse_rfc3339(s.trim())
             .or_else(|| s.trim().parse::<i64>().ok().and_then(from_epoch)),
         serde_json::Value::Number(n) => n.as_i64().and_then(from_epoch),
         _ => None,
     };
-    dt.filter(|dt| dt.timestamp() > 0)
+    dt.filter(|dt| utc::unix_secs(*dt) > 0)
 }
 
 /// A protobuf-JSON number: a JSON number as a rule, though the encoder may
@@ -806,6 +804,7 @@ fn percent(pct: f64) -> u64 {
 mod tests {
     use super::*;
     use crate::providers::test_server::{Reply, TestServer};
+    use crate::utc::SignedDuration;
 
     /// A fake token: a JWT-shaped string whose payload is
     /// {"sub":"github|user_01TESTFIXTURE","exp":4102444800,…} (year 2100).
@@ -968,7 +967,7 @@ mod tests {
         server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
         // Six days left: inside the refresh window.
         let mut near = session();
-        near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+        near.expires_at = Some(utc::now() + SignedDuration::from_hours(6 * 24));
         let (p, store) = signed_in(&server, Some(near));
         let data = p.fetch().await.unwrap();
         assert!(
@@ -994,7 +993,7 @@ mod tests {
         server.route(CURRENT_PERIOD_USAGE, vec![Reply::ok(USAGE_BODY)]);
         server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
         let mut near = session();
-        near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+        near.expires_at = Some(utc::now() + SignedDuration::from_hours(6 * 24));
         let (p, store) = signed_in(&server, Some(near));
         let _ = p.fetch().await.unwrap();
         let kept = store.kept.lock().unwrap().clone().unwrap();
@@ -1042,7 +1041,7 @@ mod tests {
             server.route(CURRENT_PERIOD_USAGE, vec![usage.clone()]);
             server.route(PLAN_INFO, vec![Reply::ok(PLAN_BODY)]);
             let mut near = session();
-            near.expires_at = Some(Utc::now() + chrono::Duration::days(6));
+            near.expires_at = Some(utc::now() + SignedDuration::from_hours(6 * 24));
             let p = CursorProvider::with_parts(
                 config(),
                 Net::local(&server.base),
@@ -1068,7 +1067,7 @@ mod tests {
         server.route("/oauth/token", vec![Reply::status(500)]);
         server.route(CURRENT_PERIOD_USAGE, vec![Reply::status(401)]);
         let mut near = session();
-        near.expires_at = Some(Utc::now() + chrono::Duration::days(3));
+        near.expires_at = Some(utc::now() + SignedDuration::from_hours(3 * 24));
         let (p, store) = signed_in(&server, Some(near));
         for _ in 0..3 {
             let _ = p.fetch().await.unwrap();

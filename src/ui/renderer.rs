@@ -13,8 +13,8 @@ use crate::providers::{
     Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
 };
 use crate::rows::{ModelLabel, RowView};
+use crate::utc::{self, Timestamp};
 use anyhow::{Context, Result};
-use chrono::Utc;
 use fontdue::{
     layout::{CoordinateSystem, Layout as TextLayout, TextStyle},
     Font,
@@ -168,7 +168,7 @@ impl Renderer {
         opacity: f32,
         detail: &DetailLevel,
         cursor: Option<(f32, f32)>,
-        forecasts: &HashMap<ProviderId, chrono::DateTime<Utc>>,
+        forecasts: &HashMap<ProviderId, Timestamp>,
         errors: &HashMap<ProviderId, String>,
     ) {
         // Fully transparent base — the blur backdrop shows through.
@@ -555,9 +555,9 @@ impl Renderer {
                         let right_size = m.t(if expanded { 11.5 } else { 10.5 });
                         let right = if let Some(reset) = active_metric
                             .and_then(|m| m.reset_at)
-                            .filter(|t| *t > Utc::now())
+                            .filter(|t| *t > utc::now())
                         {
-                            let secs = reset.signed_duration_since(Utc::now()).num_seconds();
+                            let secs = (reset - utc::now()).as_secs();
                             let half = || row.w / 2.0;
                             let text =
                                 self.countdown_text(None, secs, m.countdown, right_size, half);
@@ -681,9 +681,9 @@ impl Renderer {
         let text = if cursor.is_some_and(|point| point_in_rect(point, row)) {
             metric
                 .reset_at
-                .filter(|t| *t > Utc::now())
+                .filter(|t| *t > utc::now())
                 .map(|reset| {
-                    let secs = reset.signed_duration_since(Utc::now()).num_seconds();
+                    let secs = (reset - utc::now()).as_secs();
                     let label = Some(metric.label.as_str());
                     self.countdown_text(label, secs, m.countdown, size, || row.w)
                 })
@@ -720,9 +720,9 @@ impl Renderer {
         let size = m.t(10.5);
         let text = metric
             .reset_at
-            .filter(|t| *t > Utc::now())
+            .filter(|t| *t > utc::now())
             .map(|reset| {
-                let secs = reset.signed_duration_since(Utc::now()).num_seconds();
+                let secs = (reset - utc::now()).as_secs();
                 let label = Some(metric.label.as_str());
                 self.countdown_text(label, secs, m.countdown, size, || row.w)
             })
@@ -773,11 +773,11 @@ impl Renderer {
                         .map(|t| (p.id.display_name(), m.label.as_str(), m.display_text(), t))
                 })
             })
-            .filter(|(_, _, _, t)| *t > Utc::now())
+            .filter(|(_, _, _, t)| *t > utc::now())
             .min_by_key(|(_, _, _, t)| *t);
 
         if let Some((provider, metric, value, t)) = next {
-            let secs = t.signed_duration_since(Utc::now()).num_seconds();
+            let secs = (t - utc::now()).as_secs();
             if secs > 0 {
                 let text = compact_hint_text(provider, metric, &value, secs, m.countdown);
                 self.draw_text(
@@ -921,9 +921,9 @@ impl Renderer {
                 );
             } else if let Some(reset) = active_metric
                 .and_then(|m| m.reset_at)
-                .filter(|t| *t > Utc::now())
+                .filter(|t| *t > utc::now())
             {
-                let secs = reset.signed_duration_since(Utc::now()).num_seconds();
+                let secs = (reset - utc::now()).as_secs();
                 // Held to the names' width, so the columns keep their air.
                 let text = self.countdown_text(None, secs, m.countdown, reset_size, name_room);
                 self.draw_text(
@@ -1495,9 +1495,9 @@ fn hovered_hint_text(
             let prefix = format!("{} {}:", data.id.display_name(), metric.label);
             metric
                 .reset_at
-                .filter(|reset| *reset > Utc::now())
+                .filter(|reset| *reset > utc::now())
                 .map(|reset| {
-                    let secs = reset.signed_duration_since(Utc::now()).num_seconds();
+                    let secs = (reset - utc::now()).as_secs();
                     format!("{prefix} {}", format_countdown(secs, style))
                 })
                 .unwrap_or(prefix)
@@ -1532,7 +1532,7 @@ fn is_percent_metric(metric: &Metric) -> bool {
 /// projection computed before the source went quiet would keep masking the
 /// honest reset countdown / "x ago" age label in the same slot.
 fn forecast_label(
-    forecasts: &HashMap<ProviderId, chrono::DateTime<Utc>>,
+    forecasts: &HashMap<ProviderId, Timestamp>,
     data: &ProviderData,
     style: Countdown,
 ) -> Option<String> {
@@ -1541,7 +1541,7 @@ fn forecast_label(
     }
     forecasts
         .get(&data.id)
-        .map(|hit| hit.signed_duration_since(Utc::now()).num_seconds())
+        .map(|hit| (*hit - utc::now()).as_secs())
         .filter(|s| *s > 0)
         .map(|s| format!("~{}", format_countdown(s, style)))
 }
@@ -1592,6 +1592,7 @@ pub fn format_countdown(secs: i64, style: Countdown) -> String {
 mod tests {
     use super::*;
     use crate::providers::MetricWindow;
+    use crate::utc::SignedDuration;
 
     fn row(w: f32) -> Rect {
         Rect {
@@ -1823,7 +1824,7 @@ mod tests {
         ];
         let live = {
             let mut m = pct_metric("Pro", 37, MetricWindow::Session);
-            m.reset_at = Some(Utc::now() + chrono::Duration::days(18));
+            m.reset_at = Some(utc::now() + SignedDuration::from_hours(18 * 24));
             with_id(ProviderId::Cursor, data(vec![m]))
         };
         let unlimited = with_id(
@@ -1893,13 +1894,12 @@ mod tests {
     fn preview_stale_rows() {
         use crate::config::schema::{ColumnFlow, Layout, UIConfig, WidthScale};
         use crate::ui::layout;
-        use chrono::Duration;
         use MetricWindow::{Long, Session};
 
         let theme = ComputedTheme::compute(&UIConfig::default());
         let renderer = Renderer::new().expect("a system font");
-        let metric = |label: &str, pct: u64, window, reset: Option<Duration>| Metric {
-            reset_at: reset.map(|d| Utc::now() + d),
+        let metric = |label: &str, pct: u64, window, reset: Option<SignedDuration>| Metric {
+            reset_at: reset.map(|d| utc::now() + d),
             ..pct_metric(label, pct, window)
         };
         let live = |id: ProviderId, m: Metric| ProviderData {
@@ -1908,43 +1908,53 @@ mod tests {
         };
         // A disk-cache entry or retained data: no monotonic anchor, so the
         // wall-clock age decides.
-        let stale = |id: ProviderId, m: Metric, age: Duration| ProviderData {
+        let stale = |id: ProviderId, m: Metric, age: SignedDuration| ProviderData {
             id,
-            updated_at: Utc::now() - age,
+            updated_at: utc::now() - age,
             received_at: None,
             ..data(vec![m])
         };
         let providers: Vec<ProviderData> = [
             live(
                 ProviderId::Claude,
-                metric("Session", 18, Session, Some(Duration::hours(3))),
+                metric("Session", 18, Session, Some(SignedDuration::from_hours(3))),
             ),
             // Stale with the reset still ahead: grey, the countdown still runs.
             stale(
                 ProviderId::Codex,
-                metric("Session", 72, Session, Some(Duration::hours(2))),
-                Duration::minutes(40),
+                metric("Session", 72, Session, Some(SignedDuration::from_hours(2))),
+                SignedDuration::from_mins(40),
             ),
             stale(
                 ProviderId::Copilot,
-                metric("Premium", 91, Session, Some(Duration::days(12))),
-                Duration::hours(2),
+                metric(
+                    "Premium",
+                    91,
+                    Session,
+                    Some(SignedDuration::from_hours(12 * 24)),
+                ),
+                SignedDuration::from_hours(2),
             ),
             // Stale with no reset known: greyed before and after.
             stale(
                 ProviderId::Antigravity,
                 metric("Gemini", 61, Long, None),
-                Duration::hours(5),
+                SignedDuration::from_hours(5),
             ),
             // Stale with the window provably reset: the estimate.
             stale(
                 ProviderId::Grok,
-                metric("Weekly", 64, Long, Some(-Duration::hours(1))),
-                Duration::hours(3),
+                metric("Weekly", 64, Long, Some(-SignedDuration::from_hours(1))),
+                SignedDuration::from_hours(3),
             ),
             live(
                 ProviderId::Cursor,
-                metric("Pro", 37, Session, Some(Duration::days(18))),
+                metric(
+                    "Pro",
+                    37,
+                    Session,
+                    Some(SignedDuration::from_hours(18 * 24)),
+                ),
             ),
         ]
         .iter()
@@ -2009,7 +2019,7 @@ mod tests {
         ui: &crate::config::schema::UIConfig,
         opacity: f32,
         cursor: Option<(f32, f32)>,
-        forecasts: &HashMap<ProviderId, chrono::DateTime<Utc>>,
+        forecasts: &HashMap<ProviderId, Timestamp>,
         errors: &HashMap<ProviderId, String>,
     ) -> Pixmap {
         let rows = rows_of(providers);
@@ -2202,7 +2212,7 @@ mod tests {
         let mut forecasts = HashMap::new();
         forecasts.insert(
             ProviderId::Claude,
-            Utc::now() + chrono::Duration::seconds(90 * 60 + 30),
+            utc::now() + SignedDuration::from_secs(90 * 60 + 30),
         );
         for (dname, detail) in details.clone() {
             let pm = baseline_widget(
@@ -2245,8 +2255,8 @@ mod tests {
     // ─── Rows and models: the new looks ───────────────────────────
 
     /// A reset `secs` from now plus half a minute (see visual_baseline.rs).
-    fn reset_in(secs: i64) -> Option<chrono::DateTime<Utc>> {
-        Some(Utc::now() + chrono::Duration::seconds(secs + 30))
+    fn reset_in(secs: i64) -> Option<Timestamp> {
+        Some(utc::now() + SignedDuration::from_secs(secs + 30))
     }
 
     fn pct_reset(label: &str, used: u64, window: MetricWindow, secs: i64) -> Metric {
@@ -3132,7 +3142,7 @@ mod tests {
     /// an error (nothing on the meta line).
     fn rows_of_every_form(label: &ModelLabel) -> Vec<RowView> {
         use crate::providers::MetricWindow::{Long, Session};
-        let hours = |h: i64| Some(Utc::now() + chrono::Duration::hours(h));
+        let hours = |h: i64| Some(utc::now() + SignedDuration::from_hours(h));
         let with_reset = |label: &str, pct: u64, window, h: i64| Metric {
             reset_at: hours(h),
             ..pct_metric(label, pct, window)
@@ -3438,7 +3448,7 @@ mod tests {
             id: ProviderId::Claude,
             status: ProviderStatus::Ok,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -3455,15 +3465,14 @@ mod tests {
     #[test]
     fn stale_data_greys_even_with_a_reset_ahead() {
         use crate::config::schema::UIConfig;
-        use chrono::Duration;
 
         let theme = ComputedTheme::compute(&UIConfig::default());
         let mut session = pct_metric("Session", 72, MetricWindow::Session);
-        session.reset_at = Some(Utc::now() + Duration::hours(2));
+        session.reset_at = Some(utc::now() + SignedDuration::from_hours(2));
         let fresh = data(vec![session.clone()]);
         // Retained data 40 minutes old, its window still two hours from reset.
         let stale = ProviderData {
-            updated_at: Utc::now() - Duration::minutes(40),
+            updated_at: utc::now() - SignedDuration::from_mins(40),
             received_at: None,
             ..data(vec![session])
         };

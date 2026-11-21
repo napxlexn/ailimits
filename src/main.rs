@@ -140,7 +140,7 @@ fn short_source(file: &str) -> &str {
 /// panic's message: a panic while slicing text quotes the text it was
 /// slicing, and that can be a file's content or a token.
 fn crash_line(
-    now: chrono::DateTime<chrono::Utc>,
+    now: ailimits::utc::Timestamp,
     version: &str,
     thread: &str,
     location: Option<(&str, u32, u32)>,
@@ -151,7 +151,7 @@ fn crash_line(
     };
     format!(
         "{} AI Limits {version}: panic in thread '{thread}' at {at}\n",
-        now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        ailimits::utc::to_rfc3339_secs(now)
     )
 }
 
@@ -185,7 +185,7 @@ fn install_crash_log(path: std::path::PathBuf) {
         let thread = std::thread::current();
         let location = info.location().map(|l| (l.file(), l.line(), l.column()));
         let line = crash_line(
-            chrono::Utc::now(),
+            ailimits::utc::now(),
             env!("CARGO_PKG_VERSION"),
             thread.name().unwrap_or("unnamed"),
             location,
@@ -203,7 +203,7 @@ fn report_failed_start(e: &anyhow::Error) {
         &crash_log_path(),
         &format!(
             "{} AI Limits {}: could not start: {e:#}\n",
-            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            ailimits::utc::to_rfc3339_secs(ailimits::utc::now()),
             env!("CARGO_PKG_VERSION")
         ),
     );
@@ -257,9 +257,7 @@ mod tests {
 
     #[test]
     fn a_crash_line_names_the_place_and_never_the_message() {
-        let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T10:00:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
+        let now = ailimits::utc::parse_rfc3339("2026-11-16T10:00:00Z").unwrap();
         let line = crash_line(now, "0.7.1", "main", Some(("src\\ui\\picker.rs", 1292, 17)));
         assert_eq!(
             line,

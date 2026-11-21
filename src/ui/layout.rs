@@ -805,7 +805,7 @@ mod tests {
             used: 30,
             limit: Some(100),
             unit,
-            reset_at: Some(chrono::Utc::now() + chrono::Duration::hours(3)),
+            reset_at: Some(crate::utc::now() + crate::utc::SignedDuration::from_hours(3)),
             window,
             unified_pool: false,
             extra_only: false,
@@ -818,7 +818,7 @@ mod tests {
             id,
             status: crate::providers::ProviderStatus::Ok,
             metrics,
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::utc::now(),
             received_at: None,
         };
         let mut rows = crate::rows::visible_rows(

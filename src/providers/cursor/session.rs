@@ -12,7 +12,7 @@
 
 use super::{base64url_encode, parse_session_claims};
 use crate::providers::{read_text, BodyError, Net, MAX_ANSWER_BYTES};
-use chrono::{DateTime, Duration, Utc};
+use crate::utc::{self, SignedDuration, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::time::Duration as StdDuration;
 use tracing::{debug, warn};
@@ -193,7 +193,7 @@ fn next_poll_delay(prev: StdDuration) -> StdDuration {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SignInOutcome {
     /// Approved and stored; the session's expiry when the token states one.
-    SignedIn(Option<DateTime<Utc>>),
+    SignedIn(Option<Timestamp>),
     /// Nobody approved the link within `SIGN_IN_TIMEOUT`.
     TimedOut,
     /// Approved but unusable, or not stored. The text names what failed,
@@ -324,9 +324,9 @@ pub struct OwnSession {
     /// What a refresh sends; so far always the access token itself.
     pub refresh_token: String,
     /// The access token's `exp`, when it states one.
-    pub expires_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<Timestamp>,
     /// The last refresh attempt that got an answer.
-    pub refreshed_at: Option<DateTime<Utc>>,
+    pub refreshed_at: Option<Timestamp>,
     /// The server ended the session: a refresh answered `shouldLogout`, or
     /// the usage call refused it several fetches in a row. A new sign-in is
     /// needed. Kept instead of deleted, so the row can say so rather than
@@ -374,29 +374,30 @@ impl OwnSession {
     }
 
     /// Past its expiry: never sent again.
-    pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
+    pub fn is_expired(&self, now: Timestamp) -> bool {
         self.expires_at.is_some_and(|exp| exp <= now)
     }
 
     /// Within `REFRESH_WITHIN_DAYS` of its expiry, and not past it: an
     /// expired session is not renewed (the row asks to sign in again), so
     /// no request goes out for it day after day.
-    pub fn near_expiry(&self, now: DateTime<Utc>) -> bool {
-        self.expires_at
-            .is_some_and(|exp| exp > now && exp - now <= Duration::days(REFRESH_WITHIN_DAYS))
+    pub fn near_expiry(&self, now: Timestamp) -> bool {
+        self.expires_at.is_some_and(|exp| {
+            exp > now && exp - now <= SignedDuration::from_hours(REFRESH_WITHIN_DAYS * 24)
+        })
     }
 
     /// Near its expiry, and no refresh attempt in the last
     /// `REFRESH_EVERY_HOURS`. A token without an expiry is left to the
     /// server to judge.
-    pub fn needs_refresh(&self, now: DateTime<Utc>) -> bool {
+    pub fn needs_refresh(&self, now: Timestamp) -> bool {
         self.near_expiry(now) && attempt_due(self.refreshed_at, now)
     }
 
     /// The session after a refresh answer received at `now`. A new token
     /// replaces both tokens (the refresh token was the access token);
     /// a logout ends the session; anything else only notes the attempt.
-    pub fn after_refresh(&self, answer: &RefreshAnswer, now: DateTime<Utc>) -> Self {
+    pub fn after_refresh(&self, answer: &RefreshAnswer, now: Timestamp) -> Self {
         match answer {
             RefreshAnswer::Renewed(token) => Self {
                 access_token: token.clone(),
@@ -423,8 +424,8 @@ impl OwnSession {
             access_token: self.access_token.clone(),
             refresh_token: (self.refresh_token != self.access_token)
                 .then(|| self.refresh_token.clone()),
-            expires_at: self.expires_at.map(|t| t.timestamp()),
-            refreshed_at: self.refreshed_at.map(|t| t.timestamp()),
+            expires_at: self.expires_at.map(utc::unix_secs),
+            refreshed_at: self.refreshed_at.map(utc::unix_secs),
             ended: self.ended,
         };
         // A struct of strings and numbers always serialises.
@@ -438,7 +439,7 @@ impl OwnSession {
         if access.is_empty() {
             return None;
         }
-        let instant = |secs: Option<i64>| secs.and_then(|s| DateTime::<Utc>::from_timestamp(s, 0));
+        let instant = |secs: Option<i64>| secs.and_then(utc::from_unix_secs);
         Some(Self {
             refresh_token: record
                 .refresh_token
@@ -455,12 +456,12 @@ impl OwnSession {
 
 /// Whether a refresh may be tried at `now`, the last attempt having been
 /// made at `last` (None: never): one attempt per `REFRESH_EVERY_HOURS`.
-pub fn attempt_due(last: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
-    last.is_none_or(|t| now - t >= Duration::hours(REFRESH_EVERY_HOURS))
+pub fn attempt_due(last: Option<Timestamp>, now: Timestamp) -> bool {
+    last.is_none_or(|t| now - t >= SignedDuration::from_hours(REFRESH_EVERY_HOURS))
 }
 
 /// A token's `exp`, when it is a JWT that states one.
-fn expiry_of(token: &str) -> Option<DateTime<Utc>> {
+fn expiry_of(token: &str) -> Option<Timestamp> {
     parse_session_claims(token).and_then(|claims| claims.expires_at)
 }
 
@@ -653,17 +654,17 @@ pub(crate) async fn request_refresh(net: &Net, session: &OwnSession) -> Option<R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     /// A fake JWT whose payload is
     /// {"sub":"github|user_01TESTFIXTURE","exp":4102444800,…} (year 2100).
     const FAKE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJnaXRodWJ8dXNlcl8wMVRFU1RGSVhUVVJFIiwiZXhwIjo0MTAyNDQ0ODAwLCJpc3MiOiJodHRwczovL2F1dGhlbnRpY2F0aW9uLmN1cnNvci5zaCIsImF1ZCI6Imh0dHBzOi8vY3Vyc29yLmNvbSJ9.c2lnbmF0dXJl";
 
-    fn at(y: i32, mo: u32, d: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(y, mo, d, 12, 0, 0).unwrap()
+    fn at(y: i16, mo: i8, d: i8) -> Timestamp {
+        let noon = jiff::civil::datetime(y, mo, d, 12, 0, 0, 0);
+        jiff::tz::Offset::UTC.to_timestamp(noon).unwrap()
     }
 
-    fn session(expires_at: Option<DateTime<Utc>>) -> OwnSession {
+    fn session(expires_at: Option<Timestamp>) -> OwnSession {
         OwnSession {
             access_token: "a.b.c".to_string(),
             refresh_token: "a.b.c".to_string(),
@@ -799,10 +800,7 @@ mod tests {
             access: FAKE_TOKEN.to_string(),
             refresh: FAKE_TOKEN.to_string(),
         });
-        assert_eq!(
-            session.expires_at,
-            Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
-        );
+        assert_eq!(session.expires_at, utc::from_unix_secs(4_102_444_800));
         assert!(!session.ended);
         assert!(!format!("{session:?}").contains(FAKE_TOKEN));
     }
@@ -811,29 +809,29 @@ mod tests {
     fn refresh_waits_for_the_last_week_and_then_once_a_day() {
         let now = at(2026, 11, 10);
         // Far from its expiry: nothing to do.
-        assert!(!session(Some(now + Duration::days(50))).needs_refresh(now));
+        assert!(!session(Some(now + SignedDuration::from_hours(50 * 24))).needs_refresh(now));
         // Within a week of it; past it, never again.
-        assert!(session(Some(now + Duration::days(6))).needs_refresh(now));
-        assert!(!session(Some(now - Duration::days(1))).needs_refresh(now));
+        assert!(session(Some(now + SignedDuration::from_hours(6 * 24))).needs_refresh(now));
+        assert!(!session(Some(now - SignedDuration::from_hours(24))).needs_refresh(now));
         assert!(!session(Some(now)).needs_refresh(now));
         // No expiry stated: the server judges it.
         assert!(!session(None).needs_refresh(now));
 
-        let mut s = session(Some(now + Duration::days(3)));
-        s.refreshed_at = Some(now - Duration::hours(2));
+        let mut s = session(Some(now + SignedDuration::from_hours(3 * 24)));
+        s.refreshed_at = Some(now - SignedDuration::from_hours(2));
         assert!(!s.needs_refresh(now), "tried two hours ago");
-        s.refreshed_at = Some(now - Duration::hours(25));
+        s.refreshed_at = Some(now - SignedDuration::from_hours(25));
         assert!(s.needs_refresh(now), "a day has passed");
 
         assert!(session(Some(now)).is_expired(now));
-        assert!(!session(Some(now + Duration::seconds(1))).is_expired(now));
+        assert!(!session(Some(now + SignedDuration::from_secs(1))).is_expired(now));
         assert!(!session(None).is_expired(now));
     }
 
     #[test]
     fn refresh_answers_renew_end_or_note_the_session() {
         let now = at(2026, 11, 10);
-        let old = session(Some(now + Duration::days(2)));
+        let old = session(Some(now + SignedDuration::from_hours(2 * 24)));
 
         // The verified shape: a new token, the session goes on.
         let body =
@@ -844,10 +842,7 @@ mod tests {
         let renewed = old.after_refresh(&answer, now);
         assert_eq!(renewed.access_token, FAKE_TOKEN);
         assert_eq!(renewed.refresh_token, FAKE_TOKEN, "stored as both");
-        assert_eq!(
-            renewed.expires_at,
-            Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
-        );
+        assert_eq!(renewed.expires_at, utc::from_unix_secs(4_102_444_800));
         assert_eq!(renewed.refreshed_at, Some(now));
         assert!(!renewed.ended);
 
@@ -890,7 +885,7 @@ mod tests {
     #[test]
     fn the_record_round_trips() {
         let now = at(2026, 11, 10);
-        let mut s = session(Some(now + Duration::days(60)));
+        let mut s = session(Some(now + SignedDuration::from_hours(60 * 24)));
         s.refreshed_at = Some(now);
         let text = s.encode();
         assert!(
@@ -928,7 +923,7 @@ mod tests {
         let label = format!(
             "cursor_session_test_{}_{}",
             std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            utc::now().as_nanosecond()
         );
         let _cleanup = Cleanup(label.clone());
 

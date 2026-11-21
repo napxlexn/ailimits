@@ -848,7 +848,7 @@ mod tests {
             id,
             status: ProviderStatus::Ok,
             metrics: labels.iter().map(|l| metric(l)).collect(),
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::utc::now(),
             received_at: None,
         };
         let display = [
@@ -1046,7 +1046,7 @@ reset = false
             id,
             status: ProviderStatus::Ok,
             metrics: Vec::new(),
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::utc::now(),
             received_at: None,
         };
         let display = [ok(ProviderId::Claude), ok(ProviderId::Copilot)];
@@ -1450,7 +1450,7 @@ reset = false
                     extra_only: false,
                 })
                 .collect(),
-            updated_at: chrono::Utc::now(),
+            updated_at: crate::utc::now(),
             received_at: None,
         }
     }

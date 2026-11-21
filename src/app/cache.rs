@@ -5,11 +5,11 @@
 // relaunch the row shows the last real value (greyed, with its age) even if
 // the source is temporarily unavailable, instead of an error text.
 
+use crate::utc::{self, SignedDuration};
 use crate::{
     config::storage,
     providers::{Metric, MetricWindow, ProviderData, ProviderId, ProviderStatus},
 };
-use chrono::{Duration, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +23,7 @@ fn cache_metric_is_valid(metric: &Metric) -> bool {
     // Past its reset the number is dead: the window rolled over.
     metric
         .reset_at
-        .is_some_and(|reset| reset + Duration::minutes(1) > Utc::now())
+        .is_some_and(|reset| reset > utc::earlier(utc::now(), SignedDuration::from_mins(1)))
         && metric.percentage().is_some()
 }
 
@@ -168,7 +168,6 @@ pub(super) fn cache_file_bytes(cache: &HashMap<ProviderId, ProviderData>) -> Opt
 /// minute: a provider that sends the time left rather than the reset time
 /// moves its reset by a second or so from one fetch to the next.
 fn cache_meaning(cache: &HashMap<ProviderId, ProviderData>) -> String {
-    use chrono::DurationRound;
     let mut items: Vec<(u8, Vec<Metric>)> = cache
         .values()
         .map(|d| {
@@ -176,9 +175,7 @@ fn cache_meaning(cache: &HashMap<ProviderId, ProviderData>) -> String {
                 .metrics
                 .iter()
                 .map(|m| Metric {
-                    reset_at: m
-                        .reset_at
-                        .map(|r| r.duration_trunc(Duration::minutes(1)).unwrap_or(r)),
+                    reset_at: m.reset_at.map(utc::trunc_to_minute),
                     ..m.clone()
                 })
                 .collect();
@@ -406,7 +403,7 @@ mod tests {
             id: ProviderId::Claude,
             status: ProviderStatus::Ok,
             metrics,
-            updated_at: Utc::now(),
+            updated_at: utc::now(),
             received_at: Some(std::time::Instant::now()),
         }
     }
@@ -472,17 +469,12 @@ mod tests {
         assert_eq!(merged.metrics.len(), 4, "no duplicate slots: {labels:?}");
     }
 
-    fn cache_with(used: u64, fetched: chrono::DateTime<Utc>) -> HashMap<ProviderId, ProviderData> {
+    fn cache_with(used: u64, fetched: utc::Timestamp) -> HashMap<ProviderId, ProviderData> {
         let mut m = pct("Session", used, MetricWindow::Session);
         // The reset as such a provider computes it: the fetch time plus the
         // time left, so it wobbles by the time a request takes.
-        let wobble = Duration::milliseconds(fetched.timestamp_subsec_millis() as i64 % 700);
-        m.reset_at = Some(
-            chrono::DateTime::parse_from_rfc3339("2030-01-01T13:00:20Z")
-                .unwrap()
-                .with_timezone(&Utc)
-                + wobble,
-        );
+        let wobble = SignedDuration::from_millis(i64::from(fetched.subsec_millisecond()) % 700);
+        m.reset_at = Some(utc::parse_rfc3339("2030-01-01T13:00:20Z").unwrap() + wobble);
         let mut d = data(vec![m]);
         d.updated_at = fetched;
         HashMap::from([(ProviderId::Claude, d)])
@@ -491,19 +483,19 @@ mod tests {
     #[test]
     fn the_same_numbers_again_are_not_written_every_cycle() {
         let start = std::time::Instant::now();
-        let t0 = Utc::now();
+        let t0 = utc::now();
         let mut ledger = CacheLedger::new(&HashMap::new());
         // The first real numbers are written.
         assert!(ledger.due(&cache_with(20, t0), start).is_some());
         // The next cycle brings the same numbers, fetched a minute later.
         let a_minute = std::time::Duration::from_secs(60);
-        let later = cache_with(20, t0 + Duration::minutes(1));
+        let later = cache_with(20, t0 + SignedDuration::from_mins(1));
         assert!(ledger.due(&later, start + a_minute).is_none());
         // Changed numbers are written at once.
-        let changed = cache_with(21, t0 + Duration::minutes(2));
+        let changed = cache_with(21, t0 + SignedDuration::from_mins(2));
         assert!(ledger.due(&changed, start + 2 * a_minute).is_some());
         // The same numbers for long enough: the fetch time is brought up.
-        let much_later = cache_with(21, t0 + Duration::minutes(13));
+        let much_later = cache_with(21, t0 + SignedDuration::from_mins(13));
         assert!(ledger
             .due(&much_later, start + 2 * a_minute + CACHE_STAMP_REFRESH)
             .is_some());
@@ -512,12 +504,12 @@ mod tests {
     #[test]
     fn exit_writes_only_when_the_file_is_behind() {
         let start = std::time::Instant::now();
-        let t0 = Utc::now();
+        let t0 = utc::now();
         let mut ledger = CacheLedger::new(&HashMap::new());
         let cache = cache_with(20, t0);
         assert!(ledger.due(&cache, start).is_some());
         assert!(ledger.at_exit(&cache).is_none(), "nothing new to write");
-        let newer = cache_with(20, t0 + Duration::minutes(1));
+        let newer = cache_with(20, t0 + SignedDuration::from_mins(1));
         assert!(ledger.due(&newer, start).is_none());
         assert!(
             ledger.at_exit(&newer).is_some(),
@@ -527,7 +519,7 @@ mod tests {
 
     #[test]
     fn an_empty_cache_removes_the_file() {
-        let mut ledger = CacheLedger::new(&cache_with(20, Utc::now()));
+        let mut ledger = CacheLedger::new(&cache_with(20, utc::now()));
         assert_eq!(
             ledger.due(&HashMap::new(), std::time::Instant::now()),
             Some(None)

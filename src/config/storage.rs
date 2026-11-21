@@ -443,7 +443,7 @@ fn decode(bytes: &[u8]) -> std::result::Result<String, String> {
 /// A copy of the config beside it, under a name of its own
 /// (`config.toml.<UTC stamp>.<what>`, never replacing an earlier one).
 async fn keep_copy(path: &Path, what: &str) -> std::io::Result<PathBuf> {
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let stamp = crate::utc::file_stamp(crate::utc::now());
     for n in 1..=100u32 {
         let mut name = path.as_os_str().to_owned();
         if n == 1 {
@@ -472,7 +472,7 @@ async fn keep_copy(path: &Path, what: &str) -> std::io::Result<PathBuf> {
 /// the time-zone APIs for a file name), with `-2`, `-3`... when that is
 /// taken. Never replaces a file.
 async fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
-    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let stamp = crate::utc::file_stamp(crate::utc::now());
     let base = path.as_os_str().to_owned();
     for n in 1..=100u32 {
         let mut name = base.clone();

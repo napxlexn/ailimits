@@ -3,7 +3,7 @@
 use ailimits::providers::{
     Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
 };
-use chrono::Utc;
+use ailimits::utc::{self, SignedDuration, Timestamp};
 
 // Helper: a metric with used/limit.
 fn metric(used: u64, limit: Option<u64>) -> Metric {
@@ -108,7 +108,7 @@ fn oauth_usage_reads_a_models_own_week_for_its_extra_row_only() {
     assert_eq!(fable.limit, Some(100));
     assert_eq!(fable.window, MetricWindow::Long);
     assert_eq!(
-        fable.reset_at.unwrap().to_rfc3339(),
+        utc::to_rfc3339(fable.reset_at.unwrap()),
         "2026-11-21T12:00:00+00:00"
     );
 
@@ -188,7 +188,6 @@ fn a_failing_claude_usage_token_keeps_the_row() {
 fn an_offline_claude_is_not_an_expired_token() {
     use ailimits::providers::claude::ChainOutcome;
     use ailimits::ui::renderer::hover_reason;
-    use chrono::Duration;
     use std::collections::HashMap;
 
     // A valid Claude Code token, but no request got an answer.
@@ -208,7 +207,7 @@ fn an_offline_claude_is_not_an_expired_token() {
         id: ProviderId::Claude,
         status: ProviderStatus::Ok,
         metrics: vec![metric(10, Some(100))],
-        updated_at: Utc::now() - Duration::hours(1),
+        updated_at: utc::now() - SignedDuration::from_hours(1),
         received_at: None,
     };
     let errors = HashMap::from([(ProviderId::Claude, msg.clone())]);
@@ -505,7 +504,6 @@ fn hover_reason_explains_stale_rows_only() {
         Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
     };
     use ailimits::ui::renderer::hover_reason;
-    use chrono::{Duration, Utc};
     use std::collections::HashMap;
 
     let stale = |id: ProviderId| ProviderData {
@@ -516,12 +514,12 @@ fn hover_reason_explains_stale_rows_only() {
             used: 48,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() + Duration::hours(2)),
+            reset_at: Some(utc::now() + SignedDuration::from_hours(2)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now() - Duration::hours(10),
+        updated_at: utc::now() - SignedDuration::from_hours(10),
         received_at: None, // wall-age staleness (10 h)
     };
 
@@ -550,7 +548,7 @@ fn hover_reason_explains_stale_rows_only() {
 
     // Fresh data → no reason; hover keeps its weekly-metric meaning.
     let fresh = ProviderData {
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
         ..stale(ProviderId::Claude)
     };
@@ -582,7 +580,6 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
     use ailimits::providers::{
         Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
     };
-    use chrono::{Duration, Utc};
 
     // Data from 10 minutes ago; the session reset 5 minutes ago,
     // the weekly reset is in the future.
@@ -595,7 +592,7 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 used: 100,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(Utc::now() - Duration::minutes(5)),
+                reset_at: Some(utc::now() - SignedDuration::from_mins(5)),
                 window: MetricWindow::Session,
                 unified_pool: false,
                 extra_only: false,
@@ -605,13 +602,13 @@ fn stale_data_with_passed_reset_extrapolates_to_zero() {
                 used: 28,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(Utc::now() + Duration::days(3)),
+                reset_at: Some(utc::now() + SignedDuration::from_hours(3 * 24)),
                 window: MetricWindow::Session,
                 unified_pool: false,
                 extra_only: false,
             },
         ],
-        updated_at: Utc::now() - Duration::minutes(10),
+        updated_at: utc::now() - SignedDuration::from_mins(10),
         // No monotonic anchor → staleness falls back to the 10-min wall age.
         received_at: None,
     };
@@ -630,7 +627,6 @@ fn fresh_data_is_not_extrapolated() {
     use ailimits::providers::{
         Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
     };
-    use chrono::{Duration, Utc};
 
     // Fresh data (30s old) is left intact even with a reset in the past:
     // the next fetch will refine it.
@@ -642,12 +638,12 @@ fn fresh_data_is_not_extrapolated() {
             used: 80,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() - Duration::seconds(10)),
+            reset_at: Some(utc::now() - SignedDuration::from_secs(10)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now() - Duration::seconds(30),
+        updated_at: utc::now() - SignedDuration::from_secs(30),
         received_at: Some(std::time::Instant::now()),
     };
 
@@ -662,7 +658,7 @@ fn primary_percentage_uses_first_metric() {
         id: ProviderId::Claude,
         status: ProviderStatus::Ok,
         metrics: vec![metric(50, Some(100)), metric(10, Some(100))],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(data.primary_percentage(), Some(50.0));
@@ -693,7 +689,7 @@ fn an_exhausted_long_window_becomes_the_headline_for_every_surface() {
             window_metric("Session", 20, MetricWindow::Session),
             window_metric("Weekly", 100, MetricWindow::Long),
         ],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(
@@ -713,7 +709,7 @@ fn an_exhausted_opus_pool_counts_even_though_its_label_never_says_week() {
             window_metric("Weekly", 50, MetricWindow::Long),
             window_metric("Opus", 100, MetricWindow::Long),
         ],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(
@@ -731,7 +727,7 @@ fn a_long_window_with_headroom_leaves_the_session_in_charge() {
             window_metric("Session", 40, MetricWindow::Session),
             window_metric("Weekly", 60, MetricWindow::Long),
         ],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(
@@ -743,13 +739,12 @@ fn a_long_window_with_headroom_leaves_the_session_in_charge() {
 
 #[test]
 fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
-    use chrono::Duration;
     // Claude shape: the Session window resets in an hour but the spent Weekly
     // window (the headline, since it's exhausted) resets in five days. The
     // notification must quote the Weekly reset — quoting the Session reset
     // would tell a blocked user they are unblocked in an hour when they are
     // not.
-    let now = Utc::now();
+    let now = utc::now();
     let data = ProviderData {
         id: ProviderId::Claude,
         status: ProviderStatus::Ok,
@@ -759,7 +754,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 used: 20,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(now + Duration::hours(1)),
+                reset_at: Some(now + SignedDuration::from_hours(1)),
                 window: MetricWindow::Session,
                 unified_pool: false,
                 extra_only: false,
@@ -769,7 +764,7 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
                 used: 100,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(now + Duration::days(5)),
+                reset_at: Some(now + SignedDuration::from_hours(5 * 24)),
                 window: MetricWindow::Long,
                 unified_pool: false,
                 extra_only: false,
@@ -789,11 +784,10 @@ fn headline_reset_quotes_the_spent_long_windows_reset_not_the_soonest() {
 
 #[test]
 fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
-    use chrono::Duration;
     // No spent long window, so the headline is the Session metric itself —
     // headline_reset() must agree with next_reset() (the nearest future
     // reset), same as before this fix.
-    let now = Utc::now();
+    let now = utc::now();
     let data = ProviderData {
         id: ProviderId::Codex,
         status: ProviderStatus::Ok,
@@ -803,7 +797,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 used: 40,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(now + Duration::hours(1)),
+                reset_at: Some(now + SignedDuration::from_hours(1)),
                 window: MetricWindow::Session,
                 unified_pool: false,
                 extra_only: false,
@@ -813,7 +807,7 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
                 used: 60,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(now + Duration::days(5)),
+                reset_at: Some(now + SignedDuration::from_hours(5 * 24)),
                 window: MetricWindow::Long,
                 unified_pool: false,
                 extra_only: false,
@@ -828,7 +822,6 @@ fn headline_reset_falls_back_to_the_nearest_reset_when_no_spent_long_window() {
 
 #[test]
 fn live_data_survives_a_wall_clock_jump() {
-    use chrono::Duration;
     // Models an NTP / VM-resume forward jump: data RECEIVED live just now (fresh
     // monotonic stamp) whose wall-clock updated_at suddenly reads an hour old.
     // It must NOT grey and must NOT fabricate an estimate — the staleness gate
@@ -841,12 +834,12 @@ fn live_data_survives_a_wall_clock_jump() {
             used: 50,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() + Duration::hours(2)),
+            reset_at: Some(utc::now() + SignedDuration::from_hours(2)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now() - Duration::hours(1),
+        updated_at: utc::now() - SignedDuration::from_hours(1),
         received_at: Some(std::time::Instant::now()),
     };
     assert!(
@@ -858,14 +851,13 @@ fn live_data_survives_a_wall_clock_jump() {
 
 #[test]
 fn data_without_monotonic_anchor_uses_wall_age() {
-    use chrono::Duration;
     // A disk-cache entry (received_at None) is staled by its own wall-clock
     // age: a fresh entry is live, an old one is stale.
     let mk = |age_secs: i64| ProviderData {
         id: ProviderId::Codex,
         status: ProviderStatus::Ok,
         metrics: vec![metric(10, Some(100))],
-        updated_at: Utc::now() - Duration::seconds(age_secs),
+        updated_at: utc::now() - SignedDuration::from_secs(age_secs),
         received_at: None,
     };
     assert!(mk(10).stale_age_secs().is_none());
@@ -875,13 +867,12 @@ fn data_without_monotonic_anchor_uses_wall_age() {
 #[test]
 fn healthy_data_on_a_long_update_interval_is_not_stale() {
     use ailimits::providers::{stale_after_secs, STALE_AFTER_SECS};
-    use chrono::Duration;
 
     let aged = |minutes: i64| ProviderData {
         id: ProviderId::Claude,
         status: ProviderStatus::Ok,
         metrics: vec![metric(10, Some(100))],
-        updated_at: Utc::now() - Duration::minutes(minutes),
+        updated_at: utc::now() - SignedDuration::from_mins(minutes),
         received_at: None,
     };
 
@@ -998,7 +989,6 @@ fn pause_marks_keep_the_first_start_and_the_last_pause() {
 
 #[test]
 fn marginally_past_reset_within_grace_is_not_extrapolated() {
-    use chrono::Duration;
     // Stale data whose reset is only ~30s past — inside the grace window, so it
     // could be a wall-clock skew rather than a real rollover. It must NOT become
     // an ≈0% estimate; the value is preserved (the renderer greys it instead).
@@ -1010,12 +1000,12 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
             used: 95,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() - Duration::seconds(30)),
+            reset_at: Some(utc::now() - SignedDuration::from_secs(30)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now() - Duration::minutes(10),
+        updated_at: utc::now() - SignedDuration::from_mins(10),
         received_at: None,
     };
     let aged = data.aged_for_display();
@@ -1031,7 +1021,6 @@ fn marginally_past_reset_within_grace_is_not_extrapolated() {
 
 #[test]
 fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
-    use chrono::Duration;
     // Live data received just now (so it is not stale - e.g. the idle pause
     // kept it from ageing) whose session window provably reset 10 minutes
     // ago: the row must show the ≈0% estimate, not the old 95% as live.
@@ -1043,12 +1032,12 @@ fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
             used: 95,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() - Duration::minutes(10)),
+            reset_at: Some(utc::now() - SignedDuration::from_mins(10)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert!(data.stale_age_secs().is_none(), "fresh data is not stale");
@@ -1060,9 +1049,7 @@ fn a_reset_passed_during_the_idle_pause_still_reads_as_zero() {
 
 #[test]
 fn next_reset_skips_past_timestamps() {
-    use chrono::{Duration, Utc};
-
-    let future = Utc::now() + Duration::hours(3);
+    let future = utc::now() + SignedDuration::from_hours(3);
     let data = ProviderData {
         id: ProviderId::Claude,
         status: ProviderStatus::Ok,
@@ -1073,7 +1060,7 @@ fn next_reset_skips_past_timestamps() {
                 used: 80,
                 limit: Some(100),
                 unit: MetricUnit::Percent,
-                reset_at: Some(Utc::now() - Duration::minutes(5)),
+                reset_at: Some(utc::now() - SignedDuration::from_mins(5)),
                 window: MetricWindow::Session,
                 unified_pool: false,
                 extra_only: false,
@@ -1089,7 +1076,7 @@ fn next_reset_skips_past_timestamps() {
                 extra_only: false,
             },
         ],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: None,
     };
     assert_eq!(data.next_reset(), Some(future));
@@ -1100,7 +1087,7 @@ fn next_reset_skips_past_timestamps() {
             used: 80,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() - Duration::minutes(5)),
+            reset_at: Some(utc::now() - SignedDuration::from_mins(5)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
@@ -1205,7 +1192,6 @@ const GROK_BILLING_FULL: &str = r#"{"config":{"currentPeriod":{"type":"USAGE_PER
 #[test]
 fn grok_billing_full_body_parses_to_the_weekly_limit_and_its_products() {
     use ailimits::providers::grok::parse_billing_credits;
-    use chrono::{TimeZone, Timelike};
 
     let metrics = parse_billing_credits(GROK_BILLING_FULL).expect("should parse");
     assert_eq!(metrics.len(), 2);
@@ -1217,8 +1203,8 @@ fn grok_billing_full_body_parses_to_the_weekly_limit_and_its_products() {
     assert_eq!(metrics[0].window, MetricWindow::Long);
     let reset = metrics[0].reset_at.expect("currentPeriod.end is the reset");
     assert_eq!(
-        reset.with_nanosecond(0),
-        Utc.with_ymd_and_hms(2026, 11, 16, 23, 1, 28).single()
+        utc::from_unix_secs(utc::unix_secs(reset)),
+        utc::parse_rfc3339("2026-11-16T23:01:28Z")
     );
 
     // The per-product share rides along, compactly labelled, for its extra
@@ -1234,7 +1220,7 @@ fn grok_billing_full_body_parses_to_the_weekly_limit_and_its_products() {
         id: ProviderId::Grok,
         status: ProviderStatus::Ok,
         metrics,
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(
@@ -1272,7 +1258,7 @@ fn grok_billing_reset_falls_back_to_the_billing_period_end() {
     let metrics = parse_billing_credits(body).expect("should parse");
     assert_eq!(metrics[0].used, 42);
     assert_eq!(
-        metrics[0].reset_at.map(|t| t.to_rfc3339()).as_deref(),
+        metrics[0].reset_at.map(utc::to_rfc3339).as_deref(),
         Some("2026-11-16T23:01:28+00:00")
     );
 }
@@ -1348,9 +1334,8 @@ fn grok_billing_non_200_degrades_to_an_honest_error() {
 #[test]
 fn grok_auth_picks_the_live_session_and_never_an_expired_one() {
     use ailimits::providers::grok::{parse_grok_auth, GrokLogin};
-    use chrono::TimeZone;
 
-    let now = Utc.with_ymd_and_hms(2026, 11, 10, 0, 0, 0).unwrap();
+    let now = utc::parse_rfc3339("2026-11-10T00:00:00Z").unwrap();
     // The verified shape: sessions keyed "<issuer>::<client-id>".
     let body = r#"{
         "https://auth.x.ai::client-a": {"key": "tok-old", "refresh_token": "r1", "auth_mode": "oidc",
@@ -1420,7 +1405,7 @@ fn grok_auth_debug_print_never_shows_the_token() {
     use ailimits::providers::grok::parse_grok_auth;
 
     let body = r#"{"https://auth.x.ai::a": {"key": "tok-secret-value", "expires_at": "2099-01-01T00:00:00Z"}}"#;
-    let login = parse_grok_auth(body, Utc::now()).unwrap();
+    let login = parse_grok_auth(body, utc::now()).unwrap();
     let printed = format!("{login:?}");
     assert!(!printed.contains("tok-secret-value"), "{printed}");
     assert!(printed.contains("Token"));
@@ -1429,14 +1414,13 @@ fn grok_auth_debug_print_never_shows_the_token() {
 #[test]
 fn grok_stale_rows_point_at_the_grok_cli() {
     use ailimits::ui::renderer::hover_reason;
-    use chrono::Duration;
     use std::collections::HashMap;
 
     let stale = ProviderData {
         id: ProviderId::Grok,
         status: ProviderStatus::Ok,
         metrics: vec![window_metric("Weekly", 30, MetricWindow::Long)],
-        updated_at: Utc::now() - Duration::hours(7),
+        updated_at: utc::now() - SignedDuration::from_hours(7),
         received_at: None,
     };
     let mut errors = HashMap::new();
@@ -1478,9 +1462,8 @@ const CURSOR_SAND_BODY: &str = r#"{"currentPeriodStart":"2026-11-09T23:01:28.407
 const CURSOR_401_BODY: &str =
     r#"{"code":"unauthenticated","debug":{"error":"ERROR_NOT_LOGGED_IN"}}"#;
 
-fn cursor_week_end() -> chrono::DateTime<Utc> {
-    use chrono::TimeZone;
-    Utc.with_ymd_and_hms(2026, 11, 16, 23, 1, 28).unwrap() + chrono::Duration::milliseconds(407)
+fn cursor_week_end() -> Timestamp {
+    utc::parse_rfc3339("2026-11-16T23:01:28Z").unwrap() + SignedDuration::from_millis(407)
 }
 
 #[test]
@@ -1494,7 +1477,7 @@ fn cursor_period_usage_parses_the_verified_body() {
     assert_eq!(usage.end, Some(cursor_week_end()), "ms-epoch string");
     assert_eq!(
         usage.start,
-        Some(cursor_week_end() - chrono::Duration::days(7))
+        Some(cursor_week_end() - SignedDuration::from_hours(7 * 24))
     );
 
     let plan = parse_plan_info(CURSOR_PLAN_BODY).expect("plan");
@@ -1617,16 +1600,15 @@ fn cursor_labels_come_from_the_plan_then_the_period() {
     use ailimits::providers::cursor::{
         parse_plan_info, usage_metric, PeriodUsage, PlanInfo, UsagePeriod,
     };
-    use chrono::Duration;
 
     let end = cursor_week_end();
     let week = PeriodUsage {
         used: 5,
-        start: Some(end - Duration::days(7)),
+        start: Some(end - SignedDuration::from_hours(7 * 24)),
         end: Some(end),
     };
     let month = PeriodUsage {
-        start: Some(end - Duration::days(30)),
+        start: Some(end - SignedDuration::from_hours(30 * 24)),
         ..week.clone()
     };
     let unknown = PeriodUsage {
@@ -1698,7 +1680,7 @@ fn cursor_grok_bot_is_an_extra_that_never_takes_the_headline() {
         id: ProviderId::Cursor,
         status: ProviderStatus::Ok,
         metrics: vec![usage_metric(&usage, None), spent],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     };
     assert_eq!(data.headline_metric().unwrap().label, "Weekly");
@@ -1729,7 +1711,6 @@ fn cursor_grok_bot_is_an_extra_that_never_takes_the_headline() {
 #[test]
 fn cursor_session_claims_come_from_the_token_payload() {
     use ailimits::providers::cursor::parse_session_claims;
-    use chrono::TimeZone;
 
     // Fake JWT-shaped tokens. Payloads, in order:
     // {"sub":"github|user_01TESTFIXTURE","exp":4102444800,"iss":…,"aud":…}
@@ -1745,15 +1726,12 @@ fn cursor_session_claims_come_from_the_token_payload() {
 
     let claims = parse_session_claims(valid).expect("valid claims");
     assert_eq!(claims.subject, "github|user_01TESTFIXTURE");
-    assert_eq!(
-        claims.expires_at,
-        Some(Utc.with_ymd_and_hms(2100, 1, 1, 0, 0, 0).unwrap())
-    );
-    assert!(!claims.is_expired(Utc::now()));
+    assert_eq!(claims.expires_at, utc::from_unix_secs(4_102_444_800));
+    assert!(!claims.is_expired(utc::now()));
 
     let claims = parse_session_claims(expired).expect("expired claims still parse");
     assert!(
-        claims.is_expired(Utc::now()),
+        claims.is_expired(utc::now()),
         "an expired token is never sent"
     );
 
@@ -1766,7 +1744,7 @@ fn cursor_session_claims_come_from_the_token_payload() {
     let claims = parse_session_claims(no_exp).expect("no exp is fine");
     assert_eq!(claims.subject, "auth0|user_01NOEXP");
     assert!(
-        !claims.is_expired(Utc::now()),
+        !claims.is_expired(utc::now()),
         "the server judges a token without exp"
     );
 
@@ -1778,7 +1756,6 @@ fn cursor_session_claims_come_from_the_token_payload() {
 #[test]
 fn cursor_hover_reasons_name_the_fix_or_none_while_retrying() {
     use ailimits::ui::renderer::hover_reason;
-    use chrono::Duration;
     use std::collections::HashMap;
 
     let stale = |id: ProviderId| ProviderData {
@@ -1789,12 +1766,12 @@ fn cursor_hover_reasons_name_the_fix_or_none_while_retrying() {
             used: 40,
             limit: Some(100),
             unit: MetricUnit::Percent,
-            reset_at: Some(Utc::now() + Duration::days(10)),
+            reset_at: Some(utc::now() + SignedDuration::from_hours(10 * 24)),
             window: MetricWindow::Session,
             unified_pool: false,
             extra_only: false,
         }],
-        updated_at: Utc::now() - Duration::hours(3),
+        updated_at: utc::now() - SignedDuration::from_hours(3),
         received_at: None,
     };
 
@@ -1843,16 +1820,13 @@ fn cursor_config_id_round_trips() {
 
 /// Claude as the usage endpoint reports it on a plan with a Fable week:
 /// Session 25, Weekly 34, Fable 40 (extra-only), with the given resets.
-fn claude_with_fable(
-    session_reset: chrono::Duration,
-    fable_reset: chrono::Duration,
-) -> ProviderData {
-    let pct = |label: &str, used: u64, window, reset: chrono::Duration, extra_only| Metric {
+fn claude_with_fable(session_reset: SignedDuration, fable_reset: SignedDuration) -> ProviderData {
+    let pct = |label: &str, used: u64, window, reset: SignedDuration, extra_only| Metric {
         label: label.to_string(),
         used,
         limit: Some(100),
         unit: MetricUnit::Percent,
-        reset_at: Some(Utc::now() + reset),
+        reset_at: Some(utc::now() + reset),
         window,
         unified_pool: false,
         extra_only,
@@ -1866,12 +1840,12 @@ fn claude_with_fable(
                 "Weekly",
                 34,
                 MetricWindow::Long,
-                chrono::Duration::days(3),
+                SignedDuration::from_hours(3 * 24),
                 false,
             ),
             pct("Fable", 40, MetricWindow::Long, fable_reset, true),
         ],
-        updated_at: Utc::now(),
+        updated_at: utc::now(),
         received_at: Some(std::time::Instant::now()),
     }
 }
@@ -1883,7 +1857,7 @@ fn a_passed_fable_reset_leaves_every_claude_surface_live() {
     use ailimits::config::schema::{Config, Surface};
     use ailimits::models::Models;
 
-    let raw = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    let raw = claude_with_fable(SignedDuration::from_hours(2), -SignedDuration::from_mins(5));
     // The tray, the panel and the alerts (app.rs `visible_data`).
     let shown = raw.aged_for_display();
     assert!(
@@ -1931,14 +1905,18 @@ fn the_fable_row_ages_by_its_own_week() {
         rows[1].data.clone()
     };
 
-    let session_reset = claude_with_fable(-chrono::Duration::minutes(5), chrono::Duration::days(3));
+    let session_reset = claude_with_fable(
+        -SignedDuration::from_mins(5),
+        SignedDuration::from_hours(3 * 24),
+    );
     for input in [session_reset.clone(), session_reset.aged_for_display()] {
         let row = fable_row(&input);
         assert!(matches!(row.status, ProviderStatus::Ok), "{:?}", row.status);
         assert_eq!(row.metrics[0].used, 40);
     }
 
-    let fable_reset = claude_with_fable(chrono::Duration::hours(2), -chrono::Duration::minutes(5));
+    let fable_reset =
+        claude_with_fable(SignedDuration::from_hours(2), -SignedDuration::from_mins(5));
     for input in [fable_reset.clone(), fable_reset.aged_for_display()] {
         let row = fable_row(&input);
         assert!(matches!(row.status, ProviderStatus::Estimated));

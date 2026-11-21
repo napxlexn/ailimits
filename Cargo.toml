@@ -73,7 +73,10 @@ toml = "1"
 keyring = { version = "3", features = ["windows-native"] }
 
 # --- Time ---
-chrono = { version = "0.4", features = ["serde"] }
+# UTC instants and signed durations only: no time-zone features (no bundled
+# tz database, no system time-zone lookup, no Windows imports of its own).
+# The text the app reads and writes is chrono's, kept by hand in utc.rs.
+jiff = { version = "1", default-features = false, features = ["std", "serde"] }
 
 # --- Logging ---
 tracing = "0.1"
