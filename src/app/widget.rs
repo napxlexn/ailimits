@@ -10,6 +10,25 @@ use std::rc::Rc;
 use tao::dpi::{PhysicalPosition, PhysicalSize};
 use tracing::warn;
 
+/// The corners `apply_windows_glass` asks of Windows 11
+/// (`DWMWA_WINDOW_CORNER_PREFERENCE`): 2 round, 3 small, 1 square. Set from
+/// `[tune.widget] corners` whenever the config is applied, so every later
+/// glass pass (a focus change, a drag to another monitor) keeps them.
+#[cfg(target_os = "windows")]
+static CORNER_PREFERENCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
+
+/// Keep `corners` for the glass passes; true when they changed.
+#[cfg(target_os = "windows")]
+pub(super) fn set_corners(corners: crate::config::tune::Corners) -> bool {
+    use crate::config::tune::Corners;
+    let pref = match corners {
+        Corners::Round => 2,
+        Corners::Small => 3,
+        Corners::Square => 1,
+    };
+    CORNER_PREFERENCE.swap(pref, std::sync::atomic::Ordering::Relaxed) != pref
+}
+
 #[cfg(target_os = "windows")]
 pub(super) fn apply_windows_glass(window: &tao::window::Window) {
     use std::ffi::c_void;
@@ -96,8 +115,9 @@ pub(super) fn apply_windows_glass(window: &tao::window::Window) {
             );
         }
 
-        // Native Win11 rounded corners: DWMWA_WINDOW_CORNER_PREFERENCE=33, ROUND=2.
-        let pref: u32 = 2;
+        // Native Win11 rounded corners: DWMWA_WINDOW_CORNER_PREFERENCE=33,
+        // ROUND=2 unless [tune.widget] corners asks otherwise.
+        let pref: u32 = CORNER_PREFERENCE.load(std::sync::atomic::Ordering::Relaxed);
         let _ = DwmSetWindowAttribute(
             WinHwnd(window.hwnd() as _),
             DWMWINDOWATTRIBUTE(33),
@@ -205,14 +225,20 @@ pub(super) fn apply_ui_layout(
     win_state: &mut WindowState,
     shape: &layout::Shape,
 ) {
-    *win_layout = layout::compute(
+    *win_layout = layout::compute_tuned(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
         &config.ui.column_flow,
         shape,
+        &layout::WidgetMetrics::from_tune(&config.tune),
     );
-    *theme = ComputedTheme::compute(&config.ui);
+    *theme = ComputedTheme::tuned(&config.ui, &config.tune);
+    // [tune.widget] corners, at once when they changed.
+    #[cfg(target_os = "windows")]
+    if set_corners(config.tune.widget.corners()) {
+        apply_windows_glass(window);
+    }
 
     let (w, h) = (win_layout.width as u32, win_layout.height as u32);
     window.set_inner_size(PhysicalSize::new(w, h));

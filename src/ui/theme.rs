@@ -3,6 +3,8 @@
 // Every color is defined here. The renderer takes colors ONLY from this module.
 
 use crate::config::schema::{DetailLevel, Palette, UIConfig};
+use crate::config::tune::Tune;
+use crate::providers::ProviderId;
 
 /// RGBA color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,10 +36,21 @@ impl Color {
     }
 }
 
+/// "#rrggbb" (either case) as RGB, the form `[tune]` writes colours in;
+/// None for anything else.
+pub fn parse_hex(text: &str) -> Option<(u8, u8, u8)> {
+    let hex = text.trim().strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(hex, 16).ok()?;
+    Some(((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
+
 /// Usage level.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UsageLevel {
-    /// 0–59%.
+    /// 0–59% (by default).
     Low,
     /// 60–79%.
     Mid,
@@ -46,10 +59,17 @@ pub enum UsageLevel {
 }
 
 impl UsageLevel {
+    /// The level under the default thresholds, 60 and 80.
     pub fn from_percentage(pct: f32) -> Self {
-        if pct < 60.0 {
+        Self::at(pct, 60.0, 80.0)
+    }
+
+    /// The level of `pct` when the middle level starts at `mid` and the high
+    /// one at `high` (`[tune.format]`, see `ComputedTheme::mid_at`).
+    pub fn at(pct: f32, mid: f32, high: f32) -> Self {
+        if pct < mid {
             Self::Low
-        } else if pct < 80.0 {
+        } else if pct < high {
             Self::Mid
         } else {
             Self::High
@@ -58,7 +78,7 @@ impl UsageLevel {
 }
 
 /// Colors for one usage level.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LevelColors {
     /// Progress bar color.
     pub bar: Color,
@@ -85,6 +105,28 @@ pub struct ComputedTheme {
     /// pick a system-theme ink instead of a fixed grey that vanishes on a
     /// light taskbar.
     pub monochrome: bool,
+    /// Where the middle and the high levels start, in percent (`[tune.format]`
+    /// `mid_at`, `high_at`; 60 and 80 by default).
+    pub mid_at: f32,
+    pub high_at: f32,
+    /// The palette's own level colours, low, mid, high: `low`, `mid` and
+    /// `high` before `[tune.widget]`'s colours. The tray icon's bars.
+    palette_levels: [LevelColors; 3],
+    /// A provider's accent for its names (`[tune.widget] provider_colors`),
+    /// by `provider_slot`.
+    names: [Option<Color>; 6],
+}
+
+/// A provider's place in `ComputedTheme::names`.
+fn provider_slot(id: &ProviderId) -> usize {
+    match id {
+        ProviderId::Claude => 0,
+        ProviderId::Codex => 1,
+        ProviderId::Copilot => 2,
+        ProviderId::Antigravity => 3,
+        ProviderId::Grok => 4,
+        ProviderId::Cursor => 5,
+    }
 }
 
 /// Palette base RGB + saturation deltas.
@@ -193,8 +235,15 @@ fn level_text_color(bar: Color) -> Color {
 }
 
 impl ComputedTheme {
-    /// Compute the theme from the config.
+    /// Compute the theme from the config, with no `[tune]`: the look of the
+    /// default config (the tests and the tray's and panel's own baselines).
     pub fn compute(config: &UIConfig) -> Self {
+        Self::tuned(config, &Tune::default())
+    }
+
+    /// Compute the theme from the config and its `[tune]`: what the app
+    /// draws with. Computed when the config changes, never per frame.
+    pub fn tuned(config: &UIConfig, tune: &Tune) -> Self {
         // Base colors — a single dark theme. The background alpha is set
         // by the renderer from window.opacity; full here.
         let bg = Color::rgba(14, 14, 14, 255);
@@ -252,16 +301,56 @@ impl ComputedTheme {
             bar: dim(lc.bar),
             text: dim(lc.text),
         };
+        let palette_levels = [dim_level(low), dim_level(mid), dim_level(high)];
 
+        // [tune.widget]'s colours, in place of the palette's: a bar at the
+        // palette bars' alpha, its percent lifted the same way. Monochrome
+        // keeps its greys, and a colour that does not parse is ignored.
+        let widget = &tune.widget;
+        let tuned =
+            |set: &Option<String>, palette: LevelColors| match set.as_deref().and_then(parse_hex) {
+                Some((r, g, b)) if !config.monochrome => {
+                    let bar = Color::rgba(r, g, b, (0.82 * 255.0) as u8);
+                    dim_level(LevelColors {
+                        bar,
+                        text: level_text_color(bar),
+                    })
+                }
+                _ => palette,
+            };
+        let [low, mid, high] = palette_levels;
+        let (low, mid, high) = (
+            tuned(&widget.low, low),
+            tuned(&widget.mid, mid),
+            tuned(&widget.high, high),
+        );
+
+        // The providers' accents: a name at the percent's alpha.
+        let mut names = [None; 6];
+        if !config.monochrome {
+            for (id, hex) in &widget.provider_colors {
+                if let (Some(id), Some((r, g, b))) =
+                    (ProviderId::from_config_id(id), parse_hex(hex))
+                {
+                    names[provider_slot(&id)] = Some(dim(Color::with_alpha_f(r, g, b, 0.88)));
+                }
+            }
+        }
+
+        let (mid_at, high_at) = tune.format.thresholds();
         Self {
             bg,
             bar_track,
             provider_name: dim(text(0.42)),
             meta: dim(text(0.22)),
-            low: dim_level(low),
-            mid: dim_level(mid),
-            high: dim_level(high),
+            low,
+            mid,
+            high,
             monochrome: config.monochrome,
+            mid_at,
+            high_at,
+            palette_levels,
+            names,
         }
     }
 
@@ -272,6 +361,32 @@ impl ComputedTheme {
             UsageLevel::Mid => &self.mid,
             UsageLevel::High => &self.high,
         }
+    }
+
+    /// The level of a usage of `pct` percent under this theme's thresholds.
+    pub fn level_of(&self, pct: f32) -> UsageLevel {
+        UsageLevel::at(pct, self.mid_at, self.high_at)
+    }
+
+    /// The widget's colours for a usage of `pct` percent.
+    pub fn level_at(&self, pct: f32) -> &LevelColors {
+        self.level(self.level_of(pct))
+    }
+
+    /// The palette's colours for a usage level, without `[tune.widget]`'s:
+    /// what the tray icon's bars take.
+    pub fn palette_level(&self, level: UsageLevel) -> &LevelColors {
+        match level {
+            UsageLevel::Low => &self.palette_levels[0],
+            UsageLevel::Mid => &self.palette_levels[1],
+            UsageLevel::High => &self.palette_levels[2],
+        }
+    }
+
+    /// The colour a row's name is drawn in: its provider's accent, else the
+    /// widget's grey (`provider_name`).
+    pub fn name_color(&self, id: &ProviderId) -> Color {
+        self.names[provider_slot(id)].unwrap_or(self.provider_name)
     }
 }
 
@@ -562,3 +677,166 @@ pub fn panel_ink(light: bool) -> (Color, Color) {
 /// fully transparent pixel to the taskbar beneath), yet imperceptible over
 /// the taskbar.
 pub const PANEL_HIT: Color = Color::rgba(0, 0, 0, 1);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::tune::{TuneFormat, TuneWidget};
+
+    fn tuned(ui: &UIConfig, widget: TuneWidget, format: TuneFormat) -> ComputedTheme {
+        let tune = Tune {
+            widget,
+            format,
+            ..Tune::default()
+        };
+        ComputedTheme::tuned(ui, &tune)
+    }
+
+    fn colors(low: &str, mid: &str, high: &str) -> TuneWidget {
+        TuneWidget {
+            low: Some(low.into()),
+            mid: Some(mid.into()),
+            high: Some(high.into()),
+            ..TuneWidget::default()
+        }
+    }
+
+    #[test]
+    fn hex_colours_parse_strictly() {
+        assert_eq!(parse_hex("#d97757"), Some((0xd9, 0x77, 0x57)));
+        assert_eq!(parse_hex(" #FFaa00 "), Some((255, 170, 0)));
+        for bad in [
+            "", "#", "d97757", "#d9775", "#d977577", "#gg0000", "#+12345", "red",
+        ] {
+            assert_eq!(parse_hex(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_default_tune_is_todays_theme() {
+        for ui in [
+            UIConfig::default(),
+            UIConfig {
+                monochrome: true,
+                ..UIConfig::default()
+            },
+            UIConfig {
+                palette: Palette::Sunset,
+                brightness: 40,
+                ..UIConfig::default()
+            },
+        ] {
+            let theme = ComputedTheme::compute(&ui);
+            assert_eq!(theme.palette_level(UsageLevel::Low), &theme.low);
+            assert_eq!(theme.palette_level(UsageLevel::Mid), &theme.mid);
+            assert_eq!(theme.palette_level(UsageLevel::High), &theme.high);
+            assert_eq!((theme.mid_at, theme.high_at), (60.0, 80.0));
+            assert_eq!(theme.name_color(&ProviderId::Claude), theme.provider_name);
+        }
+    }
+
+    #[test]
+    fn thresholds_decide_every_level() {
+        for pct in [0.0, 59.9, 60.0, 79.9, 80.0, 100.0, 140.0] {
+            assert_eq!(
+                UsageLevel::from_percentage(pct),
+                UsageLevel::at(pct, 60.0, 80.0)
+            );
+        }
+        let theme = tuned(
+            &UIConfig::default(),
+            TuneWidget::default(),
+            TuneFormat {
+                mid_at: Some(30.0),
+                high_at: Some(50.0),
+                ..TuneFormat::default()
+            },
+        );
+        assert_eq!(theme.level_of(29.0), UsageLevel::Low);
+        assert_eq!(theme.level_of(30.0), UsageLevel::Mid);
+        assert_eq!(theme.level_of(50.0), UsageLevel::High);
+        assert_eq!(theme.level_at(45.0), &theme.mid);
+    }
+
+    #[test]
+    fn level_colours_replace_the_palette_in_the_widget_only() {
+        let ui = UIConfig::default();
+        let plain = ComputedTheme::compute(&ui);
+        let theme = tuned(
+            &ui,
+            colors("#00ff00", "#ffaa00", "#ff0000"),
+            TuneFormat::default(),
+        );
+        assert_eq!(theme.low.bar, Color::rgba(0, 255, 0, 209));
+        assert_eq!(theme.mid.bar, Color::rgba(255, 170, 0, 209));
+        assert_eq!(theme.high.bar, Color::rgba(255, 0, 0, 209));
+        // The percent is lifted like the palette's.
+        assert_eq!(
+            theme.high.text,
+            level_text_color(Color::rgba(255, 0, 0, 209))
+        );
+        // The tray icon keeps the palette.
+        assert_eq!(theme.palette_level(UsageLevel::High), &plain.high);
+        // Brightness dims them as it dims the palette.
+        let dim = tuned(
+            &UIConfig {
+                brightness: 50,
+                ..UIConfig::default()
+            },
+            colors("#00ff00", "#ffaa00", "#ff0000"),
+            TuneFormat::default(),
+        );
+        assert_eq!(dim.high.bar, Color::rgba(255, 0, 0, 104));
+    }
+
+    #[test]
+    fn an_invalid_colour_or_monochrome_keeps_the_palettes() {
+        let ui = UIConfig::default();
+        let plain = ComputedTheme::compute(&ui);
+        let bad = tuned(&ui, colors("green", "#12345", ""), TuneFormat::default());
+        assert_eq!(
+            (bad.low, bad.mid, bad.high),
+            (plain.low, plain.mid, plain.high)
+        );
+        let mono_ui = UIConfig {
+            monochrome: true,
+            ..UIConfig::default()
+        };
+        let mono = ComputedTheme::compute(&mono_ui);
+        let mut widget = colors("#00ff00", "#ffaa00", "#ff0000");
+        widget
+            .provider_colors
+            .insert("claude".into(), "#d97757".into());
+        let tuned_mono = tuned(&mono_ui, widget, TuneFormat::default());
+        assert_eq!(tuned_mono.high, mono.high);
+        assert_eq!(
+            tuned_mono.name_color(&ProviderId::Claude),
+            mono.provider_name
+        );
+    }
+
+    #[test]
+    fn a_provider_accent_colours_its_names_only() {
+        let mut widget = TuneWidget::default();
+        for (id, hex) in [
+            ("claude", "#d97757"),
+            ("gemini", "#4285f4"),
+            ("nobody", "#ffffff"),
+            ("codex", "not a colour"),
+        ] {
+            widget.provider_colors.insert(id.into(), hex.into());
+        }
+        let theme = tuned(&UIConfig::default(), widget, TuneFormat::default());
+        assert_eq!(
+            theme.name_color(&ProviderId::Claude),
+            Color::rgba(0xd9, 0x77, 0x57, 224)
+        );
+        // The legacy id names Antigravity.
+        assert_eq!(
+            theme.name_color(&ProviderId::Antigravity),
+            Color::rgba(0x42, 0x85, 0xf4, 224)
+        );
+        assert_eq!(theme.name_color(&ProviderId::Codex), theme.provider_name);
+        assert_eq!(theme.name_color(&ProviderId::Cursor), theme.provider_name);
+    }
+}

@@ -683,7 +683,7 @@ fn draw_stacked_icon(
                 let fill_w = (w * frac).max(3.0);
                 // Monochrome greys vanish on a light taskbar — use the system
                 // ink; colored palettes keep their hue (they contrast either way).
-                let lvl = theme.level(UsageLevel::from_percentage(pct));
+                let lvl = theme.palette_level(UsageLevel::at(pct, theme.mid_at, theme.high_at));
                 let fill = if theme.monochrome {
                     tray_ink(light, 255)
                 } else {

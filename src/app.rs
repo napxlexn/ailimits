@@ -234,8 +234,9 @@ fn widget_shape(
     models: &Models,
     renderer: &Renderer,
 ) -> layout::Shape {
-    layout::Shape::of(
+    layout::Shape::of_tuned(
         &config.ui,
+        &layout::WidgetMetrics::from_tune(&config.tune),
         &surface_rows(config, display, Surface::Widget, models),
         rows::nothing_chosen(config),
         |text, size| renderer.text_width(text, size),
@@ -578,14 +579,15 @@ pub fn run() -> Result<()> {
     let renderer = Rc::new(Renderer::new()?);
     let models = Models::new();
     let shape = widget_shape(&config, &display, &models, &renderer);
-    let win_layout = layout::compute(
+    let win_layout = layout::compute_tuned(
         &config.ui.layout,
         &config.ui.detail,
         &config.ui.width_scale,
         &config.ui.column_flow,
         &shape,
+        &layout::WidgetMetrics::from_tune(&config.tune),
     );
-    let theme = ComputedTheme::compute(&config.ui);
+    let theme = ComputedTheme::tuned(&config.ui, &config.tune);
 
     // 6. The window: borderless, transparent, out of the taskbar.
     let mut builder = WindowBuilder::new()
@@ -630,7 +632,10 @@ pub fn run() -> Result<()> {
 
     // 7. The glass effect + DWM rounded corners.
     #[cfg(target_os = "windows")]
-    apply_windows_glass(&window);
+    {
+        widget::set_corners(config.tune.widget.corners());
+        apply_windows_glass(&window);
+    }
 
     // 8. The softbuffer surface.
     let window = Rc::new(window);

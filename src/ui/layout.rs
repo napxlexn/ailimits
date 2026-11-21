@@ -6,7 +6,60 @@
 use super::renderer::{self, NAME_WIDTH, PCT_WIDTH, ROW_GAP};
 use super::theme::Dimensions;
 use crate::config::schema::{ColumnFlow, DetailLevel, Layout, UIConfig, WidthScale};
+use crate::config::tune::{Countdown, Tune};
 use crate::rows::RowView;
+
+/// The widget's sizes as `[tune.widget]` and `[tune.format]` set them,
+/// clamped (`config::tune`). Made when the config changes and carried by
+/// the `WindowLayout`, so the renderer draws with the very numbers the
+/// layout was computed with. The default is today's widget: every factor
+/// 1.0 and every addition 0.0, which leave each size bit for bit as it was.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WidgetMetrics {
+    /// Text size factor: every text and the room text takes.
+    pub text: f32,
+    /// Bar thickness factor.
+    pub bar: f32,
+    /// Inner padding factor.
+    pub pad: f32,
+    /// Extra pixels between two rows or two columns.
+    pub gap: f32,
+    /// How a time left is written.
+    pub countdown: Countdown,
+}
+
+impl WidgetMetrics {
+    /// Today's widget.
+    pub const DEFAULT: Self = Self {
+        text: 1.0,
+        bar: 1.0,
+        pad: 1.0,
+        gap: 0.0,
+        countdown: Countdown::Standard,
+    };
+
+    /// The metrics `tune` sets.
+    pub fn from_tune(tune: &Tune) -> Self {
+        Self {
+            text: tune.widget.text_scale(),
+            bar: tune.widget.bar_scale(),
+            pad: tune.widget.padding_scale(),
+            gap: tune.widget.row_gap(),
+            countdown: tune.format.countdown(),
+        }
+    }
+
+    /// A text size, or a length that follows the text, at this text scale.
+    pub fn t(&self, size: f32) -> f32 {
+        size * self.text
+    }
+}
+
+impl Default for WidgetMetrics {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
 
 /// Rectangle in window coordinates.
 #[derive(Debug, Clone, Copy)]
@@ -67,6 +120,8 @@ pub struct WindowLayout {
     /// One entry per row or column: the band added under it for its model's
     /// line of its own, or None when it has none (see `Shape`).
     pub model_lines: Vec<Option<Rect>>,
+    /// The sizes this layout was computed with; the renderer draws with them.
+    pub metrics: WidgetMetrics,
 }
 
 /// What the widget's size depends on besides the config: one entry per row
@@ -115,14 +170,29 @@ impl Shape {
     /// - Expanded rows and every columns layout: a line of its own.
     ///
     /// Only a row that shows a model ever gets the line.
+    ///
+    /// `of_tuned` with today's sizes: the tests' entry.
+    #[cfg(test)]
     pub fn of(
         ui: &UIConfig,
         rows: &[RowView],
         choose: bool,
         measure: impl Fn(&str, f32) -> f32,
     ) -> Self {
+        Self::of_tuned(ui, &WidgetMetrics::DEFAULT, rows, choose, measure)
+    }
+
+    /// `of` for the sizes `m` (`[tune]`): what the app lays out with.
+    pub fn of_tuned(
+        ui: &UIConfig,
+        m: &WidgetMetrics,
+        rows: &[RowView],
+        choose: bool,
+        measure: impl Fn(&str, f32) -> f32,
+    ) -> Self {
         let columns = matches!(ui.layout, Layout::Horizontal);
-        let row_w = rows_width(&ui.detail, &ui.width_scale) - Dimensions::PADDING_H * 2.0;
+        let (width, pad_h) = rows_frame(&ui.detail, &ui.width_scale, m);
+        let row_w = width - pad_h * 2.0;
         let model_lines = rows
             .iter()
             .map(|row| {
@@ -131,7 +201,7 @@ impl Shape {
                         || match ui.detail {
                             DetailLevel::Compact => false,
                             DetailLevel::Expanded => true,
-                            DetailLevel::Medium => medium_needs_line(row, row_w, &measure),
+                            DetailLevel::Medium => medium_needs_line(row, row_w, m, &measure),
                         })
             })
             .collect();
@@ -144,12 +214,18 @@ impl Shape {
 }
 
 /// Whether a Medium row's model needs a line of its own (see `Shape::of`).
-fn medium_needs_line(row: &RowView, row_w: f32, measure: &impl Fn(&str, f32) -> f32) -> bool {
-    match renderer::medium_meta_widest(&row.data) {
+fn medium_needs_line(
+    row: &RowView,
+    row_w: f32,
+    m: &WidgetMetrics,
+    measure: &impl Fn(&str, f32) -> f32,
+) -> bool {
+    match renderer::medium_meta_widest(&row.data, m.countdown) {
         None => true,
         Some(right) => {
-            let room = medium_model_room(row_w, measure(&right, renderer::META_SIZE));
-            room < medium_name_slot()
+            let right_w = measure(&right, m.t(renderer::META_SIZE));
+            let room = medium_model_room(row_w, right_w, m);
+            room < medium_name_slot() * m.text
         }
     }
 }
@@ -157,9 +233,9 @@ fn medium_needs_line(row: &RowView, row_w: f32, measure: &impl Fn(&str, f32) -> 
 /// What Medium's meta line leaves a model beside a right-aligned text
 /// `right_w` wide. The one formula the renderer, the shape and the
 /// name-slot test share.
-pub fn medium_model_room(row_w: f32, right_w: f32) -> f32 {
+pub fn medium_model_room(row_w: f32, right_w: f32, m: &WidgetMetrics) -> f32 {
     if right_w > 0.0 {
-        row_w - right_w - MODEL_GAP
+        row_w - right_w - m.t(MODEL_GAP)
     } else {
         row_w
     }
@@ -213,11 +289,13 @@ const STACK_FLOW_GAP: f32 = 10.0 * Dimensions::DENSITY_SCALE;
 /// - Medium and Expanded put name and percent on a top line and give the bar
 ///   a full-width line of its own. The bar is never the constraint there; the
 ///   two texts colliding on the top line is.
-fn row_tier(detail: &DetailLevel, row_w: f32) -> RowTier {
+fn row_tier(detail: &DetailLevel, row_w: f32, m: &WidgetMetrics) -> RowTier {
+    // The text columns follow the text size; the bar's floor does not.
+    let (name_w, pct_w, gap) = (m.t(NAME_WIDTH), m.t(PCT_WIDTH), m.t(ROW_GAP));
     match detail {
         DetailLevel::Compact => {
-            let bar_with_name = row_w - NAME_WIDTH - PCT_WIDTH - ROW_GAP * 2.0;
-            let bar_without_name = row_w - PCT_WIDTH - ROW_GAP;
+            let bar_with_name = row_w - name_w - pct_w - gap * 2.0;
+            let bar_without_name = row_w - pct_w - gap;
 
             if bar_with_name >= MIN_BAR {
                 RowTier::Full
@@ -228,9 +306,9 @@ fn row_tier(detail: &DetailLevel, row_w: f32) -> RowTier {
             }
         }
         DetailLevel::Medium | DetailLevel::Expanded => {
-            if row_w >= NAME_WIDTH + PCT_WIDTH + ROW_GAP {
+            if row_w >= name_w + pct_w + gap {
                 RowTier::Full
-            } else if row_w >= PCT_WIDTH {
+            } else if row_w >= pct_w {
                 RowTier::Nameless
             } else {
                 RowTier::PercentOnly
@@ -241,6 +319,9 @@ fn row_tier(detail: &DetailLevel, row_w: f32) -> RowTier {
 
 /// Compute the window layout for a widget of `shape` (one row or column per
 /// entry; see `Shape`).
+///
+/// `compute_tuned` with today's sizes: the tests' and previews' entry.
+#[cfg(test)]
 pub fn compute(
     layout: &Layout,
     detail: &DetailLevel,
@@ -248,30 +329,50 @@ pub fn compute(
     column_flow: &ColumnFlow,
     shape: &Shape,
 ) -> WindowLayout {
+    compute_tuned(
+        layout,
+        detail,
+        width_scale,
+        column_flow,
+        shape,
+        &WidgetMetrics::DEFAULT,
+    )
+}
+
+/// `compute` for the sizes `m` (`[tune]`): what the app lays out with. The
+/// layout carries `m` for the renderer.
+pub fn compute_tuned(
+    layout: &Layout,
+    detail: &DetailLevel,
+    width_scale: &WidthScale,
+    column_flow: &ColumnFlow,
+    shape: &Shape,
+    m: &WidgetMetrics,
+) -> WindowLayout {
     // A fresh install: two lines saying what to do, in a box of the Medium
     // rows' width whatever the chosen layout, so the second line fits.
     if shape.choose {
-        return two_line_box(|area| BodyLayout::Choose { area });
+        return two_line_box(|area| BodyLayout::Choose { area }, m);
     }
     // Rows chosen, none to show: the same box, saying so.
     if shape.unshown {
-        return two_line_box(|area| BodyLayout::Unshown { area });
+        return two_line_box(|area| BodyLayout::Unshown { area }, m);
     }
     // No visible providers (all unconfigured / disabled): the renderer draws a
     // single guidance line. Force a vertical compact box wide enough for that
     // hint regardless of the user's chosen layout, so it never clips (a
     // horizontal 0-provider window would otherwise be ~60px wide).
     if shape.model_lines.is_empty() {
-        let mut win = vertical(&DetailLevel::Compact, &WidthScale::Full, &[false]);
+        let mut win = vertical(&DetailLevel::Compact, &WidthScale::Full, &[false], m);
         win.model_lines.clear();
         return win;
     }
     let lines = &shape.model_lines;
     match layout {
-        Layout::Vertical => vertical(detail, width_scale, lines),
-        Layout::Horizontal => horizontal(detail, column_flow, lines),
+        Layout::Vertical => vertical(detail, width_scale, lines, m),
+        Layout::Horizontal => horizontal(detail, column_flow, lines, m),
         // Legacy config value: the 2x2 mode was removed from the UI.
-        Layout::Grid => vertical(detail, width_scale, lines),
+        Layout::Grid => vertical(detail, width_scale, lines, m),
     }
 }
 
@@ -284,38 +385,67 @@ fn rows_width(detail: &DetailLevel, width_scale: &WidthScale) -> f32 {
     }) * width_scale.fraction()
 }
 
+/// The rows layout's window width and side padding at the sizes `m`: the
+/// width follows the text, and grows by what the padding adds to today's.
+fn rows_frame(detail: &DetailLevel, width_scale: &WidthScale, m: &WidgetMetrics) -> (f32, f32) {
+    let pad_h = Dimensions::PADDING_H * m.pad;
+    let width = rows_width(detail, width_scale) * m.text + (pad_h - Dimensions::PADDING_H) * 2.0;
+    (width, pad_h)
+}
+
+/// A row's height in the rows layout: today's at the text size, plus what a
+/// thicker bar adds where the bar has a line of its own (Medium, Expanded;
+/// a Compact bar is centred in its row).
+fn row_height(detail: &DetailLevel, m: &WidgetMetrics) -> f32 {
+    let base = Dimensions::row_height(detail) * m.text;
+    match detail {
+        DetailLevel::Compact => base,
+        DetailLevel::Medium | DetailLevel::Expanded => {
+            base + renderer::row_bar_thickness(detail) * (m.bar - 1.0)
+        }
+    }
+}
+
 /// The two-line box of the first install and of a widget whose rows have
 /// nothing to show: one Medium row's width and height.
-fn two_line_box(body: impl FnOnce(Rect) -> BodyLayout) -> WindowLayout {
-    let width = rows_width(&DetailLevel::Medium, &WidthScale::Full);
-    let pad_h = Dimensions::PADDING_H;
+fn two_line_box(body: impl FnOnce(Rect) -> BodyLayout, m: &WidgetMetrics) -> WindowLayout {
+    let (width, pad_h) = rows_frame(&DetailLevel::Medium, &WidthScale::Full, m);
     let area = Rect {
         x: pad_h,
-        y: TOP_PADDING,
+        y: TOP_PADDING * m.pad,
         w: width - pad_h * 2.0,
-        h: Dimensions::row_height(&DetailLevel::Medium),
+        h: Dimensions::row_height(&DetailLevel::Medium) * m.text,
     };
     WindowLayout {
         width,
-        height: area.y + area.h + 4.0,
+        height: area.y + area.h + 4.0 * m.pad,
         body: body(area),
         row_tier: RowTier::Full,
         model_lines: Vec::new(),
+        metrics: *m,
     }
 }
 
 /// Vertical layout: one row per entry of `lines`, a row with a model line
 /// taller by that line.
-fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> WindowLayout {
-    let width: f32 = rows_width(detail, width_scale);
-    let row_h = Dimensions::row_height(detail);
-    let pad_h = Dimensions::PADDING_H;
+fn vertical(
+    detail: &DetailLevel,
+    width_scale: &WidthScale,
+    lines: &[bool],
+    m: &WidgetMetrics,
+) -> WindowLayout {
+    let (width, pad_h) = rows_frame(detail, width_scale, m);
+    let row_h = row_height(detail, m);
+    let line_h = m.t(MODEL_LINE_H);
 
     let mut rows = Vec::with_capacity(lines.len());
     let mut model_lines = Vec::with_capacity(lines.len());
-    let mut y = TOP_PADDING;
-    for &line in lines {
-        let extra = if line { MODEL_LINE_H } else { 0.0 };
+    let mut y = TOP_PADDING * m.pad;
+    for (i, &line) in lines.iter().enumerate() {
+        if i > 0 {
+            y += m.gap;
+        }
+        let extra = if line { line_h } else { 0.0 };
         rows.push(Rect {
             x: pad_h,
             y,
@@ -326,7 +456,7 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> W
             x: pad_h,
             y: y + row_h,
             w: width - pad_h * 2.0,
-            h: MODEL_LINE_H,
+            h: line_h,
         }));
         y += row_h + extra;
     }
@@ -334,16 +464,16 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> W
     // The hint is written for the natural width and the renderer drops it once
     // the rows lose their names, so its height must go with it — otherwise a
     // narrowed widget keeps a band of empty background under the last row.
-    let tier = row_tier(detail, width - pad_h * 2.0);
+    let tier = row_tier(detail, width - pad_h * 2.0, m);
     let show_hint = *detail == DetailLevel::Compact && tier == RowTier::Full;
-    let hint_h = if show_hint { HINT_HEIGHT } else { 0.0 };
+    let hint_h = if show_hint { m.t(HINT_HEIGHT) } else { 0.0 };
     let hint = Rect {
         x: pad_h,
         y,
         w: width - pad_h * 2.0,
         h: hint_h,
     };
-    let height = y + hint_h + 4.0;
+    let height = y + hint_h + 4.0 * m.pad;
 
     WindowLayout {
         width,
@@ -351,6 +481,7 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> W
         body: BodyLayout::Vertical { rows, hint },
         row_tier: tier,
         model_lines,
+        metrics: *m,
     }
 }
 
@@ -362,33 +493,42 @@ fn vertical(detail: &DetailLevel, width_scale: &WidthScale, lines: &[bool]) -> W
 /// A column with a model line keeps its body as it is and gains the line
 /// under it. Side by side every column shares one height, so the window grows
 /// by the line once any column has one; stacked, only those columns grow.
-fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> WindowLayout {
+fn horizontal(
+    detail: &DetailLevel,
+    flow: &ColumnFlow,
+    lines: &[bool],
+    m: &WidgetMetrics,
+) -> WindowLayout {
     let n = lines.len();
     // Nothing is drawn in the side margins, so they stay small and identical
     // at every detail level: a bigger detail level buys bigger bars and text,
     // not more empty background around them.
-    let pad_h = Dimensions::scale(6.0);
+    let pad_h = Dimensions::scale(6.0) * m.pad;
+    let (top, bottom) = (TOP_PADDING * m.pad, 6.0 * m.pad);
     // Wide enough for the provider name underneath the bar, and no wider —
     // the leftover width reads as distance between providers. Antigravity is
-    // the longest name and sets the floor here.
+    // the longest name and sets the floor here. Both follow the text size:
+    // the body holds the percent above the bar and the name below it.
     let col_w = Dimensions::scale(match detail {
         DetailLevel::Compact => 46.0,
         DetailLevel::Medium => 54.0,
         DetailLevel::Expanded => 62.0,
-    });
+    }) * m.text;
     let body_h = Dimensions::scale(match detail {
         DetailLevel::Compact => 42.0,
         DetailLevel::Medium => 68.0,
         DetailLevel::Expanded => 88.0,
-    });
+    }) * m.text;
     let stacked = *flow == ColumnFlow::Column;
-    let gap = if stacked {
+    let flow_gap = if stacked {
         STACK_FLOW_GAP
     } else {
         ROW_FLOW_GAP
     };
+    let gap = flow_gap + m.gap;
     let gaps = gap * n.saturating_sub(1) as f32;
-    let extra = |line: bool| if line { MODEL_COL_LINE_H } else { 0.0 };
+    let line_h = m.t(MODEL_COL_LINE_H);
+    let extra = |line: bool| if line { line_h } else { 0.0 };
     // Stacked: each column's own line; side by side: one shared line.
     let extras: f32 = if stacked {
         lines.iter().map(|&l| extra(l)).sum()
@@ -398,12 +538,12 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> Window
     let (width, height) = if stacked {
         (
             pad_h * 2.0 + col_w,
-            TOP_PADDING + body_h * n as f32 + gaps + extras + 6.0,
+            top + body_h * n as f32 + gaps + extras + bottom,
         )
     } else {
         (
             pad_h * 2.0 + col_w * n as f32 + gaps,
-            TOP_PADDING + body_h + extras + 6.0,
+            top + body_h + extras + bottom,
         )
     };
 
@@ -413,9 +553,9 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> Window
     let mut above = 0.0;
     for (i, &line) in lines.iter().enumerate() {
         let (x, y) = if stacked {
-            (pad_h, TOP_PADDING + (body_h + gap) * i as f32 + above)
+            (pad_h, top + (body_h + gap) * i as f32 + above)
         } else {
-            (pad_h + (col_w + gap) * i as f32, TOP_PADDING)
+            (pad_h + (col_w + gap) * i as f32, top)
         };
         cols.push(Rect {
             x,
@@ -427,7 +567,7 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> Window
             x,
             y: y + body_h,
             w: col_w,
-            h: MODEL_COL_LINE_H,
+            h: line_h,
         }));
         if stacked {
             above += extra(line);
@@ -440,6 +580,7 @@ fn horizontal(detail: &DetailLevel, flow: &ColumnFlow, lines: &[bool]) -> Window
         body: BodyLayout::Horizontal { cols },
         row_tier: RowTier::Full,
         model_lines,
+        metrics: *m,
     }
 }
 
@@ -926,6 +1067,255 @@ mod tests {
             Shape::of(&ui, &[], false, mono).with_unshown(false),
             Shape::plain(0)
         );
+    }
+
+    // ─── [tune.widget]: the sizes ─────────────────────────────────
+
+    fn metrics(text: f32, bar: f32, pad: f32, gap: f32) -> WidgetMetrics {
+        WidgetMetrics {
+            text,
+            bar,
+            pad,
+            gap,
+            ..WidgetMetrics::DEFAULT
+        }
+    }
+
+    fn tuned(
+        m: &WidgetMetrics,
+        layout: Layout,
+        detail: DetailLevel,
+        flow: ColumnFlow,
+        n: usize,
+    ) -> WindowLayout {
+        compute_tuned(
+            &layout,
+            &detail,
+            &WidthScale::Full,
+            &flow,
+            &Shape::plain(n),
+            m,
+        )
+    }
+
+    fn row_rects(win: &WindowLayout) -> Vec<Rect> {
+        match &win.body {
+            BodyLayout::Vertical { rows, .. } => rows.clone(),
+            BodyLayout::Horizontal { cols } => cols.clone(),
+            _ => panic!("rows or columns"),
+        }
+    }
+
+    #[test]
+    fn an_empty_tune_is_todays_metrics() {
+        let m = WidgetMetrics::from_tune(&Tune::default());
+        assert_eq!(m, WidgetMetrics::DEFAULT);
+        assert_eq!(m, WidgetMetrics::default());
+        let win = compute(
+            &Layout::Vertical,
+            &DetailLevel::Medium,
+            &WidthScale::Full,
+            &ColumnFlow::Row,
+            &Shape::plain(2),
+        );
+        assert_eq!(win.metrics, WidgetMetrics::DEFAULT);
+    }
+
+    #[test]
+    fn the_text_size_scales_rows_and_columns() {
+        let base = WidgetMetrics::DEFAULT;
+        let big = metrics(1.5, 1.0, 1.0, 0.0);
+        for detail in [
+            DetailLevel::Compact,
+            DetailLevel::Medium,
+            DetailLevel::Expanded,
+        ] {
+            let (a, b) = (
+                tuned(&base, Layout::Vertical, detail.clone(), ColumnFlow::Row, 3),
+                tuned(&big, Layout::Vertical, detail.clone(), ColumnFlow::Row, 3),
+            );
+            let (ra, rb) = (row_rects(&a), row_rects(&b));
+            assert!(
+                (rb[0].h - ra[0].h * 1.5).abs() < 0.01,
+                "{detail:?} row height"
+            );
+            assert!((b.width - a.width * 1.5).abs() < 0.01, "{detail:?} width");
+            assert_eq!(rb[0].x, ra[0].x, "the padding does not follow the text");
+            assert_eq!(b.row_tier, a.row_tier, "{detail:?}: the same tier");
+
+            let (a, b) = (
+                tuned(
+                    &base,
+                    Layout::Horizontal,
+                    detail.clone(),
+                    ColumnFlow::Row,
+                    3,
+                ),
+                tuned(&big, Layout::Horizontal, detail.clone(), ColumnFlow::Row, 3),
+            );
+            let (ca, cb) = (row_rects(&a), row_rects(&b));
+            assert!((cb[0].w - ca[0].w * 1.5).abs() < 0.01, "{detail:?} column");
+            assert!((cb[0].h - ca[0].h * 1.5).abs() < 0.01, "{detail:?} column");
+        }
+    }
+
+    #[test]
+    fn the_tier_table_holds_at_every_text_size() {
+        for text in [0.8, 1.2, 1.5] {
+            let m = metrics(text, 1.0, 1.0, 0.0);
+            for detail in [
+                DetailLevel::Compact,
+                DetailLevel::Medium,
+                DetailLevel::Expanded,
+            ] {
+                for scale in [
+                    WidthScale::Full,
+                    WidthScale::ThreeQuarters,
+                    WidthScale::Half,
+                ] {
+                    let at = |m: &WidgetMetrics| {
+                        compute_tuned(
+                            &Layout::Vertical,
+                            &detail,
+                            &scale,
+                            &ColumnFlow::Row,
+                            &Shape::plain(2),
+                            m,
+                        )
+                        .row_tier
+                    };
+                    assert_eq!(
+                        at(&m),
+                        at(&WidgetMetrics::DEFAULT),
+                        "{detail:?} {scale:?} at text {text}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_row_gap_separates_rows_and_columns() {
+        let gap = metrics(1.0, 1.0, 1.0, 8.0);
+        let base = WidgetMetrics::DEFAULT;
+        let rows = |m| {
+            row_rects(&tuned(
+                m,
+                Layout::Vertical,
+                DetailLevel::Medium,
+                ColumnFlow::Row,
+                3,
+            ))
+        };
+        let (a, b) = (rows(&base), rows(&gap));
+        assert_eq!(b[0].y, a[0].y, "nothing above the first row");
+        assert!((b[1].y - (b[0].y + b[0].h) - 8.0).abs() < 0.01);
+        assert!((b[2].y - a[2].y - 16.0).abs() < 0.01);
+        for flow in [ColumnFlow::Row, ColumnFlow::Column] {
+            let win_a = tuned(&base, Layout::Horizontal, DetailLevel::Medium, flow, 3);
+            let win_b = tuned(&gap, Layout::Horizontal, DetailLevel::Medium, flow, 3);
+            let (a, b) = (row_rects(&win_a), row_rects(&win_b));
+            let between = |c: &[Rect]| match flow {
+                ColumnFlow::Row => c[1].x - (c[0].x + c[0].w),
+                ColumnFlow::Column => c[1].y - (c[0].y + c[0].h),
+            };
+            assert!((between(&b) - between(&a) - 8.0).abs() < 0.01, "{flow:?}");
+        }
+    }
+
+    #[test]
+    fn a_thicker_bar_makes_medium_and_expanded_rows_taller_not_compact_ones() {
+        let thick = metrics(1.0, 3.0, 1.0, 0.0);
+        for (detail, grows) in [
+            (DetailLevel::Compact, 0.0),
+            (DetailLevel::Medium, 8.0),
+            (DetailLevel::Expanded, 10.0),
+        ] {
+            let row = |m| {
+                row_rects(&tuned(
+                    m,
+                    Layout::Vertical,
+                    detail.clone(),
+                    ColumnFlow::Row,
+                    1,
+                ))[0]
+            };
+            let (a, b) = (row(&WidgetMetrics::DEFAULT), row(&thick));
+            assert!(
+                (b.h - a.h - grows).abs() < 0.01,
+                "{detail:?}: {} vs {}",
+                b.h,
+                a.h
+            );
+        }
+    }
+
+    #[test]
+    fn padding_grows_the_frame_around_the_same_rows() {
+        for layout in [Layout::Vertical, Layout::Horizontal] {
+            let at = |pad| {
+                tuned(
+                    &metrics(1.0, 1.0, pad, 0.0),
+                    layout.clone(),
+                    DetailLevel::Medium,
+                    ColumnFlow::Row,
+                    2,
+                )
+            };
+            let (none, base, wide) = (at(0.0), at(1.0), at(2.0));
+            let (rn, rb, rw) = (row_rects(&none), row_rects(&base), row_rects(&wide));
+            assert_eq!(rn[0].x, 0.0, "{layout:?}: no padding at all");
+            assert!((rw[0].x - rb[0].x * 2.0).abs() < 0.01);
+            assert!(
+                (rw[0].w - rb[0].w).abs() < 0.01,
+                "{layout:?}: the rows keep their width"
+            );
+            assert!((wide.width - base.width - rb[0].x * 2.0).abs() < 0.01);
+            assert!(wide.height > base.height && base.height > none.height);
+        }
+    }
+
+    #[test]
+    fn a_model_line_follows_the_text_size() {
+        let shape = Shape {
+            model_lines: vec![true, false],
+            choose: false,
+            unshown: false,
+        };
+        let m = metrics(1.5, 1.0, 1.0, 0.0);
+        let win = compute_tuned(
+            &Layout::Vertical,
+            &DetailLevel::Expanded,
+            &WidthScale::Full,
+            &ColumnFlow::Row,
+            &shape,
+            &m,
+        );
+        let line = win.model_lines[0].expect("the first row's line");
+        assert!((line.h - MODEL_LINE_H * 1.5).abs() < 0.01);
+    }
+
+    /// A longer countdown leaves a Medium model less room beside it: a
+    /// session row that shares its meta line at half width in the standard
+    /// style gets a line of its own in the long one.
+    #[test]
+    fn a_longer_countdown_can_give_a_medium_model_its_own_line() {
+        let ui = ui(
+            Layout::Vertical,
+            DetailLevel::Medium,
+            WidthScale::Half,
+            ColumnFlow::Row,
+        );
+        let rows = [session(true)];
+        let with = |countdown| {
+            let m = WidgetMetrics {
+                countdown,
+                ..WidgetMetrics::DEFAULT
+            };
+            Shape::of_tuned(&ui, &m, &rows, false, mono).model_lines
+        };
+        assert_eq!(with(Countdown::Standard), [false]);
+        assert_eq!(with(Countdown::Long), [true]);
     }
 
     #[test]

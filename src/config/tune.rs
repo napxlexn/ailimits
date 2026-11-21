@@ -9,6 +9,7 @@
 // The user's guide is docs/en/TUNING.md (and docs/uk/TUNING.md).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The `[tune]` table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -31,13 +32,136 @@ impl Tune {
 }
 
 /// `[tune.widget]`: the floating widget's sizes, spacing and colours.
+///
+/// Every key is optional and kept as written (an unset key is not written
+/// back). A number out of its range is clamped, a value of the wrong kind or
+/// a colour that is not `"#rrggbb"` is ignored: the key then reads as its
+/// default. The accessors below are where the values are read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct TuneWidget {}
+pub struct TuneWidget {
+    /// Text size, as a factor of today's sizes: every text in the widget,
+    /// and with it the room the text takes (row heights, the name and
+    /// percent columns, the widget's width). Default 1.0, range 0.8–1.5.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub text_scale: Option<f32>,
+    /// Extra space between two rows (rows layout) or two columns (columns
+    /// layout), in pixels. Default 0, range 0–24.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub row_gap: Option<f32>,
+    /// Bar thickness, as a factor of today's: 3 px (Compact rows), 4 px
+    /// (Medium), 5 px (Expanded); 7, 8.5 and 11 px wide in the columns
+    /// layout. A thicker bar makes a Medium or Expanded row taller by what it
+    /// adds. Default 1.0, range 0.5–3.0.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub bar_scale: Option<f32>,
+    /// Inner padding between the widget's edge and its rows or columns, as
+    /// a factor of today's: 11 px at the sides and 4 px above and below the
+    /// rows; 7 px at the sides, 4 px above and 6 px below the columns. The
+    /// widget grows by what it adds. Default 1.0, range 0.0–3.0; under about
+    /// 0.5 the round corners clip the text in them (`corners = "square"`
+    /// does not).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub padding_scale: Option<f32>,
+    /// The widget's corners, as Windows 11 rounds a window: "round"
+    /// (default, about 8 px), "small" (about 4 px) or "square". Windows 10
+    /// draws every window square.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub corners: Option<Corners>,
+    /// The colour of a low usage (below `[tune.format] mid_at`): its bar and
+    /// its percent, as "#rrggbb", in place of the palette's. The menu's
+    /// brightness still applies; Monochrome still turns it grey. The tray
+    /// icon keeps the palette. Default: the palette's colour.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub low: Option<String>,
+    /// The colour of a middle usage (from `mid_at` to below `high_at`), as
+    /// "#rrggbb"; as `low`. Default: the palette's colour.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub mid: Option<String>,
+    /// The colour of a high usage (from `high_at`), as "#rrggbb"; as `low`.
+    /// The forecast ("~1h 30min") takes it too. Default: the palette's
+    /// colour.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub high: Option<String>,
+    /// An accent per provider: its rows' names drawn in that colour, as
+    /// "#rrggbb", keyed by the provider's config id ("claude", "codex",
+    /// "copilot", "antigravity", "grok", "cursor"), e.g.
+    /// `provider_colors = { claude = "#d97757" }`. An unknown provider or an
+    /// invalid colour is ignored. Default: none, every name in the widget's
+    /// grey. The menu's brightness applies; Monochrome leaves them grey.
+    #[serde(
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "de_string_map"
+    )]
+    pub provider_colors: BTreeMap<String, String>,
+}
+
+/// How Windows 11 rounds the widget's corners
+/// (`DWMWA_WINDOW_CORNER_PREFERENCE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Corners {
+    /// Windows' standard radius, about 8 px: the widget as it always was.
+    #[default]
+    Round,
+    /// Windows' small radius, about 4 px.
+    Small,
+    /// No rounding.
+    Square,
+}
 
 impl TuneWidget {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// `text_scale`, clamped: 0.8–1.5, default 1.0.
+    pub fn text_scale(&self) -> f32 {
+        clamped(self.text_scale, 1.0, 0.8, 1.5)
+    }
+
+    /// `row_gap` in pixels, clamped: 0–24, default 0.
+    pub fn row_gap(&self) -> f32 {
+        clamped(self.row_gap, 0.0, 0.0, 24.0)
+    }
+
+    /// `bar_scale`, clamped: 0.5–3.0, default 1.0.
+    pub fn bar_scale(&self) -> f32 {
+        clamped(self.bar_scale, 1.0, 0.5, 3.0)
+    }
+
+    /// `padding_scale`, clamped: 0.0–3.0, default 1.0.
+    pub fn padding_scale(&self) -> f32 {
+        clamped(self.padding_scale, 1.0, 0.0, 3.0)
+    }
+
+    /// `corners`, default round.
+    pub fn corners(&self) -> Corners {
+        self.corners.unwrap_or_default()
     }
 }
 
@@ -241,13 +365,245 @@ pub fn parse_hex_rgb(text: &str) -> Option<(u8, u8, u8)> {
 }
 
 /// `[tune.format]`: usage thresholds and how times read.
+///
+/// As `[tune.widget]`: every key optional, a number clamped, a value of the
+/// wrong kind ignored.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
-pub struct TuneFormat {}
+pub struct TuneFormat {
+    /// The usage, in percent, from which a row reads as middle (the mid
+    /// colour) rather than low: in the widget and in the tray icon's bars.
+    /// Default 60, range 0–100.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub mid_at: Option<f32>,
+    /// The usage, in percent, from which a row reads as high (the high
+    /// colour). Default 80, range 0–100, and never below `mid_at` (a lower
+    /// value is raised to it, so the middle level is skipped).
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub high_at: Option<f32>,
+    /// How the widget writes a time left (the reset countdown, the
+    /// forecast, the age of data that stopped updating, the Compact hint
+    /// line): "standard" (default: "2d 5h", "1h 12min", "12min", "45s"),
+    /// "compact" ("2d5h", "1h12m", "12m", "45s") or "long" (a day-long time
+    /// keeps its minutes: "2d 5h 12min"; shorter ones as standard; where a
+    /// long time does not fit, such as an Expanded column, the standard one
+    /// shows). The tray's tooltip and the notifications keep the standard
+    /// style.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
+    pub countdown: Option<Countdown>,
+}
+
+/// How a time left is written (`[tune.format] countdown`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Countdown {
+    /// "2d 5h", "1h 12min", "12min", "45s": the widget as it always was.
+    #[default]
+    Standard,
+    /// "2d5h", "1h12m", "12m", "45s".
+    Compact,
+    /// "2d 5h 12min"; under a day as `Standard`.
+    Long,
+}
 
 impl TuneFormat {
     pub fn is_default(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// (`mid_at`, `high_at`), clamped: each 0–100, `high_at` at least
+    /// `mid_at`; default (60, 80).
+    pub fn thresholds(&self) -> (f32, f32) {
+        let mid = clamped(self.mid_at, 60.0, 0.0, 100.0);
+        let high = clamped(self.high_at, 80.0, 0.0, 100.0).max(mid);
+        (mid, high)
+    }
+
+    /// `countdown`, default standard.
+    pub fn countdown(&self) -> Countdown {
+        self.countdown.unwrap_or_default()
+    }
+}
+
+/// `value` held to `lo..=hi`; `default` when unset or not a number (NaN, an
+/// infinity).
+fn clamped(value: Option<f32>, default: f32, lo: f32, hi: f32) -> f32 {
+    value
+        .filter(|v| v.is_finite())
+        .map_or(default, |v| v.clamp(lo, hi))
+}
+
+/// A key of the wrong kind (`text_scale = "big"`, `corners = "rounded"`)
+/// reads as unset instead of failing the whole config.
+fn de_lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let raw = toml::Value::deserialize(deserializer)?;
+    Ok(T::deserialize(raw).ok())
+}
+
+/// A table of strings; an entry that is not a string is dropped, and a
+/// value that is not a table reads as empty.
+fn de_string_map<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = toml::Value::deserialize(deserializer)?;
+    Ok(match raw {
+        toml::Value::Table(table) => table
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                toml::Value::String(s) => Some((k, s)),
+                _ => None,
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    })
+}
+
+/// `[tune.widget]` and `[tune.format]`: parsing, clamping, defaults.
+#[cfg(test)]
+mod widget_format_tests {
+    use super::*;
+
+    fn tune(text: &str) -> Tune {
+        toml::from_str(text).expect("a [tune] never fails to parse")
+    }
+
+    #[test]
+    fn an_empty_table_reads_as_today() {
+        let t = tune("[widget]\n[format]\n");
+        assert!(t.is_default());
+        let (w, f) = (&t.widget, &t.format);
+        assert_eq!(
+            (
+                w.text_scale(),
+                w.row_gap(),
+                w.bar_scale(),
+                w.padding_scale()
+            ),
+            (1.0, 0.0, 1.0, 1.0)
+        );
+        assert_eq!(w.corners(), Corners::Round);
+        assert_eq!(f.thresholds(), (60.0, 80.0));
+        assert_eq!(f.countdown(), Countdown::Standard);
+    }
+
+    #[test]
+    fn every_key_parses() {
+        let t = tune(
+            r##"
+            [widget]
+            text_scale = 1.2
+            row_gap = 4
+            bar_scale = 2.0
+            padding_scale = 0.5
+            corners = "small"
+            low = "#00ff00"
+            mid = "#FFAA00"
+            high = "#ff0000"
+            provider_colors = { claude = "#d97757", codex = "#10a37f" }
+            [format]
+            mid_at = 50
+            high_at = 90.5
+            countdown = "compact"
+            "##,
+        );
+        let (w, f) = (&t.widget, &t.format);
+        assert_eq!(w.text_scale(), 1.2);
+        assert_eq!(w.row_gap(), 4.0);
+        assert_eq!(w.bar_scale(), 2.0);
+        assert_eq!(w.padding_scale(), 0.5);
+        assert_eq!(w.corners(), Corners::Small);
+        assert_eq!(w.low.as_deref(), Some("#00ff00"));
+        assert_eq!(w.mid.as_deref(), Some("#FFAA00"));
+        assert_eq!(w.high.as_deref(), Some("#ff0000"));
+        assert_eq!(w.provider_colors.len(), 2);
+        assert_eq!(w.provider_colors["claude"], "#d97757");
+        assert_eq!(f.thresholds(), (50.0, 90.5));
+        assert_eq!(f.countdown(), Countdown::Compact);
+    }
+
+    #[test]
+    fn out_of_range_values_are_clamped_where_read() {
+        let t = tune(
+            "[widget]\ntext_scale = 9\nrow_gap = -3\nbar_scale = 0.1\npadding_scale = 7\n\
+             [format]\nmid_at = -5\nhigh_at = 400\n",
+        );
+        let (w, f) = (&t.widget, &t.format);
+        assert_eq!(w.text_scale(), 1.5);
+        assert_eq!(w.row_gap(), 0.0);
+        assert_eq!(w.bar_scale(), 0.5);
+        assert_eq!(w.padding_scale(), 3.0);
+        assert_eq!(f.thresholds(), (0.0, 100.0));
+        // Kept as written: clamping happens where it is read.
+        assert_eq!(w.text_scale, Some(9.0));
+        let low = tune("[widget]\ntext_scale = 0.1\n");
+        assert_eq!(low.widget.text_scale(), 0.8);
+        let nan = tune("[widget]\ntext_scale = nan\nrow_gap = inf\n");
+        assert_eq!((nan.widget.text_scale(), nan.widget.row_gap()), (1.0, 0.0));
+    }
+
+    #[test]
+    fn a_high_threshold_below_the_mid_one_is_raised_to_it() {
+        let t = tune("[format]\nmid_at = 70\nhigh_at = 40\n");
+        assert_eq!(t.format.thresholds(), (70.0, 70.0));
+        let only_mid = tune("[format]\nmid_at = 85\n");
+        assert_eq!(only_mid.format.thresholds(), (85.0, 85.0));
+    }
+
+    #[test]
+    fn a_value_of_the_wrong_kind_reads_as_unset() {
+        let t = tune(
+            r##"
+            [widget]
+            text_scale = "big"
+            row_gap = true
+            corners = "rounded"
+            low = 12
+            provider_colors = { claude = 5, codex = "#10a37f" }
+            [format]
+            mid_at = "sixty"
+            countdown = "verbose"
+            "##,
+        );
+        assert_eq!(t.widget.text_scale, None);
+        assert_eq!(t.widget.row_gap, None);
+        assert_eq!(t.widget.corners(), Corners::Round);
+        assert_eq!(t.widget.low, None);
+        assert_eq!(t.widget.provider_colors.len(), 1);
+        assert_eq!(t.format.thresholds(), (60.0, 80.0));
+        assert_eq!(t.format.countdown(), Countdown::Standard);
+        let not_a_table = tune("[widget]\nprovider_colors = \"#ffffff\"\n");
+        assert!(not_a_table.widget.provider_colors.is_empty());
+        assert!(not_a_table.is_default());
+    }
+
+    #[test]
+    fn only_the_keys_set_are_written_back() {
+        let mut config = crate::config::schema::Config::default();
+        config.tune.widget.bar_scale = Some(2.0);
+        config.tune.format.countdown = Some(Countdown::Long);
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("[tune.widget]\nbar_scale = 2.0\n"), "{text}");
+        assert!(
+            text.contains("[tune.format]\ncountdown = \"long\"\n"),
+            "{text}"
+        );
+        assert!(!text.contains("text_scale") && !text.contains("provider_colors"));
+        let back: crate::config::schema::Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.tune, config.tune);
     }
 }
 
