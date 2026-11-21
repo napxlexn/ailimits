@@ -78,7 +78,7 @@ Nothing of another tool is read before you allow it: the first start asks, namin
 
 Rows and models chooses the rows the widget and the tooltip show, extra rows where a provider meters a part on its own, and an optional model label. Closed, the widget folds into a tray icon with two rings, or a mini panel beside the tray showing a percentage, the time to the reset, or both. A source that is down leaves its last reading grey, with its age. It never invents a number.
 
-Measured on the audited release build: about 0.005% of one CPU core at idle, no GPU time at all (the interface is drawn on the CPU), and around 37 MB of memory. A 3 MB executable, statically linked, no runtime to install, no admin rights needed.
+Measured on the audited 0.7.1 release build: 0.0097% of one CPU core at idle, no GPU time at all (the interface is drawn on the CPU), and around 54 MB of memory. A 4 MB executable, statically linked, no runtime to install, no admin rights needed.
 
 Three detail levels, several layouts, nine palettes; opacity, brightness and saturation are adjustable, and the context menu shows each look before you click it. Free and open source under GPL-3.0; the source is on GitHub.</Char_Desc_2000>
     </English>

@@ -1218,7 +1218,8 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
    beside eight palettes, opacity 15-85, brightness 40-100, saturation 0-100)
    and the Widget column of Rows and models, with the model label's three
    parts. The rows, the extra rows and the labels are the ones the app's own
-   tests draw (renderer.rs label_for, rows.rs SUB_ROWS). */
+   tests draw (renderer.rs label_for, rows.rs SUB_ROWS); the extra rows'
+   buttons are named as the picker names them under their provider, "+ Fable". */
 const playEl = $("#aw-play");
 const PG_ROWS = [
   { id: "claude", name: "Claude", pct: 93, meta: "2h 22min", weekly: 19, label: ["Opus", "Opus 5.5", "xhigh"] },
@@ -1286,25 +1287,21 @@ if (document.fonts) document.fonts.ready.then(pgRender);
   }, { passive: true });
 }
 const press = (seg, test) => $$("button", seg).forEach((b) => b.setAttribute("aria-pressed", test(b) ? "true" : "false"));
-const paletteSeg = $('.pg [data-opt="palette"]'), monoSeg = $('.pg [data-toggle="monochrome"]');
 $$(".pg .seg[data-opt]").forEach((seg) => {
   const opt = seg.getAttribute("data-opt");
   seg.addEventListener("click", (e) => {
     const btn = e.target.closest("button");
     if (!btn) return;
     press(seg, (b) => b === btn);
-    pg[opt] = btn.getAttribute("data-v");
-    /* a palette picked in the menu switches Monochrome off */
-    if (opt === "palette" && monoSeg) { pg.monochrome = false; press(monoSeg, () => false); }
+    const v = btn.getAttribute("data-v");
+    /* Mono is the menu's Monochrome, one chip among the palettes here: it
+       overrides the palette and keeps it, and a palette picked switches it off */
+    if (opt === "palette") {
+      pg.monochrome = v === "mono";
+      if (!pg.monochrome) pg.palette = v;
+    } else pg[opt] = v;
     pgRender();
   });
-});
-if (monoSeg) monoSeg.addEventListener("click", () => {
-  pg.monochrome = !pg.monochrome;
-  press(monoSeg, () => pg.monochrome);
-  /* Monochrome keeps the palette; unticked, that palette comes back */
-  if (paletteSeg) press(paletteSeg, (b) => !pg.monochrome && b.getAttribute("data-v") === pg.palette);
-  pgRender();
 });
 $$(".pg .seg[data-multi]").forEach((seg) => {
   const set = pg[seg.getAttribute("data-multi")];
