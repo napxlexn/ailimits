@@ -7,6 +7,14 @@ and providers are ignored (old configs never break parsing). UTF-8 with or
 without a BOM and UTF-16 with a BOM (Notepad's encodings) are read.
 Fine-tuning beyond the menu, the `[tune]` tables, has a guide of its own: [TUNING.md](TUNING.md).
 
+The file explains itself. The app writes a short note before each table
+and each setting: what it does, the values or the range it takes, its
+default, and the menu item or window that sets the same. The four `[tune]`
+tables are always there, every key not set commented out with its default
+and its range, so taking the `# ` away is all it takes to use one. Comments
+you add are not kept: each save of the app's own writes the file anew with
+its notes (`src/config/annotate.rs`).
+
 When the file cannot be used, it is never overwritten with defaults:
 
 - **It cannot be read** (another program holds it, the folder's
@@ -65,7 +73,8 @@ The welcome has no such link.
   time of each file it writes, and a file that matches is left alone. A
   save with nothing new in it is not written at all, so the comments and
   layout of a hand edit stay until the app has a change of its own to save;
-  that save writes the whole file anew, without comments.
+  that save writes the whole file anew with the app's own notes, and the
+  comments you added are not kept.
 - **An edit that reads** applies at once, brought up to date as a start
   would (renamed and added providers, `[reads]` as its origin calls for; a
   position on no monitor comes back onto one), except that it never brings
@@ -108,6 +117,8 @@ The welcome has no such link.
   session still needs a restart, as its message says.
 
 ## Full example
+
+The notes the app writes in the file are shorter; this example says more.
 
 ```toml
 [general]
@@ -255,7 +266,8 @@ source  = "configured"
 # (menu: Rows and models..., Percent and Reset time, Tooltip column): the
 # percentage, the time left until the limit the row shows resets
 # ("Claude 25% · 2h 14min"), or one of them alone ("Claude 2h 14min").
-# Never neither. Written only once changed; without it, both. With the
+# The window keeps one on; both false in the file leaves each row its name
+# and a dot. Written only once changed; without it, both. With the
 # percentage alone and no model labels or extra rows, the tooltip is one
 # line, as in 0.7.0; otherwise it has one row per line. The widget always shows both; the tray
 # icon's own tooltip always says the percentages.
@@ -525,12 +537,15 @@ Every read of another tool's file is optional and asked for first:
   looked at); gh is
   asked for github.com only (`gh auth token --hostname github.com`, 10 s
   time-out, its output discarded); of Cursor only the widget's own session
-  is shown. It prints each provider's read mode and the `[reads]` state, and
-  never a token.
+  is shown. It prints each provider's read mode and the `[reads]` state,
+  names the lines of `config.toml` that do not read, and never prints a
+  token.
 - **The other `ailimits-auth` commands** (`set`, `remove`,
   `set-usage-token`, `remove-usage-token`, `login`, `logout`) never replace
-  or rename a `config.toml` they cannot read or understand. `set` and
-  `set-usage-token` then store nothing ("nothing was changed"); `remove`
+  or rename a `config.toml` they cannot read or understand, nor one with
+  lines that do not read (saved, it would lose them, and they keep no copy):
+  they name the lines ("config.toml line 12 does not read; fix it first").
+  `set` and `set-usage-token` then store nothing ("nothing was changed"); `remove`
   removes the key all the same and leaves the config as it is; `login`
   keeps the session it got and says the config could not be updated. A
   running widget picks up what they change by itself, with no restart (see

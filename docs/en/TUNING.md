@@ -5,7 +5,7 @@ finer control over the widget, the taskbar panel and the tray icon (sizes,
 spacing, colours, the usage at which a colour changes, how times read) the
 config file has four tables of its own: `[tune.widget]`, `[tune.panel]`,
 `[tune.tray]` and `[tune.format]`. They live only in the file: nothing in
-the menu or in the window writes them.
+the menu or in the window sets them.
 
 Every key is optional. A key left out takes its default, and the defaults
 are exactly the look the app has without them. A value that does not fit
@@ -23,8 +23,25 @@ models...*, and click *Settings file...* at the end of the list. The file
 opens in Notepad (`%SystemRoot%\System32\notepad.exe`). Any other editor
 works too.
 
-The `[tune]` tables are not in the file until you add them. Add them at the
-end of the file and save.
+The four `[tune]` tables are always at the end of the file, as the app
+writes it: the keys set as they are, every other key commented out with its
+default and a note on its range:
+
+```toml
+[tune.widget]
+# text_scale = 1.0        # 0.8 to 1.5: size of all text (factor)
+```
+
+To use a key, delete the `# ` before it, change the value and save. A table
+may be in the file only once: put the keys under the table that is there,
+never add a second `[tune.widget]` (the file would then not read). A file
+the app has not saved since it was updated may not have the tables yet: add
+the one you need at the end of the file then.
+
+The rest of the file is explained the same way: a short note before each
+table and each setting says what it does, the values it takes, its default
+and the menu item that sets the same. Comments you add are not kept: the
+app writes its own notes whenever it saves the file.
 
 ### When an edit applies
 
@@ -44,8 +61,9 @@ and the tray icon, and nothing is fetched again.
 
 The app's own saves (a menu click, a move of the widget) are not taken for
 edits. The app writes the file only when it has a change of its own, and
-that save writes the whole file anew: your `[tune]` keys stay, but comments
-go (see [Notes](#notes) for what else is left out). A change you make in the
+that save writes the whole file anew with its own notes: your `[tune]` keys
+stay, comments you added go (see [Notes](#notes) for what else is left
+out). A change you make in the
 app while your edit is on its way is kept where the edit left that setting
 alone; where both changed the same setting, the file wins. The details are
 in [CONFIG.md, Live edits](CONFIG.md#live-edits).
@@ -87,10 +105,10 @@ or when it quits.
 
 ### Undoing a change
 
-Delete the key, or the whole table, and save: the default comes back at
-once. The defaults are today's look, so with no `[tune]` tables everything
-looks as before you started. Commenting a line out (`# text_scale = 1.3`)
-works too, until the app's next save of its own removes the comment.
+Delete the key, or put the `# ` back before it, and save: the default
+comes back at once. The defaults are today's look, so with every `[tune]`
+key commented out everything looks as before you started. The app's next
+save of its own writes such a key commented out again, with its default.
 
 Do not empty the file to start over: an emptied file is not applied (see
 above).
@@ -232,10 +250,11 @@ countdown = "compact"
 
 ## Recipes
 
-Each snippet is complete: paste it at the end of the file and save. A table
-may appear only once in the file, so when your file already has a table of
-the same name (or you combine two recipes), put the keys under the one
-table instead of adding a second.
+Each snippet names the table its keys go under. The file already has every
+`[tune]` table, so put the keys under the table of the same name (take the
+`# ` away from a key that is there, or write the key under the header) and
+save. Do not paste a second table of the same name: a table may appear only
+once in the file, and a second one makes it not read.
 
 ### Bigger text on a 4K screen
 
@@ -386,7 +405,9 @@ the file than the menu offers. They are described in the
 - **What the app writes back.** The app's next save of its own writes your
   `[tune]` keys as you wrote them, out-of-range numbers and colours that do
   not count included. It leaves out unknown keys, values of the wrong kind
-  and comments, and it never writes a `[tune]` table that holds nothing.
+  and your comments, and writes its own notes instead. It writes all four
+  `[tune]` tables every time, every key not set commented out with its
+  default.
 - **Monochrome** (menu: Palette) ignores `low`, `mid`, `high` and
   `provider_colors`; `mid_at` and `high_at` still choose between its three
   greys.

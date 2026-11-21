@@ -387,7 +387,9 @@ panel** opens this same menu.
 is persisted there. Edits saved in it apply while the app runs, within about
 two seconds, with no restart; *Settings file...* at the end of *Rows and
 models* opens it in Notepad. A line that does not read is left out and
-named, its default used. Format reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
+named, its default used. The file explains itself: a short note before each
+setting says what it does, the values it takes and its default. Format
+reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).
 Fine-tuning beyond the menu (sizes, colours, thresholds): [docs/en/TUNING.md](docs/en/TUNING.md).
 
 Set `AILIMITS_LOG=ailimits=debug` or `RUST_LOG=ailimits=debug` to write a

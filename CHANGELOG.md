@@ -183,6 +183,12 @@ Notable, user-visible changes. Dates are release dates.
   key is optional and defaults to today's look; a value out of range is
   held to its range, and a mistyped one costs only that key. The guide,
   with recipes: `docs/en/TUNING.md`.
+- **`config.toml` explains itself.** The app writes a short note before
+  each table and each setting: what it does, the values or the range it
+  takes, its default, and the menu item or window that sets the same. The
+  four `[tune]` tables are always there, every key not set commented out
+  with its default and its range, so taking the `# ` away is all it takes
+  to use one. Comments you add are not kept when the app saves the file.
 
 ### Changed
 
@@ -396,7 +402,9 @@ Notable, user-visible changes. Dates are release dates.
   or usage token, or a consent given or taken back is dropped when it lands.
 - **`ailimits-auth status` changes nothing**: it no longer creates or sets
   aside `config.toml`, and reads another tool's sign-in only where the
-  widget may. None of the commands replaces a config it cannot read: `set`
+  widget may. None of the commands replaces a config it cannot read, nor
+  one with lines that do not read (saving it would drop them): they name
+  the lines and wait until they are fixed. `set`
   and `set-usage-token` store nothing then; `remove` still removes the key
   and leaves the config as it is; `login` keeps the session it got and says
   the config could not be updated. `set` and `set-usage-token` make what

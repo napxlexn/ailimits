@@ -89,7 +89,9 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          the [reads] migration
    ├── config/tune.rs         [tune]: config-only knobs (sizes, colours,
    │                          thresholds); defaults are today's look, values
-   │                          clamped where read, a default table never written
+   │                          clamped where read; KEY_DOCS, a line per key
+   ├── config/annotate.rs     config.toml as written: a note before each table
+   │                          and key, the [tune] keys not set commented out
    └── notifications/         toast.rs (Windows toasts), alerts.rs (one alert
                               per limit window, kept in alerts.json)
 ```
@@ -307,7 +309,9 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   renamed: the app runs on an in-memory config that reads nothing, and the
   path is held, so neither the saver nor the final save at exit writes it
   this session (`storage::saving_held`). `storage::peek` reads the config
-  without creating, renaming or writing anything, for `ailimits-auth`.
+  without creating, renaming or writing anything, for `ailimits-auth`, and
+  names the lines left out (`Peek::LeftOut`): its commands that change the
+  config refuse such a file, which a save would rob of those lines.
 - **Few writes of the app's own files.** `provider-cache.json` has one
   serialised writer (the newest content wins, a cycle's answers merge into
   one write); it is written when the values, limits or resets change (to
