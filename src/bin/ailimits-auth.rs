@@ -138,7 +138,7 @@ fn status() -> Result<()> {
     let config_path = storage::config_path();
     let peeked = storage::peek(&config_path);
     let config = match &peeked {
-        Peek::Found(config) => Some(config),
+        Peek::Found(config) | Peek::LeftOut(config, _) => Some(config),
         _ => None,
     };
     let allowed = |id: &str| config.is_some_and(|c| c.sign_in_allowed(id));
@@ -190,9 +190,31 @@ fn status() -> Result<()> {
             println!("could not be understood ({e}); the widget sets it aside on its next start")
         }
         Peek::Found(config) => print_config(&config),
+        Peek::LeftOut(config, lines) => {
+            println!(
+                "{}; the commands that change it wait until it does",
+                does_not_read(&lines)
+            );
+            print_config(&config);
+        }
     }
 
     Ok(())
+}
+
+/// "config.toml line 12 does not read", "config.toml lines 3, 7 do not
+/// read": where, never what.
+fn does_not_read(lines: &[usize]) -> String {
+    let list = lines
+        .iter()
+        .map(|l| l.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if lines.len() == 1 {
+        format!("config.toml line {list} does not read")
+    } else {
+        format!("config.toml lines {list} do not read")
+    }
 }
 
 /// The other tools' sign-ins: read only where `allowed`, otherwise only
@@ -627,7 +649,9 @@ fn read_oauth_expiry(path: &Path) -> Option<(DateTime<Utc>, String)> {
 
 /// The config a command changes: the file as it stands, or a first start's
 /// config when there is none yet. A file that cannot be read or understood
-/// is refused, never replaced and never renamed: nothing is changed.
+/// is refused, never replaced and never renamed: nothing is changed. So is
+/// one with lines that do not read: saved, it would lose them, and unlike
+/// the widget at its start this tool keeps no copy.
 fn config_to_change() -> Result<Config> {
     config_at(&storage::config_path())
 }
@@ -635,6 +659,13 @@ fn config_to_change() -> Result<Config> {
 fn config_at(path: &Path) -> Result<Config> {
     match storage::peek(path) {
         Peek::Found(config) => Ok(*config),
+        Peek::LeftOut(_, lines) => {
+            let fix = if lines.len() == 1 { "it" } else { "them" };
+            bail!(
+                "{}; fix {fix} first — nothing was changed",
+                does_not_read(&lines)
+            )
+        }
         Peek::Missing => Ok(Config::fresh_install()),
         Peek::Unreadable(e) => bail!(
             "config.toml could not be read ({e}) — nothing was changed; try again in a moment"
@@ -684,6 +715,39 @@ mod tests {
         assert!(err.contains("nothing was changed"), "{err}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[broken");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A config with lines that do not read is refused, the lines named:
+    /// saved, it would lose them, with no copy kept. Fixed, it is taken.
+    #[test]
+    fn a_config_with_lines_left_out_is_refused_until_fixed() {
+        let dir = std::env::temp_dir().join(format!("ailimits-auth-left-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let text =
+            "[reads]\nsign_in = [\"claude\"]\n\n[ui]\nbrightness = \"50\"\npalette = \"ocean\"\n";
+        std::fs::write(&path, text).unwrap();
+        let err = config_at(&path).unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "config.toml line 5 does not read; fix it first — nothing was changed"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let two = text.replace("palette = \"ocean\"", "palette = ocean");
+        std::fs::write(&path, &two).unwrap();
+        let err = config_at(&path).unwrap_err().to_string();
+        assert!(
+            err.starts_with("config.toml lines 5, 6 do not read; fix them first"),
+            "{err}"
+        );
+        let fixed = text.replace("\"50\"", "50");
+        std::fs::write(&path, &fixed).unwrap();
+        let config = config_at(&path).unwrap();
+        assert_eq!(config.ui.brightness, 50);
+        assert!(config.sign_in_allowed("claude"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

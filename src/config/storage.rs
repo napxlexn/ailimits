@@ -276,6 +276,7 @@ async fn read_with_retries(path: &Path, retries: &[Duration]) -> FileRead {
 
 /// The config in the file's bytes, and where it came from (`parse_keeping`
 /// without the lines left out).
+#[cfg(test)]
 fn parse(bytes: &[u8]) -> std::result::Result<(Config, Origin), String> {
     parse_keeping(bytes).map(|(config, origin, _)| (config, origin))
 }
@@ -471,6 +472,10 @@ pub enum Peek {
     Missing,
     /// The config, brought up to date in memory as the widget would.
     Found(Box<Config>),
+    /// The config without these lines (1-based), which did not read and
+    /// were left out (`parse_keeping`). A command that saved it would drop
+    /// them, with no copy kept: they are fixed in the file first.
+    LeftOut(Box<Config>, Vec<usize>),
     /// The file is there but could not be read.
     Unreadable(String),
     /// The file could not be understood.
@@ -484,10 +489,14 @@ pub fn peek(path: &Path) -> Peek {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Peek::Missing,
         Err(e) => return Peek::Unreadable(e.to_string()),
     };
-    match parse(&bytes) {
-        Ok((mut config, origin)) => {
+    match parse_keeping(&bytes) {
+        Ok((mut config, origin, left_out)) => {
             migrate(&mut config, origin);
-            Peek::Found(Box::new(config))
+            if left_out.is_empty() {
+                Peek::Found(Box::new(config))
+            } else {
+                Peek::LeftOut(Box::new(config), left_out)
+            }
         }
         Err(e) => Peek::Unparsable(e),
     }
@@ -615,8 +624,9 @@ pub async fn save(config: &Config) -> Result<()> {
     save_to(config, &config_path()).await
 }
 
-/// Save the config to a specific path at once: a first start, the commands
-/// of `ailimits-auth`, tests. The app's own saves go through the background
+/// Save the config to a specific path at once, with its notes
+/// (`annotate`): a first start, the commands of `ailimits-auth`, tests. The
+/// app's own saves go through the background
 /// writer instead (`spawn_saver_for`, `ConfigFile::write`), which also
 /// keeps an edit made elsewhere from being written over. Refused, with the
 /// file untouched, while saving to that path is held for the session
@@ -632,7 +642,7 @@ pub async fn save_to(config: &Config, path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let content = toml::to_string_pretty(config)?;
+    let content = super::annotate::annotate(config).map_err(anyhow::Error::msg)?;
     atomic_write(path, content.as_bytes()).await?;
     Ok(())
 }
@@ -1073,15 +1083,13 @@ impl ConfigFile {
         if disk.config.as_ref() == Some(config) {
             return Written::Same;
         }
-        let written = toml::to_string_pretty(config)
-            .map_err(|e| e.to_string())
-            .and_then(|text| {
-                // The directory may have vanished between runs.
-                if let Some(parent) = self.path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                }
-                write_atomically(&self.path, text.as_bytes()).map_err(|e| e.to_string())
-            });
+        let written = super::annotate::annotate(config).and_then(|text| {
+            // The directory may have vanished between runs.
+            if let Some(parent) = self.path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            write_atomically(&self.path, text.as_bytes()).map_err(|e| e.to_string())
+        });
         match written {
             Ok(()) => {
                 disk.stamp = stamp_of(&self.path).ok().flatten();
@@ -1659,6 +1667,47 @@ pos_x = 2"
         assert_eq!(config.reads.sign_in, ["claude", "codex", "antigravity"]);
         assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), CONFIG_0_7_0);
         assert!(!saving_held(&dir.config()));
+        // Lines that do not read are named, and the file is left as it is.
+        let bad = CONFIG_0_7_0.replace("pos_y = 80", "pos_y = \"80\"");
+        std::fs::write(dir.config(), &bad).unwrap();
+        let Peek::LeftOut(config, lines) = peek(&dir.config()) else {
+            panic!("no lines left out");
+        };
+        assert_eq!(lines, [12]);
+        assert_eq!(config.window.pos_x, 1200);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), bad);
+        assert_eq!(dir.names(), ["config.toml"]);
+    }
+
+    /// The app writes the file with its notes: such a write is not taken
+    /// for an edit, reads back as the config written, and the same config
+    /// is not written again, by this process or the next.
+    #[test]
+    fn the_annotated_file_is_the_apps_own() {
+        let dir = Dir::new("annotated");
+        let (loaded, file) = watched(&dir, &current_text());
+        let mut config = loaded.config.clone();
+        config.ui.saturation = 30;
+        config.tune.panel.tray_gap = Some(4);
+        assert_eq!(file.write(&config, file.generation()), Written::Done);
+        let text = std::fs::read_to_string(dir.config()).unwrap();
+        assert!(text.starts_with("# AI Limits settings."), "{text}");
+        assert!(text.contains("\n# text_scale = 1.0 "), "{text}");
+        assert!(!file.changed());
+        assert_eq!(file.check(), Change::None);
+        assert_eq!(file.write(&config, file.generation()), Written::Same);
+        let again = block(load_with(&dir.config(), &QUICK));
+        assert_eq!(again.problem, None);
+        assert_eq!(again.config, config);
+        let next = ConfigFile::new(dir.config(), again.on_disk);
+        assert_eq!(next.write(&config, 0), Written::Same);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), text);
+        // A first start writes it the same way.
+        let fresh = Dir::new("annotated-fresh");
+        let first = block(load_with(&fresh.config(), &QUICK));
+        let text = std::fs::read_to_string(fresh.config()).unwrap();
+        assert!(text.starts_with("# AI Limits settings."), "{text}");
+        assert_eq!(toml::from_str::<Config>(&text).unwrap(), first.config);
     }
 
     /// A config as 0.7.0 writes it (toml::to_string_pretty of its Config):

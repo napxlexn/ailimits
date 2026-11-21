@@ -492,6 +492,216 @@ where
     })
 }
 
+/// One `[tune]` key as config.toml explains it (`config::annotate`): a key
+/// not set is written commented out, `# key = shown`, with `note` after it,
+/// so taking the `# ` away is all it takes to use it. Tests hold the names
+/// to the struct fields, `shown` to the defaults and `range` to the clamps
+/// of the accessors above.
+#[derive(Debug, Clone, Copy)]
+pub struct KeyDoc {
+    /// The table: "widget", "panel", "tray" or "format".
+    pub table: &'static str,
+    pub key: &'static str,
+    /// The value shown, as TOML: the default, written as the app writes it,
+    /// or an example where the default is not a value (the palette's
+    /// colour, no colour).
+    pub shown: &'static str,
+    /// Whether `shown` is the default (false: an example; `note` then says
+    /// what the default is).
+    pub default: bool,
+    /// The lowest and the highest value that count, as TOML, for a number.
+    pub range: Option<(&'static str, &'static str)>,
+    /// What follows the value: its range or its words, and what it changes.
+    pub note: &'static str,
+}
+
+const fn doc(
+    table: &'static str,
+    key: &'static str,
+    shown: &'static str,
+    range: Option<(&'static str, &'static str)>,
+    note: &'static str,
+) -> KeyDoc {
+    KeyDoc {
+        table,
+        key,
+        shown,
+        default: true,
+        range,
+        note,
+    }
+}
+
+const fn example(
+    table: &'static str,
+    key: &'static str,
+    shown: &'static str,
+    note: &'static str,
+) -> KeyDoc {
+    KeyDoc {
+        table,
+        key,
+        shown,
+        default: false,
+        range: None,
+        note,
+    }
+}
+
+/// Every `[tune]` key, table by table, in the order of the struct fields.
+pub const KEY_DOCS: &[KeyDoc] = &[
+    doc(
+        "widget",
+        "text_scale",
+        "1.0",
+        Some(("0.8", "1.5")),
+        "0.8 to 1.5: size of all text (factor)",
+    ),
+    doc(
+        "widget",
+        "row_gap",
+        "0.0",
+        Some(("0.0", "24.0")),
+        "0 to 24 px: extra space between rows or columns",
+    ),
+    doc(
+        "widget",
+        "bar_scale",
+        "1.0",
+        Some(("0.5", "3.0")),
+        "0.5 to 3.0: bar thickness (factor)",
+    ),
+    doc(
+        "widget",
+        "padding_scale",
+        "1.0",
+        Some(("0.0", "3.0")),
+        "0.0 to 3.0: space inside the edge (factor)",
+    ),
+    doc(
+        "widget",
+        "corners",
+        "\"round\"",
+        None,
+        "\"round\", \"small\" or \"square\"",
+    ),
+    example(
+        "widget",
+        "low",
+        "\"#4caf50\"",
+        "colour under mid_at; default: the palette's",
+    ),
+    example(
+        "widget",
+        "mid",
+        "\"#ffb300\"",
+        "colour from mid_at; default: the palette's",
+    ),
+    example(
+        "widget",
+        "high",
+        "\"#e53935\"",
+        "colour from high_at; default: the palette's",
+    ),
+    example(
+        "widget",
+        "provider_colors",
+        "{ claude = \"#d97757\" }",
+        "name colour per id; default: grey",
+    ),
+    doc(
+        "panel",
+        "digit_size",
+        "1.0",
+        Some(("0.5", "1.5")),
+        "0.5 to 1.5: digit height (factor)",
+    ),
+    doc(
+        "panel",
+        "bar_length",
+        "1.0",
+        Some(("0.25", "3.0")),
+        "0.25 to 3.0: bar length (factor)",
+    ),
+    doc(
+        "panel",
+        "bar_thickness",
+        "1.0",
+        Some(("0.25", "2.0")),
+        "0.25 to 2.0: bar thickness (factor)",
+    ),
+    doc(
+        "panel",
+        "row_gap",
+        "1.0",
+        Some(("0.0", "2.0")),
+        "0.0 to 2.0: space between the rows (factor)",
+    ),
+    doc(
+        "panel",
+        "tray_gap",
+        "10",
+        Some(("0", "200")),
+        "0 to 200 whole px: space before the tray",
+    ),
+    doc(
+        "panel",
+        "ink_dark",
+        "\"#ececec\"",
+        None,
+        "\"#rrggbb\": digits and bar, dark taskbar",
+    ),
+    doc(
+        "panel",
+        "ink_light",
+        "\"#242424\"",
+        None,
+        "\"#rrggbb\": digits and bar, light taskbar",
+    ),
+    doc(
+        "panel",
+        "tooltip_size",
+        "1.0",
+        Some(("0.85", "2.0")),
+        "0.85 to 2.0: its tooltip's size (factor)",
+    ),
+    doc(
+        "tray",
+        "ring_width",
+        "5.0",
+        Some(("2.0", "6.0")),
+        "2.0 to 6.0 px: each ring's thickness",
+    ),
+    doc(
+        "tray",
+        "ring_gap",
+        "2.0",
+        Some(("1.0", "6.0")),
+        "1.0 to 6.0 px: space between the rings",
+    ),
+    doc(
+        "format",
+        "mid_at",
+        "60.0",
+        Some(("0.0", "100.0")),
+        "0 to 100 %: the middle colour from here",
+    ),
+    doc(
+        "format",
+        "high_at",
+        "80.0",
+        Some(("0.0", "100.0")),
+        "0 to 100 %, not below mid_at: high colour",
+    ),
+    doc(
+        "format",
+        "countdown",
+        "\"standard\"",
+        None,
+        "\"standard\", \"compact\" (2d5h) or \"long\"",
+    ),
+];
+
 /// `[tune.widget]` and `[tune.format]`: parsing, clamping, defaults.
 #[cfg(test)]
 mod widget_format_tests {
@@ -815,6 +1025,131 @@ ring_gap = 3
             (p.ink(false), p.ink(true)),
             (None, Some((0x12, 0x34, 0x56)))
         );
+    }
+
+    /// `KEY_DOCS` names every field of the four tables, in their order, and
+    /// nothing else: a field added without its line in config.toml, or a
+    /// line for a field that is gone, fails here.
+    #[test]
+    fn the_key_docs_name_every_field() {
+        use crate::config::annotate::field_names;
+        for (table, fields) in [
+            ("widget", field_names::<TuneWidget>()),
+            ("panel", field_names::<TunePanel>()),
+            ("tray", field_names::<TuneTray>()),
+            ("format", field_names::<TuneFormat>()),
+        ] {
+            let documented: Vec<&str> = KEY_DOCS
+                .iter()
+                .filter(|d| d.table == table)
+                .map(|d| d.key)
+                .collect();
+            assert_eq!(documented, fields, "[tune.{table}]");
+        }
+        let tables = field_names::<Tune>();
+        assert!(KEY_DOCS.iter().all(|d| tables.contains(&d.table)));
+    }
+
+    /// Everything the accessors give, the inks as drawn: two tunes that
+    /// look the same give the same text.
+    fn resolved(t: &Tune) -> String {
+        let ink = |light: bool| {
+            t.panel.ink(light).unwrap_or_else(|| {
+                let (c, _) = crate::ui::theme::panel_ink(light);
+                (c.r, c.g, c.b)
+            })
+        };
+        let (w, p, r) = (&t.widget, &t.panel, &t.tray);
+        format!(
+            "{:?}",
+            (
+                (
+                    w.text_scale(),
+                    w.row_gap(),
+                    w.bar_scale(),
+                    w.padding_scale()
+                ),
+                w.corners(),
+                (
+                    p.digit_size(),
+                    p.bar_length(),
+                    p.bar_thickness(),
+                    p.row_gap()
+                ),
+                (p.tray_gap(), ink(false), ink(true), p.tooltip_size()),
+                (r.ring_width(), r.ring_gap()),
+                (t.format.thresholds(), t.format.countdown()),
+            )
+        )
+    }
+
+    /// `key = value` (with `also` before it) under its table.
+    fn with(d: &KeyDoc, also: &str, value: &str) -> Tune {
+        let text = format!("[{}]\n{also}{} = {value}\n", d.table, d.key);
+        toml::from_str(&text).unwrap_or_else(|e| panic!("{e}\n{text}"))
+    }
+
+    /// The value config.toml shows for a key not set is its real default:
+    /// written in, it changes nothing that shows. An example (a colour
+    /// where the default is the palette's) at least reads as a value.
+    #[test]
+    fn the_values_shown_are_the_defaults() {
+        let today = resolved(&Tune::default());
+        for d in KEY_DOCS {
+            let set = with(d, "", d.shown);
+            assert!(!set.is_default(), "{}: {} does not read", d.key, d.shown);
+            if d.default {
+                assert_eq!(resolved(&set), today, "{} = {}", d.key, d.shown);
+            } else {
+                // Every colour of an example is one that counts.
+                let colours: Vec<&str> = d.shown.split('"').skip(1).step_by(2).collect();
+                assert!(!colours.is_empty(), "{}", d.key);
+                for c in colours {
+                    assert!(parse_hex_rgb(c).is_some(), "{}: {c}", d.key);
+                }
+                assert!(d.note.contains("default:"), "{}: {}", d.key, d.note);
+            }
+        }
+    }
+
+    /// The ranges config.toml gives are the clamps: past either end reads
+    /// as that end, and just inside it reads as itself.
+    #[test]
+    fn the_ranges_shown_are_the_clamps() {
+        for d in KEY_DOCS {
+            let Some((lo, hi)) = d.range else {
+                continue;
+            };
+            // The note says the same range, ".0" or not.
+            let spell = |x: &str| [x.to_string(), x.trim_end_matches(".0").to_string()];
+            let said = spell(lo).iter().any(|a| {
+                spell(hi)
+                    .iter()
+                    .any(|b| d.note.starts_with(&format!("{a} to {b}")))
+            });
+            assert!(said, "{}: {}", d.key, d.note);
+            // high_at never reads below mid_at: put mid_at out of the way.
+            let also = if d.key == "high_at" {
+                "mid_at = 0\n"
+            } else {
+                ""
+            };
+            let whole = !lo.contains('.');
+            let (l, h): (f64, f64) = (lo.parse().unwrap(), hi.parse().unwrap());
+            let text = |v: f64| {
+                if whole {
+                    format!("{}", v as i64)
+                } else {
+                    format!("{v:?}")
+                }
+            };
+            let at = |v: f64| resolved(&with(d, also, &text(v)));
+            let step = if whole { 1.0 } else { (h - l) / 100.0 };
+            assert_eq!(at(l - 1.0), at(l), "{} below {lo}", d.key);
+            assert_eq!(at(h + 1.0), at(h), "{} above {hi}", d.key);
+            assert_ne!(at(l + step), at(l), "{} just above {lo}", d.key);
+            assert_ne!(at(h - step), at(h), "{} just below {hi}", d.key);
+        }
     }
 
     /// Only the knobs set are written back, as they were set (an invalid
