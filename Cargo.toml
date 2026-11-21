@@ -2,8 +2,9 @@
 name = "ailimits"
 version = "0.7.1"
 edition = "2021"
-# Build-from-source floor. Driven by icu_* (via reqwest → url → idna); Cargo
-# emits a clear error on an older toolchain instead of a deep dependency error.
+# Build-from-source floor. Driven by muda 0.21.2 and tray-icon 0.26.1 (1.90;
+# icu_* via reqwest → url → idna needs 1.88); Cargo emits a clear error on an
+# older toolchain instead of a deep dependency error.
 rust-version = "1.90"
 description = "AI provider limits floating overlay widget for Windows 11"
 authors = ["napxlexn"]

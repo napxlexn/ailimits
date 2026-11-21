@@ -181,23 +181,35 @@ pub struct TunePanel {
     /// 48 px taskbar). The number's column widens with it, so a wider number
     /// is not squeezed. Range 0.5 to 1.5, default 1.0. The row gap and the
     /// bar's thickness are measured in digit heights, so they grow with it.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub digit_size: Option<f64>,
     /// The usage bar's length, as a multiple of today's (about half the
     /// panel's width on a horizontal taskbar). Lying down the panel grows or
     /// shrinks with the bar; standing up (a taskbar on the left or right) the
     /// panel is as wide as the taskbar, so the bar stays centred and at most
     /// that wide (less a pixel at each end). Range 0.25 to 3.0, default 1.0.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub bar_length: Option<f64>,
     /// The usage bar's thickness, as a multiple of today's: half a digit's
     /// height. Its ends stay round. Range 0.25 to 2.0, default 1.0.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub bar_thickness: Option<f64>,
     /// The space between the two providers' rows, as a multiple of today's:
     /// 0.4 of a digit's height lying down, 0.6 standing up. 0 puts the rows
     /// edge to edge. Range 0.0 to 2.0, default 1.0.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub row_gap: Option<f64>,
     /// The space between the panel and the notification area (the tray, the
     /// clock), in screen pixels along the taskbar, not scaled with the
@@ -210,21 +222,30 @@ pub struct TunePanel {
     /// `[general] panel_offset_x` / `panel_offset_y` are different: they
     /// nudge the panel after it is placed, in either direction and across the
     /// bar too (up to 200 px), without changing the room it asks for.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub tray_gap: Option<i64>,
     /// The ink on a DARK taskbar, `"#rrggbb"`, in place of the system's
     /// near-white (`#ececec`). The bar's groove and the dimmer ink of a stale
     /// or estimated row are derived from it as they are from the default
     /// (the same colour at the groove's and the halfway transparency).
     /// Anything but `#` and six hex digits is ignored. Default: none.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub ink_dark: Option<String>,
     /// The ink on a LIGHT taskbar, `"#rrggbb"`, in place of the system's
     /// near-black (`#242424`); derived the same way as `ink_dark`. The panel
     /// follows the system theme (Settings > Personalization > Colors,
     /// "Choose your default Windows mode"), so each theme has its own ink.
     /// Default: none.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub ink_light: Option<String>,
     /// The size of the panel's hover tooltip (text, padding and corners
     /// together), as a multiple of the shell's own tooltip (12 px text at
@@ -232,7 +253,10 @@ pub struct TunePanel {
     /// below 85% of the 100% size or above three times it. The tray icon's
     /// own tooltip is the system's and keeps the system's size. Range 0.85
     /// to 2.0, default 1.0.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub tooltip_size: Option<f64>,
 }
 
@@ -298,7 +322,10 @@ pub struct TuneTray {
     /// Each ring's stroke width, in canvas pixels. Range 2.0 to 6.0, default
     /// 5.0. A thicker ring leaves less room for short arcs: under a few
     /// percent the inner ring shows a dot.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub ring_width: Option<f64>,
     /// The bare space between the outer and the inner ring, in canvas
     /// pixels. Range 1.0 to 6.0, default 2.0 (1 px on screen at 100%; below
@@ -306,7 +333,10 @@ pub struct TuneTray {
     /// The inner ring always keeps a hole in the middle of at least 1 px: a
     /// gap that would close it is cut down to fit (twice the ring width plus
     /// the gap stays at most 14).
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_knob")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_lenient"
+    )]
     pub ring_gap: Option<f64>,
 }
 
@@ -325,18 +355,6 @@ impl TuneTray {
     pub fn ring_gap(&self) -> f32 {
         knob(self.ring_gap, 2.0, 1.0, 6.0)
     }
-}
-
-/// A `[tune]` value that reads as unset when it holds the wrong kind of
-/// value (a word where a number belongs), so a typo cannot cost the whole
-/// config. An integer is taken where a decimal is asked for.
-fn de_knob<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    let raw = toml::Value::deserialize(deserializer)?;
-    Ok(T::deserialize(raw).ok())
 }
 
 /// A number knob: unset or not a finite number reads as `default`, the rest
@@ -442,8 +460,10 @@ fn clamped(value: Option<f32>, default: f32, lo: f32, hi: f32) -> f32 {
         .map_or(default, |v| v.clamp(lo, hi))
 }
 
-/// A key of the wrong kind (`text_scale = "big"`, `corners = "rounded"`)
-/// reads as unset instead of failing the whole config.
+/// A `[tune]` key of the wrong kind (`text_scale = "big"`, `corners =
+/// "rounded"`, a word where a number belongs) reads as unset instead of
+/// failing the whole config. An integer is taken where a decimal is asked
+/// for.
 fn de_lenient<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
