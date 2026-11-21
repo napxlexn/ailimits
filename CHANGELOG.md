@@ -326,6 +326,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **The widget keeps its place after a hard restart.** When the display it
+  was on was not awake yet at start (or was unplugged), the widget opened on
+  another one and that place was saved over the one you chose. Now the
+  saved place stays yours: the widget opens on a monitor it can, and goes
+  back to its place as soon as that display is there again.
 - **A click on the tray icon or the taskbar panel brings the widget in
   front of every window.** Shown again after being tucked away, or while
   another window covered it, the widget could stay behind the window in
