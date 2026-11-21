@@ -295,19 +295,16 @@ impl Picker {
                     return Vec::new();
                 };
                 self.set_focus(ask.from.clone());
-                let mut out: Vec<PickerAction> = std::iter::once(&p)
-                    .chain(&others)
-                    .map(|id| PickerAction::Allow(ReadKind::SignIn(id.clone())))
-                    .collect();
-                // The tick that asked, or (asked from the menu) its own rows.
+                // This tool, and the tick that asked (or its own rows); the
+                // others only allowed: their rows stay as they are, and
+                // ticking one later asks nothing.
+                let mut out = vec![PickerAction::Allow(ReadKind::SignIn(p.clone()))];
                 if ask.then.is_empty() {
                     out.extend(Self::own_rows_on(&p));
                 } else {
                     out.extend(ask.then);
                 }
-                for o in &others {
-                    out.extend(Self::own_rows_on(o));
-                }
+                out.extend(others.iter().map(|o| PickerAction::Consent(o.clone())));
                 out.extend(self.answered(false));
                 out
             }

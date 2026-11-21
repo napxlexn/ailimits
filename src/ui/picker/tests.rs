@@ -914,14 +914,14 @@ fn allow_all_starts_every_tool_found() {
     }
     // Enter is still Allow, for this tool only.
     assert_eq!(p.focus, Some(Target::Allow));
-    let mut want: Vec<PickerAction> = ["codex", "claude", "grok"]
-        .map(|id| PickerAction::Allow(ReadKind::SignIn(id.into())))
-        .to_vec();
-    want.push(set_row(Surface::Widget, "codex", true));
-    for id in ["claude", "grok"] {
-        want.push(set_row(Surface::Widget, id, true));
-        want.push(set_row(Surface::Tooltip, id, true));
-    }
+    // Allow all: this tool and its tick; the others only allowed, none of
+    // their rows ticked.
+    let want = vec![
+        PickerAction::Allow(ReadKind::SignIn("codex".into())),
+        set_row(Surface::Widget, "codex", true),
+        PickerAction::Consent("claude".into()),
+        PickerAction::Consent("grok".into()),
+    ];
     assert_eq!(click(&mut p, &Target::AllowAll), want);
     assert!(p.ask.is_none());
     // Nothing else found: no Allow all.
@@ -930,7 +930,7 @@ fn allow_all_starts_every_tool_found() {
     let mut p = picker(alone);
     click(&mut p, &row("codex", Surface::Widget));
     assert!(area(&p, &Target::AllowAll).is_none());
-    assert!(!texts(&p).contains(ALLOW_ALL_LEAD));
+    assert!(!texts(&p).replace('\n', " ").contains(ALLOW_ALL_LEAD));
     assert!(p.ask.is_some());
 }
 
@@ -1477,12 +1477,13 @@ fn allow_all_starts_the_tools_never_allowed_and_leaves_the_rest() {
     i.found = vec!["claude", "codex", "grok", "cursor"];
     let mut p = picker(i.clone());
     click(&mut p, &row("cursor", Surface::Widget));
-    assert!(texts(&p).contains(ALLOW_ALL_LEAD));
+    assert!(texts(&p).replace('\n', " ").contains(ALLOW_ALL_LEAD));
     let out = click(&mut p, &Target::AllowAll);
     assert!(out.contains(&allow("cursor")));
-    assert!(out.contains(&allow("grok")));
+    assert!(out.contains(&PickerAction::Consent("grok".into())));
     assert!(!out.contains(&allow("claude")) && !out.contains(&allow("codex")));
-    assert!(out.contains(&set_row(Surface::Widget, "grok", true)));
+    assert!(!out.contains(&allow("grok")));
+    assert!(!out.contains(&set_row(Surface::Widget, "grok", true)));
     // Allowed and switched off: the menu says so, not Allow all.
     i.reads.sign_in.push("grok".into());
     let mut p = picker(i);
@@ -1499,7 +1500,7 @@ fn allow_all_starts_the_tools_never_allowed_and_leaves_the_rest() {
     click(&mut p, &row("codex", Surface::Widget));
     assert!(p.ask.is_some());
     assert!(area(&p, &Target::AllowAll).is_none());
-    assert!(!texts(&p).contains(ALLOW_ALL_LEAD));
+    assert!(!texts(&p).replace('\n', " ").contains(ALLOW_ALL_LEAD));
 }
 
 /// The welcome a real fresh install opens with: built from

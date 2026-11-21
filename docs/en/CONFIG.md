@@ -449,9 +449,10 @@ Every read of another tool's file is optional and asked for first:
   Cancel reads nothing and leaves the choice to you.
 - **Any other tool's first tick asks once**, naming the file and the host.
   While other tools found on this PC by a folder of their own have not been
-  allowed yet, that question offers *Allow all*: it starts those too and
-  switches them on, as a fresh install and an update leave every unused
-  provider switched off. A tool already allowed is left as it is. It is not
+  allowed yet, that question offers *Allow all*: it allows those too
+  (`[reads] sign_in`), so ticking one of them later asks nothing, but it
+  switches none of them on and ticks none of their rows: a tool runs once a
+  row of it is ticked. A tool already allowed is left as it is. It is not
   offered in a window where the welcome's question was already answered.
 - **The welcome and the update notice open quietly.** They take no keyboard
   focus, so Enter or Space allows nothing until Tab or an arrow key moves to

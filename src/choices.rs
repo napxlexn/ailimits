@@ -331,6 +331,8 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 out.models = true;
             }
         },
+        // Allowed, not switched on: nothing runs until a row is ticked.
+        PickerAction::Consent(provider) => config.allow_sign_in(provider),
         // The sign-in's actions reach the Credential Manager, the clipboard
         // and the browser: the app carries them out (app/flow.rs).
         PickerAction::SetSignInSource { .. }
@@ -954,6 +956,27 @@ mod tests {
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(back.ui.panel, config.ui.panel);
         assert!(!back.ui.panel.percent && back.ui.panel.reset);
+    }
+
+    /// Allow all's other tools: allowed, not switched on, no row; the first
+    /// tick of one switches it on with nothing more to allow.
+    #[test]
+    fn allow_all_allows_without_ticking() {
+        let mut config = Config::fresh_install();
+        let grok = |c: &Config| c.providers.iter().find(|p| p.id == "grok").unwrap().clone();
+        apply(&mut config, &PickerAction::Consent("grok".into()));
+        assert!(config.sign_in_allowed("grok"));
+        assert!(!grok(&config).enabled);
+        assert!(!config.provider_active(&grok(&config)));
+        apply(
+            &mut config,
+            &PickerAction::SetRow {
+                surface: Surface::Widget,
+                row: "grok".into(),
+                on: true,
+            },
+        );
+        assert!(config.provider_active(&grok(&config)));
     }
 
     /// The panel's progress bar: on by default and not written; it can go

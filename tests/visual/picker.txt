@@ -1,6 +1,6 @@
 # Visual baseline 'picker': name, size, FNV-1a of the RGBA pixels.
 # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
-ask-allow-all-dark 458x584 5ec9581d6e2320cc
+ask-allow-all-dark 458x584 667df81290e143a4
 ask-risk-dark 458x584 9d8664e8a0e33b2e
 ask-session-dark 458x584 2ddf086dc4a88f2b
 ask-settings-light 458x584 4299fcdd32ed6596

@@ -100,6 +100,10 @@ pub enum PickerAction {
     /// The user allowed a read in the picker's question. Sent before the tick
     /// that needed it.
     Allow(ReadKind),
+    /// Allow all: the sign-in of another tool found on this PC may be read
+    /// from now on, so its first tick asks nothing. It is not switched on
+    /// and none of its rows is ticked: it runs once a row of it is.
+    Consent(String),
     /// Take a provider's sign-in from this source from now on.
     SetSignInSource {
         provider: String,
@@ -590,7 +594,8 @@ const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI
 const SETTINGS_FILE: &str = "Settings file...";
 const SETTINGS_FILE_HINT: &str = "Fine-tuning that has no place in this window: sizes, colours, thresholds. Opens config.toml in Notepad; changes apply when you save.";
 const ALLOW_ALL: &str = "Allow all";
-const ALLOW_ALL_LEAD: &str = "Allow all also starts the other tools found on this PC:";
+const ALLOW_ALL_LEAD: &str =
+    "Allow all also allows the other tools found on this PC, so ticking them later asks nothing. Their rows stay unticked:";
 const FOUND_TITLE: &str = "Show the tools found on this PC?";
 const FOUND_LEAD: &str = "Tick the tools to show. For each one ticked, AI Limits reads:";
 const FOUND_OUTRO: &str = "Each sign-in stays on this PC and goes only to the service named with it, to ask for your usage. A tool's own token is never changed or refreshed. Cancel to tick the tools yourself; untick a tool's rows to stop.";
@@ -1364,8 +1369,8 @@ impl Picker {
     }
 
     /// The other tools found on this PC by a folder of their own that are
-    /// not allowed yet: what Allow all starts (and switches on) besides
-    /// `provider`. Never allowed is also how a provider switched off in the
+    /// not allowed yet: what Allow all allows besides `provider` (without
+    /// switching them on or ticking a row). Never allowed is also how a provider switched off in the
     /// menu looks on a fresh install or after an update, so that is not a
     /// reason to leave one out; one the user switched off after allowing it
     /// keeps its consent and is left alone. Nothing once the welcome's

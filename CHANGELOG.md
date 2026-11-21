@@ -186,8 +186,9 @@ Notable, user-visible changes. Dates are release dates.
   for Copilot, `.gemini` for Antigravity) is listed unticked. *Allow* starts
   the ticked ones, *Cancel* reads nothing and leaves the choice to you.
   Later, a tool's own question offers *Allow all* while other tools found
-  by their own folder have not been allowed yet, and switches them on; a
-  tool already allowed is left as it is. The welcome and the update notice
+  by their own folder have not been allowed yet: it allows them too, so
+  ticking one later asks nothing, but ticks none of their rows; a tool
+  already allowed is left as it is. The welcome and the update notice
   take no keyboard
   focus, so a stray Enter allows nothing, keep their buttons in view at any
   size and scaling, and wait while a fullscreen app is in front. A fresh
