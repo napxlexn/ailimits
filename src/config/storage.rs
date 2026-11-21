@@ -406,10 +406,6 @@ fn decode(bytes: &[u8]) -> std::result::Result<String, String> {
     }
 }
 
-/// Move an unusable config out of the way under a name no earlier one has:
-/// `config.toml.<date>-<time>.corrupt` (UTC: the local clock would pull in
-/// the time-zone APIs for a file name), with `-2`, `-3`... when that is
-/// taken. Never replaces a file.
 /// A copy of the config beside it, under a name of its own
 /// (`config.toml.<UTC stamp>.<what>`, never replacing an earlier one).
 async fn keep_copy(path: &Path, what: &str) -> std::io::Result<PathBuf> {
@@ -437,6 +433,10 @@ async fn keep_copy(path: &Path, what: &str) -> std::io::Result<PathBuf> {
     ))
 }
 
+/// Move an unusable config out of the way under a name no earlier one has:
+/// `config.toml.<date>-<time>.corrupt` (UTC: the local clock would pull in
+/// the time-zone APIs for a file name), with `-2`, `-3`... when that is
+/// taken. Never replaces a file.
 async fn set_aside(path: &Path) -> std::io::Result<PathBuf> {
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let base = path.as_os_str().to_owned();

@@ -31,13 +31,13 @@ end of the file and save.
 Save the file (Ctrl+S in Notepad); no restart is needed. The app looks at
 the file's size and time (nothing is read until they change):
 
-- every 2 seconds for 30 minutes after *Settings file...* opened it, so a
-  saved edit shows within about 2 seconds (click the link again for another
-  30 minutes);
-- otherwise once per update cycle (every minute by default), right before
-  it carries out a click in the context menu or in *Rows and models*, and
-  when it quits. While updates pause (the PC idle or locked), an edit is
-  read at the next cycle or the next click.
+- every 2 seconds while you are at the PC (any input in the last 5
+  minutes), so a saved edit shows within about 2 seconds;
+- every 30 seconds while you are away, except for 30 minutes after
+  *Settings file...* opened it: then every 2 seconds, away or not (click
+  the link again for another 30 minutes);
+- besides, once per update cycle, right before it carries out a click in
+  the context menu or in *Rows and models*, and when it quits.
 
 Only what changed is redone: a `[tune]` edit redraws the widget, the panel
 and the tray icon, and nothing is fetched again.
@@ -52,11 +52,22 @@ in [CONFIG.md, Live edits](CONFIG.md#live-edits).
 
 ### When the file does not read
 
-A wrong `[tune]` value costs only its key. A mistake in the TOML itself
-costs more: a missing quote, a colour without quotes (`low = #4caf50`, where
-the `#` starts a comment), or a table written twice. Then the edit is not
-applied, the app keeps running on the settings it had, and one notification
-says so:
+A wrong `[tune]` value costs only its key. A line that does not read at
+all costs only that line: a missing quote (`low = "#4caf50`) or a colour
+without quotes (`low = #4caf50`, where the `#` starts a comment and leaves
+no value) is left out, its default used, and one notification names it:
+
+> In config.toml, line 12 does not read and is left out: the default is
+> used there, and everything else is in use. Fix it in the file.
+
+The file stays as you saved it until the app saves a change of its own,
+which writes it anew without that line: fix the line first. (At start the
+file as it was is also kept beside it, as `config.toml.<stamp>.left-out`.)
+
+A mistake in the TOML's structure costs more: a table written twice, a
+broken table header (`[tune.widget` without its `]`), more than 8 lines
+that do not read. Then the edit is not applied, the app keeps running on
+the settings it had, and one notification says so:
 
 > config.toml was saved, but it does not read: not a usable config at line
 > 12, column 7. AI Limits keeps running on the settings it had and does not

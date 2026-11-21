@@ -4,12 +4,16 @@
 // No change notification of Windows is used (that would be a new import): the
 // file's stamp (`storage::FileStamp`, one metadata call) is compared on timers
 // the app has anyway:
+//   - every 2 seconds while the user is at the PC (input within 5 minutes),
+//     every 30 while away, and every 2 for 30 minutes after the file was
+//     opened from Rows and models: a deadline of the event loop
+//     (`ConfigWatch`), never a thread;
 //   - once per polling cycle, off the event loop (`ConfigFile::tell_if_changed`
 //     in the scheduler's cycle hook);
-//   - right before a menu or picker action, a drag's end, and the exit, so a
-//     change made in the app lands on top of the file as it is now;
-//   - every 2 seconds for 30 minutes after the file was opened from Rows and
-//     models, as a deadline of the event loop (`ConfigWatch`), never a thread.
+//   - right before a menu or picker action and the exit, and before each of
+//     the app's own saves (a drag's end saves the position: the writer finds
+//     the file changed and tells), so a change made in the app lands on top
+//     of the file as it is now.
 // The app's own writes are recorded by the writer (`ConfigFile::write`), so
 // they never count as edits.
 //

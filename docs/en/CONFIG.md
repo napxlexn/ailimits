@@ -13,8 +13,16 @@ When the file cannot be used, it is never overwritten with defaults:
   permissions): the read is retried for about 2 seconds. Then the app runs
   with nothing switched on and no welcome, keeps the file exactly as it is
   and saves nothing over it until it is restarted. One message says so.
-- **It cannot be understood** (broken TOML, text that is not UTF-8 or
-  UTF-16): it is set aside as `config.toml.<UTC yyyymmdd-hhmmss>.corrupt`
+- **A line does not read** (a `key = value` line whose value is of the
+  wrong kind, a typo, a missing value): that line is left out and its
+  default used; the rest of the file applies. One message names the line
+  numbers, never the text. The file as it was is kept beside it as
+  `config.toml.<UTC yyyymmdd-hhmmss>.left-out`, since the app's next save
+  writes the config without that line.
+- **It cannot be understood** (broken TOML that leaving a line out does not
+  mend, such as a broken table header; more than 8 lines that do not read;
+  text that is not UTF-8 or UTF-16): it is set aside as
+  `config.toml.<UTC yyyymmdd-hhmmss>.corrupt`
   (with `-2`, `-3`... when that name is taken; an earlier one is never
   replaced). The app starts as on a new install, and the old settings remain
   in that file. One message names it.
@@ -32,6 +40,7 @@ uninstaller together with the folder):
 | `crash.log` | one line per crash: UTC time, version, thread, source file:line:column. The panic's text is never written. Rotates at 64 KB into `crash.log.1`. A start that failed writes `could not start: <error>` (which may name a local path, such as config.toml's). |
 | `ailimits.log` | only while `AILIMITS_LOG` or `RUST_LOG` is set; rotates at 5 MB into `ailimits.log.1`. Tokens are never written. |
 | `config.toml.<stamp>.corrupt` | a config that could not be understood, set aside as above. |
+| `config.toml.<stamp>.left-out` | a config whose lines were left out at start, kept as it was before the app saves over it (see above). |
 
 ## Live edits
 
@@ -44,12 +53,14 @@ The welcome has no such link.
 
 - **When the file is looked at.** No change notification of Windows is
   used: the app compares the file's size and last write time (one metadata
-  call, about 20 µs, nothing read) once per update cycle, right before it
-  applies a context-menu or Rows and models action (so the change made
-  there lands on top of the file as saved), and when it quits. For 30
-  minutes after *Settings file...* opened the file, also every 2 seconds.
-  While polling pauses (idle or locked), an edit is read at the next cycle
-  or the next action.
+  call, about 20 µs, nothing read) every 2 seconds while you are at the PC
+  (any input in the last 5 minutes), every 30 seconds while you are away,
+  and every 2 seconds for 30 minutes after *Settings file...* opened the
+  file, away or not: an edit applies within about two seconds of its save.
+  It also looks once per update cycle, right before it applies a
+  context-menu or Rows and models action, before each save of its own (the
+  end of a drag saves the position), and when it quits, so a change made in
+  the app lands on top of the file as saved.
 - **The app's own saves are not edits.** The writer records the size and
   time of each file it writes, and a file that matches is left alone. A
   save with nothing new in it is not written at all, so the comments and
@@ -77,8 +88,13 @@ The welcome has no such link.
   a tick in Rows and models does: the files it names are read from the next
   fetch on, without a question. A provider taken out of `[reads]` by hand
   stops at once.
-- **An edit that does not read** (broken TOML, another encoding) is not
-  applied: the app keeps running on the settings it had and says so in one
+- **A line that does not read** is left out, as at start (see the top):
+  its default applies, the rest of the edit applies, and one message names
+  the line. The file stays as you saved it until the app has a change of
+  its own to save, which writes it anew without that line (no copy is kept
+  for a live edit): fix the line before that.
+- **An edit that does not read** (broken TOML that leaving a line out does
+  not mend, another encoding) is not applied: the app keeps running on the settings it had and says so in one
   message that names the line and column only, never the text. The file is
   never written over while it stays broken, not even when the app quits:
   changes made in the app meanwhile apply but are not saved, and are merged
@@ -164,7 +180,10 @@ saturation = 55
 brightness = 100
 # Monochrome mode (overrides the palette).
 monochrome = false
-# Layout: "vertical" or "horizontal".
+# Layout: "vertical" (providers stacked, horizontal bars: the menu's
+# Horizontal) or "horizontal" (providers side by side, vertical bars: the
+# menu's Vertical). The menu names the bars' direction, the file the
+# providers'.
 layout = "vertical"
 # Detail level: "compact" / "medium" / "expanded".
 detail = "compact"
@@ -528,5 +547,6 @@ The files and hosts per provider are in [PROVIDERS.md](PROVIDERS.md) and in
 `src/consent.rs`, the text the questions show; the paths are resolved in
 `src/config/paths.rs`.
 
-The Rust structs live in `src/config/schema.rs` — that file is the single
-source of truth for the schema.
+The Rust structs live in `src/config/schema.rs`, and those of `[tune]` in
+`src/config/tune.rs`: these two files are the single source of truth for
+the schema.
