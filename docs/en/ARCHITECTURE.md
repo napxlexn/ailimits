@@ -87,6 +87,9 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          database (Cursor's state.vscdb) via winsqlite3
    ├── config/ (schema.rs, storage.rs)  config structs + tolerant TOML load/save,
    │                          the [reads] migration
+   ├── config/tune.rs         [tune]: config-only knobs (sizes, colours,
+   │                          thresholds); defaults are today's look, values
+   │                          clamped where read, a default table never written
    └── notifications/         toast.rs (Windows toasts), alerts.rs (one alert
                               per limit window, kept in alerts.json)
 ```
@@ -95,7 +98,7 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
 storing and removing keys and usage tokens; Cursor's login and logout). It
 uses the library's providers and config but not the widget's event loop,
 and it never calls `follow_windows_proxy`, so it follows only the
-`HTTP(S)_PROXY` variables. `tools/release_sign.rs` (the Cargo example
+proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`). `tools/release_sign.rs` (the Cargo example
 `release-sign`) makes and checks release signatures; it is never built into
 the app.
 
@@ -213,7 +216,8 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `ailimits-auth.exe`, so `providers/proxy.rs` reads the three Internet
   Settings values with calls the widget's exe already makes, and only once
   `app::run` calls `follow_windows_proxy()`; code the CLI never calls is never
-  linked into it. `HTTP(S)_PROXY` still wins; PAC is not followed.
+  linked into it. `HTTPS_PROXY`, `HTTP_PROXY` and `ALL_PROXY` still win; PAC
+  is not followed.
 - **No new DLLs, on purpose.** Trusting corporate root certificates
   (rustls-native-certs, a platform verifier or native-tls) would add crypt32
   or schannel; a UI Automation provider for screen readers would add
@@ -440,9 +444,12 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   make a test pass.
 - **Other groups** (`picker`, `widget-rows`, `tooltip-rows`,
   `panel-numbers`: the panel's percentage, reset time or both, with or
-  without its bar, each at the size the app gives it) cover new
-  looks; they are re-recorded with `UPDATE_BASELINE=1` only for an intended
-  change, said in the commit.
+  without its bar, each at the size the app gives it; `widget-tune`,
+  `panel-tune`, `tray-tune`: the `[tune]` knobs away from their defaults,
+  each alone and a few together) cover new looks; they are re-recorded with
+  `UPDATE_BASELINE=1` only for an intended change, said in the commit. The
+  `[tune]` defaults themselves are held by the pinned groups, which render
+  with no `[tune]` table.
 - **The font.** Every hash depends on the UI font (the first of
   `renderer::FONT_CANDIDATES` that loads). `tests/visual/font.txt` records
   it (`segoeui.ttf`, Segoe UI 5.72, and its SHA-256). On a machine that
@@ -454,14 +461,19 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
 
 ## Resource footprint (measured, not estimated)
 
-The reference figures, quoted in the README and CLAUDE.md, are the 0.7.0
-measurement of 2026-09-23: 254 s on a quiet machine (a video playing,
-nothing else; unelevated, so the timer-resolution and SRUM rows are carried
-from the August run; `bench/results/perf-audit-2026-09-23_0424.json`). The
-panel had asked the shell for the bar's room at least once, which is the
-state it is in whenever it is on screen; about 20 MB of the memory is UI
-Automation, loaded for that question. 0.7.1 is measured the same way
-before its release.
+The table's reference column is the 0.7.0 measurement of 2026-09-23: 254 s
+on a quiet machine (a video playing, nothing else; unelevated, so the
+timer-resolution and SRUM rows are carried from the August run;
+`bench/results/perf-audit-2026-09-23_0424.json`). The panel had asked the
+shell for the bar's room at least once, which is the state it is in
+whenever it is on screen; about 20 MB of the memory is UI Automation,
+loaded for that question.
+
+The README quotes the first 0.7.1 run, of b1ca5da on 2026-11-21 (322 s,
+`bench/results/perf-audit-2026-11-21_0423.json`): 0.0097% of one core
+(0.031 CPU-s), no GPU, a 54 MB working set, ~11 threads (14 peak), no
+timer request. CLAUDE.md quotes both runs. The release build of 0.7.1 is
+measured the same way before its release.
 
 The earlier column is the 0.6.3 audit of 2026-08-23 with
 `bench/perf_audit.ps1` (5 min at 1 Hz, running `release-min`, Win11 26200,
