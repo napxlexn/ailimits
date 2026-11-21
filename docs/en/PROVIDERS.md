@@ -533,9 +533,12 @@ each value a session record:
   "oidc_issuer": "https://auth.x.ai", "oidc_client_id": "..."}}
 ```
 
-`key` is the access token (a JWT that lives about 6 hours). Sessions past
-`expires_at` are skipped; of the rest the one valid longest is used, and a
-session with no stated expiry comes last (the server judges it). Then:
+`key` is the access token (a JWT that lives about 6 hours). Only xAI's
+sessions count: one whose `oidc_issuer` (or, without it, the issuer in its
+key) is not an https address on `x.ai` or `grok.com` is passed over, so a
+token another issuer gave never goes to xAI. Sessions past `expires_at` are
+skipped; of the rest the one valid longest is used, and a session with no
+stated expiry comes last (the server judges it). Then:
 
 1. A usable session → one billing request (below).
 2. Sessions exist, but all have expired → `NetworkError("token expired")`;

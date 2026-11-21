@@ -1395,6 +1395,24 @@ fn grok_auth_picks_the_live_session_and_never_an_expired_one() {
 
     // Not JSON — an error the provider reports as an unreadable file.
     assert!(parse_grok_auth("{\"half", now).is_err());
+
+    // A session another issuer gave is never sent to xAI, however long it
+    // is valid; one named by its key alone is judged by the key.
+    for body in [
+        r#"{"https://idp.example::c": {"key": "tok-other", "expires_at": "2099-01-01T00:00:00Z"}}"#,
+        r#"{"x": {"key": "tok-other", "oidc_issuer": "https://x.ai.evil.example"}}"#,
+        r#"{"x": {"key": "tok-other", "oidc_issuer": "http://auth.x.ai"}}"#,
+    ] {
+        assert!(
+            matches!(parse_grok_auth(body, now).unwrap(), GrokLogin::Missing),
+            "{body} holds no xAI session"
+        );
+    }
+    let xai_port = r#"{"https://auth.x.ai:443::c": {"key": "tok-xai"}}"#;
+    assert!(matches!(
+        parse_grok_auth(xai_port, now).unwrap(),
+        GrokLogin::Token { .. }
+    ));
 }
 
 #[test]

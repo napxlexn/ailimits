@@ -200,7 +200,8 @@ async fn read_grok_login(path: &Path) -> Result<GrokLogin> {
 /// Expired sessions are skipped — the CLI refreshes them itself. Of the rest,
 /// the one valid longest wins; a session with no stated expiry (the CLI gives
 /// those a 30-day lifetime of its own) comes last and is left to the server
-/// to judge.
+/// to judge. A session another issuer gave (not xAI's) is never sent to
+/// xAI: it is passed over as if it were not there.
 pub fn parse_grok_auth(body: &str, now: DateTime<Utc>) -> Result<GrokLogin> {
     let value: serde_json::Value = serde_json::from_str(body)?;
     let Some(sessions) = value.as_object() else {
@@ -209,7 +210,14 @@ pub fn parse_grok_auth(body: &str, now: DateTime<Utc>) -> Result<GrokLogin> {
 
     let mut any_session = false;
     let mut best: Option<(Option<DateTime<Utc>>, &str)> = None;
-    for record in sessions.values() {
+    for (name, record) in sessions {
+        let issuer = record
+            .get("oidc_issuer")
+            .and_then(|v| v.as_str())
+            .or_else(|| name.split_once("::").map(|(issuer, _)| issuer));
+        if issuer.is_some_and(|i| !is_xai_issuer(i)) {
+            continue;
+        }
         let Some(key) = record
             .get("key")
             .and_then(|v| v.as_str())
@@ -237,6 +245,23 @@ pub fn parse_grok_auth(body: &str, now: DateTime<Utc>) -> Result<GrokLogin> {
         None if any_session => GrokLogin::Expired,
         None => GrokLogin::Missing,
     })
+}
+
+/// Whether an OIDC issuer is xAI's own (verified: `https://auth.x.ai`): an
+/// https address on x.ai or grok.com, or a host under them.
+fn is_xai_issuer(issuer: &str) -> bool {
+    let Some(rest) = issuer.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => authority,
+    }
+    .to_ascii_lowercase();
+    ["x.ai", "grok.com"]
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 /// One billing answer → status + metrics. Free of I/O so every branch is
@@ -452,7 +477,7 @@ mod tests {
         let home = TempHome::new("grok");
         home.write(
             "auth.json",
-            r#"{"https://issuer.invalid::client": {"key": "grok-token", "expires_at": "2100-01-01T00:00:00Z"}}"#,
+            r#"{"https://auth.x.ai::client": {"key": "grok-token", "expires_at": "2100-01-01T00:00:00Z"}}"#,
         );
         home
     }
