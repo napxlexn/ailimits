@@ -618,6 +618,12 @@ pub fn run() -> Result<()> {
     // 6. The window: borderless, transparent, out of the taskbar.
     let mut builder = WindowBuilder::new()
         .with_title("AI Limits")
+        // Shown without taking the focus: started by itself (at sign-in,
+        // or by the installer after an update while the user is away and a
+        // film plays full screen), the widget must not pull the focus from
+        // what is in front, nor hide that from the fullscreen check below
+        // (the welcome and the update notice wait for such an app).
+        .with_focused(false)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top(config.window.pinned)

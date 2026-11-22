@@ -376,6 +376,10 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **Starting, AI Limits no longer takes the focus from the app in front.** At
+  sign-in, or when an update starts it again while you are away and a film
+  plays full screen, what you were using keeps the focus, and the update
+  notice or the welcome waits for a fullscreen app as it should.
 - **A long reason under a vertical bar stays under its own bar.** Hovering
   an Expanded column whose data had aged showed why ("rate-limited,
   retrying") on one line across the next column; it is now held to its
