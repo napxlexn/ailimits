@@ -395,10 +395,10 @@ pub struct UiRows {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tooltip: Option<Vec<String>>,
     /// The providers the taskbar panel and the tray icon show, by config id,
-    /// at most `rows::TASKBAR_MAX`: the picker's Taskbar column. `None`
-    /// keeps what they always showed (the panel the first two running
-    /// providers, the tray icon's rings the two busiest), and the file
-    /// gets no `taskbar` line until the user chooses.
+    /// at most `rows::TASKBAR_MAX`: the picker's Taskbar column. `None`:
+    /// both show the first two running providers, in the widget's order
+    /// (the tray icon inherits the panel's), and the file gets no
+    /// `taskbar` line until the user chooses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taskbar: Option<Vec<String>>,
 }

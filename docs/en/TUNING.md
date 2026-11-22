@@ -82,7 +82,8 @@ it:
 
 The file stays as you saved it until the app saves a change of its own,
 which writes it anew without that line: fix the line first. (At start the
-file as it was is also kept beside it, as `config.toml.<stamp>.left-out`.)
+file as it was is also kept beside it, as `config.toml.<stamp>.left-out`,
+once for each version of the file.)
 
 A table written twice (a recipe pasted under the one already there) or a
 broken table header (`[tune.widget` without its `]`) costs that table: its
@@ -110,9 +111,9 @@ Such a file found at start is set aside as `config.toml.<stamp>.corrupt`
 instead, and the app starts as on a fresh install; the old settings stay
 in that file.
 
-A file emptied or removed is not applied (it would read as a fresh
-install): the app keeps its settings and writes them back with its next save
-or when it quits.
+A file emptied, commented out whole or removed is not applied (it would
+read as a fresh install): the app keeps its settings and writes them back
+with its next save or when it quits.
 
 ### Undoing a change
 
@@ -123,10 +124,12 @@ save of its own writes such a key commented out again, with its default.
 
 Do not empty the file to start over: an emptied file is not applied (see
 above). Nor replace the file with a snippet: a file with a `[tune.widget]`
-alone, with neither `[reads]` nor any `[[providers]]`, reads as a fresh
-install and is applied, so every provider stops and every other setting
-returns to its default. Paste a snippet into the file, never in place of
-it.
+alone, with neither `[reads]` nor any `[[providers]]`, would read as a
+fresh install, so it is not applied. A notification says it is only a part
+of a config, and the app saves nothing over it until the rest is back
+(undo in the editor); found at start, it is set aside as
+`config.toml.<stamp>.corrupt`. Paste a snippet into the file, never in
+place of it.
 
 ## [tune.widget]: the floating widget
 

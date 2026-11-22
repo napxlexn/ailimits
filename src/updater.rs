@@ -34,7 +34,9 @@
 // (`unfinished_update_note`).
 //
 // The whole feature is gated behind the `auto_update` config flag (a menu
-// toggle), passed in as a shared atomic so the loop honours live changes.
+// toggle), passed in as a shared `AutoUpdate` so the loop honours live
+// changes: switched on, it checks within seconds (`SWITCHED_ON_DELAY`)
+// rather than at the next daily check, unless it checked within the hour.
 // Its requests follow the proxy set in Windows, as the providers' do.
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -69,6 +71,44 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(120);
 const IDLE_BEFORE_INSTALL_SECS: u64 = 300;
 /// While an update waits for that, how often to look again.
 const IDLE_RECHECK: Duration = Duration::from_secs(60);
+/// After Automatic updates is switched on, how long before the check: a
+/// tick undone at once (a slip of the mouse) asks nothing.
+const SWITCHED_ON_DELAY: Duration = Duration::from_secs(10);
+/// A switch-on checks only when no check ran for this long, so ticking it
+/// off and on again never asks GitHub more than once an hour.
+const SWITCHED_ON_MIN_GAP: Duration = Duration::from_secs(60 * 60);
+
+/// The Automatic updates setting as the update loop sees it: read before
+/// each check and while an update waits, and a wake-up when it is switched
+/// on, so the check comes then rather than at the next daily one.
+#[derive(Debug, Default)]
+pub struct AutoUpdate {
+    on: AtomicBool,
+    switched_on: tokio::sync::Notify,
+}
+
+impl AutoUpdate {
+    pub fn new(on: bool) -> Self {
+        Self {
+            on: AtomicBool::new(on),
+            switched_on: tokio::sync::Notify::new(),
+        }
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.on.load(Ordering::Relaxed)
+    }
+
+    /// Set from the menu or an edit of the config; switched from off to on,
+    /// the loop is woken.
+    pub fn set(&self, on: bool) {
+        if on && !self.on.swap(on, Ordering::Relaxed) {
+            self.switched_on.notify_one();
+        } else if !on {
+            self.on.store(false, Ordering::Relaxed);
+        }
+    }
+}
 
 /// A signature file is one short line; anything longer is not one.
 const SIGNATURE_MAX_BYTES: usize = 1024;
@@ -184,10 +224,11 @@ struct Update {
     signature_url: String,
 }
 
-/// Background loop: check on an interval while `enabled` is true. On a
-/// confirmed, verified newer release it installs and exits the process, so a
-/// successful upgrade never returns here.
-pub async fn run(enabled: Arc<AtomicBool>) {
+/// Background loop: check on an interval while Automatic updates is on, and
+/// soon after it is switched on (`AutoUpdate`). On a confirmed, verified
+/// newer release it installs and exits the process, so a successful upgrade
+/// never returns here.
+pub async fn run(auto: Arc<AutoUpdate>) {
     // Before anything else: a copy something else updates never asks the
     // network anything, whatever the Auto-update setting says.
     match channel() {
@@ -226,15 +267,38 @@ pub async fn run(enabled: Arc<AtomicBool>) {
             return;
         }
     };
+    let mut last_check: Option<tokio::time::Instant> = None;
+    let mut due = true;
     loop {
-        if enabled.load(Ordering::Relaxed) {
-            if let Err(e) = check_and_install(&client, &state, current, &enabled).await {
+        if due && auto.is_on() {
+            last_check = Some(tokio::time::Instant::now());
+            if let Err(e) = check_and_install(&client, &state, current, &auto.on).await {
                 // A failed check is non-fatal: log and try again next cycle.
                 debug!("auto-update check skipped: {e:#}");
             }
         }
-        tokio::time::sleep(CHECK_INTERVAL).await;
+        due = next_check(&auto, last_check).await;
     }
+}
+
+/// Wait for the next check: the daily one (true), or a switch-on. A
+/// switch-on that still holds after `SWITCHED_ON_DELAY` is a check too,
+/// unless one ran within `SWITCHED_ON_MIN_GAP` (false: nothing is asked,
+/// and the loop waits again).
+async fn next_check(auto: &AutoUpdate, last_check: Option<tokio::time::Instant>) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(CHECK_INTERVAL) => true,
+        _ = auto.switched_on.notified() => {
+            tokio::time::sleep(SWITCHED_ON_DELAY).await;
+            switch_on_checks(auto.is_on(), last_check.map(|t| t.elapsed()))
+        }
+    }
+}
+
+/// Whether a switch-on asks GitHub: it still holds, and no check ran
+/// within `SWITCHED_ON_MIN_GAP` (`since_last`: None, none ran yet).
+fn switch_on_checks(on: bool, since_last: Option<Duration>) -> bool {
+    on && since_last.is_none_or(|t| t >= SWITCHED_ON_MIN_GAP)
 }
 
 fn build_client() -> Result<reqwest::Client> {
@@ -884,6 +948,43 @@ fn normalize(tag: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// Switching Automatic updates on wakes the loop once; switching it on
+    /// while on, or off, does not. The check follows unless it was undone
+    /// meanwhile or a check ran within the hour.
+    #[test]
+    fn switching_automatic_updates_on_checks_soon() {
+        use super::{switch_on_checks, AutoUpdate, SWITCHED_ON_MIN_GAP};
+        use std::time::Duration;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let woken = |auto: &AutoUpdate| {
+            rt.block_on(async {
+                tokio::time::timeout(Duration::from_millis(20), auto.switched_on.notified())
+                    .await
+                    .is_ok()
+            })
+        };
+        let auto = AutoUpdate::new(false);
+        assert!(!woken(&auto));
+        auto.set(true);
+        assert!(auto.is_on());
+        assert!(woken(&auto), "switched on: the loop wakes");
+        auto.set(true);
+        assert!(!woken(&auto), "already on: nothing new");
+        auto.set(false);
+        assert!(!auto.is_on());
+        assert!(!woken(&auto), "switched off: nothing to wake for");
+        let on_at_start = AutoUpdate::new(true);
+        assert!(!woken(&on_at_start), "on from the start: the daily loop");
+
+        assert!(switch_on_checks(true, None));
+        assert!(switch_on_checks(true, Some(SWITCHED_ON_MIN_GAP)));
+        assert!(!switch_on_checks(true, Some(SWITCHED_ON_MIN_GAP / 2)));
+        assert!(!switch_on_checks(false, None), "undone meanwhile");
+    }
+
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -1001,7 +1102,7 @@ mod tests {
         assert_ne!(channel(), Channel::Installer);
         let ran = tokio::time::timeout(
             Duration::from_millis(500),
-            run(Arc::new(AtomicBool::new(true))),
+            run(Arc::new(AutoUpdate::new(true))),
         )
         .await;
         assert!(ran.is_ok(), "run() returned without waiting or asking");

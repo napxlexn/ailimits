@@ -473,7 +473,7 @@ impl App {
         }
         if e.auto_update {
             self.auto_update_enabled
-                .store(self.config.general.auto_update, Ordering::Relaxed);
+                .set(self.config.general.auto_update);
         }
         if e.pinned {
             self.win_state.pinned = self.config.window.pinned;

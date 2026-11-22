@@ -103,9 +103,10 @@ impl App {
             }
             MenuAction::ToggleAutoUpdate => {
                 self.config.general.auto_update = !self.config.general.auto_update;
-                // The updater task reads this before each check.
+                // The updater task reads this before each check, and
+                // checks soon after it is switched on.
                 self.auto_update_enabled
-                    .store(self.config.general.auto_update, Ordering::Relaxed);
+                    .set(self.config.general.auto_update);
                 self.menu.sync(&self.config, self.win_state.pinned);
                 self.save_config();
             }

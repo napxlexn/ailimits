@@ -41,8 +41,8 @@ Notable, user-visible changes. Dates are release dates.
   models...*: every row there is in one list, with a Widget column and a
   Tooltip column, so the widget and the panel's tooltip are chosen
   separately, and a Taskbar column for the two providers the taskbar panel
-  and the tray icon show (untouched, they show what they did in 0.7.0: the
-  panel the first two, the tray rings the two busiest). A tick shows at
+  and the tray icon show (untouched, both show the first two, as the panel
+  did in 0.7.0). A tick shows at
   once, with no restart. The window opens clear of the taskbar, also of an
   auto-hidden one that would slide over it. It keeps as far from every edge
   of the screen as from the taskbar's, plus 16 px (scaled with the
@@ -86,7 +86,9 @@ Notable, user-visible changes. Dates are release dates.
   `ANTHROPIC_MODEL` and a Codex CLI `profile` are followed. Cursor shows the
   model chosen for its Agent ("Grok 4.7 · high"), taken from the editor's
   state database as one value; nothing else of it is read, and nothing is
-  ever written or created in Cursor's folder. The settings file is read for
+  ever written or created in Cursor's folder, also where `%APPDATA%` is on
+  a network path (the database is then not opened while Cursor is
+  closed). The settings file is read for
   every tool that runs, also one set up with a pasted key or token or
   Cursor's own sign-in, and only once you allow it. A tool left on its default
   model, which it does not write down, shows its effort alone. Expanded
@@ -175,7 +177,10 @@ Notable, user-visible changes. Dates are release dates.
   applies. An edit that does not read at all (a stray line without `=`,
   more than 8 lines that do not read, or bytes that are not text) is not
   applied, and the file is never written over while it stays
-  broken, not even when the app quits.
+  broken, not even when the app quits. Nor is a part of a config saved in
+  place of the whole (settings with neither `[reads]` nor any
+  `[[providers]]`, a `[tune]` snippet alone), which would otherwise start
+  over as a fresh install; found at start, it is set aside.
 - **Fine-tuning in `config.toml`.** Four tables that only the file holds
   tune what the menu does not reach: `[tune.widget]` (text size, the gap
   between rows, bar thickness, padding, corners, your own colours for the
@@ -195,9 +200,17 @@ Notable, user-visible changes. Dates are release dates.
   four `[tune]` tables are always there, every key not set commented out
   with its default and its range, so taking the `# ` away is all it takes
   to use one. Comments you add are not kept when the app saves the file.
+- **A security policy.** `SECURITY.md` in the repository says how to report a
+  vulnerability privately, which version gets fixes, and how to check a
+  release.
 
 ### Changed
 
+- **The tray icon shows the same two providers as the taskbar panel.**
+  Untouched, both show the first two in the widget, the busier on the outer
+  ring, and its tooltip lists those two; 0.7.0's rings took the two busiest
+  of all. The Taskbar column of *Rows and models* chooses for both, as
+  before.
 - **Nothing that belongs to another tool is read before you allow it.**
   Each tool's sign-in, the settings files and the session files are asked
   about once, before their first read, and the question names the files
@@ -304,6 +317,9 @@ Notable, user-visible changes. Dates are release dates.
   `cooldown_minutes` is now the shortest time between two alerts of one
   provider. The alerts given are kept in `alerts.json`, so a restart does
   not repeat them.
+- **Switching Automatic updates on checks within seconds**, not at the next
+  daily check or the next start, unless a check ran within the hour. A tick
+  undone at once asks nothing.
 - **Automatic updates wait until you are away.** An update is installed
   only after 5 minutes without input (or with the session locked). The
   installer is started directly, with no script in between, and starts the
@@ -420,16 +436,16 @@ Notable, user-visible changes. Dates are release dates.
   `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only as absolute
   paths; a relative one means that tool's files are not read, never a folder
   relative to the app.
-- **A `config.toml` held by another program (right after an update, say)
-  no longer resets the app or gets overwritten on exit.** It is read again
-  for about 2 seconds; if it still cannot be read, it is kept as it is and
-  nothing is saved over it until a restart, and one message says so. A
-  line that does not read costs only that line: it is left out, its default
-  used, and a message names it. At start, the file as it was is kept
-  beside it (`config.toml.<date>-<time>.left-out`), since the next save
-  writes it without that line; after a live edit, mend the line in the file
-  itself. One that cannot be understood at all (a stray line without `=`,
-  say) is set aside under a name of its own
+- **A `config.toml` held by another program (right after an update, say) no
+  longer resets the app or gets overwritten on exit.** It is read again for
+  about 2 seconds; if it still cannot be read, it is kept as it is and
+  nothing is saved over it until a restart, and one message says so. A line
+  that does not read costs only that line: it is left out, its default used,
+  and a message names it. At start, the file as it was is kept beside it
+  (`config.toml.<date>-<time>.left-out`, one copy for each version of the
+  file), since the next save writes it without that line; after a live edit,
+  mend the line in the file itself. One that cannot be understood at all (a
+  stray line without `=`, say) is set aside under a name of its own
   (`config.toml.<date>-<time>.corrupt`), never replacing an earlier one, and
   a message names it. A config saved by Notepad as UTF-16 now reads.
 - **Hook commands with a quoted path work** (`"C:\Program Files\x\y.exe"

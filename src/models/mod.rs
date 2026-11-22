@@ -14,7 +14,7 @@ mod settings;
 use crate::config::paths::ToolPaths;
 use crate::config::schema::{ModelSource, Reads};
 use crate::providers::ProviderId;
-use files::{Stamp, Unread};
+use files::{DbUnread, Stamp, Unread};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -233,7 +233,10 @@ impl ModelReader {
     /// `cursor_agent_model`). Read again only when the database or its
     /// write-ahead log changed; while it cannot be read (Cursor holds a
     /// lock, an I/O error), the model found before stays and the next cycle
-    /// asks again. Only an answer from the database is kept.
+    /// asks again. While Cursor is closed and the database is where it
+    /// cannot be read without leaving files beside it (a network
+    /// %APPDATA%), the model found before stays until the database changes.
+    /// Only an answer from the database is kept.
     fn cursor_configured(&mut self, homes: &ToolPaths) -> Option<ModelInfo> {
         let id = ProviderId::Cursor;
         let path = homes.cursor_state_db();
@@ -248,7 +251,11 @@ impl ModelReader {
         }
         let info = match files::cursor_agent_model(&path) {
             Ok(agent) => agent.and_then(|json| settings::cursor(json.as_bytes())),
-            Err(Unread) => return kept(&self.settings, &id, &path),
+            Err(DbUnread::ThisTime) => return kept(&self.settings, &id, &path),
+            // Not opened while Cursor is closed: what was shown stays, kept
+            // by this stamp, so the database is not looked at again until
+            // it changes (Cursor running brings its -wal).
+            Err(DbUnread::UntilChanged) => kept(&self.settings, &id, &path),
         };
         self.settings.insert(
             id,
@@ -964,6 +971,65 @@ mod tests {
         assert_eq!(label(&mut r).as_deref(), Some("grok-4.7"));
         drop(held);
         assert_eq!(label(&mut r).as_deref(), Some("gpt-5.5-and-more"));
+    }
+
+    /// Cursor's database where it has no URI form (a network %APPDATA%;
+    /// here a `\\?\` path): read while Cursor runs (its -wal is there);
+    /// once Cursor is closed it is not opened at all - a plain open would
+    /// leave -wal and -shm beside it - the label read before stays, and the
+    /// database is not looked at again until it changes.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cursor_closed_at_a_path_without_a_uri_form_is_not_opened() {
+        use crate::platform::sqlite::test_support::TestDb;
+        let dir = TempDir::new("cursor-no-uri");
+        let mut verbatim = std::ffi::OsString::from(r"\\?\");
+        verbatim.push(dir.path().as_os_str());
+        let home = PathBuf::from(verbatim);
+        let db_path = ToolPaths::at_home(dir.path()).cursor_state_db();
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let key = "src.vs.platform.reactivestorage.browser.reactiveStorageServiceImpl.persistentStorage.applicationUser";
+        let sidecars = || {
+            ["-wal", "-shm"]
+                .into_iter()
+                .filter(|s| {
+                    let mut p = db_path.as_os_str().to_owned();
+                    p.push(s);
+                    Path::new(&p).exists()
+                })
+                .collect::<Vec<_>>()
+        };
+        let ids = [ProviderId::Cursor];
+        let mut r = reader_at(&home, None);
+        let label = |r: &mut ModelReader| {
+            r.read(&reads(true, false), ModelSource::Configured, &ids)
+                .get(&ProviderId::Cursor)
+                .map(|m| m.id.clone())
+        };
+        {
+            // Cursor running: WAL, its -wal there.
+            let db = TestDb::create(&db_path);
+            db.exec("PRAGMA journal_mode=WAL;");
+            db.exec("PRAGMA wal_autocheckpoint=0;");
+            db.exec("CREATE TABLE ItemTable (key TEXT UNIQUE ON CONFLICT REPLACE, value BLOB);");
+            db.exec(&format!(
+                "INSERT INTO ItemTable VALUES ('{key}', '{{\"aiSettings\": {{\"modelConfig\": {{\"composer\": {{\"modelName\": \"grok-4.7\"}}}}}}}}');"
+            ));
+            assert!(sidecars().contains(&"-wal"));
+            assert_eq!(label(&mut r).as_deref(), Some("grok-4.7"));
+        }
+        // Cursor closed: its -wal and -shm are gone with it.
+        assert!(sidecars().is_empty(), "{:?}", sidecars());
+        let path = ToolPaths::at_home(&home).cursor_state_db();
+        assert_eq!(
+            files::cursor_agent_model(&path),
+            Err(DbUnread::UntilChanged)
+        );
+        assert_eq!(label(&mut r).as_deref(), Some("grok-4.7"));
+        assert!(sidecars().is_empty(), "left {:?}", sidecars());
+        // Kept by the stamp: not asked again while nothing changed.
+        let seen = r.settings.get(&ProviderId::Cursor).expect("kept");
+        assert_eq!(seen.stamp, files::db_stamp(&path).expect("stamp"));
     }
 
     /// The labels for prepared homes: every folder under `AILIMITS_PROBE_HOMES`

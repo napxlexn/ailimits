@@ -1,12 +1,15 @@
 // ui/tray.rs — tray-area usage indicators.
 //
 // Two modes (config `general.indicator`), both a SINGLE tray icon:
-//   Tray — two concentric rings, the busiest provider outside and the
-//          runner-up inside, sweeping clockwise from 12 o'clock. Monochrome,
+//   Tray — two concentric rings for the two providers the taskbar panel
+//          shows (app.rs `visible_data`: those ticked in the Taskbar column,
+//          untouched the first two in the widget), the busier outside and
+//          the other inside, sweeping clockwise from 12 o'clock. Monochrome,
 //          inked in the system taskbar theme rather than the widget palette,
 //          so the shape alone carries the reading on a light or a dark bar.
-//   Bars — horizontal progress bars stacked, one row per visible provider;
-//          with a single provider the row gains its percent number on top.
+//   Bars — horizontal progress bars stacked, one row per provider shown
+//          (the same two); with a single provider the row gains its percent
+//          number on top.
 // A third icon lives here too: the stand-in the Panel modes raise while the
 // panel cannot be seen (`set_scrim_fallback`).
 //
@@ -38,7 +41,7 @@ pub struct Tray {
     promote_pending: bool,
     /// The current icon is a transient Start-menu fallback (shown while a Panel
     /// indicator is occluded by the Start/Search scrim), not a configured tray
-    /// mode. It renders the busiest-provider rings, like Tray mode.
+    /// mode. It renders the rings, like Tray mode.
     fallback: bool,
     /// Nothing chosen yet (a fresh install, `rows::nothing_chosen`): the
     /// tooltip says what to do instead of the bare app name.
@@ -159,8 +162,8 @@ impl Tray {
 
     /// A Panel indicator cannot paint over the Start menu (a protected z-band
     /// no overlay can beat). While the Start/Search scrim is up, fall back to a
-    /// tray icon — which the shell keeps visible — showing the busiest
-    /// provider's %; hide it again the instant the scrim closes and the panel
+    /// tray icon — which the shell keeps visible — showing the rings of the
+    /// providers the panel shows; hide it again the instant the scrim closes and the panel
     /// overlay is visible once more. No-op outside the Panel modes (Tray/Bars
     /// already show an icon; Off shows nothing). Event-driven (the foreground
     /// watch), so idle CPU is unaffected.
@@ -484,9 +487,9 @@ fn draw_ring_icon(providers: &[ProviderData], light: bool, rings: Rings) -> Resu
     let track = tray_ink(light, 64);
 
     match two_busiest(providers) {
-        // Two or more providers with data: the busiest takes the outer ring,
-        // the runner-up the inner one. Which is which is answered by the
-        // tooltip, which lists every provider with its percentage.
+        // Two providers with data: the busier takes the outer ring, the
+        // other the inner one. Which is which is answered by the tooltip,
+        // which lists both with their percentages.
         (Some(first), Some(second)) => {
             draw_ring(&mut pm, RING_OUTER, rings.w, first as f32, ink, track);
             let inner = RING_OUTER - rings.step;

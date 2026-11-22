@@ -206,7 +206,7 @@ const TABLES: &[Table] = &[
                 "taskbar",
                 &[
                     "Providers on the taskbar panel and the tray icon, at most 2. Without",
-                    "it: the panel shows the first two, the tray icon the two busiest.",
+                    "it: both show the first two the widget shows.",
                 ],
             ),
         ],

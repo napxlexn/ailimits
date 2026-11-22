@@ -66,7 +66,7 @@ use provider_set::ProviderSet;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tao::{
     dpi::{PhysicalPosition, PhysicalSize},
@@ -196,9 +196,10 @@ fn active_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
 
 /// `active_data` aged for display, for the surfaces that show one entry per
 /// provider (the tray icon, the taskbar panel): a window whose reset has
-/// provably passed is shown as ≈0%. Once the user chose which providers
-/// those show (the picker's Taskbar column, `rows::taskbar_ticked`), only
-/// those; untouched, every running one, as always.
+/// provably passed is shown as ≈0%. Both show the same providers: once the
+/// user chose (the picker's Taskbar column, `rows::taskbar_ticked`), those;
+/// untouched, the first `rows::TASKBAR_MAX` the widget shows, as the panel
+/// always drew. The tray icon inherits the panel's choice.
 fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> {
     let chosen = config
         .ui
@@ -213,6 +214,7 @@ fn visible_data(config: &Config, display: &[ProviderData]) -> Vec<ProviderData> 
                 .as_ref()
                 .is_none_or(|ids| ids.contains(&d.id.config_id()))
         })
+        .take(rows::TASKBAR_MAX)
         .map(ProviderData::aged_for_display)
         .collect()
 }
@@ -402,7 +404,7 @@ struct App {
     /// Shared with the scheduler, changed live from the menu.
     update_interval: SharedInterval,
     /// Shared with the updater, changed live from the menu.
-    auto_update_enabled: Arc<AtomicBool>,
+    auto_update_enabled: Arc<updater::AutoUpdate>,
 
     // ── The widget ──
     /// Shared with the picker window, which draws with the same font.
@@ -588,7 +590,7 @@ pub fn run() -> Result<()> {
     // 4b. Background auto-updater — polls GitHub Releases and silently installs
     // newer builds. The enabled flag is shared so the menu toggle takes effect
     // without a restart.
-    let auto_update_enabled = Arc::new(AtomicBool::new(config.general.auto_update));
+    let auto_update_enabled = Arc::new(updater::AutoUpdate::new(config.general.auto_update));
     runtime.spawn(updater::run(auto_update_enabled.clone()));
 
     // 5. Layout, theme, renderer — mut: switched live from the menu.
@@ -902,9 +904,11 @@ mod tests {
         config
     }
 
-    /// The taskbar panel and the tray icon get every running provider until
-    /// the user chooses in the Taskbar column; then those chosen that run,
-    /// and the first two that run when none of those chosen does.
+    /// The taskbar panel and the tray icon get the same providers: the
+    /// first two running until the user chooses in the Taskbar column; then
+    /// those chosen that run, and the first two that run when none of those
+    /// chosen does. The tray never picks others (it once took the two
+    /// busiest of every running provider).
     #[test]
     fn the_taskbar_shows_the_providers_chosen_for_it() {
         let mut config = Config::default();
@@ -926,7 +930,21 @@ mod tests {
                 .map(|d| d.id.config_id())
                 .collect()
         };
-        assert_eq!(ids(&config), ["claude", "codex", "grok"]);
+        assert_eq!(ids(&config), ["claude", "codex"]);
+        // Grok the busiest: still the first two, as the panel shows them.
+        let busy = [
+            one(ProviderId::Claude),
+            one(ProviderId::Codex),
+            ProviderData {
+                id: ProviderId::Grok,
+                ..claude(vec![metric("Session", 95, Some(120), false)])
+            },
+        ];
+        let shown: Vec<&str> = visible_data(&config, &busy)
+            .iter()
+            .map(|d| d.id.config_id())
+            .collect();
+        assert_eq!(shown, ["claude", "codex"]);
         config.ui.rows.taskbar = Some(vec!["grok".into(), "claude".into()]);
         assert_eq!(ids(&config), ["claude", "grok"]);
         config.ui.rows.taskbar = Some(vec!["cursor".into()]);

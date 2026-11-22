@@ -35,12 +35,15 @@ When the file cannot be used, it is never overwritten with defaults:
   numbers, never the text. The file as it was is kept beside it as
   `config.toml.<UTC yyyymmdd-hhmmss>.left-out`, since the app's next save
   writes the config without that line. The file is not rewritten before the
-  app has a change of its own to save, so while the line is still in it,
-  every start keeps a new copy, under the time of that start.
+  app has a change of its own to save, so the line may still be in it at
+  the next start: a copy of the same file already kept is named again, and
+  no other is made.
 - **It cannot be understood** (a mistake on any other line, such as
   `text_scale 1.2` with no `=`, or one TOML gives no line for; a mistake
   found after 8 lines were left out, a header counting every line of its
-  table; text that is not UTF-8 or UTF-16): it is set aside as
+  table; text that is not UTF-8 or UTF-16; settings with neither `[reads]`
+  nor any `[[providers]]`, such as a `[tune.widget]` snippet saved in place
+  of the whole file): it is set aside as
   `config.toml.<UTC yyyymmdd-hhmmss>.corrupt`
   (with `-2`, `-3`... when that name is taken; an earlier one is never
   replaced). The app starts as on a new install, and the old settings remain
@@ -128,10 +131,12 @@ The welcome has no such link.
 - **A file emptied or removed** is not applied (it would read as a fresh
   install): the app keeps its settings and writes them back with its next
   save, or when it quits. To start over, quit the app first.
-- **A file with text but neither `[reads]` nor any `[[providers]]`** (only
-  comments, or only a pasted `[tune.widget]` snippet) reads as a fresh
-  install and is applied: every provider stops and every setting returns to
-  its default, the snippet's keys included. Keep both tables in the file.
+- **A file of comments only** is an emptied one, as above.
+- **A file with settings but neither `[reads]` nor any `[[providers]]`**
+  (only a pasted `[tune.widget]` snippet) is not applied either: it would
+  start over as a fresh install. It counts as a file that does not read:
+  one message says it is only a part of a config, and nothing is saved over
+  it until the rest is back (undo in the editor), as above.
 - **A file kept as it was at start** (one that could not be read, or
   neither understood nor set aside: see the top) is not looked at: that
   session still needs a restart, as its message says.
@@ -150,22 +155,22 @@ The notes the app writes in the file are shorter; this example says more.
 # occasionally take 2–3 minutes regardless of this setting.
 update_interval_secs = 60
 # Taskbar indicator (menu: Indicator): "tray" — a 16px tray icon, two
-# concentric rings carrying the two busiest providers, monochrome in the
-# system taskbar theme; "panel_rows" / "panel_grid" (legacy alias) — a transparent
-# overlay left of the tray: a per-pixel-alpha layered window, only digits
-# and bars are painted. Shows the first two providers in the widget's order
-# (clock-sized; by default percent + bar, see [ui.panel]), monochrome,
-# following the SYSTEM light/dark
-# theme; the rest stay in the tooltip. Tracks the taskbar's auto-hide and
-# tray width event-driven, no polling. "bars" — legacy tray icon;
-# "off" — nothing. Supersedes the legacy show_tray_icon flag (ignored).
-# Which providers the panel and the tray icon show can be chosen:
-# [ui.rows] taskbar below.
+# concentric rings carrying the two providers the panel would show (the
+# busier outside), monochrome in the system taskbar theme; "panel_rows" /
+# "panel_grid" (legacy alias) — a transparent overlay left of the tray: a
+# per-pixel-alpha layered window, only digits and bars are painted. Shows the
+# first two providers in the widget's order (clock-sized; by default percent
+# + bar, see [ui.panel]), monochrome, following the SYSTEM light/dark theme;
+# the rest stay in the tooltip. Tracks the taskbar's auto-hide and tray width
+# event-driven, no polling. "bars" — legacy tray icon; "off" — nothing.
+# Supersedes the legacy show_tray_icon flag (ignored). Which providers the
+# panel and the tray icon show can be chosen: [ui.rows] taskbar below.
 indicator = "tray"
 # Automatic updates (menu: Automatic updates). Only a copy our installer put
 # on disk updates itself; a Store, Scoop, portable or self-built copy never
 # asks GitHub anything, and its menu has no such item. When true, the app
-# checks GitHub for a newer release (~30 s after start, then daily). A
+# checks GitHub for a newer release (~30 s after start, then daily, and
+# ~10 s after you switch it on, unless it checked within the hour). A
 # newer one waits until you have been away for 5 minutes (no input, or the
 # session locked); then the installer is downloaded and checked against
 # both the SHA-256 GitHub publishes for it and the release's Ed25519
@@ -246,12 +251,11 @@ show_forecast = false
 # kept. Rows chosen that have no data yet leave the widget saying "Nothing
 # to show yet"; a click opens the window.
 # taskbar: the providers the taskbar panel and the tray icon show (the
-# window's Taskbar column), at most two, in the widget's order. Written
-# only once chosen; without it they show what they always did (the panel
-# the first two running providers, the tray rings the two busiest), and
-# the window ticks the first two. When none of those listed runs, the first
-# two that run show. A provider kept here keeps running though none of its
-# widget or tooltip rows is ticked.
+# window's Taskbar column), at most two, in the widget's order. Written only
+# once chosen; without it both show the first two running providers (the tray
+# icon inherits the panel's), and the window ticks those two. When none of
+# those listed runs, the first two that run show. A provider kept here keeps
+# running though none of its widget or tooltip rows is ticked.
 [ui.rows]
 widget  = ["claude", "claude.opus", "codex"]
 tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
@@ -543,9 +547,10 @@ Every read of another tool's file is optional and asked for first:
   again.
 - **A config that cannot be understood** is set aside (see the top) and the
   app starts as a fresh install: what the lost file allowed is unknown, so
-  nothing is read until chosen again. A config with neither `[reads]` nor
-  `[[providers]]` (an empty one, say) counts as a fresh install too, and
-  everything else in it is dropped. One with `[reads]` but no
+  nothing is read until chosen again. An empty config, or one of comments
+  only, counts as a fresh install too. One with settings but neither
+  `[reads]` nor `[[providers]]` (a `[tune]` snippet alone) cannot be
+  understood, so it is set aside the same way. One with `[reads]` but no
   `[[providers]]` is no fresh install: it gets the six default providers,
   and `[reads]` decides which run. One that cannot be read is
   kept, and the app runs with nothing switched on until restarted.

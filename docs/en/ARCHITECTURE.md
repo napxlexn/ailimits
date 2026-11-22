@@ -257,8 +257,10 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   an import, so a machine without it gets an honest error instead of an exe
   that will not start. Nothing is ever written to or created in the other
   app's folder: a WAL database whose owner is closed (no `-wal`) is opened as
-  `file:...?immutable=1`; one whose owner runs, and a rollback-journal one,
-  `SQLITE_OPEN_READONLY`, with a 200 ms busy timeout. Measured: ~0.6 ms per
+  `file:...?immutable=1` (at a path with no such form, a UNC one, it is not
+  opened at all, `SqliteError::NotQuietly`); one whose owner runs, and a
+  rollback-journal one, `SQLITE_OPEN_READONLY`, with a 200 ms busy
+  timeout. Measured: ~0.6 ms per
   lookup; +0.2 MB private memory after the first one, levelling off under
   +0.5 MB over 21,000 lookups.
 - **Honest display states** (see PROVIDERS.md): retention → grey + age →
@@ -383,8 +385,9 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
   `Installer` copy goes on.
 - **Check, wait, verify.** About 30 s after start, then daily, the updater
   asks the GitHub Releases API for the latest release (through the Windows
-  proxy, as the providers do). Ticking *Automatic updates* does not check
-  at once: the next check is the daily one or the next start. The updater
+  proxy, as the providers do). Ticking *Automatic updates* checks about
+  10 s later (`AutoUpdate`, `SWITCHED_ON_DELAY`; a tick undone meanwhile
+  asks nothing), unless a check ran within the hour. The updater
   takes only an `AiLimits-Setup-<v>.exe` asset with its `.sig`. A newer one
   waits until the user has been away for 5 minutes (no input, or the
   session locked, `platform::user_idle_secs`), checked every minute

@@ -34,7 +34,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 <p align="center">
   <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the two busiest providers as two rings, or the two you choose. Hovering the panel gives the full list; the tray icon's tooltip gives percentages only, and once you tick providers in the Taskbar column, only theirs. Both follow the system light and dark theme.</sub>
+  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the same two providers as the panel as two rings: the first two in the widget, or the two you choose. Hovering the panel gives the full list; the tray icon's tooltip gives those two percentages only. Both follow the system light and dark theme.</sub>
 </p>
 
 <table>
@@ -432,10 +432,11 @@ readout stays on the taskbar; while a fullscreen app has the screen, it
 hides with the taskbar and comes back when you leave the app. Right-click →
 **Indicator**:
 
-- **Tray icon** (the default). One 16px icon: two concentric rings, the
-  busiest provider outside and the runner-up inside (or the two ticked in the
-  Taskbar column of *Rows and models*), both filling clockwise from 12
-  o'clock. Monochrome, drawn in the system taskbar theme.
+- **Tray icon** (the default). One 16px icon: two concentric rings for the
+  same two providers the panel shows (the first two in the widget, or the
+  two ticked in the Taskbar column of *Rows and models*), the busier
+  outside, both filling clockwise from 12 o'clock. Monochrome, drawn in the
+  system taskbar theme.
 - **Taskbar panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two

@@ -492,7 +492,7 @@ pub const TASKBAR_MAX: usize = 2;
 /// The providers ticked in the picker's Taskbar column, by config id, in
 /// the widget's order: those chosen (`ui.rows.taskbar`) that run, at most
 /// `TASKBAR_MAX`. Untouched, or when none of those chosen runs, the first
-/// two that run: what the panel draws by itself.
+/// two that run: what the panel draws by itself, and the tray icon with it.
 pub fn taskbar_ticked(config: &Config) -> Vec<&'static str> {
     let running: Vec<&'static str> = config
         .providers

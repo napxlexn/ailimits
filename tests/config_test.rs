@@ -383,6 +383,27 @@ fn a_bad_line_is_left_out_and_the_file_kept() {
         message.contains("line 5") && message.contains(".left-out"),
         "{message}"
     );
+
+    // The line stays and the app starts again: the copy already kept is
+    // named, and no other is made.
+    let again = block(storage::load_from(&dir.config()));
+    let Some(LoadProblem::LeftOut { copy: same, .. }) = again.problem else {
+        panic!("{:?}", again.problem);
+    };
+    assert_eq!(same.as_ref(), Some(&copy));
+    assert_eq!(dir.names().len(), 2, "{:?}", dir.names());
+
+    // The file changed, still with a line left out: a copy of it too.
+    let changed = text.replace("ocean", "forest");
+    std::fs::write(dir.config(), &changed).unwrap();
+    let third = block(storage::load_from(&dir.config()));
+    let Some(LoadProblem::LeftOut { copy: other, .. }) = third.problem else {
+        panic!("{:?}", third.problem);
+    };
+    let other = other.expect("a copy");
+    assert_ne!(other, copy);
+    assert_eq!(std::fs::read_to_string(&other).unwrap(), changed);
+    assert_eq!(dir.names().len(), 3, "{:?}", dir.names());
 }
 
 /// `peek` — what `ailimits-auth status` uses — never creates, renames or

@@ -189,7 +189,12 @@ async fn load_with(path: &Path, retries: &[Duration]) -> Loaded {
             let problem = if left_out.is_empty() {
                 None
             } else {
-                let copy = keep_copy(path, "left-out").await.ok();
+                // While the line stays, every start finds it again: one copy
+                // of the same file is enough.
+                let copy = match same_copy(path, &bytes, "left-out").await {
+                    Some(earlier) => Some(earlier),
+                    None => keep_copy(path, "left-out").await.ok(),
+                };
                 Some(LoadProblem::LeftOut {
                     lines: left_out,
                     copy,
@@ -303,7 +308,8 @@ const MAX_LEFT_OUT: usize = 8;
 /// so a mistake costs that line, not the whole file. A table header that
 /// does not read costs its table (`without_line`). A mistake on any other
 /// line (one without `=`), one without a position, or more than
-/// `MAX_LEFT_OUT` left-out lines still make it not understood.
+/// `MAX_LEFT_OUT` left-out lines still make it not understood, and so do
+/// settings with neither `[reads]` nor `[[providers]]` (`PART_ONLY`).
 fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize>), String> {
     let content = decode(bytes)?;
     let mut text = content.clone();
@@ -334,11 +340,25 @@ fn parse_keeping(bytes: &[u8]) -> std::result::Result<(Config, Origin, Vec<usize
     // Judged on the text that read: the lines left out are not in it.
     Ok(match origin_of(&text) {
         Some(origin) => (config, origin, left_out),
-        // Neither [reads] nor [[providers]]: an empty file, or one written by
-        // something else before the first start. Every version that read
-        // without asking wrote its providers, so this is no upgrade.
-        None => (Config::default(), Origin::FreshInstall, left_out),
+        // Nothing in it (empty, or comments only): a fresh install. Every
+        // version that read without asking wrote its providers, so this is
+        // no upgrade.
+        None if holds_nothing(&text) => (Config::default(), Origin::FreshInstall, left_out),
+        // Settings without [reads] or [[providers]]: a part of a config
+        // (a `[tune]` snippet) saved in place of the whole. Applied, it
+        // would start over as a fresh install, so it is not understood.
+        None => return Err(PART_ONLY.to_string()),
     })
+}
+
+/// Why a file with settings but neither `[reads]` nor `[[providers]]` is
+/// not used: the notification and `ailimits-auth status` show it.
+const PART_ONLY: &str =
+    "it has neither [reads] nor [[providers]], so it is only a part of a config";
+
+/// Text with no setting in it: empty, white space or comments only.
+fn holds_nothing(text: &str) -> bool {
+    text.parse::<toml::Table>().is_ok_and(|t| t.is_empty())
 }
 
 /// `text` with its `line` (1-based) commented out, when that line is a
@@ -440,6 +460,44 @@ fn decode(bytes: &[u8]) -> std::result::Result<String, String> {
         String::from_utf8(bytes.to_vec())
             .map_err(|_| "text that is not UTF-8 (saved in another encoding?)".to_string())
     }
+}
+
+/// An earlier `keep_copy` of the config that holds exactly `bytes`, if one
+/// is beside it. Only copies of the same length are read.
+async fn same_copy(path: &Path, bytes: &[u8], what: &str) -> Option<PathBuf> {
+    let dir = path.parent()?;
+    let name = path.file_name()?.to_str()?;
+    let (start, end) = (format!("{name}."), format!(".{what}"));
+    let mut entries = tokio::fs::read_dir(dir).await.ok()?;
+    let mut found: Option<PathBuf> = None;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let file_name = entry.file_name();
+        let Some(n) = file_name.to_str() else {
+            continue;
+        };
+        if !n.starts_with(&start) || !n.ends_with(&end) {
+            continue;
+        }
+        let same_length = entry
+            .metadata()
+            .await
+            .is_ok_and(|m| m.is_file() && m.len() == bytes.len() as u64);
+        if same_length
+            && tokio::fs::read(entry.path())
+                .await
+                .is_ok_and(|b| b == bytes)
+        {
+            // The newest by name, so the message names the latest copy.
+            let path = entry.path();
+            if found
+                .as_ref()
+                .is_none_or(|f| f.file_name() < path.file_name())
+            {
+                found = Some(path);
+            }
+        }
+    }
+    found
 }
 
 /// A copy of the config beside it, under a name of its own
@@ -1136,10 +1194,11 @@ impl ConfigFile {
     }
 }
 
-/// Empty, or only white space (with or without a BOM): what an editor
-/// leaves for a moment while it saves, or a file cleared by hand.
+/// Empty, only white space or only comments (with or without a BOM): what
+/// an editor leaves for a moment while it saves, or a file cleared or
+/// commented out by hand.
 fn is_blank(bytes: &[u8]) -> bool {
-    decode(bytes).is_ok_and(|text| text.trim().is_empty())
+    decode(bytes).is_ok_and(|text| text.trim().is_empty() || holds_nothing(&text))
 }
 
 /// A unique sibling temp file for an atomic write: two overlapping writes
@@ -1637,6 +1696,49 @@ mod tests {
         );
     }
 
+    /// A part of a config saved in place of the whole (settings, but
+    /// neither `[reads]` nor `[[providers]]`) is not applied - it would
+    /// start over as a fresh install - nor written over; at start it is set
+    /// aside like any file not understood, and `ailimits-auth` refuses it.
+    /// A file of comments only is an emptied one.
+    #[test]
+    fn a_part_of_a_config_is_not_applied() {
+        let snippet = "[tune.widget]\nfont_size = 14\n";
+        let dir = Dir::new("part-only");
+        let (loaded, file) = watched(&dir, &current_text());
+        std::fs::write(dir.config(), snippet).unwrap();
+        assert_eq!(file.check(), Change::Broken(PART_ONLY.to_string()));
+        assert_eq!(file.write(&loaded.config, 0), Written::Broken);
+        assert_eq!(std::fs::read_to_string(dir.config()).unwrap(), snippet);
+        assert!(matches!(peek(&dir.config()), Peek::Unparsable(e) if e == PART_ONLY));
+
+        // Put back: it reads again.
+        std::fs::write(dir.config(), current_text()).unwrap();
+        assert!(matches!(file.check(), Change::Edited { .. }));
+
+        // Comments only: not applied, and the next save writes it back.
+        std::fs::write(dir.config(), "# [tune.widget]\n# font_size = 14\n").unwrap();
+        assert_eq!(file.check(), Change::Gone);
+        assert_eq!(file.write(&loaded.config, file.generation()), Written::Done);
+
+        // At start: set aside, and the app starts with nothing allowed.
+        std::fs::write(dir.config(), snippet).unwrap();
+        let started = block(load_with(&dir.config(), &QUICK));
+        let Some(LoadProblem::SetAside { backup, error }) = started.problem else {
+            panic!("not set aside");
+        };
+        assert_eq!(error, PART_ONLY);
+        assert_eq!(std::fs::read_to_string(backup).unwrap(), snippet);
+        assert!(!started.config.providers.iter().any(|p| p.enabled));
+
+        // Empty or comments only at start: a fresh install, as before.
+        for text in ["", "# nothing yet\n"] {
+            let (config, origin) = parse(text.as_bytes()).expect("reads");
+            assert_eq!(origin, Origin::FreshInstall);
+            assert_eq!(config, Config::default());
+        }
+    }
+
     /// Notepad's encodings: UTF-8 with a BOM and UTF-16 with a BOM read as
     /// the same config; text in another encoding is a file not understood.
     #[test]
@@ -1909,22 +2011,22 @@ on_startup = ""
         assert!(config.providers.iter().all(|p| !p.enabled));
     }
 
+    /// An empty config is a fresh install; one with settings but no
+    /// providers and no `[reads]` is not understood (it is set aside at
+    /// start, which starts as a fresh install too). Neither is an upgrade.
     #[test]
     fn an_empty_or_providerless_config_is_no_upgrade() {
-        for text in [
-            "",
-            "
-",
-            "[window]
-pos_x = 10
-",
-            "[ui]
-detail = \"medium\"
-",
-        ] {
+        for text in ["", "\n", "# a comment\n"] {
             let config = load_text(text);
             assert!(config.reads.sign_in.is_empty(), "{text:?}");
             assert_eq!(config.reads.pending, PendingNotice::Welcome, "{text:?}");
+        }
+        for text in ["[window]\npos_x = 10\n", "[ui]\ndetail = \"medium\"\n"] {
+            assert_eq!(
+                parse(text.as_bytes()),
+                Err(PART_ONLY.to_string()),
+                "{text:?}"
+            );
         }
     }
 

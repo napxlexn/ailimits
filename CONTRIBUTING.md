@@ -13,6 +13,8 @@ and the licensing in one place.
 
 ## What helps
 
+- **Security issues.** Not as an issue: report them privately, as
+  [SECURITY.md](SECURITY.md) describes.
 - **Bug reports.** Open an issue with the AI Limits version (the last line of
   the tray menu), the Windows build, how you installed it (installer, winget,
   Chocolatey, Scoop, Microsoft Store, portable zip), which providers are on,

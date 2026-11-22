@@ -205,16 +205,32 @@ fn cursor_entry_query(cap: usize) -> String {
     )
 }
 
+/// Why Cursor's state database gave no answer (`cursor_agent_model`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DbUnread {
+    /// Not this time (Cursor holds a lock, an I/O error, or it is not a
+    /// database Cursor wrote): the caller keeps what it showed and asks
+    /// again on the next cycle.
+    ThisTime,
+    /// Cursor is closed and its database sits where it cannot be read
+    /// without leaving files beside it (a network %APPDATA%): the caller
+    /// keeps what it showed and asks again only once the database changes,
+    /// as it does when Cursor runs.
+    UntilChanged,
+}
+
 /// The Agent's model settings in Cursor's state database, as JSON text:
-/// Ok(None) when there are none; Err(Unread) when the database could not be
-/// read this time (Cursor holds a lock, an I/O error, or it is not a
-/// database Cursor wrote): the caller keeps what it showed and asks again on
-/// the next cycle. Opened read-only through Windows' own SQLite
+/// Ok(None) when there are none; Err when the database could not be read
+/// (`DbUnread`). Opened read-only through Windows' own SQLite
 /// (`platform::sqlite`), which never changes the file and leaves nothing
 /// beside it.
-pub(super) fn cursor_agent_model(path: &Path) -> Result<Option<String>, Unread> {
+pub(super) fn cursor_agent_model(path: &Path) -> Result<Option<String>, DbUnread> {
     use crate::platform::sqlite::{lookup_texts, SqliteError};
     let first = |sql: &str| lookup_texts(path, sql, &[CURSOR_ITEM]).map(|mut v| v.pop().flatten());
+    let unread = |e: SqliteError| match e {
+        SqliteError::NotQuietly => DbUnread::UntilChanged,
+        _ => DbUnread::ThisTime,
+    };
     match first(CURSOR_AGENT_QUERY) {
         Ok(found) => Ok(found),
         Err(SqliteError::Failed(e)) if e.contains("no such function") => {
@@ -222,10 +238,10 @@ pub(super) fn cursor_agent_model(path: &Path) -> Result<Option<String>, Unread> 
                 Ok(Some(entry)) if entry.len() <= CURSOR_ENTRY_CAP => Ok(composer_of(&entry)),
                 // Over the cap, or no entry: no model, as for any odd shape.
                 Ok(_) => Ok(None),
-                Err(_) => Err(Unread),
+                Err(e) => Err(unread(e)),
             }
         }
-        Err(_) => Err(Unread),
+        Err(e) => Err(unread(e)),
     }
 }
 

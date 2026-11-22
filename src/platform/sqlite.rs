@@ -16,6 +16,8 @@
 //   read-only connection cannot remove them again. So it is opened as
 //   `file:...?immutable=1`: no lock is taken and no file is created, and
 //   nothing can change the database meanwhile, as its owner is not running.
+//   At a path with no URI form (a UNC or `\\?\` path) it is not opened at
+//   all (`SqliteError::NotQuietly`): the plain open would leave the files.
 // - A WAL database whose owner has it open (its -wal exists, and its -shm):
 //   SQLITE_OPEN_READONLY, reading the owner's -wal/-shm as they are, never
 //   checkpointing or truncating them. Nothing new is created.
@@ -37,6 +39,10 @@ pub enum SqliteError {
     Busy,
     /// Anything else: not a database, corrupt, no such table, I/O.
     Failed(String),
+    /// A WAL database whose owner is not running, at a path with no URI
+    /// form (`immutable_uri`): any open would leave -wal and -shm beside it,
+    /// so it is not opened. Nothing changes until the owner runs again.
+    NotQuietly,
 }
 
 impl std::fmt::Display for SqliteError {
@@ -45,6 +51,9 @@ impl std::fmt::Display for SqliteError {
             SqliteError::Unavailable(e) => write!(f, "winsqlite3 unavailable: {e}"),
             SqliteError::Busy => write!(f, "database is locked by its owner"),
             SqliteError::Failed(e) => write!(f, "sqlite error: {e}"),
+            SqliteError::NotQuietly => {
+                write!(f, "database not opened: it would leave files beside it")
+            }
         }
     }
 }
@@ -84,13 +93,14 @@ enum OpenMode {
 }
 
 /// `Immutable` for a WAL database without its -wal file (its owner is not
-/// running), when the path has a URI form; `Shared` otherwise.
+/// running), when the path has a URI form, and None when it has none: such
+/// a database is not opened at all. `Shared` otherwise.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn open_mode(path: &Path) -> OpenMode {
+fn open_mode(path: &Path) -> Option<OpenMode> {
     if !is_wal_database(path) || sidecar(path, "-wal").exists() {
-        return OpenMode::Shared;
+        return Some(OpenMode::Shared);
     }
-    immutable_uri(path).map_or(OpenMode::Shared, OpenMode::Immutable)
+    immutable_uri(path).map(OpenMode::Immutable)
 }
 
 /// Whether the file is a SQLite database in WAL mode, from its 100-byte
@@ -121,7 +131,8 @@ fn sidecar(path: &Path, suffix: &str) -> std::path::PathBuf {
 /// created: `file:///C:/Users/.../state.vscdb?immutable=1`, every byte but
 /// the plain ones percent-encoded (spaces, `%`, `#`, `?`, non-ASCII as its
 /// UTF-8). Only a path on a drive (`C:\...`) has one; a UNC or `\\?\` path,
-/// or one that is not UTF-8, gets None and is opened the plain way.
+/// or one that is not UTF-8, gets None: opened the plain way while its owner
+/// runs, and not at all while it does not (`open_mode`).
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn immutable_uri(path: &Path) -> Option<String> {
     let text = path.to_str()?;
@@ -398,7 +409,7 @@ mod win {
         keys: &[&str],
     ) -> Result<Vec<Option<String>>, SqliteError> {
         let api = api()?;
-        let conn = match super::open_mode(path) {
+        let conn = match super::open_mode(path).ok_or(SqliteError::NotQuietly)? {
             OpenMode::Shared => Conn::open(api, path, SQLITE_OPEN_READONLY)?,
             OpenMode::Immutable(uri) => {
                 Conn::open_name(api, &uri, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI)?
@@ -529,7 +540,7 @@ mod tests {
         db.exec("INSERT INTO ItemTable VALUES ('a', 'fresh');");
         // The writer stays open, so nothing is checkpointed into the main file.
         // Its -wal is there: the owner's files are read as they are.
-        assert_eq!(open_mode(&tmp.0), OpenMode::Shared);
+        assert_eq!(open_mode(&tmp.0), Some(OpenMode::Shared));
         assert_eq!(
             lookup_texts(&tmp.0, QUERY, &["a"]).expect("lookup"),
             vec![Some("fresh".to_string())]
@@ -566,7 +577,7 @@ mod tests {
             "the owner left {:?}",
             sidecars(path)
         );
-        assert!(matches!(open_mode(path), OpenMode::Immutable(_)));
+        assert!(matches!(open_mode(path), Some(OpenMode::Immutable(_))));
         for _ in 0..3 {
             assert_eq!(
                 lookup_texts(path, QUERY, &["a", "missing"]).expect("lookup"),
@@ -581,7 +592,7 @@ mod tests {
         db.exec("INSERT INTO ItemTable VALUES ('a', 'newer');");
         let before = sidecars(path);
         assert!(before.contains(&"-wal"), "{before:?}");
-        assert_eq!(open_mode(path), OpenMode::Shared);
+        assert_eq!(open_mode(path), Some(OpenMode::Shared));
         assert_eq!(
             lookup_texts(path, QUERY, &["a"]).expect("lookup"),
             vec![Some("newer".to_string())]
@@ -622,7 +633,7 @@ mod tests {
             db.exec("INSERT INTO ItemTable VALUES ('a', 'x');");
         }
         assert!(!is_wal_database(&tmp.0));
-        assert_eq!(open_mode(&tmp.0), OpenMode::Shared);
+        assert_eq!(open_mode(&tmp.0), Some(OpenMode::Shared));
         assert_eq!(
             lookup_texts(&tmp.0, QUERY, &["a"]).expect("lookup"),
             vec![Some("x".to_string())]
@@ -644,7 +655,7 @@ mod tests {
             immutable_uri(Path::new(r"d:\a b\#1%?&=(x):y.db")).as_deref(),
             Some("file:///d:/a%20b/%231%25%3F%26%3D%28x%29%3Ay.db?immutable=1")
         );
-        // No URI form: opened the plain way.
+        // No URI form: the plain way while the owner runs, else not at all.
         for odd in [
             r"\\server\share\state.vscdb",
             r"\\?\C:\Users\x\state.vscdb",
@@ -657,8 +668,41 @@ mod tests {
         // Not a database, or missing: the plain way, which fails honestly.
         assert_eq!(
             open_mode(Path::new(r"C:\definitely\missing.db")),
-            OpenMode::Shared
+            Some(OpenMode::Shared)
         );
+    }
+
+    /// A closed WAL database at a path with no URI form (here `\\?\`, as a
+    /// UNC %APPDATA% would be) is not opened: a plain open would leave -wal
+    /// and -shm beside it. Once its owner runs (its -wal is there), it is
+    /// read the plain way, still adding nothing.
+    #[test]
+    fn a_closed_wal_database_without_a_uri_form_is_not_opened() {
+        let tmp = TempDb::new("no-uri");
+        {
+            let db = TestDb::create(&tmp.0);
+            db.exec("PRAGMA journal_mode=WAL;");
+            db.exec(SCHEMA);
+            db.exec("INSERT INTO ItemTable VALUES ('a', 'kept');");
+        }
+        let mut verbatim = std::ffi::OsString::from(r"\\?\");
+        verbatim.push(tmp.0.as_os_str());
+        let path = std::path::PathBuf::from(verbatim);
+        assert!(is_wal_database(&path));
+        assert_eq!(open_mode(&path), None);
+        assert!(matches!(
+            lookup_texts(&path, QUERY, &["a"]),
+            Err(SqliteError::NotQuietly)
+        ));
+        assert!(sidecars(&tmp.0).is_empty(), "left {:?}", sidecars(&tmp.0));
+
+        let db = TestDb::create(&tmp.0);
+        db.exec("PRAGMA wal_autocheckpoint=0;");
+        db.exec("INSERT INTO ItemTable VALUES ('a', 'newer');");
+        let before = sidecars(&tmp.0);
+        assert!(before.contains(&"-wal"), "{before:?}");
+        assert_eq!(open_mode(&path), Some(OpenMode::Shared));
+        assert_eq!(sidecars(&tmp.0), before);
     }
 
     #[test]

@@ -958,8 +958,8 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   `%USERPROFILE%\.cursor\cli-config.json` (with the account's e-mail beside
   it); it is not read.
 
-  **Nothing is ever written to or created in `%APPDATA%\Cursor`, with one
-  known exception (below).** The database belongs to the editor, which may
+  **Nothing is ever written to or created in `%APPDATA%\Cursor`.** The
+  database belongs to the editor, which may
   hold it open and write to it (it runs in WAL mode). It is read through the
   SQLite that ships with Windows (`System32\winsqlite3.dll`, loaded on first
   use) with a 200 ms busy timeout, in one of three ways: while Cursor is
@@ -967,12 +967,14 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   read-only, with no lock and no `-wal` or `-shm` created; while Cursor runs,
   read-only, reading Cursor's own `-wal` and `-shm` as they are and creating
   nothing; a rollback-journal database read-only the plain way. A held lock
-  is a transient error that the next cycle retries. Known limit: the
-  `immutable=1` form needs a path on a drive letter that is valid UTF-8. On a
-  UNC path (a redirected `%APPDATA%`) or a path that is not UTF-8, the
-  database is opened read-only the plain way, and while Cursor is closed that
-  can leave `state.vscdb-wal` and `state.vscdb-shm` beside it. The app opens
-  no other SQLite database.
+  is a transient error that the next cycle retries. The `immutable=1` form
+  needs a path on a drive letter that is valid UTF-8. On a UNC path (a
+  redirected `%APPDATA%`), while Cursor is closed, the database is not
+  opened at all, since any other way would leave `state.vscdb-wal` and
+  `state.vscdb-shm` beside it: the model read while Cursor ran stays, and
+  the database is looked at again once it changes (Cursor running brings
+  its `-wal`). A path that is not UTF-8 is never opened. The app opens no
+  other SQLite database.
 
 A file with an effort but no model gives the effort alone ("xhigh"), and no
 name to rename.
