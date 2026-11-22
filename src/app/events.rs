@@ -79,7 +79,11 @@ impl App {
                     .as_mut()
                     .map(|p| p.handle_window_event(&event))
                     .unwrap_or_default();
-                if !actions.is_empty() {
+                if matches!(event, WindowEvent::Focused(false)) {
+                    // The focus is still on its way to the window clicked:
+                    // the picker goes once that click is handled.
+                    self.picker_deferred.extend(actions);
+                } else if !actions.is_empty() {
                     self.apply_picker_actions(actions);
                 }
             }
@@ -112,6 +116,7 @@ impl App {
             // before quitting survives — and no in-flight background write
             // can land after it. This one arm covers every exit path (window
             // close, tray Quit, menu Quit).
+            Event::MainEventsCleared => self.apply_deferred_picker_actions(),
             Event::LoopDestroyed => self.shut_down(),
 
             _ => {}

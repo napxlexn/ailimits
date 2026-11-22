@@ -53,6 +53,20 @@ impl App {
         }
     }
 
+    /// What Rows and models answered to losing the focus (closing, unless
+    /// a name is being typed), applied now: once the messages of that
+    /// moment are handled, and before a menu opens. Hidden while the focus
+    /// was still on its way to the window clicked, the picker took that
+    /// click with it: a right-click on the widget opened no menu until a
+    /// second one (E2E 2026-11-22).
+    pub(super) fn apply_deferred_picker_actions(&mut self) {
+        if self.picker_deferred.is_empty() {
+            return;
+        }
+        let actions = std::mem::take(&mut self.picker_deferred);
+        self.apply_picker_actions(actions);
+    }
+
     /// Bring the provider instances in line with the config
     /// (provider_set.rs), `force` rebuilt whatever its config. A rebuilt
     /// provider is fetched at once. One whose source or account changed

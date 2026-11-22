@@ -440,6 +440,10 @@ struct App {
     /// look items it highlights can be shown while it is open.
     #[cfg(target_os = "windows")]
     menu_request: Option<isize>,
+    /// What Rows and models answered to losing the focus (closing, mostly),
+    /// applied once the messages of that moment are handled
+    /// (`apply_deferred_picker_actions`).
+    picker_deferred: Vec<crate::ui::picker::PickerAction>,
     /// The open menu's look shown under the pointer (app/menu_preview.rs).
     #[cfg(target_os = "windows")]
     menu_preview: Option<menu_preview::MenuPreview>,
@@ -791,6 +795,7 @@ pub fn run() -> Result<()> {
         indicator,
         #[cfg(target_os = "windows")]
         menu_request: None,
+        picker_deferred: Vec::new(),
         #[cfg(target_os = "windows")]
         menu_preview: None,
         #[cfg(target_os = "windows")]
@@ -860,6 +865,9 @@ pub fn run() -> Result<()> {
         {
             let request = app.borrow_mut().menu_request.take();
             if let Some(hwnd) = request {
+                // The right-click may have taken the focus from Rows and
+                // models: the window goes first, as the click calls for.
+                app.borrow_mut().apply_deferred_picker_actions();
                 let menu = app.borrow().menu.menu.clone();
                 // SAFETY: the widget's or the panel's window, alive with the
                 // app on this thread.
