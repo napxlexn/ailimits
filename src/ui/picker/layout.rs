@@ -29,6 +29,7 @@ impl Picker {
                 .filter(|t| matches!(t, Target::Field { .. })),
             names: (self.names_open, self.open_names.clone()),
             sign_in: self.open_sign_in.clone(),
+            tab: self.tab,
         }
     }
 
@@ -49,16 +50,29 @@ impl Picker {
     /// Lay out the whole window.
     pub(super) fn build_frame(&self) -> Frame {
         let view = self.view();
+        let tabs = matches!(view, View::Rows { .. });
+        // The header, with the tabs under the title.
+        let head_h = HEADER_H + if tabs { TABS_H } else { 0.0 };
         let mut flow = Flow::new();
         match view {
-            View::Rows { welcome } => self.flow_rows(&mut flow, welcome),
+            View::Rows { welcome } => self.flow_tab(&mut flow, self.tab, welcome),
             View::Notice => self.flow_notice(&mut flow),
         }
         let content_h = flow.y.ceil();
+        // One height for both tabs, the taller one's: the window does not
+        // jump when the other tab is chosen.
+        let tall_h = match view {
+            View::Rows { welcome } => {
+                let mut other = Flow::new();
+                self.flow_tab(&mut other, self.tab.other(), welcome);
+                content_h.max(other.y.ceil())
+            }
+            View::Notice => content_h,
+        };
         let footer_h = if view == View::Notice { FOOTER_H } else { 0.0 };
         let ask = self.ask.as_ref().map(|a| self.ask_layout(a));
 
-        let natural = HEADER_H + content_h + footer_h;
+        let natural = head_h + tall_h + footer_h;
         let mut box_h = natural.min(self.max_box_h);
         if let Some(q) = &ask {
             box_h = box_h.max((HEADER_H + q.height() + ASK_INSET * 2.0).min(self.max_box_h));
@@ -67,9 +81,9 @@ impl Picker {
         let boxr = rect(MARGIN, MARGIN, BOX_W, box_h);
         let viewport = rect(
             boxr.x + 1.0,
-            boxr.y + HEADER_H,
+            boxr.y + head_h,
             BOX_W - 2.0,
-            box_h - HEADER_H - footer_h - 1.0,
+            box_h - head_h - footer_h - 1.0,
         );
         let max_scroll = (content_h - viewport.h).max(0.0);
         let scroll = self.scroll.clamp(0.0, max_scroll).round();
@@ -111,6 +125,46 @@ impl Picker {
                 },
             ),
         ];
+
+        // The tabs: a segmented control under the title.
+        if tabs {
+            let track = rect(
+                boxr.x + PAD_X,
+                boxr.y + HEADER_H,
+                BOX_W - PAD_X * 2.0,
+                TABS_H - 8.0,
+            );
+            els.push((
+                Layer::Chrome,
+                El::Shape(Shape::Fill {
+                    rect: track,
+                    radius: 6.0,
+                    ink: Ink::Hover,
+                    alpha: Level::Full,
+                }),
+            ));
+            let w = ((track.w - 6.0) / 2.0).floor();
+            for (i, (tab, label)) in [(Tab::Rows, TAB_ROWS), (Tab::Shows, TAB_SHOWS)]
+                .into_iter()
+                .enumerate()
+            {
+                els.push((
+                    Layer::Chrome,
+                    El::Tab {
+                        target: Target::Tab(tab),
+                        rect: rect(
+                            track.x + 3.0 + w * i as f32,
+                            track.y + 3.0,
+                            w,
+                            track.h - 6.0,
+                        ),
+                        label: label.to_string(),
+                        on: self.tab == tab,
+                        nav: (1, i as u32),
+                    },
+                ));
+            }
+        }
 
         // The list, moved from content to window coordinates.
         let (dx, dy) = (boxr.x, viewport.y - scroll);
@@ -266,7 +320,8 @@ impl Picker {
             .round()
     }
 
-    /// The list: rows, model parts, the source, the names.
+    /// The Rows tab: which rows show in the widget, in the tooltip and on
+    /// the taskbar, each provider's sign-in at the end of its rows.
     pub(super) fn flow_rows(&self, f: &mut Flow, welcome: bool) {
         let input = &self.input;
         if welcome {
@@ -300,31 +355,7 @@ impl Picker {
             f.y += h + 8.0;
         }
 
-        // The column heads, pinned to the top while the list scrolls.
-        let heads: Vec<Shape> = SURFACES
-            .iter()
-            .map(|(_, cx)| *cx)
-            .chain([COL_TASKBAR])
-            .zip(["Widget", "Tooltip", TASKBAR])
-            .map(|(cx, label)| {
-                let w = self.adv(label, SIZE_NOTE);
-                text_shape(
-                    (cx - w / 2.0).round(),
-                    f.y + ((COLS_H - lh(SIZE_NOTE)) / 2.0).round(),
-                    label,
-                    SIZE_NOTE,
-                    Ink::Muted,
-                    false,
-                )
-            })
-            .collect();
-        // Drawn once, by the frame, in place or pinned.
-        f.sticky = Some((
-            f.y,
-            COLS_H,
-            heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect(),
-        ));
-        f.y += COLS_H;
+        self.flow_heads(f, ["Widget", "Tooltip", TASKBAR]);
 
         // Rows, grouped by provider.
         let mut groups: Vec<Vec<&RowChoice>> = Vec::new();
@@ -359,59 +390,123 @@ impl Picker {
             }
         }
 
-        // What each tooltip row shows, then the model, version, effort.
-        self.flow_sep(f);
+        f.y += 10.0;
+    }
+
+    /// The column heads, pinned to the top while the list scrolls.
+    pub(super) fn flow_heads(&self, f: &mut Flow, labels: [&str; 3]) {
+        let heads: Vec<Shape> = [COL_WIDGET, COL_TOOLTIP, COL_TASKBAR]
+            .into_iter()
+            .zip(labels)
+            .map(|(cx, label)| {
+                let w = self.adv(label, SIZE_NOTE);
+                text_shape(
+                    (cx - w / 2.0).round(),
+                    f.y + ((COLS_H - lh(SIZE_NOTE)) / 2.0).round(),
+                    label,
+                    SIZE_NOTE,
+                    Ink::Muted,
+                    false,
+                )
+            })
+            .collect();
+        // Drawn once, by the frame, in place or pinned.
+        f.sticky = Some((
+            f.y,
+            COLS_H,
+            heads.into_iter().map(|s| s.moved(0.0, -f.y)).collect(),
+        ));
+        f.y += COLS_H;
+    }
+
+    /// A section's title: small capitals over the rows under it.
+    pub(super) fn flow_section(&self, f: &mut Flow, title: &str) {
+        f.y += 8.0;
+        f.shape(text_shape(PAD_X, f.y, title, SIZE_NOTE, Ink::Muted, true));
+        f.y += lh(SIZE_NOTE) + 2.0;
+    }
+
+    /// A row of the What shows tab: its label and note on the left, its
+    /// description on hover. Its top and height, for the ticks beside it.
+    pub(super) fn flow_labelled(
+        &self,
+        f: &mut Flow,
+        label: &str,
+        note: &str,
+        hint: &str,
+    ) -> (f32, f32) {
+        let notes = self.wrap(
+            &[span(note, SIZE_NOTE, Ink::Muted, false)],
+            LABEL_RIGHT - PAD_X,
+        );
+        let block = lh(SIZE_TEXT) + notes.len() as f32 * lh(SIZE_NOTE);
+        let h = (block + 8.0).max(ROW_H);
+        let y = f.y;
+        f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
+        let top = y + ((h - block) / 2.0).round();
+        f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
+        f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
+        f.els.push(El::Hint {
+            rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
+            text: hint.to_string(),
+        });
+        (y, h)
+    }
+
+    /// A dash in a column that has nothing to choose there.
+    pub(super) fn flow_dash(&self, f: &mut Flow, cx: f32, y: f32, h: f32) {
+        let w = self.adv(DASH, SIZE_NOTE);
+        f.shape(text_shape(
+            (cx - w / 2.0).round(),
+            y + ((h - lh(SIZE_NOTE)) / 2.0).round(),
+            DASH,
+            SIZE_NOTE,
+            Ink::Muted,
+            false,
+        ));
+    }
+
+    /// The What shows tab: what each row shows in the widget, the tooltip
+    /// and on the panel; the model label; the tray icon's look; the model
+    /// names and the settings file.
+    pub(super) fn flow_shows(&self, f: &mut Flow, welcome: bool) {
+        self.flow_heads(f, ["Widget", "Tooltip", PANEL]);
+        self.flow_section(f, SECT_NUMBERS);
         for (part, label, note, hint) in TIP_PARTS {
-            let notes = self.wrap(
-                &[span(note, SIZE_NOTE, Ink::Muted, false)],
-                LABEL_RIGHT - PAD_X,
-            );
-            let block = lh(SIZE_TEXT) + notes.len() as f32 * lh(SIZE_NOTE);
-            let h = (block + 8.0).max(ROW_H);
-            let y = f.y;
-            f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
-            let top = y + ((h - block) / 2.0).round();
-            f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
-            f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
-            f.els.push(El::Hint {
-                rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
-                text: hint.to_string(),
-            });
+            let (y, h) = self.flow_labelled(f, label, note, hint);
             for (col, place, cx) in [
+                (0, NumbersOn::Widget, COL_WIDGET),
                 (1, NumbersOn::Tooltip, COL_TOOLTIP),
                 (2, NumbersOn::Panel, COL_TASKBAR),
             ] {
                 // The tooltip has no bar to show or hide.
                 if part == TipPart::Bar && place == NumbersOn::Tooltip {
+                    self.flow_dash(f, cx, y, h);
                     continue;
                 }
+                let cell = rect(cx - COL_W / 2.0, y, COL_W, h);
+                let enabled = self.tip_enabled(part, place);
                 f.els.push(El::Tick {
                     target: Target::Tip(part, place),
-                    cell: rect(cx - COL_W / 2.0, y, COL_W, h),
+                    cell,
                     on: self.tip_on(part, place),
-                    enabled: self.tip_enabled(part, place),
+                    enabled,
                     nav: (f.nav, col),
                 });
+                // The last one on there says why it stays.
+                if !enabled {
+                    f.els.push(El::Hint {
+                        rect: cell,
+                        text: lock_hint(place).to_string(),
+                    });
+                }
             }
             f.nav += 1;
             f.y += h;
         }
+        self.flow_section(f, SECT_MODEL);
         for (part, label, note) in PARTS {
-            let notes = self.wrap(
-                &[span(note, SIZE_NOTE, Ink::Muted, false)],
-                LABEL_RIGHT - PAD_X,
-            );
-            let block = lh(SIZE_TEXT) + notes.len() as f32 * lh(SIZE_NOTE);
-            let h = (block + 8.0).max(ROW_H);
-            let y = f.y;
-            f.els.push(El::RowBg(rect(6.0, y, BOX_W - 12.0, h)));
-            let top = y + ((h - block) / 2.0).round();
-            f.shape(text_shape(PAD_X, top, label, SIZE_TEXT, Ink::Text, false));
-            f.lines(&notes, PAD_X, top + lh(SIZE_TEXT), lh(SIZE_NOTE));
-            f.els.push(El::Hint {
-                rect: rect(PAD_X, y, LABEL_RIGHT - PAD_X, h),
-                text: part_hint(part).to_string(),
-            });
+            let (y, h) = self.flow_labelled(f, label, note, part_hint(part));
             for (col, (surface, cx)) in SURFACES.iter().enumerate() {
                 f.els.push(El::Tick {
                     target: Target::Part {
@@ -424,6 +519,8 @@ impl Picker {
                     nav: (f.nav, col as u32),
                 });
             }
+            // The panel has no room for a model.
+            self.flow_dash(f, COL_TASKBAR, y, h);
             f.nav += 1;
             f.y += h;
         }
@@ -477,6 +574,7 @@ impl Picker {
         f.nav += 1;
         f.y += RADIO_H;
 
+        self.flow_tray(f);
         // Model names: closed until opened, then one heading per tool.
         self.flow_sep(f);
         f.y += 4.0;
@@ -566,6 +664,48 @@ impl Picker {
             self.flow_settings_file(f);
         }
         f.y += 10.0;
+    }
+
+    /// The tray icon's look: a tile for each, the chosen one outlined.
+    pub(super) fn flow_tray(&self, f: &mut Flow) {
+        f.y += 4.0;
+        self.flow_section(f, SECT_TRAY);
+        f.y += 4.0;
+        let gap = 6.0;
+        let n = TRAY_STYLES.len() as f32;
+        let w = ((BOX_W - PAD_X * 2.0 - gap * (n - 1.0)) / n).floor();
+        let mut x = PAD_X;
+        for (col, (style, label, hint)) in TRAY_STYLES.into_iter().enumerate() {
+            let r = rect(x, f.y, w, TILE_H);
+            f.els.push(El::Tile {
+                target: Target::TrayStyle(style),
+                rect: r,
+                label: label.to_string(),
+                style,
+                on: self.input.tray_style == style,
+                nav: (f.nav, col as u32),
+            });
+            f.els.push(El::Hint {
+                rect: r,
+                text: hint.to_string(),
+            });
+            x += w + gap;
+        }
+        f.nav += 1;
+        f.y += TILE_H + 6.0;
+        let note = self.wrap(
+            &[span(TRAY_NOTE, SIZE_NOTE, Ink::Muted, false)],
+            BOX_W - PAD_X * 2.0,
+        );
+        f.y += f.lines(&note, PAD_X, f.y, lh(SIZE_NOTE)) + 2.0;
+    }
+
+    /// The list of a tab.
+    pub(super) fn flow_tab(&self, f: &mut Flow, tab: Tab, welcome: bool) {
+        match tab {
+            Tab::Rows => self.flow_rows(f, welcome),
+            Tab::Shows => self.flow_shows(f, welcome),
+        }
     }
 
     /// "Settings file...": a small link at the list's end, its description

@@ -301,6 +301,8 @@ impl App {
             self.panel.set_tune(&self.config.tune.panel, &visible);
             self.tray
                 .set_tune(&self.config.tune.tray, &visible, &self.theme);
+            self.tray
+                .set_style(self.config.ui.tray.style, &visible, &self.theme);
             self.panel.update(&self.visible(), true);
             self.menu.sync(&self.config, self.win_state.pinned);
             self.window.request_redraw();

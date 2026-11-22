@@ -118,8 +118,8 @@ const TABLES: &[Table] = &[
     Table {
         path: "ui",
         about: &[
-            "How the widget looks. [ui.rows], [ui.model], [ui.tooltip] and [ui.panel]",
-            "appear below once set in Rows and models (in the context menu).",
+            "How the widget looks. [ui.rows], [ui.model], [ui.widget], [ui.tooltip],",
+            "[ui.panel] and [ui.tray] appear below once set in Rows and models.",
         ],
         keys: &[
             (
@@ -244,10 +244,34 @@ const TABLES: &[Table] = &[
         keys: &[],
     },
     Table {
+        path: "ui.widget",
+        about: &[
+            "What each widget row shows besides its name; keep one true. Window:",
+            "Rows and models, What shows, Widget column.",
+        ],
+        keys: &[
+            (
+                "percent",
+                &["The percentage used: true (default) or false."],
+            ),
+            (
+                "reset",
+                &["The time left until the reset: true (default) or false."],
+            ),
+            (
+                "bar",
+                &[
+                    "The progress bar: true (default) or false; without it each row is",
+                    "one line. The Vertical layout keeps its bars.",
+                ],
+            ),
+        ],
+    },
+    Table {
         path: "ui.tooltip",
         about: &[
             "What each tooltip row (panel and tray icon) shows besides its name;",
-            "keep one true. Window: Rows and models, Tooltip column.",
+            "keep one true. Window: Rows and models, What shows, Tooltip column.",
         ],
         keys: &[
             (
@@ -264,8 +288,8 @@ const TABLES: &[Table] = &[
     Table {
         path: "ui.panel",
         about: &[
-            "What each row of the taskbar panel shows; one number always stays on.",
-            "Window: Rows and models, Taskbar column.",
+            "What each row of the taskbar panel shows; keep one true. Window: Rows",
+            "and models, What shows, Panel column.",
         ],
         keys: &[
             (
@@ -281,6 +305,17 @@ const TABLES: &[Table] = &[
                 &["The progress bar: true (default) or false, for a narrower panel."],
             ),
         ],
+    },
+    Table {
+        path: "ui.tray",
+        about: &["The tray icon's look. Window: Rows and models, What shows, Tray icon."],
+        keys: &[(
+            "style",
+            &[
+                "\"rings\" (default), \"bars\" (two upright bars), \"number\" (the busier's",
+                "percentage) or \"sector\" (its slice of a disc).",
+            ],
+        )],
     },
     Table {
         path: "providers",
@@ -792,6 +827,12 @@ mod tests {
             .names
             .insert("copilot:auto".into(), "Auto".into());
         c.ui.model.names.insert("a\nb\\c".into(), "odd".into());
+        c.ui.widget = UiNumbers {
+            percent: false,
+            reset: true,
+            bar: false,
+        };
+        c.ui.tray.style = crate::config::schema::TrayStyle::Sector;
         c.ui.tooltip.percent = false;
         c.ui.tooltip.bar = false;
         c.ui.panel = UiNumbers {
@@ -846,8 +887,10 @@ mod tests {
                 "[ui.rows]",
                 "[ui.model]",
                 "[ui.model.names]",
+                "[ui.widget]",
                 "[ui.tooltip]",
                 "[ui.panel]",
+                "[ui.tray]",
                 "[[providers]]",
                 "[[providers]]",
                 "[[providers]]",
@@ -949,8 +992,13 @@ mod tests {
         assert_eq!(keys("ui"), fields(field_names::<UIConfig>()));
         assert_eq!(keys("ui.rows"), fields(field_names::<UiRows>()));
         assert_eq!(keys("ui.model"), fields(field_names::<UiModel>()));
+        assert_eq!(keys("ui.widget"), fields(field_names::<UiNumbers>()));
         assert_eq!(keys("ui.tooltip"), fields(field_names::<UiNumbers>()));
         assert_eq!(keys("ui.panel"), fields(field_names::<UiNumbers>()));
+        assert_eq!(
+            keys("ui.tray"),
+            fields(field_names::<crate::config::schema::UiTray>())
+        );
         assert_eq!(keys("providers"), fields(field_names::<ProviderConfig>()));
         assert_eq!(
             keys("notifications"),

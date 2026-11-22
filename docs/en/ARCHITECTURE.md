@@ -534,7 +534,10 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   make a test pass.
 - **Other groups** (`picker`, `widget-rows`, `tooltip-rows`,
   `panel-numbers`: the panel's percentage, reset time or both, with or
-  without its bar, each at the size the app gives it; `widget-tune`,
+  without its bar, or the bar alone, each at the size the app gives it;
+  `widget-numbers`: every mix of `[ui.widget]` but the default, in every
+  layout, with models; `tray-styles`: the tray icon's other looks;
+  `widget-tune`,
   `panel-tune`, `tray-tune`: the `[tune]` knobs away from their defaults,
   each alone and a few together) cover new looks; they are re-recorded with
   `UPDATE_BASELINE=1` only for an intended change, said in the commit. The

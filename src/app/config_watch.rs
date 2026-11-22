@@ -64,7 +64,9 @@ pub(super) enum Part {
     Rows,
     Model,
     Tooltip,
+    WidgetNumbers,
     PanelNumbers,
+    TrayStyle,
     Providers,
     Notifications,
     Hooks,
@@ -73,7 +75,7 @@ pub(super) enum Part {
 }
 
 impl Part {
-    pub(super) const ALL: [Part; 21] = [
+    pub(super) const ALL: [Part; 23] = [
         Part::Interval,
         Part::Indicator,
         Part::AutoUpdate,
@@ -89,7 +91,9 @@ impl Part {
         Part::Rows,
         Part::Model,
         Part::Tooltip,
+        Part::WidgetNumbers,
         Part::PanelNumbers,
+        Part::TrayStyle,
         Part::Providers,
         Part::Notifications,
         Part::Hooks,
@@ -131,7 +135,9 @@ impl Part {
             Part::Rows => ua.rows != ub.rows,
             Part::Model => ua.model != ub.model,
             Part::Tooltip => ua.tooltip != ub.tooltip,
+            Part::WidgetNumbers => ua.widget != ub.widget,
             Part::PanelNumbers => ua.panel != ub.panel,
+            Part::TrayStyle => ua.tray != ub.tray,
             Part::Providers => a.providers != b.providers,
             Part::Notifications => a.notifications != b.notifications,
             Part::Hooks => a.hooks != b.hooks,
@@ -181,7 +187,9 @@ impl Part {
             Part::Rows => to.ui.rows = u.rows.clone(),
             Part::Model => to.ui.model = u.model.clone(),
             Part::Tooltip => to.ui.tooltip = u.tooltip,
+            Part::WidgetNumbers => to.ui.widget = u.widget,
             Part::PanelNumbers => to.ui.panel = u.panel,
+            Part::TrayStyle => to.ui.tray = u.tray,
             Part::Providers => to.providers = from.providers.clone(),
             Part::Notifications => to.notifications = from.notifications.clone(),
             Part::Hooks => to.hooks = from.hooks.clone(),
@@ -249,6 +257,7 @@ pub(super) struct Effects {
     pub tune: bool,
     pub indicator: bool,
     pub panel_numbers: bool,
+    pub tray_style: bool,
     pub panel_offset: bool,
     pub panel_display: bool,
     pub position: bool,
@@ -283,7 +292,7 @@ impl Effects {
                     e.repaint = true;
                     e.tune = true;
                 }
-                Part::Layout => e.relayout = true,
+                Part::Layout | Part::WidgetNumbers => e.relayout = true,
                 // The Grok Bot row decides whether Cursor asks for it.
                 Part::Rows => {
                     e.providers = true;
@@ -296,6 +305,7 @@ impl Effects {
                     e.relayout = true;
                 }
                 Part::PanelNumbers => e.panel_numbers = true,
+                Part::TrayStyle => e.tray_style = true,
                 Part::Providers | Part::Reads => {
                     e.providers = true;
                     e.models = true;
@@ -536,6 +546,10 @@ impl App {
         if e.panel_numbers {
             self.panel.set_numbers(self.config.ui.panel, &visible);
         }
+        if e.tray_style {
+            self.tray
+                .set_style(self.config.ui.tray.style, &visible, &self.theme);
+        }
         if e.tune {
             // After `relayout`: the tray's rings take the new theme.
             self.panel.set_tune(&self.config.tune.panel, &visible);
@@ -664,7 +678,9 @@ mod tests {
         c.ui.rows.widget = Some(vec!["claude".into(), "claude.opus".into()]);
         c.ui.model.widget = vec![crate::config::schema::ModelPart::Model];
         c.ui.tooltip.percent = false;
+        c.ui.widget.bar = false;
         c.ui.panel.reset = true;
+        c.ui.tray.style = crate::config::schema::TrayStyle::Bars;
         c.providers[0].alert_threshold = 50;
         c.notifications.cooldown_minutes = 60;
         c.hooks.on_reset = "echo reset".into();

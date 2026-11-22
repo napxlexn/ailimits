@@ -727,6 +727,11 @@ pub fn run() -> Result<()> {
         &visible_data(&config, &display),
     );
     tray.set_tune(&config.tune.tray, &visible_data(&config, &display), &theme);
+    tray.set_style(
+        config.ui.tray.style,
+        &visible_data(&config, &display),
+        &theme,
+    );
     tray.set_mode(
         config.general.indicator,
         &menu.menu,

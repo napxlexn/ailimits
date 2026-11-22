@@ -162,9 +162,10 @@ The notes the app writes in the file are shorter; this example says more.
 # Claude's endpoint is also rate-limited server-side, so its refresh can
 # occasionally take 2–3 minutes regardless of this setting.
 update_interval_secs = 60
-# Taskbar indicator (menu: Indicator): "tray" — a 16px tray icon, two
-# concentric rings carrying the two providers the panel would show (the
-# busier outside), monochrome in the system taskbar theme; "panel_rows" /
+# Taskbar indicator (menu: Indicator): "tray" — a 16px tray icon carrying
+# the two providers the panel would show, by default two concentric rings
+# (the busier outside; other looks: [ui.tray]), monochrome in the system
+# taskbar theme; "panel_rows" /
 # "panel_grid" (legacy alias) — a transparent overlay left of the tray: a
 # per-pixel-alpha layered window, only digits and bars are painted. Shows the
 # first two providers in the widget's order (clock-sized; by default percent
@@ -298,33 +299,51 @@ source  = "configured"
 "claude-opus-5-5" = "Opus 5.5"
 "copilot:auto" = "Auto"
 
+# What each widget row shows besides its name (menu: Rows and models...,
+# What shows, Widget column): the percentage, the time left until the
+# reset, the progress bar, in any mix; the window keeps one on, and all
+# three false in the file read as the default. Written only once changed;
+# without it, all three: the widget as it always was. Without the bar a
+# Compact or Medium row is one line ("Claude   2h 14min  25%") and the
+# widget only as wide as its texts; an Expanded row keeps its two lines, the
+# weekly limit under the name. A narrower Width step drops the reset first,
+# never the name. With the bar, Compact shows each row's reset in place of
+# the percentage when that is left out, and keeps the soonest reset on its
+# bottom line while it shows both; Medium without the reset loses its line
+# under the bar. The Vertical layout is made of its bars and keeps them;
+# there `percent` and `reset` give their room to the bar.
+[ui.widget]
+percent = true
+reset   = true
+bar     = false
+
 # What each row of the taskbar panel's tooltip shows besides its name
-# (menu: Rows and models..., Percent and Reset time, Tooltip column): the
+# (menu: Rows and models..., What shows, Tooltip column): the
 # percentage, the time left until the limit the row shows resets
 # ("Claude 25% · 2h 14min"), or one of them alone ("Claude 2h 14min").
 # The window keeps one on; both false in the file leaves each row its name
 # and a dot. Written only once changed; without it, both. With the
 # percentage alone and no model labels or extra rows, the tooltip is one
 # line, as in 0.7.0; otherwise it has one row per line. The tray icon's
-# tooltip says the same (within the 127 characters Windows keeps); the
-# widget always shows both.
+# tooltip says the same (within the 127 characters Windows keeps).
 [ui.tooltip]
 percent = false
 reset   = true
 
 # What each row of the taskbar panel shows (menu: Rows and models...,
-# Percent, Reset time and Progress bar, Taskbar column): the percentage
-# with its bar (as in 0.7.0), the time alone before the bar ("2h14 ▬▬"), or
-# both with the bar between them ("25% ▬▬ 2h14"; on a side taskbar the time
-# under the percentage). Compact like the clock: 3d4h, 2h14, 12m, <1m; a
-# dash when the row's own reset is not known.
+# What shows, Panel column): the percentage with its bar (as in 0.7.0), the
+# time alone before the bar ("2h14 ▬▬"), both with the bar between them
+# ("25% ▬▬ 2h14"; on a side taskbar the time under the percentage), or the
+# bar alone. Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the
+# row's own reset is not known.
 # `bar = false` leaves the bar out for a narrower panel ("25%", "2h14",
 # "25%  2h14"); without the key the bar is on. Written only once changed;
 # without it, the percentage with its bar, and a key left out of the table
-# keeps that default. Both numbers false read as that default too, and a
-# `bar = false` beside them is dropped. The panel is as long as what it
-# shows (119 px at 100% for a number and the bar, 161 px with both numbers,
-# 50 px for one number alone); with no room for it on the taskbar the tray
+# keeps that default. The window keeps one of the three on; all three false
+# in the file read as that default. The panel is as long as what it shows
+# (119 px at 100% for a number and the bar, 161 px with both numbers, 77 px
+# for the bar alone, 50 px for one number alone); with no room for it on the
+# taskbar the tray
 # icon stands in. While it shows a time it repaints when the time next reads
 # differently (once a minute, once an hour past a day), and asks the shell
 # nothing for it.
@@ -332,6 +351,16 @@ reset   = true
 percent = true
 reset   = true
 bar     = true
+
+# The tray icon's look (menu: Rows and models..., What shows, Tray icon):
+# "rings" (default: two concentric rings, the busier outside), "bars" (two
+# upright bars filling from the bottom, the busier on the left), "number"
+# (the busier's percentage in digits; "!" from 100%) or "sector" (the
+# busier's slice of a disc, from 12 o'clock). Monochrome in the taskbar's
+# theme; the other provider of the two is in the tooltip. The legacy
+# indicator = "bars" keeps its horizontal bars. Written only once changed.
+[ui.tray]
+style = "rings"
 
 [[providers]]
 # Identifier: claude / codex / copilot / antigravity / grok / cursor ("gemini"
@@ -548,8 +577,8 @@ Every read of another tool's file is optional and asked for first:
   provider the old version did not have (Grok and Cursor, for 0.7.0) is
   added switched off and asks when you tick it.
 - **A downgrade to 0.7.0 and back.** When 0.7.0 saves the file, it drops
-  `[reads]`, `[ui.rows]`, `[ui.model]`, `[ui.tooltip]`, `[ui.panel]` and
-  `[tune]`, and writes `"usage_token"` as `"subscription"`. The next 0.7.1
+  `[reads]`, `[ui.rows]`, `[ui.model]`, `[ui.widget]`, `[ui.tooltip]`,
+  `[ui.panel]`, `[ui.tray]` and `[tune]`, and writes `"usage_token"` as `"subscription"`. The next 0.7.1
   start takes the file for an upgrade: it allows every provider switched on
   and shows the update notice again. Its record of the sources settled is
   gone too, so a stored usage token or Copilot token becomes the source

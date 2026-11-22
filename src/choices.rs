@@ -305,12 +305,17 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
         }
         PickerAction::SetTip { part, place, on } => {
             let numbers = match place {
+                NumbersOn::Widget => &mut config.ui.widget,
                 NumbersOn::Tooltip => &mut config.ui.tooltip,
                 NumbersOn::Panel => &mut config.ui.panel,
             };
             let before = *numbers;
-            numbers.set(*part, *on);
+            numbers.set(*part, *on, *place);
             out.changed = *numbers != before;
+        }
+        PickerAction::SetTrayStyle(style) => {
+            out.changed = config.ui.tray.style != *style;
+            config.ui.tray.style = *style;
         }
         PickerAction::SetSource(source) => {
             config.ui.model.source = *source;
@@ -486,8 +491,10 @@ pub(crate) fn picker_input_with(
             .map(String::from)
             .collect(),
         model: config.ui.model.clone(),
+        widget: config.ui.widget,
         tip: config.ui.tooltip,
         panel: config.ui.panel,
+        tray_style: config.ui.tray.style,
         reads: config.reads.clone(),
         enabled: config
             .providers
@@ -1021,7 +1028,18 @@ mod tests {
         let mut config = Config::default();
         assert_eq!(config.ui.panel, UiNumbers::PERCENT_ONLY);
         assert!(!toml::to_string(&config).unwrap().contains("[ui.panel]"));
-        assert!(!apply(&mut config, &set(TipPart::Percent, false)).changed);
+        // With its bar on, the percentage may go: the bar alone stays.
+        assert!(apply(&mut config, &set(TipPart::Percent, false)).changed);
+        let bar_only = UiNumbers {
+            percent: false,
+            reset: false,
+            bar: true,
+        };
+        assert_eq!(config.ui.panel, bar_only);
+        assert!(!apply(&mut config, &set(TipPart::Bar, false)).changed);
+        let back: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(back.ui.panel, bar_only);
+        assert!(apply(&mut config, &set(TipPart::Percent, true)).changed);
         assert!(apply(&mut config, &set(TipPart::Reset, true)).changed);
         assert_eq!(config.ui.panel, UiNumbers::default());
         // The tooltip's choice is its own.
@@ -1089,6 +1107,7 @@ bar = false
                 ..UiNumbers::PERCENT_ONLY
             }
         );
+        // Neither number: the bar alone, which is something.
         let neither: Config = toml::from_str(
             "[ui.panel]
 percent = false
@@ -1096,7 +1115,24 @@ reset = false
 ",
         )
         .unwrap();
-        assert_eq!(neither.ui.panel, UiNumbers::PERCENT_ONLY);
+        assert_eq!(
+            neither.ui.panel,
+            UiNumbers {
+                percent: false,
+                reset: false,
+                bar: true,
+            }
+        );
+        // Nothing at all: the default again.
+        let nothing: Config = toml::from_str(
+            "[ui.panel]
+percent = false
+reset = false
+bar = false
+",
+        )
+        .unwrap();
+        assert_eq!(nothing.ui.panel, UiNumbers::PERCENT_ONLY);
         // An older [ui.panel] without the key keeps its bar.
         let old: UiNumbers = toml::from_str("percent = true\nreset = true").unwrap();
         assert!(old.bar);

@@ -5,7 +5,7 @@
 
 use super::renderer::{self, NAME_WIDTH, PCT_WIDTH, ROW_GAP};
 use super::theme::Dimensions;
-use crate::config::schema::{ColumnFlow, DetailLevel, Layout, UIConfig, WidthScale};
+use crate::config::schema::{ColumnFlow, DetailLevel, Layout, UIConfig, UiNumbers, WidthScale};
 use crate::config::tune::{Countdown, Tune};
 use crate::rows::RowView;
 
@@ -107,6 +107,9 @@ pub enum RowTier {
     Nameless,
     /// The percent alone, centred. No bar is built at all.
     PercentOnly,
+    /// A line without its bar: the name and the percentage; the reset,
+    /// the widest text, is dropped first.
+    Short,
 }
 
 /// Full window layout.
@@ -122,6 +125,74 @@ pub struct WindowLayout {
     pub model_lines: Vec<Option<Rect>>,
     /// The sizes this layout was computed with; the renderer draws with them.
     pub metrics: WidgetMetrics,
+    /// What each row shows (`[ui.widget]`) and the slots measured for it.
+    pub numbers: UiNumbers,
+    pub slots: Slots,
+}
+
+/// The room a row's texts are given where they share one line (a Compact
+/// row, every row without its bar), in whole pixels at the text size:
+/// what the widest of them takes, so the rows line up and the widget is
+/// only as wide as they are. Measured once per shape (`Shape::of_tuned`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Slots {
+    /// The widest name the rows show in full, held to `NAME_SLOT_MAX`.
+    pub name: u32,
+    /// The widest reset the rows can show (`renderer::medium_meta_widest`).
+    pub reset: u32,
+    /// Expanded's: the widest text on the left of its meta line
+    /// (`renderer::expanded_left_widest`).
+    pub left: u32,
+}
+
+/// The most a name is given on a line without a bar; a longer one takes a
+/// shorter form of itself (`Renderer::fit_name`).
+const NAME_SLOT_MAX: f32 = 110.0;
+
+/// A row without its bar, in the rows layout: one line (Expanded: one more
+/// for its weekly limit). The columns layout is made of bars and keeps them.
+pub fn bare(numbers: &UiNumbers, layout: &Layout) -> bool {
+    !numbers.bar && !matches!(layout, Layout::Horizontal)
+}
+
+/// Whether a row's line carries its reset time: always without the bar; with
+/// it, a Compact row only when the percentage is off (with both, the reset of
+/// the soonest row is the hint line under the rows, as it always was).
+pub fn reset_on_line(numbers: &UiNumbers) -> bool {
+    numbers.reset && !(numbers.bar && numbers.percent)
+}
+
+/// The percentage's slot on a line, at the detail's size: Compact's
+/// `PCT_WIDTH`, wider for the bigger figures of Medium and Expanded.
+pub fn pct_slot(detail: &DetailLevel, m: &WidgetMetrics) -> f32 {
+    let (_, pct, _) = renderer::line_sizes(detail);
+    m.t(PCT_WIDTH * pct / 11.0)
+}
+
+/// What the right of a line takes: the reset's slot and the percentage's,
+/// with a gap between them.
+pub fn line_right(detail: &DetailLevel, m: &WidgetMetrics, n: &UiNumbers, s: &Slots) -> f32 {
+    let pct = if n.percent { pct_slot(detail, m) } else { 0.0 };
+    let reset = if reset_on_line(n) {
+        s.reset as f32
+    } else {
+        0.0
+    };
+    let gap = if pct > 0.0 && reset > 0.0 {
+        m.t(ROW_GAP)
+    } else {
+        0.0
+    };
+    pct + reset + gap
+}
+
+/// The name's slot on a line: Compact's `NAME_WIDTH`, as it always was; a
+/// line without a bar, the widest name its rows show.
+pub fn line_name(detail: &DetailLevel, m: &WidgetMetrics, s: &Slots) -> f32 {
+    match detail {
+        DetailLevel::Compact => m.t(NAME_WIDTH),
+        DetailLevel::Medium | DetailLevel::Expanded => s.name as f32,
+    }
 }
 
 /// What the widget's size depends on besides the config: one entry per row
@@ -138,6 +209,10 @@ pub struct Shape {
     /// not connected. The widget says so and a click opens the picker,
     /// instead of pointing at the providers (`with_unshown`).
     pub unshown: bool,
+    /// What each row shows (`[ui.widget]`).
+    pub numbers: UiNumbers,
+    /// The room its texts take on a line (`Slots`).
+    pub slots: Slots,
 }
 
 impl Shape {
@@ -147,6 +222,8 @@ impl Shape {
             model_lines: vec![false; n],
             choose: false,
             unshown: false,
+            numbers: UiNumbers::default(),
+            slots: Slots::default(),
         }
     }
 
@@ -191,6 +268,8 @@ impl Shape {
         measure: impl Fn(&str, f32) -> f32,
     ) -> Self {
         let columns = matches!(ui.layout, Layout::Horizontal);
+        let numbers = ui.widget;
+        let bare = bare(&numbers, &ui.layout);
         let (width, pad_h) = rows_frame(&ui.detail, &ui.width_scale, m);
         let row_w = width - pad_h * 2.0;
         let model_lines = rows
@@ -201,15 +280,62 @@ impl Shape {
                         || match ui.detail {
                             DetailLevel::Compact => false,
                             DetailLevel::Expanded => true,
+                            // One line, or the bar without the meta line.
+                            DetailLevel::Medium if bare || !numbers.reset => true,
                             DetailLevel::Medium => medium_needs_line(row, row_w, m, &measure),
                         })
             })
             .collect();
+        let slots = if columns {
+            Slots::default()
+        } else {
+            line_slots(&ui.detail, m, rows, &measure)
+        };
         Self {
             model_lines,
             choose: choose && rows.is_empty(),
             unshown: false,
+            numbers,
+            slots,
         }
+    }
+}
+
+/// The slots of `rows` on a line at the detail's sizes (`Slots`).
+fn line_slots(
+    detail: &DetailLevel,
+    m: &WidgetMetrics,
+    rows: &[RowView],
+    measure: &impl Fn(&str, f32) -> f32,
+) -> Slots {
+    if rows.is_empty() {
+        return Slots::default();
+    }
+    let (name_size, _, reset_size) = renderer::line_sizes(detail);
+    let longest = renderer::longest_countdown(m.countdown);
+    let name = rows
+        .iter()
+        .filter_map(|r| r.names.first())
+        .map(|n| measure(n, m.t(name_size)))
+        .fold(0.0, f32::max)
+        .min(m.t(NAME_SLOT_MAX));
+    let reset = rows
+        .iter()
+        .map(|r| {
+            let widest = renderer::medium_meta_widest(&r.data, m.countdown)
+                .unwrap_or_else(|| longest.to_string());
+            measure(&widest, m.t(reset_size))
+        })
+        .fold(measure(longest, m.t(reset_size)), f32::max);
+    let left = rows
+        .iter()
+        .filter_map(|r| renderer::expanded_left_widest(&r.data, m.countdown))
+        .map(|t| measure(&t, m.t(renderer::EXPANDED_LEFT_SIZE)))
+        .fold(0.0, f32::max);
+    Slots {
+        name: name.ceil() as u32,
+        reset: reset.ceil() as u32,
+        left: left.ceil() as u32,
     }
 }
 
@@ -363,17 +489,24 @@ pub fn compute_tuned(
     // hint regardless of the user's chosen layout, so it never clips (a
     // horizontal 0-provider window would otherwise be ~60px wide).
     if shape.model_lines.is_empty() {
-        let mut win = vertical(&DetailLevel::Compact, &WidthScale::Full, &[false], m);
+        let mut win = vertical(
+            &DetailLevel::Compact,
+            &WidthScale::Full,
+            &Shape::plain(1),
+            m,
+        );
         win.model_lines.clear();
         return win;
     }
-    let lines = &shape.model_lines;
-    match layout {
-        Layout::Vertical => vertical(detail, width_scale, lines, m),
-        Layout::Horizontal => horizontal(detail, column_flow, lines, m),
+    let mut win = match layout {
+        Layout::Vertical => vertical(detail, width_scale, shape, m),
+        Layout::Horizontal => horizontal(detail, column_flow, &shape.model_lines, m),
         // Legacy config value: the 2x2 mode was removed from the UI.
-        Layout::Grid => vertical(detail, width_scale, lines, m),
-    }
+        Layout::Grid => vertical(detail, width_scale, shape, m),
+    };
+    win.numbers = shape.numbers;
+    win.slots = shape.slots;
+    win
 }
 
 /// The rows layout's window width.
@@ -423,6 +556,57 @@ fn two_line_box(body: impl FnOnce(Rect) -> BodyLayout, m: &WidgetMetrics) -> Win
         row_tier: RowTier::Full,
         model_lines: Vec::new(),
         metrics: *m,
+        numbers: UiNumbers::default(),
+        slots: Slots::default(),
+    }
+}
+
+/// A row's height for what it shows: Compact's is one line whatever it
+/// shows; Medium without the bar is one line, with the bar but without
+/// the reset it loses its meta line; Expanded without the bar loses the
+/// bar's band and keeps its two lines.
+fn numbers_row_height(detail: &DetailLevel, m: &WidgetMetrics, n: &UiNumbers) -> f32 {
+    match detail {
+        DetailLevel::Medium if !n.bar => Dimensions::scale(22.0) * m.text,
+        DetailLevel::Medium if !n.reset => {
+            Dimensions::scale(28.0) * m.text + renderer::row_bar_thickness(detail) * (m.bar - 1.0)
+        }
+        DetailLevel::Expanded if !n.bar => Dimensions::scale(41.0) * m.text,
+        _ => row_height(detail, m),
+    }
+}
+
+/// How much of a line fits `row_w` (`row_tier` for a line that is not
+/// today's Compact one): the name, the bar when there is one, the texts.
+fn line_tier(
+    detail: &DetailLevel,
+    row_w: f32,
+    m: &WidgetMetrics,
+    n: &UiNumbers,
+    s: &Slots,
+) -> RowTier {
+    let right = line_right(detail, m, n, s);
+    let gap = m.t(ROW_GAP);
+    let name = line_name(detail, m, s);
+    let right_gap = if right > 0.0 { gap } else { 0.0 };
+    let short = n.percent && reset_on_line(n) && row_w >= name + gap + pct_slot(detail, m);
+    if n.bar {
+        // A Compact line with its bar: the bar is what runs out first.
+        if row_w - name - gap - right - right_gap >= MIN_BAR {
+            RowTier::Full
+        } else if row_w - right - right_gap >= MIN_BAR {
+            RowTier::Nameless
+        } else {
+            RowTier::PercentOnly
+        }
+    } else if row_w >= name + gap + right {
+        RowTier::Full
+    } else if short {
+        RowTier::Short
+    } else if row_w >= right {
+        RowTier::Nameless
+    } else {
+        RowTier::PercentOnly
     }
 }
 
@@ -431,11 +615,34 @@ fn two_line_box(body: impl FnOnce(Rect) -> BodyLayout, m: &WidgetMetrics) -> Win
 fn vertical(
     detail: &DetailLevel,
     width_scale: &WidthScale,
-    lines: &[bool],
+    shape: &Shape,
     m: &WidgetMetrics,
 ) -> WindowLayout {
-    let (width, pad_h) = rows_frame(detail, width_scale, m);
-    let row_h = row_height(detail, m);
+    let lines = &shape.model_lines;
+    let n = &shape.numbers;
+    let bare = !n.bar;
+    let (mut width, pad_h) = rows_frame(detail, width_scale, m);
+    // Without the bar a row is only as wide as its texts: the name, air,
+    // the reset and the percentage (Expanded: the wider of its two lines).
+    // Never wider than with the bar.
+    if bare {
+        let s = &shape.slots;
+        let air = m.t(ROW_GAP) * 2.0;
+        let pct = if n.percent { pct_slot(detail, m) } else { 0.0 };
+        let content = if *detail == DetailLevel::Expanded {
+            let reset = if n.reset { s.reset as f32 } else { 0.0 };
+            (s.name as f32 + air + pct).max(s.left as f32 + air + reset)
+        } else {
+            line_name(detail, m, s) + air + line_right(detail, m, n, s)
+        };
+        // A narrower width step drops the reset first, never the name: the
+        // name and the one number left are the least a row is.
+        let least = line_name(detail, m, s) + air + if n.percent { pct } else { s.reset as f32 };
+        width = width
+            .min((content + pad_h * 2.0).ceil())
+            .max((least + pad_h * 2.0).ceil());
+    }
+    let row_h = numbers_row_height(detail, m, n);
     let line_h = m.t(MODEL_LINE_H);
 
     let mut rows = Vec::with_capacity(lines.len());
@@ -464,8 +671,23 @@ fn vertical(
     // The hint is written for the natural width and the renderer drops it once
     // the rows lose their names, so its height must go with it — otherwise a
     // narrowed widget keeps a band of empty background under the last row.
-    let tier = row_tier(detail, width - pad_h * 2.0, m);
-    let show_hint = *detail == DetailLevel::Compact && tier == RowTier::Full;
+    // Today's rows (a Compact row with its bar and percentage, any Medium or
+    // Expanded row with its bar, an Expanded row without it) keep today's
+    // tiers; a line, its own.
+    let today = match detail {
+        DetailLevel::Compact => n.bar && n.percent,
+        DetailLevel::Medium => n.bar,
+        DetailLevel::Expanded => true,
+    };
+    let tier = if today {
+        row_tier(detail, width - pad_h * 2.0, m)
+    } else {
+        line_tier(detail, width - pad_h * 2.0, m, n, &shape.slots)
+    };
+    // The soonest reset under the rows: Compact's, while its rows show the
+    // bar and the percentage but not their own reset.
+    let show_hint =
+        *detail == DetailLevel::Compact && tier == RowTier::Full && n.bar && n.percent && n.reset;
     let hint_h = if show_hint { m.t(HINT_HEIGHT) } else { 0.0 };
     let hint = Rect {
         x: pad_h,
@@ -482,6 +704,8 @@ fn vertical(
         row_tier: tier,
         model_lines,
         metrics: *m,
+        numbers: *n,
+        slots: shape.slots,
     }
 }
 
@@ -581,6 +805,8 @@ fn horizontal(
         row_tier: RowTier::Full,
         model_lines,
         metrics: *m,
+        numbers: UiNumbers::default(),
+        slots: Slots::default(),
     }
 }
 
@@ -1279,8 +1505,7 @@ mod tests {
     fn a_model_line_follows_the_text_size() {
         let shape = Shape {
             model_lines: vec![true, false],
-            choose: false,
-            unshown: false,
+            ..Shape::plain(2)
         };
         let m = metrics(1.5, 1.0, 1.0, 0.0);
         let win = compute_tuned(

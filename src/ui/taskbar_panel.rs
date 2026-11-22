@@ -218,7 +218,13 @@ const H_BAR: f32 = 1.0 - 2.0 * H_PAD - H_NUM - H_GAP;
 /// Whether a row is the classic "number + bar": the percentage or the time,
 /// then the bar (the panel of 0.7.0, its size and its pixels).
 fn classic(numbers: &UiNumbers) -> bool {
-    numbers.bar && !(numbers.percent && numbers.reset)
+    numbers.bar && numbers.percent != numbers.reset
+}
+
+/// Whether a row starts with a number: the percentage or the time. Without
+/// one it is the bar alone.
+fn has_number(numbers: &UiNumbers) -> bool {
+    numbers.percent || numbers.reset
 }
 
 /// The panel's length along a horizontal bar, as a share of the classic
@@ -230,9 +236,15 @@ fn width_factor(numbers: &UiNumbers, k: Knobs) -> f32 {
         // Both terms are exactly 0.0 at the default knobs.
         return 1.0 + H_NUM * (k.digit - 1.0) + H_BAR * (k.bar_len - 1.0);
     }
-    let mut f = 2.0 * H_PAD + H_NUM * k.digit;
+    let mut f = 2.0 * H_PAD;
+    if has_number(numbers) {
+        f += H_NUM * k.digit;
+    }
     if numbers.bar {
-        f += H_GAP + H_BAR * k.bar_len;
+        if has_number(numbers) {
+            f += H_GAP;
+        }
+        f += H_BAR * k.bar_len;
     }
     if numbers.percent && numbers.reset {
         f += H_GAP + H_NUM * k.digit;
@@ -242,14 +254,17 @@ fn width_factor(numbers: &UiNumbers, k: Knobs) -> f32 {
 
 /// One provider's height standing up, in digit heights: the first number,
 /// the time under the percentage when both are shown, and the bar
-/// (`bar_thick` times its usual thickness).
+/// (`bar_thick` times its usual thickness), alone without a number.
 fn stack_row(numbers: &UiNumbers, bar_thick: f32) -> f32 {
-    let mut row = 1.0;
+    let mut row = if has_number(numbers) { 1.0 } else { 0.0 };
     if numbers.percent && numbers.reset {
         row += STACK_UNDER + STACK_SMALL;
     }
     if numbers.bar {
-        row += STACK_UNDER + STACK_BAR * bar_thick;
+        if has_number(numbers) {
+            row += STACK_UNDER;
+        }
+        row += STACK_BAR * bar_thick;
     }
     row
 }
@@ -417,9 +432,10 @@ fn paint_rows(
 }
 
 /// The rows other than the classic "number + bar": the percentage and the
-/// time with the bar ("25% ▬▬ 2h14"), or the numbers without it ("25%",
-/// "2h14", "25%  2h14"). The same digit size, gaps and bar as the classic
-/// panel; the panel is as much longer or shorter as its columns or lines.
+/// time with the bar ("25% ▬▬ 2h14"), the numbers without it ("25%",
+/// "2h14", "25%  2h14"), or the bar alone. The same digit size, gaps and bar
+/// as the classic panel; the panel is as much longer or shorter as its
+/// columns or lines.
 fn paint_rows_more(
     pm: &mut Pixmap,
     vertical: bool,
@@ -456,16 +472,16 @@ fn paint_rows_more(
         for (i, data) in top.iter().enumerate() {
             let ink = ink_of(data);
             let mut y = top0 + i as f32 * (row_h + row_gap);
-            first(pm, data, pad_x, y, inner, digit_h, ink);
-            y += digit_h;
+            if has_number(numbers) {
+                first(pm, data, pad_x, y, inner, digit_h, ink);
+                y += digit_h + under;
+            }
             if both {
-                y += under;
                 let t = countdown_of(data);
                 draw_text_like_digits(pm, &t, pad_x, y, inner, small, false, ink);
-                y += small;
+                y += small + under;
             }
             if numbers.bar {
-                y += under;
                 paint_bar(pm, data, bar_x, y, bar_w, bar_h, ink, track);
             }
         }
@@ -488,15 +504,15 @@ fn paint_rows_more(
             let y = cy - digit_h / 2.0;
             let ink = ink_of(data);
             let mut x = pad_x;
-            first(pm, data, x, y, num_w, digit_h, ink);
-            x += num_w;
+            if has_number(numbers) {
+                first(pm, data, x, y, num_w, digit_h, ink);
+                x += num_w + gap;
+            }
             if numbers.bar {
-                x += gap;
                 paint_bar(pm, data, x, cy - bar_h / 2.0, bar_w, bar_h, ink, track);
-                x += bar_w;
+                x += bar_w + gap;
             }
             if both {
-                x += gap;
                 let t = countdown_of(data);
                 draw_text_like_digits(pm, &t, x, y, num_w, digit_h, false, ink);
             }
@@ -1331,6 +1347,7 @@ mod tests {
             ("percent", n(true, false, false)),
             ("time", n(false, true, false)),
             ("both", n(true, true, false)),
+            ("bar", n(false, false, true)),
         ]
     }
 
@@ -1350,8 +1367,8 @@ mod tests {
             .iter()
             .map(|(_, n)| panel_size(false, 48, n, k).0)
             .collect();
-        // time-bar, both-bar, percent, time, both
-        assert_eq!(widths, [119, 161, 50, 50, 92]);
+        // time-bar, both-bar, percent, time, both, bar
+        assert_eq!(widths, [119, 161, 50, 50, 92, 77]);
         for (_, n) in panel_variants() {
             let (_, h) = panel_size(true, 62, &n, k);
             assert!(h > 20 && h < 140, "{n:?}: {h}");

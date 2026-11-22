@@ -1,12 +1,14 @@
 // ui/tray.rs — tray-area usage indicators.
 //
 // Two modes (config `general.indicator`), both a SINGLE tray icon:
-//   Tray — two concentric rings for the two providers the taskbar panel
-//          shows (app.rs `visible_data`: those ticked in the Taskbar column,
-//          untouched the first two in the widget), the busier outside and
-//          the other inside, sweeping clockwise from 12 o'clock. Monochrome,
-//          inked in the system taskbar theme rather than the widget palette,
-//          so the shape alone carries the reading on a light or a dark bar.
+//   Tray — the two providers the taskbar panel shows (app.rs
+//          `visible_data`: those ticked in the Taskbar column, untouched the
+//          first two in the widget), in the look `[ui.tray] style` chooses:
+//          two concentric rings (the busier outside, sweeping clockwise from
+//          12 o'clock), two upright bars (the busier left), the busier's
+//          percentage as digits, or its sector of a disc. Monochrome, inked
+//          in the system taskbar theme rather than the widget palette, so the
+//          shape alone carries the reading on a light or a dark bar.
 //   Bars — horizontal progress bars stacked, one row per provider shown
 //          (the same two); with a single provider the row gains its percent
 //          number on top.
@@ -17,7 +19,7 @@
 // integer % changes, to stay at ~0% idle CPU. The icon carries the widget's
 // context menu; a left-click toggles the overlay.
 
-use crate::config::schema::{IndicatorKind, UiNumbers};
+use crate::config::schema::{IndicatorKind, TrayStyle, UiNumbers};
 use crate::config::tune::TuneTray;
 use crate::providers::{ProviderData, ProviderStatus};
 use crate::rows::{ModelLabel, RowView};
@@ -48,6 +50,8 @@ pub struct Tray {
     first_install: bool,
     /// The rings' stroke and spacing (`[tune.tray]`).
     rings: Rings,
+    /// The look of the Tray mode's icon (`[ui.tray] style`).
+    style: TrayStyle,
     /// The icon's own tooltip (`tray_tip_text`): the rows chosen in the
     /// Tooltip column, as the panel's tooltip shows them. Empty until the
     /// app first sets it.
@@ -64,8 +68,23 @@ impl Tray {
             fallback: false,
             first_install: false,
             rings: Rings::DEFAULT,
+            style: TrayStyle::Rings,
             tip: String::new(),
         }
+    }
+
+    /// The icon's look (`[ui.tray] style`); redrawn when it changed.
+    pub fn set_style(
+        &mut self,
+        style: TrayStyle,
+        providers: &[ProviderData],
+        theme: &ComputedTheme,
+    ) {
+        if self.style == style {
+            return;
+        }
+        self.style = style;
+        self.update(providers, theme, true);
     }
 
     /// The `[tune.tray]` knobs; the icon is redrawn when the rings they
@@ -147,8 +166,8 @@ impl Tray {
             // match so it stays readable on a light taskbar.
             let light = crate::platform::system_uses_light_theme();
             let img = if rings {
-                // The ring icon is monochrome by design — it takes no theme.
-                draw_ring_icon(providers, light, self.rings)
+                // Every style is monochrome by design — it takes no theme.
+                draw_styled_icon(providers, light, self.rings, self.style)
             } else {
                 draw_stacked_icon(providers, theme, light)
             };
@@ -557,32 +576,217 @@ impl Rings {
 fn draw_ring_icon(providers: &[ProviderData], light: bool, rings: Rings) -> Result<Icon> {
     let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
     pm.fill(tiny_skia::Color::TRANSPARENT);
+    paint_rings(&mut pm, two_busiest(providers), Inks::taskbar(light), rings);
+    to_icon(&pm)
+}
+
+/// The rings for the busier and the other percentage.
+fn paint_rings(pm: &mut Pixmap, pcts: (Option<u8>, Option<u8>), inks: Inks, rings: Rings) {
     // One ink for everything. The tray sits on the system taskbar, whose theme
     // is independent of the widget's palette, and at 16px a hue difference is
     // far weaker than the arc length — so the shape does the talking.
-    let ink = tray_ink(light, 255);
-    let track = tray_ink(light, 64);
+    let (ink, track) = (inks.ink, inks.track);
 
-    match two_busiest(providers) {
+    match pcts {
         // Two providers with data: the busier takes the outer ring, the
         // other the inner one. Which is which is answered by the tooltip,
         // which lists both with their percentages.
         (Some(first), Some(second)) => {
-            draw_ring(&mut pm, RING_OUTER, rings.w, first as f32, ink, track);
+            draw_ring(pm, RING_OUTER, rings.w, first as f32, ink, track);
             let inner = RING_OUTER - rings.step;
-            draw_ring(&mut pm, inner, rings.w, second as f32, ink, track);
+            draw_ring(pm, inner, rings.w, second as f32, ink, track);
         }
         // Exactly one: the outer ring alone, so the icon keeps its meaning
         // when a second provider starts reporting — nothing moves, a ring
         // simply appears inside.
         (Some(only), None) => {
-            draw_ring(&mut pm, RING_OUTER, rings.w, only as f32, ink, track);
+            draw_ring(pm, RING_OUTER, rings.w, only as f32, ink, track);
         }
         // No percentage data yet (loading / binary / error).
-        _ => fill_circle(&mut pm, CENTER, CENTER, 5.0, tray_ink(light, 200)),
+        _ => fill_circle(pm, CENTER, CENTER, 5.0, inks.dot),
+    }
+}
+
+/// The Tray mode's icon in `style`.
+fn draw_styled_icon(
+    providers: &[ProviderData],
+    light: bool,
+    rings: Rings,
+    style: TrayStyle,
+) -> Result<Icon> {
+    if style == TrayStyle::Rings {
+        return draw_ring_icon(providers, light, rings);
+    }
+    let mut pm = Pixmap::new(ICON_SIZE, ICON_SIZE).context("pixmap alloc")?;
+    pm.fill(tiny_skia::Color::TRANSPARENT);
+    paint_style(
+        &mut pm,
+        two_busiest(providers),
+        Inks::taskbar(light),
+        rings,
+        style,
+    );
+    to_icon(&pm)
+}
+
+/// The colours an icon is painted in: the fill, the faint track, and the
+/// placeholder dot before any figure.
+#[derive(Clone, Copy)]
+struct Inks {
+    ink: tiny_skia::Color,
+    track: tiny_skia::Color,
+    dot: tiny_skia::Color,
+}
+
+impl Inks {
+    /// The taskbar's, light or dark (`tray_ink`).
+    fn taskbar(light: bool) -> Self {
+        Self {
+            ink: tray_ink(light, 255),
+            track: tray_ink(light, 64),
+            dot: tray_ink(light, 200),
+        }
     }
 
-    to_icon(&pm)
+    /// `ink`, with the track and the dot as faint as the taskbar's.
+    fn of(ink: tiny_skia::Color) -> Self {
+        let faint = |a: f32| {
+            let mut c = ink;
+            c.apply_opacity(a);
+            c
+        };
+        Self {
+            ink,
+            track: faint(64.0 / 255.0),
+            dot: faint(200.0 / 255.0),
+        }
+    }
+}
+
+/// Paint the icon in `style` for the busier and the other percentage.
+fn paint_style(
+    pm: &mut Pixmap,
+    pcts: (Option<u8>, Option<u8>),
+    inks: Inks,
+    rings: Rings,
+    style: TrayStyle,
+) {
+    match style {
+        TrayStyle::Rings => paint_rings(pm, pcts, inks, rings),
+        TrayStyle::Bars => paint_upright_bars(pm, pcts, inks),
+        TrayStyle::Number => paint_number(pm, pcts, inks),
+        TrayStyle::Sector => paint_sector(pm, pcts, inks),
+    }
+}
+
+/// The icon in `style` as the window's tiles show it: two providers at 48%
+/// and 25%, `size` pixels square, in `ink` (the window's text colour).
+pub(crate) fn style_preview(style: TrayStyle, ink: tiny_skia::Color, size: u32) -> Option<Pixmap> {
+    let mut src = Pixmap::new(ICON_SIZE, ICON_SIZE)?;
+    paint_style(
+        &mut src,
+        (Some(48), Some(25)),
+        Inks::of(ink),
+        Rings::DEFAULT,
+        style,
+    );
+    let mut out = Pixmap::new(size, size)?;
+    let k = size as f32 / ICON_SIZE as f32;
+    let paint = tiny_skia::PixmapPaint {
+        quality: tiny_skia::FilterQuality::Bicubic,
+        ..Default::default()
+    };
+    out.draw_pixmap(
+        0,
+        0,
+        src.as_ref(),
+        &paint,
+        Transform::from_scale(k, k),
+        None,
+    );
+    Some(out)
+}
+
+/// Upright bars: their width, the gap between the two, and their top and
+/// length, in the 32px icon space. At 16px a bar is 4px wide and the gap
+/// between them 2px, wide enough to read as two.
+const UPRIGHT_W: f32 = 8.0;
+const UPRIGHT_GAP: f32 = 4.0;
+const UPRIGHT_TOP: f32 = 3.0;
+const UPRIGHT_LEN: f32 = 26.0;
+/// The least a non-zero bar fills, so a small value never reads as none.
+const UPRIGHT_MIN: f32 = 3.0;
+
+/// Two upright bars filling from the bottom, the busier on the left, like
+/// a level meter; one provider alone has one bar in the middle.
+fn paint_upright_bars(pm: &mut Pixmap, pcts: (Option<u8>, Option<u8>), inks: Inks) {
+    let (ink, track) = (inks.ink, inks.track);
+    let bar = |pm: &mut Pixmap, x: f32, pct: u8| {
+        let r = 3.0;
+        fill_round_rect(pm, x, UPRIGHT_TOP, UPRIGHT_W, UPRIGHT_LEN, r, track);
+        let frac = (pct as f32 / 100.0).clamp(0.0, 1.0);
+        if frac > 0.0 {
+            let h = (UPRIGHT_LEN * frac).max(UPRIGHT_MIN);
+            let y = UPRIGHT_TOP + UPRIGHT_LEN - h;
+            fill_round_rect(pm, x, y, UPRIGHT_W, h, r.min(h / 2.0), ink);
+        }
+    };
+    let pair_x = (ICON_SIZE as f32 - UPRIGHT_W * 2.0 - UPRIGHT_GAP) / 2.0;
+    match pcts {
+        (Some(first), Some(second)) => {
+            bar(pm, pair_x, first);
+            bar(pm, pair_x + UPRIGHT_W + UPRIGHT_GAP, second);
+        }
+        (Some(only), None) => bar(pm, (ICON_SIZE as f32 - UPRIGHT_W) / 2.0, only),
+        _ => fill_circle(pm, CENTER, CENTER, 5.0, inks.dot),
+    }
+}
+
+/// The busier provider's percentage as digits filling the icon; a limit
+/// reached (100% or more) is "!", which reads at 16px where "100" would
+/// not. The other provider is in the tooltip.
+fn paint_number(pm: &mut Pixmap, pcts: (Option<u8>, Option<u8>), inks: Inks) {
+    match pcts.0 {
+        Some(pct) => {
+            let text = if pct >= 100 {
+                "!".to_string()
+            } else {
+                pct.to_string()
+            };
+            draw_digits_fit(pm, &text, 0.0, 4.0, 32.0, 24.0, inks.ink);
+        }
+        None => fill_circle(pm, CENTER, CENTER, 5.0, inks.dot),
+    }
+}
+
+/// The disc a sector fills, 1px inside the canvas like the outer ring.
+const SECTOR_R: f32 = 15.0;
+/// The least angle a non-zero sector sweeps, so it never reads as none.
+const SECTOR_MIN: f32 = 0.25;
+
+/// The busier provider's share as a sector of a faint disc, from 12
+/// o'clock clockwise, like a clock face. The other one is in the tooltip.
+fn paint_sector(pm: &mut Pixmap, pcts: (Option<u8>, Option<u8>), inks: Inks) {
+    let Some(pct) = pcts.0 else {
+        fill_circle(pm, CENTER, CENTER, 5.0, inks.dot);
+        return;
+    };
+    fill_circle(pm, CENTER, CENTER, SECTOR_R, inks.track);
+    let frac = (pct as f32 / 100.0).clamp(0.0, 1.0);
+    if frac >= 1.0 {
+        fill_circle(pm, CENTER, CENTER, SECTOR_R, inks.ink);
+    } else if frac > 0.0 {
+        let sweep = (frac * std::f32::consts::TAU).max(SECTOR_MIN);
+        let steps = ((sweep * SECTOR_R / 0.5).ceil() as usize).clamp(6, 512);
+        let mut pb = PathBuilder::new();
+        pb.move_to(CENTER, CENTER);
+        for i in 0..=steps {
+            let a = RING_TOP + sweep * (i as f32 / steps as f32);
+            pb.line_to(CENTER + SECTOR_R * a.cos(), CENTER + SECTOR_R * a.sin());
+        }
+        pb.close();
+        fill_path(pm, pb, inks.ink);
+    }
 }
 
 /// 12 o'clock, where every ring starts.
@@ -1400,6 +1604,38 @@ mod tests {
             }
         }
         vb::check("tray", items);
+    }
+
+    /// The Tray mode's other looks (`[ui.tray] style`): the upright bars,
+    /// the number and the sector, for every fixture set and for one
+    /// provider at 0%, 4%, 100% and over, on a dark and a light taskbar.
+    #[test]
+    fn visual_baseline_tray_styles() {
+        use crate::ui::visual_baseline as vb;
+        let take = || LAST_ICON.with(|c| c.borrow_mut().take().expect("an icon was drawn"));
+        let mut items = Vec::new();
+        for light in [false, true] {
+            let ink = if light { "light" } else { "dark" };
+            for (sname, style) in [
+                ("bars", TrayStyle::Bars),
+                ("number", TrayStyle::Number),
+                ("sector", TrayStyle::Sector),
+            ] {
+                let mut sets: Vec<(String, Vec<ProviderData>)> = vb::sets()
+                    .into_iter()
+                    .map(|(n, p)| (n.to_string(), p))
+                    .collect();
+                for pct in [0, 4, 100, 130] {
+                    sets.push((format!("one-{pct}"), vec![data(ProviderId::Claude, pct)]));
+                }
+                for (set, providers) in sets {
+                    let rings = Rings::of(&TuneTray::default());
+                    draw_styled_icon(&providers, light, rings, style).unwrap();
+                    items.push((format!("{sname}-{set}-{ink}"), take()));
+                }
+            }
+        }
+        vb::check("tray-styles", items);
     }
 
     fn data(id: ProviderId, pct: u64) -> ProviderData {

@@ -130,8 +130,10 @@ fn input() -> PickerInput {
         // Untouched: the first two that run.
         taskbar_rows: vec!["claude".into(), "codex".into()],
         model: UiModel::default(),
+        widget: UiNumbers::default(),
         tip: UiNumbers::default(),
         panel: UiNumbers::PERCENT_ONLY,
+        tray_style: crate::config::schema::TrayStyle::default(),
         sign_in: Vec::new(),
         reads: Reads {
             sign_in: base.iter().map(|s| s.to_string()).collect(),
@@ -236,8 +238,10 @@ fn picker(input: PickerInput) -> Picker {
 }
 
 /// A picker with the list of names open, every tool's models showing.
+/// The What shows tab with the list of names and every tool in it open.
 fn opened(input: PickerInput) -> Picker {
     let mut p = picker(input);
+    on_tab(&mut p, Tab::Shows);
     p.names_open = true;
     p.open_names = p
         .input
@@ -282,6 +286,8 @@ fn area(p: &Picker, t: &Target) -> Option<(Layer, Rect)> {
             | El::Field { target, rect, .. }
             | El::Button { target, rect, .. }
             | El::Toggle { target, rect, .. }
+            | El::Tab { target, rect, .. }
+            | El::Tile { target, rect, .. }
             | El::Link { target, rect, .. } => (target.clone(), *rect),
             El::Close { rect, .. } => (Target::Close, *rect),
             _ => return None,
@@ -290,13 +296,28 @@ fn area(p: &Picker, t: &Target) -> Option<(Layer, Rect)> {
     })
 }
 
-/// The middle of a target, scrolled into view first.
+/// Show `tab`, as a click on it does.
+fn on_tab(p: &mut Picker, tab: Tab) {
+    if p.tab != tab {
+        p.activate(&Target::Tab(tab));
+        p.settle();
+    }
+}
+
+/// The middle of a target, scrolled into view first; on the other tab, that
+/// tab is shown first.
 fn spot(p: &mut Picker, t: &Target) -> (f32, f32) {
+    if area(p, t).is_none() {
+        let other = p.tab.other();
+        on_tab(p, other);
+    }
     let (layer, r) = area(p, t).expect("target laid out");
     if layer == Layer::Body {
         let f = p.frame();
+        // Scrolled, the heads are pinned over the list's top.
+        let top = f.viewport.y + COLS_H;
         if r.y < f.list_top() || bottom(&r) > bottom(&f.viewport) {
-            p.scroll = f.scroll + (r.y - f.list_top()) - 8.0;
+            p.scroll = f.scroll + (r.y - top) - 8.0;
             p.settle();
         }
     }
@@ -317,6 +338,7 @@ fn click(p: &mut Picker, t: &Target) -> Vec<PickerAction> {
 #[test]
 fn the_settings_file_link_opens_config_toml() {
     let mut p = picker(input());
+    on_tab(&mut p, Tab::Shows);
     let t = Target::SettingsFile;
     let (_, r) = area(&p, &t).expect("the link");
     // The last thing in the list.
@@ -338,6 +360,7 @@ fn the_settings_file_link_opens_config_toml() {
     assert!(shown.contains("Opens config.toml in Notepad"), "{shown}");
     // The keyboard reaches it, and Enter opens it.
     let mut p = picker(input());
+    on_tab(&mut p, Tab::Shows);
     p.handle(PickerEvent::Key(PickerKey::End));
     for _ in 0..200 {
         if p.focus == Some(t.clone()) {
@@ -353,7 +376,8 @@ fn the_settings_file_link_opens_config_toml() {
     // Not in the welcome.
     let mut welcome = input();
     welcome.mode = PickerMode::Welcome;
-    let p = picker(welcome);
+    let mut p = picker(welcome);
+    on_tab(&mut p, Tab::Shows);
     assert!(area(&p, &t).is_none());
     assert!(!texts(&p).contains(SETTINGS_FILE));
 }
@@ -556,6 +580,7 @@ fn version_needs_the_model_and_effort_may_go_alone() {
     let mut i = input();
     i.reads.tool_settings = true;
     let mut p = picker(i.clone());
+    on_tab(&mut p, Tab::Shows);
     // Version is dimmed and inert until Model is on.
     assert!(click(&mut p, &part(ModelPart::Version, Surface::Widget)).is_empty());
     assert!(p.ask.is_none());
@@ -575,6 +600,7 @@ fn version_needs_the_model_and_effort_may_go_alone() {
     // Model off takes the version with it.
     i.model.widget = vec![ModelPart::Model, ModelPart::Version];
     let mut p = picker(i);
+    on_tab(&mut p, Tab::Shows);
     assert!(ticked(&p, &part(ModelPart::Version, Surface::Widget)));
     assert_eq!(
         click(&mut p, &part(ModelPart::Model, Surface::Widget)),
@@ -951,6 +977,7 @@ fn allow_all_starts_every_tool_found() {
 #[test]
 fn the_names_open_by_tool() {
     let mut p = picker(with_model());
+    on_tab(&mut p, Tab::Shows);
     assert!(area(&p, &field("claude-opus-5-5")).is_none());
     assert!(area(&p, &Target::NamesOf("claude".into())).is_none());
     assert!(texts(&p).contains("4 models"));
@@ -975,6 +1002,7 @@ fn the_names_open_by_tool() {
 #[test]
 fn hover_shows_a_description() {
     let mut p = picker(with_model());
+    on_tab(&mut p, Tab::Shows);
     let effort = |p: &Picker| {
         p.frame()
             .els
@@ -993,7 +1021,6 @@ fn hover_shows_a_description() {
     p.scroll = (f.scroll + (r.y - f.list_top()) - 8.0).max(0.0);
     p.settle();
     let (r, text) = effort(&p);
-    let f = p.frame();
     let first_word = text.split(' ').next().unwrap().to_string();
     let shown = |p: &Picker| {
         p.scene()
@@ -1011,6 +1038,8 @@ fn hover_shows_a_description() {
     p.handle(PickerEvent::PointerLeave);
     assert!(!shown(&p));
     // Every extra row describes itself.
+    on_tab(&mut p, Tab::Rows);
+    let f = p.frame();
     let hints: Vec<String> = f
         .els
         .iter()
@@ -1134,6 +1163,10 @@ fn the_keyboard_walks_the_grid() {
     assert_eq!(p.focus, Some(Target::Close));
     assert!(p.focus_visible);
     key(&mut p, PickerKey::Tab);
+    assert_eq!(p.focus, Some(Target::Tab(Tab::Rows)));
+    key(&mut p, PickerKey::Tab);
+    assert_eq!(p.focus, Some(Target::Tab(Tab::Shows)));
+    key(&mut p, PickerKey::Tab);
     assert_eq!(p.focus, Some(row("claude", Surface::Widget)));
     key(&mut p, PickerKey::Right);
     assert_eq!(p.focus, Some(row("claude", Surface::Tooltip)));
@@ -1147,15 +1180,24 @@ fn the_keyboard_walks_the_grid() {
     key(&mut p, PickerKey::Up);
     assert_eq!(p.focus, Some(row("claude", Surface::Widget)));
     key(&mut p, PickerKey::BackTab);
+    assert_eq!(p.focus, Some(Target::Tab(Tab::Shows)));
+    // Enter on a tab shows it; the focus stays on it.
+    assert!(key(&mut p, PickerKey::Enter).is_empty());
+    assert_eq!(p.tab, Tab::Shows);
+    assert_eq!(p.focus, Some(Target::Tab(Tab::Shows)));
+    key(&mut p, PickerKey::BackTab);
+    key(&mut p, PickerKey::BackTab);
     assert_eq!(p.focus, Some(Target::Close));
     // End goes to the last control, scrolled into view: the settings
-    // file's link; with no model part on, the source waits and the list of
-    // names is closed, so above it is the names' heading.
+    // file's link; above it the names' heading, above that the tray
+    // icon's looks.
     key(&mut p, PickerKey::End);
     assert_eq!(p.focus, Some(Target::SettingsFile));
     assert!(p.scroll > 0.0);
     key(&mut p, PickerKey::Up);
     assert_eq!(p.focus, Some(Target::Names));
+    key(&mut p, PickerKey::Up);
+    assert_eq!(p.focus, Some(Target::TrayStyle(TrayStyle::Rings)));
 }
 
 #[test]
@@ -1538,25 +1580,37 @@ fn a_fresh_install_asks_about_the_tools_found() {
 
 // ─── The tooltip's percent and reset time ────────────────────
 
-/// Percent and Reset time have a tick in the Tooltip column and one in
-/// the Taskbar column, none for the widget, which always shows both. The
-/// tooltip starts with both, the panel with the percentage alone; the last
-/// one on in a column cannot be unticked.
+/// Percent, Reset time and Progress bar have a tick for the widget, the
+/// tooltip (no bar there: a dash) and the panel, on the What shows tab.
+/// The widget and the tooltip start with everything, the panel with the
+/// percentage and its bar; the last one on in a column cannot be unticked
+/// and says why on hover.
 #[test]
-fn the_tooltip_and_the_panel_choose_their_percent_and_reset_time() {
+fn the_widget_the_tooltip_and_the_panel_choose_what_rows_show() {
     use crate::config::schema::{NumbersOn, TipPart, UiNumbers};
+    let widget = |part| Target::Tip(part, NumbersOn::Widget);
     let tip = |part| Target::Tip(part, NumbersOn::Tooltip);
     let panel = |part| Target::Tip(part, NumbersOn::Panel);
     let set = |part, place, on| PickerAction::SetTip { part, place, on };
     let mut p = picker(input());
+    on_tab(&mut p, Tab::Shows);
     let text = texts(&p);
     assert!(
-        text.contains("Percent") && text.contains("Reset time"),
+        text.contains("Percent") && text.contains("Reset time") && text.contains("Progress bar"),
         "{text}"
     );
+    for part in [TipPart::Percent, TipPart::Reset, TipPart::Bar] {
+        assert!(ticked(&p, &widget(part)) && usable(&p, &widget(part)));
+    }
     assert!(ticked(&p, &tip(TipPart::Percent)) && ticked(&p, &tip(TipPart::Reset)));
+    assert!(area(&p, &tip(TipPart::Bar)).is_none());
     assert!(ticked(&p, &panel(TipPart::Percent)) && !ticked(&p, &panel(TipPart::Reset)));
-    assert!(!usable(&p, &panel(TipPart::Percent)));
+    // With its bar on, the panel's percentage may go.
+    assert!(usable(&p, &panel(TipPart::Percent)));
+    assert_eq!(
+        click(&mut p, &widget(TipPart::Bar)),
+        [set(TipPart::Bar, NumbersOn::Widget, false)]
+    );
     assert_eq!(
         click(&mut p, &tip(TipPart::Reset)),
         [set(TipPart::Reset, NumbersOn::Tooltip, false)]
@@ -1565,18 +1619,112 @@ fn the_tooltip_and_the_panel_choose_their_percent_and_reset_time() {
         click(&mut p, &panel(TipPart::Reset)),
         [set(TipPart::Reset, NumbersOn::Panel, true)]
     );
+    // The last one on stays, and its description says why.
     let mut i = input();
     i.tip = UiNumbers::PERCENT_ONLY;
+    i.widget = UiNumbers {
+        percent: false,
+        reset: true,
+        bar: false,
+    };
     let mut p = picker(i);
+    on_tab(&mut p, Tab::Shows);
     assert!(!usable(&p, &tip(TipPart::Percent)));
     assert!(click(&mut p, &tip(TipPart::Percent)).is_empty());
+    assert!(!usable(&p, &widget(TipPart::Reset)));
+    assert!(click(&mut p, &widget(TipPart::Reset)).is_empty());
+    let shown = texts(&p).replace('\n', " ");
+    assert!(shown.contains(lock_hint(NumbersOn::Widget)), "{shown}");
     // The ticks sit in their columns.
     let (_, t) = area(&p, &tip(TipPart::Reset)).unwrap();
     let (_, effort) = area(&p, &part(ModelPart::Effort, Surface::Tooltip)).unwrap();
     assert_eq!(t.x, effort.x);
+    let (_, w) = area(&p, &widget(TipPart::Reset)).unwrap();
     let (_, k) = area(&p, &panel(TipPart::Reset)).unwrap();
+    on_tab(&mut p, Tab::Rows);
     let (_, claude) = area(&p, &Target::Taskbar("claude".into())).unwrap();
-    assert_eq!(k.x, claude.x);
+    let (_, own) = area(&p, &row("claude", Surface::Widget)).unwrap();
+    assert_eq!((k.x, w.x), (claude.x, own.x));
+}
+
+/// The tray icon's look: a tile each, the chosen one outlined; a click on
+/// another asks for it, on the chosen one nothing.
+#[test]
+fn the_tray_icon_look_is_a_tile() {
+    let mut p = picker(input());
+    assert!(area(&p, &Target::TrayStyle(TrayStyle::Bars)).is_none());
+    on_tab(&mut p, Tab::Shows);
+    let tiles = |p: &Picker| {
+        p.frame()
+            .els
+            .iter()
+            .filter_map(|(_, el)| match el {
+                El::Tile { style, on, .. } => Some((*style, *on)),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        tiles(&p),
+        [
+            (TrayStyle::Rings, true),
+            (TrayStyle::Bars, false),
+            (TrayStyle::Number, false),
+            (TrayStyle::Sector, false)
+        ]
+    );
+    assert!(click(&mut p, &Target::TrayStyle(TrayStyle::Rings)).is_empty());
+    assert_eq!(
+        click(&mut p, &Target::TrayStyle(TrayStyle::Sector)),
+        [PickerAction::SetTrayStyle(TrayStyle::Sector)]
+    );
+    let mut i = input();
+    i.tray_style = TrayStyle::Number;
+    p.set_input(i);
+    assert!(tiles(&p).contains(&(TrayStyle::Number, true)));
+}
+
+/// The tabs: Rows on opening; a click shows the other at its top; the
+/// window keeps one height for both.
+#[test]
+fn the_tabs_switch_the_list_and_keep_the_height() {
+    let mut p = picker(with_model());
+    assert_eq!(p.tab, Tab::Rows);
+    assert!(area(&p, &row("claude", Surface::Widget)).is_some());
+    assert!(area(&p, &Target::Names).is_none());
+    let size = p.window_size();
+    p.handle(PickerEvent::Wheel { dy: -48.0 });
+    assert!(click(&mut p, &Target::Tab(Tab::Shows)).is_empty());
+    assert_eq!((p.tab, p.scroll), (Tab::Shows, 0.0));
+    assert!(area(&p, &Target::Names).is_some());
+    assert!(area(&p, &row("claude", Surface::Widget)).is_none());
+    assert_eq!(p.window_size(), size);
+    // Shown in the header, above the list.
+    let (layer, r) = area(&p, &Target::Tab(Tab::Rows)).unwrap();
+    assert_eq!(layer, Layer::Chrome);
+    assert!(bottom(&r) <= p.frame().viewport.y);
+}
+
+/// A description waits for the pointer to rest on what it describes,
+/// and the next one, straight after, follows sooner.
+#[test]
+fn a_description_waits_for_the_pointer_to_rest() {
+    let mut p = picker(input());
+    p.hint_delay = std::time::Duration::from_millis(300);
+    let (_, y) = spot(&mut p, &row("claude.opus", Surface::Widget));
+    // The outline is always on top; a description adds its box.
+    let base = p.scene().top.len();
+    let hint = |p: &Picker| p.scene().top.len() > base;
+    // On the row's label, left of its ticks.
+    p.handle(PickerEvent::PointerMove { x: PAD_X + 30.0, y });
+    assert!(!hint(&p));
+    let due = p.next_wake().expect("a description is due");
+    assert!(due > std::time::Instant::now());
+    std::thread::sleep(std::time::Duration::from_millis(320));
+    assert!(hint(&p));
+    assert!(p.next_wake().is_none());
+    p.handle(PickerEvent::PointerLeave);
+    assert!(!hint(&p));
 }
 
 // ─── Taskbar ─────────────────────────────────────────────────
@@ -1851,7 +1999,9 @@ fn long_names_are_cut_and_counts_read_well() {
     assert!(texts(&p).contains("…"));
     let mut i = with_model();
     i.models.truncate(1);
-    let text = texts(&picker(i));
+    let mut one = picker(i);
+    on_tab(&mut one, Tab::Shows);
+    let text = texts(&one);
     assert!(text.lines().any(|l| l == "1 model"), "{text}");
 }
 
@@ -2231,6 +2381,7 @@ fn visual_baseline_picker() {
     // The names, opened: one typed (caret, room hint), the others
     // placeholders.
     let open_all = |p: &mut Picker| {
+        on_tab(p, Tab::Shows);
         p.names_open = true;
         p.open_names = p
             .input
@@ -2259,6 +2410,7 @@ fn visual_baseline_picker() {
     ));
     // Closed, as it opens: one line at the bottom.
     let mut closed = make(with_model());
+    on_tab(&mut closed, Tab::Shows);
     closed.handle(PickerEvent::Wheel { dy: -10_000.0 });
     items.push(("names-closed-dark".to_string(), draw(&closed, false, 1.0)));
     // Every model of each tool: the list open, Claude's models shown,
@@ -2297,6 +2449,7 @@ fn visual_baseline_picker() {
     }
     catalogue.models = more;
     let mut catalogue = make(catalogue);
+    on_tab(&mut catalogue, Tab::Shows);
     catalogue.names_open = true;
     catalogue.open_names = vec!["claude".into()];
     catalogue.handle(PickerEvent::Wheel { dy: -10_000.0 });
@@ -2362,6 +2515,7 @@ fn visual_baseline_picker() {
     i.reads.tool_settings = true;
     i.model.widget = vec![ModelPart::Effort];
     let mut effort_only = make(i);
+    on_tab(&mut effort_only, Tab::Shows);
     effort_only.names_open = true;
     effort_only.open_names = vec!["claude".into()];
     effort_only.handle(PickerEvent::Wheel { dy: -10_000.0 });
@@ -2386,6 +2540,7 @@ fn visual_baseline_picker() {
         items.push((name.to_string(), draw(&link, light, 1.0)));
     }
     let mut link = make(input());
+    on_tab(&mut link, Tab::Shows);
     key(&mut link, PickerKey::End);
     items.push((
         "settings-file-focus-dark".to_string(),
@@ -2405,6 +2560,7 @@ fn visual_baseline_picker() {
     i.model.widget = vec![ModelPart::Effort];
     i.model.tooltip = vec![ModelPart::Model, ModelPart::Version];
     let mut parts = make(i);
+    on_tab(&mut parts, Tab::Shows);
     parts.focus = Some(part(ModelPart::Effort, Surface::Widget));
     parts.focus_visible = true;
     parts.reveal_focus();
@@ -2546,6 +2702,48 @@ fn visual_baseline_picker() {
     items.push((
         "rows-new-models-light".to_string(),
         draw(&make(added), true, 1.0),
+    ));
+
+    // The What shows tab as it opens; the keyboard's ring on its tab.
+    let mut shows = make(input());
+    on_tab(&mut shows, Tab::Shows);
+    items.push(("shows-dark".to_string(), draw(&shows, false, 1.0)));
+    items.push(("shows-light".to_string(), draw(&shows, true, 1.0)));
+    items.push(("shows-dark-150".to_string(), draw(&shows, false, 1.5)));
+    shows.focus = Some(Target::Tab(Tab::Shows));
+    shows.focus_visible = true;
+    items.push(("tab-focus-dark".to_string(), draw(&shows, false, 1.0)));
+
+    // The widget down to its reset time: that tick stays, and says why
+    // under the pointer.
+    let mut i = input();
+    i.widget = UiNumbers {
+        percent: false,
+        reset: true,
+        bar: false,
+    };
+    let mut lock = make(i);
+    let (x, y) = spot(&mut lock, &Target::Tip(TipPart::Reset, NumbersOn::Widget));
+    lock.handle(PickerEvent::PointerMove { x, y });
+    items.push(("shows-lock-dark".to_string(), draw(&lock, false, 1.0)));
+    items.push(("shows-lock-light".to_string(), draw(&lock, true, 1.0)));
+
+    // The tray icon's looks: Sector chosen, Bars under the pointer, the
+    // ring on Number; dark, light and high contrast.
+    let mut i = input();
+    i.tray_style = TrayStyle::Sector;
+    let mut tiles = make(i);
+    spot(&mut tiles, &Target::TrayStyle(TrayStyle::Number));
+    tiles.focus = Some(Target::TrayStyle(TrayStyle::Number));
+    tiles.focus_visible = true;
+    let (x, y) = spot(&mut tiles, &Target::TrayStyle(TrayStyle::Bars));
+    tiles.handle(PickerEvent::PointerMove { x, y });
+    items.push(("tray-tiles-dark".to_string(), draw(&tiles, false, 1.0)));
+    items.push(("tray-tiles-light".to_string(), draw(&tiles, true, 1.0)));
+    items.push(("tray-tiles-dark-150".to_string(), draw(&tiles, false, 1.5)));
+    items.push((
+        "tray-tiles-contrast-white".to_string(),
+        draw_with(&tiles, &white, 1.0),
     ));
 
     vb::check("picker", items);

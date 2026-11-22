@@ -1,5 +1,37 @@
 # Visual baseline 'panel-numbers': name, size, FNV-1a of the RGBA pixels.
 # Written by `UPDATE_BASELINE=1 cargo test visual_baseline`; see src/ui/visual_baseline.rs.
+bar-levels-bottom-100-dark 77x48 ac98cc082b7bc570
+bar-levels-bottom-100-light 77x48 0caa0725ea05c45b
+bar-levels-bottom-125-dark 97x60 92555acc612b2433
+bar-levels-bottom-125-light 97x60 279f3dfe9d57e963
+bar-levels-bottom-150-dark 116x72 99e8ef66d798cb36
+bar-levels-bottom-150-light 116x72 1b68f2a0db18fd0c
+bar-levels-side-100-dark 62x45 38cbda2047f7a76a
+bar-levels-side-100-light 62x45 7ecbb782bd9fce0d
+bar-single-bottom-100-dark 77x48 c814341537ca47b3
+bar-single-bottom-100-light 77x48 5de5c41eef8c12e8
+bar-single-bottom-125-dark 97x60 d87661fefd9733ba
+bar-single-bottom-125-light 97x60 b758e93f75dab2b0
+bar-single-bottom-150-dark 116x72 d8fbc4dab6e19632
+bar-single-bottom-150-light 116x72 263d0083d3830dfb
+bar-single-side-100-dark 62x45 64bbab80e0a40fdb
+bar-single-side-100-light 62x45 98309233ac4710c1
+bar-states-bottom-100-dark 77x48 96955d90bf393648
+bar-states-bottom-100-light 77x48 894e0bc4a863e770
+bar-states-bottom-125-dark 97x60 3e2f76ae847179ac
+bar-states-bottom-125-light 97x60 86d6a8922e9feceb
+bar-states-bottom-150-dark 116x72 a0043dacfbae6d78
+bar-states-bottom-150-light 116x72 5f4a28f51fc8c0f2
+bar-states-side-100-dark 62x45 c23f9d56b22dd0fe
+bar-states-side-100-light 62x45 c2a7804449f105ae
+bar-typical-bottom-100-dark 77x48 1aa5ef059f69144c
+bar-typical-bottom-100-light 77x48 609b636004fce566
+bar-typical-bottom-125-dark 97x60 36fdcc0d743d8199
+bar-typical-bottom-125-light 97x60 752a931fee5d0121
+bar-typical-bottom-150-dark 116x72 2586bc2e321bc402
+bar-typical-bottom-150-light 116x72 3ff59171b7a90782
+bar-typical-side-100-dark 62x45 b148587a853154c9
+bar-typical-side-100-light 62x45 e854f3da73049e93
 both-bar-levels-bottom-100-dark 161x48 b55e37e0c3192d5a
 both-bar-levels-bottom-100-light 161x48 58e01114c6087d85
 both-bar-levels-bottom-125-dark 201x60 d0c8917741b4758c

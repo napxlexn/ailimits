@@ -346,6 +346,15 @@ pub struct UIConfig {
     /// The model, version and effort labels. Absent: none shown.
     #[serde(default, skip_serializing_if = "UiModel::is_default")]
     pub model: UiModel,
+    /// What each widget row shows: its percentage, the time left until its
+    /// reset, its progress bar, in any mix but never none. Absent: all
+    /// three, the widget as it always was.
+    #[serde(
+        default,
+        deserialize_with = "de_widget_numbers",
+        skip_serializing_if = "UiNumbers::is_default"
+    )]
+    pub widget: UiNumbers,
     /// What each row of the panel's tooltip shows: its percentage, the time
     /// left until its reset, or both. Absent: both.
     #[serde(default, skip_serializing_if = "UiNumbers::is_default")]
@@ -361,6 +370,38 @@ pub struct UIConfig {
         skip_serializing_if = "UiNumbers::is_panel_default"
     )]
     pub panel: UiNumbers,
+    /// The tray icon's look. Absent: the two rings.
+    #[serde(default, skip_serializing_if = "UiTray::is_default")]
+    pub tray: UiTray,
+}
+
+/// `[ui.tray]`: how the tray icon draws its two providers.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct UiTray {
+    #[serde(default, deserialize_with = "de_enum_or_default")]
+    pub style: TrayStyle,
+}
+
+impl UiTray {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The tray icon's look (ui/tray.rs): what it draws of the two providers
+/// the panel shows. Every style is monochrome in the taskbar's ink.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrayStyle {
+    /// Two concentric rings, the busier outside.
+    #[default]
+    Rings,
+    /// Two upright bars side by side, filling from the bottom.
+    Bars,
+    /// The busier one's percentage as digits.
+    Number,
+    /// A filled sector of the busier one, like a clock face.
+    Sector,
 }
 
 impl Default for UIConfig {
@@ -378,7 +419,9 @@ impl Default for UIConfig {
             rows: UiRows::default(),
             model: UiModel::default(),
             tooltip: UiNumbers::default(),
+            widget: UiNumbers::default(),
             panel: UiNumbers::panel_default(),
+            tray: UiTray::default(),
         }
     }
 }
@@ -510,16 +553,27 @@ impl UiNumbers {
         }
     }
 
-    /// Turn `part` on or off; the last number on stays on (the bar is free).
-    pub fn set(&mut self, part: TipPart, on: bool) {
+    /// Turn `part` on or off where it shows; the last thing on there stays
+    /// on, so nothing is ever empty: of the percentage and the reset time
+    /// on the tooltip (it has no bar), of those and the bar on the widget
+    /// and the panel.
+    pub fn set(&mut self, part: TipPart, on: bool, place: NumbersOn) {
         let mut next = *self;
         match part {
             TipPart::Percent => next.percent = on,
             TipPart::Reset => next.reset = on,
             TipPart::Bar => next.bar = on,
         }
-        if next.percent || next.reset {
+        if next.shows_any(place) {
             *self = next;
+        }
+    }
+
+    /// Whether anything is left to show at `place`.
+    pub fn shows_any(&self, place: NumbersOn) -> bool {
+        match place {
+            NumbersOn::Tooltip => self.percent || self.reset,
+            NumbersOn::Widget | NumbersOn::Panel => self.percent || self.reset || self.bar,
         }
     }
 }
@@ -533,10 +587,11 @@ pub enum TipPart {
     Bar,
 }
 
-/// Where a `UiNumbers` choice applies: the panel's tooltip or the taskbar
-/// panel itself.
+/// Where a `UiNumbers` choice applies: the widget, the tooltip of the panel
+/// and the tray icon, or the taskbar panel itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NumbersOn {
+    Widget,
     Tooltip,
     Panel,
 }
@@ -785,6 +840,32 @@ fn de_panel_numbers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<UiNumbers,
         reset: p.reset.unwrap_or(base.reset),
         bar: p.bar.unwrap_or(base.bar),
     };
-    // Never neither number: as the picker keeps one on.
-    Ok(if n.percent || n.reset { n } else { base })
+    // Never nothing: as the picker keeps one on.
+    Ok(if n.shows_any(NumbersOn::Panel) {
+        n
+    } else {
+        base
+    })
+}
+
+/// `[ui.widget]`: each key left out keeps the widget's default (shown);
+/// nothing at all reads as the default.
+fn de_widget_numbers<'de, D: serde::Deserializer<'de>>(d: D) -> Result<UiNumbers, D::Error> {
+    #[derive(Deserialize)]
+    struct Partial {
+        percent: Option<bool>,
+        reset: Option<bool>,
+        bar: Option<bool>,
+    }
+    let p = Partial::deserialize(d)?;
+    let n = UiNumbers {
+        percent: p.percent.unwrap_or(true),
+        reset: p.reset.unwrap_or(true),
+        bar: p.bar.unwrap_or(true),
+    };
+    Ok(if n.shows_any(NumbersOn::Widget) {
+        n
+    } else {
+        UiNumbers::default()
+    })
 }

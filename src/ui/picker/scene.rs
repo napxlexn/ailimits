@@ -26,6 +26,7 @@ impl Picker {
         let hint = self
             .pointer
             .and_then(|(x, y)| self.hint_at(&f, x, y))
+            .filter(|&i| self.hint_ready(&f, i))
             .or_else(|| self.focus_hint(&f))
             .and_then(|i| match &f.els[i].1 {
                 El::Hint { rect, text } => Some(self.hint_shapes(&f, rect, text)),
@@ -389,22 +390,43 @@ impl Picker {
                 arrow,
                 ..
             } => {
+                let lx = r.x + 22.0;
+                // A sign-in line is a chip as wide as what it says; a
+                // heading washes its whole line under the pointer.
+                let chip = arrow.then(|| {
+                    let cx = lx + self.adv_styled(label, SIZE_TEXT, *bold) + 8.0;
+                    let end = if count.is_empty() {
+                        lx + self.adv_styled(label, SIZE_TEXT, *bold)
+                    } else {
+                        cx + self.adv(count, SIZE_NOTE)
+                    };
+                    let h = 22.0;
+                    rect(
+                        r.x + 1.0,
+                        r.y + ((r.h - h) / 2.0).round(),
+                        (end + 11.0 - r.x).ceil(),
+                        h,
+                    )
+                });
+                let wash = |level| Shape::Fill {
+                    rect: chip.unwrap_or(*r),
+                    radius: if chip.is_some() { 11.0 } else { 4.0 },
+                    ink: Ink::Hover,
+                    alpha: level,
+                };
                 if hovered == Some(target) {
-                    out.push(Shape::Fill {
-                        rect: *r,
-                        radius: 4.0,
-                        ink: Ink::Hover,
-                        alpha: if pressed(target) {
-                            Level::Hovered
-                        } else {
-                            Level::Full
-                        },
-                    });
+                    out.push(wash(if pressed(target) || chip.is_some() {
+                        Level::Hovered
+                    } else {
+                        Level::Full
+                    }));
+                } else if chip.is_some() {
+                    out.push(wash(Level::Full));
                 }
                 if self.ring(target) {
                     out.push(Shape::Stroke {
-                        rect: *r,
-                        radius: 6.0,
+                        rect: chip.unwrap_or(*r),
+                        radius: if chip.is_some() { 11.0 } else { 6.0 },
                         width: 2.0,
                         ink: Ink::Text,
                         alpha: Level::Full,
@@ -426,7 +448,6 @@ impl Picker {
                     Ink::Muted,
                     false,
                 ));
-                let lx = r.x + 22.0;
                 out.push(text_shape(lx, ty, label, SIZE_TEXT, Ink::Text, *bold));
                 if !count.is_empty() {
                     let cx = (lx + self.adv_styled(label, SIZE_TEXT, *bold) + 8.0).round();
@@ -441,6 +462,108 @@ impl Picker {
                 }
             }
             El::Hint { .. } => {}
+            El::Tab {
+                target,
+                rect: r,
+                label,
+                on,
+                ..
+            } => {
+                if *on {
+                    out.push(Shape::Fill {
+                        rect: *r,
+                        radius: 4.0,
+                        ink: Ink::Border,
+                        alpha: Level::Full,
+                    });
+                } else if hovered == Some(target) {
+                    out.push(Shape::Fill {
+                        rect: *r,
+                        radius: 4.0,
+                        ink: Ink::Hover,
+                        alpha: if pressed(target) {
+                            Level::Hovered
+                        } else {
+                            Level::Full
+                        },
+                    });
+                }
+                if self.ring(target) {
+                    out.push(Shape::Stroke {
+                        rect: rect(r.x - 1.0, r.y - 1.0, r.w + 2.0, r.h + 2.0),
+                        radius: 5.0,
+                        width: 2.0,
+                        ink: Ink::Text,
+                        alpha: Level::Full,
+                    });
+                }
+                let w = self.adv_styled(label, SIZE_TEXT, *on);
+                out.push(text_shape(
+                    (r.x + (r.w - w) / 2.0).round(),
+                    r.y + ((r.h - lh(SIZE_TEXT)) / 2.0).round(),
+                    label,
+                    SIZE_TEXT,
+                    if *on { Ink::Text } else { Ink::Muted },
+                    *on,
+                ));
+            }
+            El::Tile {
+                target,
+                rect: r,
+                label,
+                style,
+                on,
+                ..
+            } => {
+                if hovered == Some(target) {
+                    out.push(Shape::Fill {
+                        rect: *r,
+                        radius: 6.0,
+                        ink: Ink::Hover,
+                        alpha: if pressed(target) {
+                            Level::Hovered
+                        } else {
+                            Level::Full
+                        },
+                    });
+                }
+                out.push(Shape::Stroke {
+                    rect: *r,
+                    radius: 6.0,
+                    width: if *on { 2.0 } else { 1.0 },
+                    ink: if *on { Ink::Accent } else { Ink::Border },
+                    alpha: Level::Full,
+                });
+                if self.ring(target) {
+                    out.push(Shape::Stroke {
+                        rect: rect(r.x - 3.0, r.y - 3.0, r.w + 6.0, r.h + 6.0),
+                        radius: 8.0,
+                        width: 2.0,
+                        ink: Ink::Text,
+                        alpha: Level::Full,
+                    });
+                }
+                let top = r.y + 9.0;
+                out.push(Shape::TrayIcon {
+                    rect: rect(
+                        (r.x + (r.w - TILE_ICON) / 2.0).round(),
+                        top,
+                        TILE_ICON,
+                        TILE_ICON,
+                    ),
+                    style: *style,
+                    alpha: Level::Full,
+                });
+                let w = self.adv_styled(label, SIZE_NOTE, *on);
+                out.push(text_shape(
+                    (r.x + (r.w - w) / 2.0).round(),
+                    top + TILE_ICON + 5.0,
+                    label,
+                    SIZE_NOTE,
+                    if *on { Ink::Text } else { Ink::Muted },
+                    *on,
+                ));
+            }
             El::Link {
                 target,
                 rect: r,
@@ -739,6 +862,9 @@ pub(super) fn el_rect(el: &El) -> Option<Rect> {
         | El::Close { rect, .. }
         | El::Toggle { rect, .. }
         | El::Hint { rect, .. }
+        | El::Tab { rect, .. }
+        | El::Tile { rect, .. }
+        | El::Shape(Shape::TrayIcon { rect, .. })
         | El::Link { rect, .. } => Some(*rect),
         El::Shape(Shape::Text { x, y, size, .. }) => Some(rect(*x, *y, 1.0, lh(*size))),
     }

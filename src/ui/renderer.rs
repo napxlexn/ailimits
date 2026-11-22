@@ -4,10 +4,10 @@
 // zones from ui/layout.rs.
 
 use super::{
-    layout::{self, BodyLayout, Rect, RowTier, WidgetMetrics, WindowLayout},
+    layout::{self, BodyLayout, Rect, RowTier, Slots, WidgetMetrics, WindowLayout},
     theme::{Color, ComputedTheme},
 };
-use crate::config::schema::DetailLevel;
+use crate::config::schema::{DetailLevel, UiNumbers};
 use crate::config::tune::Countdown;
 use crate::providers::{
     Metric, MetricUnit, MetricWindow, ProviderData, ProviderId, ProviderStatus,
@@ -82,6 +82,34 @@ pub(super) fn row_bar_thickness(detail: &DetailLevel) -> f32 {
         DetailLevel::Expanded => 5.0,
     }
 }
+/// A row's texts where they share one line (a Compact row, a row without
+/// its bar): the name's size, the percentage's and the reset's, as the
+/// detail level draws them elsewhere.
+pub(super) fn line_sizes(detail: &DetailLevel) -> (f32, f32, f32) {
+    match detail {
+        DetailLevel::Compact => (11.0, 11.0, META_SIZE),
+        DetailLevel::Medium => (12.0, 13.0, META_SIZE),
+        DetailLevel::Expanded => (13.0, 15.0, 11.5),
+    }
+}
+
+/// The size of the text on the left of Expanded's meta line.
+pub(super) const EXPANDED_LEFT_SIZE: f32 = 11.0;
+
+/// The widest text Expanded's meta line puts on its left for `data`: its
+/// weekly limit as the hover writes it ("Weekly: 23h 59min"), or a count
+/// ("123 / 300"). None when it has neither.
+pub(super) fn expanded_left_widest(data: &ProviderData, style: Countdown) -> Option<String> {
+    if let Some(metric) = long_window_metric(data) {
+        let pct = format!("{}: 100%", metric.label);
+        let time = format!("{}: {}", metric.label, longest_countdown(style));
+        return Some(if time.len() > pct.len() { time } else { pct });
+    }
+    data.headline_metric()
+        .filter(|m| !is_percent_metric(m))
+        .map(Metric::display_text)
+}
+
 /// The widest provider name: what the columns' width is made for.
 const WIDEST_PROVIDER_NAME: &str = "Antigravity";
 /// Size of a model label on Expanded's line of its own.
@@ -137,6 +165,18 @@ pub enum Align {
 
 pub struct Renderer {
     font: Font,
+}
+
+/// How a row is drawn besides its rectangle: what it shows and the slots
+/// for it, the width's tier, the pointer, the forecast and the reason a
+/// row that is not live gives on hover.
+struct Line<'a> {
+    numbers: &'a UiNumbers,
+    slots: &'a Slots,
+    tier: RowTier,
+    cursor: Option<(f32, f32)>,
+    forecast: Option<&'a str>,
+    reason: Option<&'a str>,
 }
 
 impl Renderer {
@@ -237,6 +277,7 @@ impl Renderer {
                         model_line(i).as_ref(),
                         detail,
                         layout.row_tier,
+                        (&layout.numbers, &layout.slots),
                         cursor,
                         fc.as_deref(),
                         reason.as_deref(),
@@ -264,6 +305,7 @@ impl Renderer {
                         row,
                         model_line(i).as_ref(),
                         detail,
+                        &layout.numbers,
                         cursor,
                         fc.as_deref(),
                         reason.as_deref(),
@@ -321,23 +363,284 @@ impl Renderer {
         model_line: Option<&Rect>,
         detail: &DetailLevel,
         tier: RowTier,
+        (numbers, slots): (&UiNumbers, &Slots),
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
     ) {
+        let line = Line {
+            numbers,
+            slots,
+            tier,
+            cursor,
+            forecast,
+            reason,
+        };
         match detail {
-            // Compact has no per-row reset slot; the reason shows in the hint
-            // line. Nor a model: the tooltip carries it.
-            DetailLevel::Compact => {
+            // Compact has no per-row reset slot while its rows show the bar
+            // and the percentage; the reason shows in the hint line. Nor a
+            // model: the tooltip carries it.
+            DetailLevel::Compact if numbers.bar && numbers.percent => {
                 self.vertical_compact(pixmap, rect, theme, m, row, tier, cursor)
             }
-            DetailLevel::Medium => self.vertical_medium(
-                pixmap, rect, theme, m, row, model_line, false, tier, cursor, forecast, reason,
-            ),
-            DetailLevel::Expanded => self.vertical_medium(
-                pixmap, rect, theme, m, row, model_line, true, tier, cursor, forecast, reason,
-            ),
+            // Any other Compact row is one line, its reset on it.
+            DetailLevel::Compact => {
+                self.draw_line(pixmap, rect, rect, theme, m, row, detail, &line, true)
+            }
+            DetailLevel::Medium if !numbers.bar => {
+                self.vertical_bare(pixmap, rect, theme, m, row, model_line, detail, &line)
+            }
+            DetailLevel::Medium => {
+                self.vertical_medium(pixmap, rect, theme, m, row, model_line, false, &line)
+            }
+            DetailLevel::Expanded => {
+                self.vertical_medium(pixmap, rect, theme, m, row, model_line, true, &line)
+            }
         }
+    }
+
+    /// A row on one line: the name, the bar when the row shows one, the
+    /// reset and the percentage right-aligned in their slots
+    /// (`layout::Slots`), on one baseline. `band` is what the line is
+    /// centred in, `row` the whole row (its hover). With `reason_here`, a
+    /// hovered row that is not live says why in place of its numbers.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_line(
+        &self,
+        pixmap: &mut Pixmap,
+        band: &Rect,
+        row: &Rect,
+        theme: &ComputedTheme,
+        m: &WidgetMetrics,
+        view: &RowView,
+        detail: &DetailLevel,
+        line: &Line,
+        reason_here: bool,
+    ) {
+        let data = &view.data;
+        let n = line.numbers;
+        let (name_size, pct_size, reset_size) = line_sizes(detail);
+        let (name_size, pct_size, reset_size) = (m.t(name_size), m.t(pct_size), m.t(reset_size));
+        let gap = m.t(ROW_GAP);
+        // One baseline for the three sizes: the name's, centred in the band
+        // as a Compact row centres its text.
+        let name_y = band.y + (band.h - name_size * 13.0 / 11.0) / 2.0;
+        let base = name_y + self.ascent(name_size);
+        let y_of = |size: f32| base - self.ascent(size);
+        let end = band.x + band.w;
+        let right = layout::line_right(detail, m, n, line.slots);
+        let name_w = layout::line_name(detail, m, line.slots);
+
+        let after_name = if matches!(line.tier, RowTier::Full | RowTier::Short) {
+            self.draw_text(
+                pixmap,
+                self.fit_name(view.names, name_size, || name_w),
+                band.x,
+                y_of(name_size),
+                name_size,
+                theme.name_color(&view.provider),
+                Align::Left,
+                name_w,
+            );
+            band.x + name_w + gap
+        } else {
+            band.x
+        };
+
+        let hovered = line
+            .reason
+            .filter(|_| reason_here && line.cursor.is_some_and(|p| point_in_rect(p, row)));
+        if let Some(text) = hovered {
+            let room = end - after_name;
+            let text = self.fit_line(text, reset_size, room);
+            let y = y_of(reset_size);
+            self.draw_text(
+                pixmap,
+                &text,
+                after_name,
+                y,
+                reset_size,
+                theme.meta,
+                Align::Left,
+                room,
+            );
+            return;
+        }
+
+        let active = active_progress_metric(data, row, line.cursor);
+        let shown_pct = match (&data.status, active.and_then(Metric::percentage)) {
+            (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => Some(pct),
+            _ => None,
+        };
+        let Some(pct) = shown_pct else {
+            // A dot and words after the name, where a Compact row puts them
+            // in its bar's place.
+            let h = m.t(row_bar_thickness(&DetailLevel::Compact));
+            let at = Rect {
+                x: after_name,
+                y: band.y + (band.h - h) / 2.0,
+                w: end - after_name,
+                h,
+            };
+            let text_y = band.y + (band.h - m.t(13.0)) / 2.0;
+            self.draw_status_inline(pixmap, &at, text_y, theme, m, data, end - after_name);
+            return;
+        };
+        let (bar_color, text_color) = row_colors(theme, data, pct);
+        let reset_on = layout::reset_on_line(n) && line.tier != RowTier::Short;
+        let reset = reset_on
+            .then(|| {
+                let room = line.slots.reset as f32;
+                self.line_reset(data, active, line.forecast, theme, m, reset_size, room)
+            })
+            .flatten();
+
+        // Too narrow for anything but a number: the percentage, else the
+        // reset, centred on the row.
+        if line.tier == RowTier::PercentOnly {
+            let (text, size, color) = if n.percent {
+                (pct_text(data, pct), pct_size, text_color)
+            } else if let Some((text, color)) = reset {
+                (text, reset_size, color)
+            } else {
+                return;
+            };
+            self.draw_text(
+                pixmap,
+                &text,
+                band.x,
+                y_of(size),
+                size,
+                color,
+                Align::Center,
+                band.w,
+            );
+            return;
+        }
+
+        let mut x = end;
+        if n.percent {
+            let w = layout::pct_slot(detail, m);
+            let y = y_of(pct_size);
+            let text = pct_text(data, pct);
+            self.draw_text(
+                pixmap,
+                &text,
+                x - w,
+                y,
+                pct_size,
+                text_color,
+                Align::Right,
+                w,
+            );
+            x -= w + gap;
+        }
+        if reset_on {
+            let w = line.slots.reset as f32;
+            if let Some((text, color)) = &reset {
+                self.draw_text(
+                    pixmap,
+                    text,
+                    x - w,
+                    y_of(reset_size),
+                    reset_size,
+                    *color,
+                    Align::Right,
+                    w,
+                );
+            }
+        }
+        if n.bar {
+            let bar_end = if right > 0.0 { end - right - gap } else { end };
+            let h = row_bar_thickness(&DetailLevel::Compact) * m.bar;
+            let bar = Rect {
+                x: after_name,
+                y: band.y + (band.h - h) / 2.0,
+                w: (bar_end - after_name).max(0.0),
+                h,
+            };
+            self.draw_bar(pixmap, &bar, theme, bar_color, pct);
+        }
+    }
+
+    /// What a line shows for its reset, held to `room`: as Medium's meta
+    /// line writes it ("2h 14min", a weekly's "Weekly: 6d 2h"), else the
+    /// forecast, else how old the figure is.
+    #[allow(clippy::too_many_arguments)]
+    fn line_reset(
+        &self,
+        data: &ProviderData,
+        active: Option<&Metric>,
+        forecast: Option<&str>,
+        theme: &ComputedTheme,
+        m: &WidgetMetrics,
+        size: f32,
+        room: f32,
+    ) -> Option<(String, Color)> {
+        let future = |t: &Timestamp| *t > utc::now();
+        let text = match active {
+            Some(metric) if is_long_window_metric(metric) => Some((
+                match metric.reset_at.filter(future) {
+                    Some(reset) => {
+                        let secs = (reset - utc::now()).as_secs();
+                        let label = Some(metric.label.as_str());
+                        self.countdown_text(label, secs, m.countdown, size, || room)
+                    }
+                    None => metric.label.clone(),
+                },
+                theme.meta,
+            )),
+            _ => match active.and_then(|m| m.reset_at).filter(future) {
+                Some(reset) => {
+                    let secs = (reset - utc::now()).as_secs();
+                    Some((
+                        self.countdown_text(None, secs, m.countdown, size, || room),
+                        theme.meta,
+                    ))
+                }
+                None => forecast
+                    .map(|fc| (fc.to_string(), theme.high.text))
+                    .or_else(|| {
+                        stale_age_secs_or_estimated(data, m.countdown).map(|l| (l, theme.meta))
+                    }),
+            },
+        };
+        text.map(|(t, c)| (self.fit_line(&t, size, room), c))
+    }
+
+    /// Medium without the bar: one line, the name on the left, the reset
+    /// and the percentage on the right. A model is on a line of its own.
+    #[allow(clippy::too_many_arguments)]
+    fn vertical_bare(
+        &self,
+        pixmap: &mut Pixmap,
+        row: &Rect,
+        theme: &ComputedTheme,
+        m: &WidgetMetrics,
+        view: &RowView,
+        model_line: Option<&Rect>,
+        detail: &DetailLevel,
+        line: &Line,
+    ) {
+        let band = Rect {
+            h: row.h - model_line.map_or(0.0, |l| l.h),
+            ..*row
+        };
+        self.draw_line(pixmap, &band, row, theme, m, view, detail, line, true);
+        if let (Some(label), Some(at)) = (&view.model, model_line) {
+            let size = m.t(model_size(detail, false));
+            if let Some(text) = self.fit_label(label, size, at.w) {
+                let y = at.y - m.t(2.0);
+                self.draw_text(pixmap, &text, at.x, y, size, theme.meta, Align::Left, at.w);
+            }
+        }
+    }
+
+    /// Where the top of a line of text at `size` is above its baseline.
+    fn ascent(&self, size: f32) -> f32 {
+        self.font
+            .horizontal_line_metrics(size)
+            .map_or(size * 1.08, |l| l.ascent)
     }
 
     /// Compact: name | bar | pct in one line, minus whatever the width cannot
@@ -431,11 +734,15 @@ impl Renderer {
         view: &RowView,
         model_line: Option<&Rect>,
         expanded: bool,
-        tier: RowTier,
-        cursor: Option<(f32, f32)>,
-        forecast: Option<&str>,
-        reason: Option<&str>,
+        line: &Line,
     ) {
+        let (numbers, tier, cursor, forecast, reason) = (
+            line.numbers,
+            line.tier,
+            line.cursor,
+            line.forecast,
+            line.reason,
+        );
         let data = &view.data;
         // Hovering a greyed/estimated row answers "why": the meta line shows
         // the stored failure + the action instead of the usual metric/reset.
@@ -454,7 +761,7 @@ impl Renderer {
         // A name with shorter forms takes the longest that ends before the
         // percent.
         if tier == RowTier::Full {
-            let room = || match shown_pct {
+            let room = || match shown_pct.filter(|_| numbers.percent) {
                 Some(pct) => row.w - self.text_width(&pct_text(data, pct), pct_size) - m.t(6.0),
                 None => row.w,
             };
@@ -475,8 +782,23 @@ impl Renderer {
         } else {
             DetailLevel::Medium
         };
-        let bar_h = row_bar_thickness(&detail) * m.bar;
-        let bar_y = row.y + m.t(if expanded { 26.0 } else { 20.0 });
+        // Expanded without the bar: its meta line comes up under the name.
+        let bare = !numbers.bar;
+        // Medium without the reset: no meta line under the bar.
+        let short = !expanded && !numbers.reset;
+        let bar_h = if bare {
+            0.0
+        } else {
+            row_bar_thickness(&detail) * m.bar
+        };
+        let bar_y = row.y
+            + m.t(if bare {
+                19.0
+            } else if expanded {
+                26.0
+            } else {
+                20.0
+            });
         let bar = Rect {
             x: row.x,
             y: bar_y,
@@ -493,20 +815,40 @@ impl Renderer {
             (_, Some(pct)) => {
                 let stale = stale_age_secs_or_estimated(data, m.countdown);
                 let (bar_color, text_color) = row_colors(theme, data, pct);
-                // Percent at the top right.
-                self.draw_text(
-                    pixmap,
-                    &pct_text(data, pct),
-                    row.x,
-                    row.y + m.t(2.0),
-                    pct_size,
-                    text_color,
-                    Align::Right,
-                    row.w,
-                );
-                self.draw_bar(pixmap, &bar, theme, bar_color, pct);
+                // A short row's reason takes the percentage's place.
+                if let Some(text) = hovered_reason.filter(|_| short) {
+                    let name_w =
+                        self.text_width(view.names.first().copied().unwrap_or(""), name_size);
+                    let room = (row.w - name_w - m.t(ROW_GAP)).max(0.0);
+                    let text = self.fit_line(text, meta_size, room);
+                    let y = row.y + m.t(3.0) + self.ascent(name_size) - self.ascent(meta_size);
+                    self.draw_text(
+                        pixmap,
+                        &text,
+                        row.x,
+                        y,
+                        meta_size,
+                        theme.meta,
+                        Align::Right,
+                        row.w,
+                    );
+                } else if numbers.percent {
+                    self.draw_text(
+                        pixmap,
+                        &pct_text(data, pct),
+                        row.x,
+                        row.y + m.t(2.0),
+                        pct_size,
+                        text_color,
+                        Align::Right,
+                        row.w,
+                    );
+                }
+                if !bare {
+                    self.draw_bar(pixmap, &bar, theme, bar_color, pct);
+                }
 
-                if let Some(text) = hovered_reason {
+                if let Some(text) = hovered_reason.filter(|_| !short) {
                     meta_right = None;
                     self.draw_text(
                         pixmap,
@@ -521,8 +863,26 @@ impl Renderer {
                 }
                 let weekly_active_in_expanded =
                     expanded && active_metric.is_some_and(is_long_window_metric);
-                if hovered_reason.is_none() && !weekly_active_in_expanded {
-                    if active_metric.is_some_and(is_long_window_metric) {
+                if hovered_reason.is_none() && !weekly_active_in_expanded && !short {
+                    if !numbers.reset {
+                        // The reset left out: the meta line keeps its left
+                        // part, a count or the model, and nothing right.
+                        if let Some(metric) = active_metric
+                            .filter(|m| !is_percent_metric(m) && !is_long_window_metric(m))
+                        {
+                            meta_right = None;
+                            self.draw_text(
+                                pixmap,
+                                &metric.display_text(),
+                                row.x,
+                                meta_y,
+                                meta_size,
+                                theme.meta,
+                                Align::Left,
+                                row.w / 2.0,
+                            );
+                        }
+                    } else if active_metric.is_some_and(is_long_window_metric) {
                         meta_right = self.draw_weekly_time_only(
                             pixmap,
                             row,
@@ -590,11 +950,13 @@ impl Renderer {
                 if matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated)
                     && long_window_metric(data).is_some()
                 {
+                    // Without the bar, on the meta line it comes up to.
+                    let y = if bare { meta_y } else { bar.y - m.t(5.0) };
                     self.draw_text(
                         pixmap,
                         "session unavailable",
                         bar.x,
-                        bar.y - m.t(5.0),
+                        y,
                         m.t(10.5),
                         theme.meta,
                         Align::Left,
@@ -603,11 +965,17 @@ impl Renderer {
                 } else {
                     // No bar is drawn here: the dot keeps to the text, at the
                     // place a bar of today's thickness would centre it.
+                    let (y, at_y) = if bare {
+                        (meta_y, meta_y + m.t(5.0))
+                    } else {
+                        (bar.y - m.t(5.0), bar.y)
+                    };
                     let at = Rect {
+                        y: at_y,
                         h: m.t(row_bar_thickness(&detail)),
                         ..bar
                     };
-                    self.draw_status_inline(pixmap, &at, bar.y - m.t(5.0), theme, m, data, row.w);
+                    self.draw_status_inline(pixmap, &at, y, theme, m, data, row.w);
                 }
             }
         }
@@ -626,9 +994,11 @@ impl Renderer {
         // Expanded, a row in error says so on the bar line and leaves its
         // meta line empty: the label takes that line rather than leaving a
         // gap above it.
-        let meta_empty = expanded
+        let meta_empty = (expanded
+            && !bare
             && hovered_reason.is_none()
-            && !matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated);
+            && !matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated))
+            || short;
         let (x, y, room, size) = match (model_line, expanded) {
             (Some(line), _) => (
                 line.x,
@@ -808,6 +1178,7 @@ impl Renderer {
         view: &RowView,
         model_line: Option<&Rect>,
         detail: &DetailLevel,
+        numbers: &UiNumbers,
         cursor: Option<(f32, f32)>,
         forecast: Option<&str>,
         reason: Option<&str>,
@@ -820,11 +1191,19 @@ impl Renderer {
             .filter(|_| cursor.is_some_and(|point| point_in_rect(point, col)))
             .map(|r| r.rsplit(" — ").next().unwrap_or(r));
         // Compact has no percent: pct_size = None, the bar starts at the top.
-        let (bar_w, top_gap, bottom_gap, pct_size, reset_size) = match detail {
+        let (bar_w, mut top_gap, mut bottom_gap, mut pct_size, mut reset_size) = match detail {
             DetailLevel::Compact => (7.0, 4.0, 13.0, None, None),
             DetailLevel::Medium => (8.5, 19.0, 17.0, Some(12.5), None),
             DetailLevel::Expanded => (11.0, 23.0, 30.0, Some(14.5), Some(11.0)),
         };
+        // The columns are their bars: what is left out above or below one
+        // gives its room to the bar.
+        if !numbers.percent && pct_size.is_some() {
+            (pct_size, top_gap) = (None, 4.0);
+        }
+        if !numbers.reset && reset_size.is_some() {
+            (reset_size, bottom_gap) = (None, 17.0);
+        }
         // The bar's width is its thickness; the gaps above and below it hold
         // text, so they follow the text size.
         let (bar_w, top_gap, bottom_gap) = (bar_w * m.bar, m.t(top_gap), m.t(bottom_gap));
@@ -1457,7 +1836,10 @@ fn point_in_rect(point: (f32, f32), rect: &Rect) -> bool {
 fn vertical_compact_bar_rect(row: &Rect, tier: RowTier, m: &WidgetMetrics) -> Option<Rect> {
     let (name_w, pct_w, gap) = (m.t(NAME_WIDTH), m.t(PCT_WIDTH), m.t(ROW_GAP));
     let (x, w) = match tier {
-        RowTier::Full => (row.x + name_w + gap, row.w - name_w - pct_w - gap * 2.0),
+        // A Compact row with its bar never has a line's tier.
+        RowTier::Full | RowTier::Short => {
+            (row.x + name_w + gap, row.w - name_w - pct_w - gap * 2.0)
+        }
         // The name column is reclaimed whole; the percent keeps its slot.
         RowTier::Nameless => (row.x, row.w - pct_w - gap),
         RowTier::PercentOnly => return None,
@@ -2516,6 +2898,54 @@ mod tests {
     /// names, model labels at every step in every layout, Medium beside the
     /// longest reset, the Expanded and columns line, a count with a model,
     /// hover, stale data, the workshop's scenarios and the first install.
+    /// What each row shows (`[ui.widget]`), every mix but the default, in
+    /// every layout: the rows on one line without the bar, Compact's reset
+    /// on its line, the columns that keep their bars. With models and with a
+    /// row that is not live, hovered, where the reason takes the numbers.
+    /// See ui/visual_baseline.rs.
+    #[test]
+    fn visual_baseline_widget_numbers() {
+        use crate::config::schema::UiNumbers;
+        use crate::ui::visual_baseline as vb;
+
+        let renderer = Renderer::new().expect("a system font");
+        let fixture = rows_fixture();
+        let rows = widget_rows(&fixture, None, None);
+        let models = widget_rows(&fixture, None, Some(Parts::Full));
+        let mixes = [
+            ("pr", (true, true, false)),
+            ("pb", (true, false, true)),
+            ("rb", (false, true, true)),
+            ("p", (true, false, false)),
+            ("r", (false, true, false)),
+            ("b", (false, false, true)),
+        ];
+        let mut items = Vec::new();
+        for (name, base) in every_layout() {
+            for (mname, (percent, reset, bar)) in mixes {
+                let ui = crate::config::schema::UIConfig {
+                    widget: UiNumbers {
+                        percent,
+                        reset,
+                        bar,
+                    },
+                    ..base.clone()
+                };
+                items.push((
+                    format!("{mname}-{name}"),
+                    rows_widget(&renderer, &rows, &ui, false, None),
+                ));
+                if name.ends_with("-100") || name.starts_with("columns") {
+                    items.push((
+                        format!("{mname}-{name}-models"),
+                        rows_widget(&renderer, &models, &ui, false, None),
+                    ));
+                }
+            }
+        }
+        vb::check("widget-numbers", items);
+    }
+
     #[test]
     fn visual_baseline_widget_rows() {
         use crate::config::schema::{Layout, UIConfig, WidthScale};
@@ -3840,6 +4270,21 @@ impl Renderer {
                     );
                 } else if let Some(path) = PathBuilder::from_circle(cx, cy, rad - 0.5 * s) {
                     self.picker_line(pm, &path, s, picker_ink(theme, Ink::Muted, *alpha));
+                }
+            }
+            PickerShape::TrayIcon { rect, style, alpha } => {
+                let r = sc(rect);
+                let ink = picker_ink(theme, Ink::Text, *alpha).to_skia_color();
+                let size = r.w.round().max(1.0) as u32;
+                if let Some(icon) = crate::ui::tray::style_preview(*style, ink, size) {
+                    pm.draw_pixmap(
+                        r.x.round() as i32,
+                        r.y.round() as i32,
+                        icon.as_ref(),
+                        &tiny_skia::PixmapPaint::default(),
+                        Transform::identity(),
+                        None,
+                    );
                 }
             }
             PickerShape::Cross { rect, ink } => {

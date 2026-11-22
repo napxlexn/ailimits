@@ -27,7 +27,7 @@
 // - tests.rs.
 
 use crate::config::schema::{
-    ModelPart, ModelSource, NumbersOn, Reads, Surface, TipPart, UiModel, UiNumbers,
+    ModelPart, ModelSource, NumbersOn, Reads, Surface, TipPart, TrayStyle, UiModel, UiNumbers,
 };
 use crate::ui::layout::Rect;
 use std::cell::RefCell;
@@ -76,13 +76,16 @@ pub enum PickerAction {
         on: bool,
     },
     SetSource(ModelSource),
-    /// Show or hide the percentage or the reset time on each row of the
-    /// panel's tooltip; the last one on stays on (`UiNumbers::set`).
+    /// Show or hide the percentage, the reset time or the bar on each row
+    /// of the widget, the tooltip or the panel; the last one on there stays
+    /// on (`UiNumbers::set`).
     SetTip {
         part: TipPart,
         place: NumbersOn,
         on: bool,
     },
+    /// The tray icon's look.
+    SetTrayStyle(TrayStyle),
     /// Show or hide a provider ("claude") on the taskbar panel and the tray
     /// icon (the Taskbar column): at most `rows::TASKBAR_MAX` at a time,
     /// which the picker holds to.
@@ -241,10 +244,14 @@ pub struct PickerInput {
     /// (`rows::taskbar_ticked`: untouched, the first two that run).
     pub taskbar_rows: Vec<String>,
     pub model: UiModel,
+    /// What each widget row shows: the percentage, the reset time, the bar.
+    pub widget: UiNumbers,
     /// What each tooltip row shows: the percentage, the reset time, or both.
     pub tip: UiNumbers,
     /// The same for each row of the taskbar panel.
     pub panel: UiNumbers,
+    /// The tray icon's look.
+    pub tray_style: TrayStyle,
     pub reads: Reads,
     /// Providers switched on in the config.
     pub enabled: Vec<&'static str>,
@@ -405,6 +412,12 @@ pub enum Shape {
     Cross { rect: Rect, ink: Ink },
     /// The soft shadow of a box.
     Shadow { rect: Rect, radius: f32 },
+    /// The tray icon in a look, filling `rect`, in the text's ink.
+    TrayIcon {
+        rect: Rect,
+        style: TrayStyle,
+        alpha: Level,
+    },
 }
 
 impl Shape {
@@ -421,6 +434,7 @@ impl Shape {
             | Shape::Check { rect, .. }
             | Shape::Radio { rect, .. }
             | Shape::Cross { rect, .. }
+            | Shape::TrayIcon { rect, .. }
             | Shape::Shadow { rect, .. } => *rect = m(rect),
             Shape::Text { x, y, .. } => {
                 *x += dx;
@@ -487,6 +501,16 @@ const MAX_BOX_H: f32 = 560.0;
 /// The smallest maximum a short work area can impose.
 const MIN_BOX_H: f32 = 200.0;
 const HEADER_H: f32 = 42.0;
+/// The tabs under the title: the control and the air under it.
+const TABS_H: f32 = 38.0;
+/// A tray icon look's tile.
+const TILE_H: f32 = 60.0;
+/// A tile's icon, square.
+const TILE_ICON: f32 = 24.0;
+/// How long the pointer rests on something before its description shows,
+/// as Windows' own tooltips wait; one shown, the next follows sooner.
+const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
+const HINT_RESHOW: std::time::Duration = std::time::Duration::from_millis(100);
 /// The notice's button row.
 const FOOTER_H: f32 = 50.0;
 const PAD_X: f32 = 14.0;
@@ -557,6 +581,53 @@ fn canonical(id: &str) -> &str {
 // ─── UI text ─────────────────────────────────────────────────────
 
 const TITLE_ROWS: &str = "Rows and models";
+const TAB_ROWS: &str = "Rows";
+const TAB_SHOWS: &str = "What shows";
+const SECT_NUMBERS: &str = "ON EVERY ROW";
+const SECT_MODEL: &str = "MODEL LABEL";
+const SECT_TRAY: &str = "TRAY ICON";
+const PANEL: &str = "Panel";
+const DASH: &str = "\u{2013}";
+const TRAY_NOTE: &str = "The icon shows with Indicator set to Tray icon in the menu, and stands in for the panel while the Start menu covers it.";
+
+/// The tray icon's looks: the tile's label and what it says on hover.
+const TRAY_STYLES: [(TrayStyle, &str, &str); 4] = [
+    (
+        TrayStyle::Rings,
+        "Rings",
+        "Two rings: the busier provider outside, the other inside.",
+    ),
+    (
+        TrayStyle::Bars,
+        "Bars",
+        "Two upright bars filling from the bottom, the busier on the left, like a level meter.",
+    ),
+    (
+        TrayStyle::Number,
+        "Number",
+        "The busier provider's percentage in digits; a limit reached shows !. The other is in the tooltip.",
+    ),
+    (
+        TrayStyle::Sector,
+        "Sector",
+        "The busier provider's share as a slice of a disc, like a clock face. The other is in the tooltip.",
+    ),
+];
+
+/// Why the last tick on there cannot be taken off.
+fn lock_hint(place: NumbersOn) -> &'static str {
+    match place {
+        NumbersOn::Widget => {
+            "One of Percent, Reset time and Progress bar stays on, so the widget is never empty."
+        }
+        NumbersOn::Tooltip => {
+            "One of Percent and Reset time stays on, so the tooltip is never empty."
+        }
+        NumbersOn::Panel => {
+            "One of Percent, Reset time and Progress bar stays on, so the panel is never empty."
+        }
+    }
+}
 const TITLE_WELCOME: &str = "Welcome to AI Limits";
 const TITLE_NOTICE: &str = "What AI Limits reads";
 const FOUND: &str = "found on this PC";
@@ -610,27 +681,27 @@ fn count_of(n: usize, one: &str) -> String {
     }
 }
 
-/// What each row of the panel's tooltip can show besides its name, with a
-/// sample and what it says on hover. Only the tooltip and the taskbar panel
-/// choose: the widget always shows both. The bar is the panel's only.
+/// What each row of the widget, the tooltip and the taskbar panel can show
+/// besides its name, with a sample and what it says on hover. The tooltip
+/// has no bar.
 const TIP_PARTS: [(TipPart, &str, &str, &str); 3] = [
     (
         TipPart::Percent,
         "Percent",
-        "16% · 40%",
-        "How much of the limit is used, as a number. The widget always shows it; untick it to leave it out of the tooltip or the taskbar panel.",
+        "25% · 48%",
+        "How much of the limit is used, as a number.",
     ),
     (
         TipPart::Reset,
         "Reset time",
         "2h 14min · 4d 3h",
-        "How long until the limit the row shows resets. The widget always shows it; tick it to see it in the tooltip or on the taskbar panel too. On the panel it follows the bar, or stands in the percentage's place when that is left out.",
+        "How long until the limit the row shows resets. On the panel it follows the bar, or stands in the percentage's place when that is left out.",
     ),
     (
         TipPart::Bar,
         "Progress bar",
-        "taskbar panel only",
-        "The bar beside each number on the taskbar panel. Untick it to show the numbers alone and take less of the taskbar.",
+        "the bar under or beside it",
+        "The bar of each row in the widget and on the taskbar panel; the tooltip has none. Without it each widget row is one line and the panel takes less of the taskbar. The Vertical layout is made of its bars and keeps them.",
     ),
 ];
 
@@ -721,6 +792,10 @@ struct Run {
 #[derive(Debug, Clone, PartialEq)]
 enum Target {
     Close,
+    /// A tab under the title.
+    Tab(Tab),
+    /// A tray icon look's tile.
+    TrayStyle(TrayStyle),
     Row {
         row: String,
         surface: Surface,
@@ -769,6 +844,22 @@ enum Target {
 
 /// Keyboard grid position: (row, column).
 type Nav = (u32, u32);
+
+/// The window's two tabs: which rows show where, and what each shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Rows,
+    Shows,
+}
+
+impl Tab {
+    fn other(self) -> Self {
+        match self {
+            Tab::Rows => Tab::Shows,
+            Tab::Shows => Tab::Rows,
+        }
+    }
+}
 
 /// A laid-out element. Interactive ones become shapes once hover, focus and
 /// the edit in progress are known.
@@ -835,6 +926,23 @@ enum El {
         arrow: bool,
         nav: Nav,
     },
+    /// A tab under the title, the chosen one raised.
+    Tab {
+        target: Target,
+        rect: Rect,
+        label: String,
+        on: bool,
+        nav: Nav,
+    },
+    /// A tray icon look: its icon over its label, the chosen one outlined.
+    Tile {
+        target: Target,
+        rect: Rect,
+        label: String,
+        style: TrayStyle,
+        on: bool,
+        nav: Nav,
+    },
     /// What a part of the window is, shown while the pointer rests on it.
     Hint {
         rect: Rect,
@@ -874,6 +982,8 @@ impl El {
             | El::Close { rect, .. }
             | El::Toggle { rect, .. }
             | El::Hint { rect, .. }
+            | El::Tab { rect, .. }
+            | El::Tile { rect, .. }
             | El::Link { rect, .. } => *rect = m(rect),
         }
         e
@@ -914,6 +1024,12 @@ impl El {
             }
             | El::Link {
                 target, rect, nav, ..
+            }
+            | El::Tab {
+                target, rect, nav, ..
+            }
+            | El::Tile {
+                target, rect, nav, ..
             } => Some((target, *rect, *nav)),
             El::Close { rect, nav } => Some((&Target::Close, *rect, *nav)),
             _ => None,
@@ -947,8 +1063,8 @@ impl Flow {
         Self {
             y: 0.0,
             els: Vec::new(),
-            // Row 0 is the header's close button.
-            nav: 1,
+            // Row 0 is the header's close button, row 1 the tabs.
+            nav: 2,
             sticky: None,
         }
     }
@@ -1241,6 +1357,12 @@ pub struct Picker {
     found_answered: bool,
     /// A scroll bar's thumb held down.
     drag: Option<Drag>,
+    /// The tab shown (Rows on every opening).
+    tab: Tab,
+    /// The description the pointer rests on (its rect) and since when:
+    /// shown once it has rested `hint_delay`.
+    hint_rest: Option<(Rect, std::time::Instant)>,
+    hint_delay: std::time::Duration,
     dirty: bool,
     /// Bumped by every new input; part of the layout's cache key.
     input_gen: u64,
@@ -1267,6 +1389,7 @@ struct LayoutKey {
     names: (bool, Vec<String>),
     /// The providers whose sign-in is open.
     sign_in: Vec<String>,
+    tab: Tab,
 }
 
 /// What a point is over.
@@ -1313,6 +1436,14 @@ impl Picker {
             opened_as,
             found_answered: false,
             drag: None,
+            tab: Tab::Rows,
+            hint_rest: None,
+            // At once in the tests, which look at hints right after a move.
+            hint_delay: if cfg!(test) {
+                std::time::Duration::ZERO
+            } else {
+                HINT_DELAY
+            },
             dirty: true,
             input_gen: 0,
             layout: RefCell::new(None),
@@ -1532,7 +1663,61 @@ impl Picker {
         if relayout {
             self.settle();
         }
+        self.track_hint();
         out
+    }
+
+    /// The rect of the description under the pointer, if any.
+    fn hint_under(&self) -> Option<Rect> {
+        let (x, y) = self.pointer?;
+        let f = self.frame();
+        match &f.els[self.hint_at(&f, x, y)?].1 {
+            El::Hint { rect, .. } => Some(*rect),
+            _ => None,
+        }
+    }
+
+    /// Follow the pointer's rest on a description: a new one starts its
+    /// wait, straight after one that showed a short one.
+    fn track_hint(&mut self) {
+        let same = |a: &Rect, b: &Rect| (a.x, a.y, a.w, a.h) == (b.x, b.y, b.w, b.h);
+        let Some(u) = self.hint_under() else {
+            self.hint_rest = None;
+            return;
+        };
+        let now = std::time::Instant::now();
+        match self.hint_rest {
+            Some((r, _)) if same(&r, &u) => {}
+            prev => {
+                let warm = prev.is_some_and(|(_, since)| now >= since + self.hint_delay);
+                let since = if warm {
+                    now.checked_sub(self.hint_delay.saturating_sub(HINT_RESHOW))
+                        .unwrap_or(now)
+                } else {
+                    now
+                };
+                self.hint_rest = Some((u, since));
+            }
+        }
+    }
+
+    /// Whether the description at `i` in `f` has been rested on long enough.
+    fn hint_ready(&self, f: &Frame, i: usize) -> bool {
+        let El::Hint { rect: r, .. } = &f.els[i].1 else {
+            return false;
+        };
+        self.hint_rest.is_some_and(|(at, since)| {
+            (at.x, at.y, at.w, at.h) == (r.x, r.y, r.w, r.h)
+                && std::time::Instant::now() >= since + self.hint_delay
+        })
+    }
+
+    /// When the description the pointer rests on is due: the window is
+    /// drawn again then. None when none is waiting.
+    pub fn next_wake(&self) -> Option<std::time::Instant> {
+        let (_, since) = self.hint_rest?;
+        let due = since + self.hint_delay;
+        (due > std::time::Instant::now()).then_some(due)
     }
 
     // ─── Reading the input ───────────────────────────────────────
@@ -1614,6 +1799,7 @@ impl Picker {
     /// version only with the model.
     fn numbers(&self, place: NumbersOn) -> UiNumbers {
         match place {
+            NumbersOn::Widget => self.input.widget,
             NumbersOn::Tooltip => self.input.tip,
             NumbersOn::Panel => self.input.panel,
         }
@@ -1628,7 +1814,7 @@ impl Picker {
     fn tip_enabled(&self, part: TipPart, place: NumbersOn) -> bool {
         let now = self.numbers(place);
         let mut next = now;
-        next.set(part, !now.shows(part));
+        next.set(part, !now.shows(part), place);
         next != now
     }
 

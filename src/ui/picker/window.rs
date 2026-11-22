@@ -111,6 +111,8 @@ pub struct PickerWindow {
     /// Let go behind other windows while a name is typed from a shell
     /// panel (Win+V, Win+.); on top again with the focus back.
     behind: bool,
+    /// When a description the pointer rests on is due: drawn then.
+    hint_due: Option<std::time::Instant>,
 }
 
 impl PickerWindow {
@@ -233,6 +235,7 @@ impl PickerWindow {
             had_focus: false,
             text_cursor: false,
             behind: false,
+            hint_due: None,
         };
         me.redraw();
         me.window.set_visible(true);
@@ -340,6 +343,7 @@ impl PickerWindow {
             _ => None,
         };
         let actions = ev.map(|e| self.picker.handle(e)).unwrap_or_default();
+        self.hint_due = self.picker.next_wake();
         if self.picker.take_dirty() {
             self.window.request_redraw();
             // The IME's candidates open beside the caret of the field typed in.
@@ -420,6 +424,21 @@ impl PickerWindow {
                 tracing::warn!("picker present failed: {e}");
             }
         }
+    }
+
+    /// When the description the pointer rests on is due (`Picker::next_wake`).
+    pub fn next_wake(&self) -> Option<std::time::Instant> {
+        self.picker.next_wake()
+    }
+
+    /// A timer came due: draw again if a description is due now, so it
+    /// shows after its wait.
+    pub fn on_timer(&mut self, now: std::time::Instant) {
+        if self.hint_due.is_some_and(|t| now >= t) {
+            self.hint_due = None;
+            self.window.request_redraw();
+        }
+        self.hint_due = self.hint_due.or_else(|| self.picker.next_wake());
     }
 
     /// Hide and destroy the window.

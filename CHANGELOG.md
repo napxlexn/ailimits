@@ -124,9 +124,9 @@ Notable, user-visible changes. Dates are release dates.
   certificate is not trusted: its rows say so ("untrusted certificate,
   retrying").
 - **The taskbar panel can show when a limit resets.** Percent and Reset
-  time ticks of its own, in the Taskbar column of *Rows and models*
-  (`[ui.panel]`; the tooltip has a pair of its own in the Tooltip column,
-  `[ui.tooltip]`), decide what each of the panel's two rows shows: the
+  time ticks of its own, in the Panel column of *Rows and models*, *What
+  shows* (`[ui.panel]`; the tooltip has a pair of its own in the Tooltip
+  column, `[ui.tooltip]`), decide what each of the panel's two rows shows: the
   percentage with its bar, as before and by default; the time alone before
   the bar ("2h14 ▬▬"); or both, with the bar between them ("25% ▬▬ 2h14";
   on a side taskbar the time under the percentage). The time is the shown
@@ -135,6 +135,26 @@ Notable, user-visible changes. Dates are release dates.
   **Progress bar** tick (on by default) leaves the bar out for a narrower
   panel ("25%", "2h14", "25%  2h14"); the panel is as long as what it
   shows. Asked for in #2 by JCauz.
+- **The widget chooses what its rows show, the bar too.** *Rows and models*
+  has two tabs: *Rows*, which rows show where, and *What shows*, with a
+  Widget, a Tooltip and a Panel column for Percent, Reset time and Progress
+  bar (`[ui.widget]`, `[ui.tooltip]`, `[ui.panel]`) and the model label's
+  Model, Version and Effort. One of the three always stays on wherever it
+  shows, so nothing is ever empty: the last tick on there cannot be taken off
+  and says why. Without its bar a Compact or Medium widget row is one line
+  ("Claude   2h 14min  25%") and the widget is only as wide as its texts; an
+  Expanded row keeps the line of its weekly limit; a narrower width step
+  drops the reset before the name. The panel can show its bar alone.
+  Untouched, the widget looks as it always did.
+- **The tray icon has other looks.** *What shows*, *Tray icon* (`[ui.tray]
+  style`): the two rings, as before and by default; two upright bars, like a
+  level meter; the busier provider's percentage in digits; or its slice of a
+  disc, like a clock face. Each is monochrome in the taskbar's theme, and the
+  tooltip names both providers.
+- **Descriptions in *Rows and models* wait for the pointer.** One shows after
+  the pointer has rested 0.6 s on what it describes, as Windows' tooltips do,
+  and the next one straight after follows sooner; on keyboard focus it shows
+  at once. Nothing runs while none is due.
 - **Antigravity says what renews its sign-in.** The row reads the
   Antigravity CLI's sign-in (`agy`), so it needs that CLI signed in on this
   PC; the token lasts about an hour and is renewed only when `agy` runs. The
@@ -144,7 +164,7 @@ Notable, user-visible changes. Dates are release dates.
   read: a weekly pool stays the long window, a five-hour one would be a
   session window of its own.
 - **The tooltip's percentage and reset time, chosen.** Two ticks in the
-  Tooltip column of *Rows and models*, Percent and Reset time
+  Tooltip column of *Rows and models*, *What shows*, Percent and Reset time
   (`[ui.tooltip]`), decide what each row of the taskbar panel's tooltip
   shows: the percentage, the time left until the limit it shows resets
   ("Claude 25% · 2h 14min"), or either alone ("Claude 2h 14min"). By

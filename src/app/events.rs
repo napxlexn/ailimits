@@ -48,6 +48,8 @@ impl App {
                 self.indicator.next_wake(),
                 self.panel.next_tick(),
                 self.config_watch.next_wake(),
+                // A description in the open picker, after its wait.
+                self.picker.as_ref().and_then(|p| p.next_wake()),
             ]
             .into_iter()
             .flatten()
@@ -144,6 +146,9 @@ impl App {
     #[cfg(target_os = "windows")]
     fn on_timers(&mut self) {
         let now = std::time::Instant::now();
+        if let Some(p) = self.picker.as_mut() {
+            p.on_timer(now);
+        }
         // The countdown on the panel reads differently now: repaint it, and
         // nothing else (no placement query).
         if self.panel.next_tick().is_some_and(|t| now >= t) {

@@ -143,6 +143,20 @@ impl Picker {
         self.dirty = true;
         match t {
             Target::Close => self.close(),
+            Target::Tab(tab) => {
+                if self.tab != *tab {
+                    self.tab = *tab;
+                    self.scroll = 0.0;
+                    self.drop_lost_focus();
+                }
+                Vec::new()
+            }
+            Target::TrayStyle(style) => {
+                if self.input.tray_style == *style {
+                    return Vec::new();
+                }
+                vec![PickerAction::SetTrayStyle(*style)]
+            }
             Target::Row { row, surface } => {
                 let Some(choice) = self.input.rows.iter().find(|r| r.id == row).cloned() else {
                     return Vec::new();
