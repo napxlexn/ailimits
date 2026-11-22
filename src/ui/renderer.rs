@@ -1190,6 +1190,19 @@ impl Renderer {
         let hovered_reason = reason
             .filter(|_| cursor.is_some_and(|point| point_in_rect(point, col)))
             .map(|r| r.rsplit(" — ").next().unwrap_or(r));
+        if !numbers.bar {
+            let at = BareAt {
+                col,
+                model_line,
+                detail,
+                numbers,
+                cursor,
+                forecast,
+                hovered_reason,
+            };
+            self.draw_bare_col(pixmap, theme, m, view, &at);
+            return;
+        }
         // Compact has no percent: pct_size = None, the bar starts at the top.
         let (bar_w, mut top_gap, mut bottom_gap, mut pct_size, mut reset_size) = match detail {
             DetailLevel::Compact => (7.0, 4.0, 13.0, None, None),
@@ -1331,6 +1344,117 @@ impl Renderer {
                     theme.high.text,
                     Align::Center,
                     col.w,
+                );
+            }
+        }
+    }
+
+    /// A column without its bar (`layout::bare_column`): the percentage in
+    /// the bar's colour, the name, the reset time (or, under the pointer,
+    /// why there are no numbers; or the forecast), stacked and centred, and
+    /// the model under them. Without a percentage to show, the status dot
+    /// takes its line (the reset's, when the percentage is off).
+    fn draw_bare_col(
+        &self,
+        pixmap: &mut Pixmap,
+        theme: &ComputedTheme,
+        m: &WidgetMetrics,
+        view: &RowView,
+        at: &BareAt,
+    ) {
+        let (col, data) = (at.col, &view.data);
+        let c = layout::bare_column(at.detail);
+        let name_size = m.t(column_name_size(at.detail));
+        let reset_size = m.t(c.reset_size);
+        let name_room = || self.text_width(WIDEST_PROVIDER_NAME, name_size).min(col.w);
+        let active_metric = active_progress_metric(data, col, at.cursor);
+        let pct = match (&data.status, active_metric.and_then(Metric::percentage)) {
+            (ProviderStatus::Ok | ProviderStatus::Estimated, Some(pct)) => Some(pct),
+            _ => None,
+        };
+        let dot = |pixmap: &mut Pixmap, top: f32, line: f32| {
+            let color = self.status_dot_color(theme, &data.status);
+            self.draw_dot_at(
+                pixmap,
+                col.x + col.w / 2.0,
+                top + line / 2.0,
+                m.t(3.0),
+                color,
+            );
+        };
+        let mut y = col.y + m.t(layout::BARE_COLUMN_AIR);
+        if at.numbers.percent {
+            match pct {
+                Some(pct) => {
+                    let (_, text_color) = row_colors(theme, data, pct);
+                    self.draw_text(
+                        pixmap,
+                        &pct_text(data, pct),
+                        col.x,
+                        y,
+                        m.t(c.pct_size),
+                        text_color,
+                        Align::Center,
+                        col.w,
+                    );
+                }
+                None => dot(pixmap, y, m.t(c.pct_line)),
+            }
+            y += m.t(c.pct_line);
+        }
+        self.draw_text(
+            pixmap,
+            self.fit_name(view.names, name_size, name_room),
+            col.x,
+            y,
+            name_size,
+            theme.name_color(&view.provider),
+            Align::Center,
+            col.w,
+        );
+        y += m.t(c.name_line);
+        if at.numbers.reset {
+            let line = if let Some(text) = at.hovered_reason {
+                Some((self.fit_line(text, reset_size, col.w), theme.meta))
+            } else if pct.is_none() && !at.numbers.percent {
+                dot(pixmap, y, m.t(c.reset_line));
+                None
+            } else if let Some(reset) = active_metric
+                .and_then(|m| m.reset_at)
+                .filter(|t| *t > utc::now())
+            {
+                let secs = (reset - utc::now()).as_secs();
+                let text = self.countdown_text(None, secs, m.countdown, reset_size, name_room);
+                Some((text, theme.meta))
+            } else {
+                at.forecast
+                    .map(|fc| (self.fit_line(fc, reset_size, name_room()), theme.high.text))
+            };
+            if let Some((text, color)) = line {
+                self.draw_text(
+                    pixmap,
+                    &text,
+                    col.x,
+                    y,
+                    reset_size,
+                    color,
+                    Align::Center,
+                    col.w,
+                );
+            }
+        }
+        if let (Some(label), Some(line)) = (&view.model, at.model_line) {
+            let size = m.t(model_size(at.detail, true));
+            if let Some(text) = self.fit_label(label, size, line.w) {
+                self.draw_text(
+                    pixmap,
+                    &text,
+                    line.x,
+                    line.y,
+                    size,
+                    theme.meta,
+                    Align::Center,
+                    line.w,
                 );
             }
         }
@@ -1688,6 +1812,19 @@ impl Renderer {
 }
 
 /// The provider name's size under a column.
+/// Where and what a column without its bar draws (`draw_bare_col`).
+struct BareAt<'a> {
+    col: &'a Rect,
+    model_line: Option<&'a Rect>,
+    detail: &'a DetailLevel,
+    numbers: &'a UiNumbers,
+    cursor: Option<(f32, f32)>,
+    forecast: Option<&'a str>,
+    /// The short reason there are no numbers, while the pointer is on the
+    /// column.
+    hovered_reason: Option<&'a str>,
+}
+
 fn column_name_size(detail: &DetailLevel) -> f32 {
     match detail {
         DetailLevel::Compact => 9.5,

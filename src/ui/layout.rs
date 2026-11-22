@@ -150,9 +150,59 @@ pub struct Slots {
 const NAME_SLOT_MAX: f32 = 110.0;
 
 /// A row without its bar, in the rows layout: one line (Expanded: one more
-/// for its weekly limit). The columns layout is made of bars and keeps them.
+/// for its weekly limit). A column without its bar is `bare_column`.
 pub fn bare(numbers: &UiNumbers, layout: &Layout) -> bool {
     !numbers.bar && !matches!(layout, Layout::Horizontal)
+}
+
+/// A column without its bar: its texts stacked and centred, each on a line
+/// of its own: the percentage (in the bar's colour), the name, the reset
+/// time. Sizes and line heights at the default text size, per detail level.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BareColumn {
+    pub pct_size: f32,
+    pub pct_line: f32,
+    pub name_line: f32,
+    pub reset_size: f32,
+    pub reset_line: f32,
+}
+
+/// Air above the first line of a column without its bar and below its last.
+pub const BARE_COLUMN_AIR: f32 = 1.0;
+
+pub fn bare_column(detail: &DetailLevel) -> BareColumn {
+    match detail {
+        DetailLevel::Compact => BareColumn {
+            pct_size: 11.5,
+            pct_line: 16.0,
+            name_line: 12.0,
+            reset_size: 9.5,
+            reset_line: 12.0,
+        },
+        DetailLevel::Medium => BareColumn {
+            pct_size: 12.5,
+            pct_line: 18.0,
+            name_line: 13.0,
+            reset_size: 10.0,
+            reset_line: 12.0,
+        },
+        DetailLevel::Expanded => BareColumn {
+            pct_size: 14.5,
+            pct_line: 21.0,
+            name_line: 14.0,
+            reset_size: 11.0,
+            reset_line: 13.0,
+        },
+    }
+}
+
+/// The body of a column without its bar: the lines it shows and its air,
+/// at the text size.
+fn bare_column_h(detail: &DetailLevel, n: &UiNumbers, m: &WidgetMetrics) -> f32 {
+    let c = bare_column(detail);
+    let pct = if n.percent { c.pct_line } else { 0.0 };
+    let reset = if n.reset { c.reset_line } else { 0.0 };
+    m.t(pct + c.name_line + reset + BARE_COLUMN_AIR * 2.0)
 }
 
 /// Whether a row's line carries its reset time: always without the bar; with
@@ -500,7 +550,9 @@ pub fn compute_tuned(
     }
     let mut win = match layout {
         Layout::Vertical => vertical(detail, width_scale, shape, m),
-        Layout::Horizontal => horizontal(detail, column_flow, &shape.model_lines, m),
+        Layout::Horizontal => {
+            horizontal(detail, column_flow, &shape.model_lines, &shape.numbers, m)
+        }
         // Legacy config value: the 2x2 mode was removed from the UI.
         Layout::Grid => vertical(detail, width_scale, shape, m),
     };
@@ -717,10 +769,13 @@ fn vertical(
 /// A column with a model line keeps its body as it is and gains the line
 /// under it. Side by side every column shares one height, so the window grows
 /// by the line once any column has one; stacked, only those columns grow.
+/// Without its bar (`numbers.bar` off) a column is only as tall as its texts
+/// (`bare_column`), as wide as with it.
 fn horizontal(
     detail: &DetailLevel,
     flow: &ColumnFlow,
     lines: &[bool],
+    numbers: &UiNumbers,
     m: &WidgetMetrics,
 ) -> WindowLayout {
     let n = lines.len();
@@ -738,11 +793,15 @@ fn horizontal(
         DetailLevel::Medium => 54.0,
         DetailLevel::Expanded => 62.0,
     }) * m.text;
-    let body_h = Dimensions::scale(match detail {
-        DetailLevel::Compact => 42.0,
-        DetailLevel::Medium => 68.0,
-        DetailLevel::Expanded => 88.0,
-    }) * m.text;
+    let body_h = if numbers.bar {
+        Dimensions::scale(match detail {
+            DetailLevel::Compact => 42.0,
+            DetailLevel::Medium => 68.0,
+            DetailLevel::Expanded => 88.0,
+        }) * m.text
+    } else {
+        bare_column_h(detail, numbers, m)
+    };
     let stacked = *flow == ColumnFlow::Column;
     let flow_gap = if stacked {
         STACK_FLOW_GAP

@@ -310,8 +310,10 @@ source  = "configured"
 # never the name. With the bar, Compact shows each row's reset in place of
 # the percentage when that is left out, and keeps the soonest reset on its
 # bottom line while it shows both; Medium without the reset loses its line
-# under the bar. The Vertical layout is made of its bars and keeps them;
-# there `percent` and `reset` give their room to the bar.
+# under the bar. In the Vertical layout (columns) a column without its bar
+# is its texts stacked, the percentage in the bar's colour, the name, the
+# reset time, and the widget is only as tall as they are; with the bar,
+# `percent` and `reset` give their room to the bar.
 [ui.widget]
 percent = true
 reset   = true

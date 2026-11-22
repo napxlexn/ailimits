@@ -262,7 +262,7 @@ const TABLES: &[Table] = &[
                 "bar",
                 &[
                     "The progress bar: true (default) or false; without it each row is",
-                    "one line. The Vertical layout keeps its bars.",
+                    "one line, each column only its texts, and the widget smaller.",
                 ],
             ),
         ],

@@ -144,7 +144,10 @@ Notable, user-visible changes. Dates are release dates.
   and says why. Without its bar a Compact or Medium widget row is one line
   ("Claude   2h 14min  25%") and the widget is only as wide as its texts; an
   Expanded row keeps the line of its weekly limit; a narrower width step
-  drops the reset before the name. The panel can show its bar alone.
+  drops the reset before the name. Without their bars the columns (the
+  Vertical layout) are their texts stacked, the percentage in the bar's
+  colour, the name and the reset time, and the widget is that much lower.
+  The panel can show its bar alone.
   Untouched, the widget looks as it always did. On *Rows*, each provider
   has a dot for how it runs (green: it brings numbers; yellow: it runs
   without them, loading, retrying or not signed in; hollow: off), a hairline
