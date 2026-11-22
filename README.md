@@ -211,7 +211,9 @@ ailimits-auth logout cursor
 Then delete `%APPDATA%\AiLimits` and the registry key
 `HKCU\Software\Classes\AppUserModelId\napxlexn.AILimits` (the name and icon
 the app's toasts show). A Microsoft Store copy: how to remove its keys
-first is in [docs/en/CONFIG.md](docs/en/CONFIG.md#secrets).
+first is in [docs/en/CONFIG.md](docs/en/CONFIG.md#secrets); removing it
+takes its own settings folder with it (the Store copy's folder is described
+at the top of that file).
 
 ## Quick start
 

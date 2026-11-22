@@ -1907,6 +1907,17 @@ pub fn toast_app_id() -> String {
     APP_USER_MODEL_ID.to_string()
 }
 
+/// The package family name inside a package (the Store copy): the part of
+/// its AppUserModelID before the `!`. None when not packaged.
+pub fn package_family_name() -> Option<String> {
+    if !is_packaged() {
+        return None;
+    }
+    let aumid = toast_app_id();
+    let (family, _) = aumid.split_once('!')?;
+    (!family.is_empty()).then(|| family.to_string())
+}
+
 /// Whether the menu icon size the system asks for is 32 px or more, i.e.
 /// the primary display runs at 200%+ scaling (menus follow the system DPI).
 pub fn menu_scale_is_200() -> bool {

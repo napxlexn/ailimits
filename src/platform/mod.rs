@@ -39,6 +39,19 @@ pub fn is_packaged() -> bool {
     }
 }
 
+/// The package family name inside a package (the Store copy); None
+/// elsewhere.
+pub fn package_family_name() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        win::package_family_name()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        None
+    }
+}
+
 /// The identity toasts are shown under: the package's own inside the Store
 /// build, the registered `napxlexn.AILimits` everywhere else. Empty off
 /// Windows, where toasts are only logged.

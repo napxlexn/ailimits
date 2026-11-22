@@ -164,23 +164,24 @@ Notable, user-visible changes. Dates are release dates.
   per crash: the time, the version, the thread and the place in the code,
   never the crash message's text. A start that fails says so in a message
   that names the file.
-- **Edits to `config.toml` apply while the app runs.** Any setting saved
-  in the file, by hand or by `ailimits-auth`, applies within about two
-  seconds of its save, with no restart: the app looks at the file's size
-  and time every 2 seconds while you are at the PC (every 30 while you are
-  away), one metadata call each time, and redoes only what changed. A
-  change made in the app meanwhile is kept, and the app's own saves are
-  never taken for edits. *Settings file...* at the end of *Rows and models*
-  opens the file in Notepad. A line that does not read (a value of the
-  wrong kind, a typo, a missing value) is left out and its default used:
-  one message names the line, never its text, and the rest of the file
-  applies. An edit that does not read at all (a stray line without `=`,
-  more than 8 lines that do not read, or bytes that are not text) is not
-  applied, and the file is never written over while it stays
-  broken, not even when the app quits. Nor is a part of a config saved in
-  place of the whole (settings with neither `[reads]` nor any
-  `[[providers]]`, a `[tune]` snippet alone), which would otherwise start
-  over as a fresh install; found at start, it is set aside.
+- **Edits to `config.toml` apply while the app runs.** Any setting saved in
+  the file, by hand or by `ailimits-auth`, applies within about two seconds
+  of its save, with no restart: the app looks at the file's size and time
+  every 2 seconds while you are at the PC (every 30 while you are away), one
+  metadata call each time, and redoes only what changed. A change made in the
+  app meanwhile is kept, and the app's own saves are never taken for edits.
+  *Settings file...* at the end of *Rows and models* opens the file in
+  Notepad, in a Microsoft Store copy too, whose own settings folder Windows
+  keeps with the package. A line that does not read (a value of the wrong
+  kind, a typo, a missing value) is left out and its default used: one
+  message names the line, never its text, and the rest of the file applies.
+  An edit that does not read at all (a stray line without `=`, more than 8
+  lines that do not read, or bytes that are not text) is not applied, and the
+  file is never written over while it stays broken, not even when the app
+  quits. Nor is a part of a config saved in place of the whole (settings with
+  neither `[reads]` nor any `[[providers]]`, a `[tune]` snippet alone), which
+  would otherwise start over as a fresh install; found at start, it is set
+  aside.
 - **Fine-tuning in `config.toml`.** Four tables that only the file holds
   tune what the menu does not reach: `[tune.widget]` (text size, the gap
   between rows, bar thickness, padding, corners, your own colours for the

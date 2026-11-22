@@ -4,7 +4,15 @@ Location: `%APPDATA%\AiLimits\config.toml`. Created automatically on the
 first launch; every context-menu change is persisted here, and edits saved in
 it apply while the app runs (see "Live edits" below). There is no portable
 mode: a copy from the installer, the portable zip or Scoop uses this same
-folder, and only the installer's uninstaller removes it. Unknown fields and
+folder, and only the installer's uninstaller removes it. A Microsoft Store
+copy that finds no such folder makes its own, which Windows keeps with the
+package:
+`%LOCALAPPDATA%\Packages\napxlexn.AILimits_<publisher id>\LocalCache\Roaming\AiLimits`.
+The app still sees it at the usual path, *Settings file...* opens it where
+it is, and removing the Store copy removes it; other programs (an
+`ailimits-auth` from another copy among them) do not see it at
+`%APPDATA%\AiLimits`. A folder another copy left there is shared with the
+Store copy instead. Unknown fields and
 providers are ignored (old configs never break parsing). An unknown field is
 also dropped at the app's next save; an unknown provider's table and an
 unknown row id are kept. A second `[[providers]]` table with an id already

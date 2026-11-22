@@ -25,6 +25,42 @@ pub fn config_path() -> PathBuf {
         .join("config.toml")
 }
 
+/// The file another program is shown for `path` (Notepad, from Settings
+/// file...). Inside a package (the Store copy) a folder the app made under
+/// %APPDATA% is the package's own: Windows keeps it in the package's
+/// `LocalCache\Roaming`, and only the package sees it at the %APPDATA% path
+/// (measured on Windows 11 26300: a new folder goes there; a file new or
+/// replaced in a folder that was already there, an installer copy's, stays
+/// in that folder). That place, when the file is there; else `path`.
+pub fn path_for_others(path: &Path) -> PathBuf {
+    let private = crate::platform::package_family_name().and_then(|family| {
+        package_private(
+            path,
+            &dirs::config_dir()?,
+            &dirs::data_local_dir()?,
+            &family,
+        )
+    });
+    match private {
+        Some(p) if p.is_file() => p,
+        _ => path.to_path_buf(),
+    }
+}
+
+/// Where a package's own copy of `path` (under `appdata`, %APPDATA%) is:
+/// `<local>\Packages\<family>\LocalCache\Roaming\<the rest>`.
+fn package_private(path: &Path, appdata: &Path, local: &Path, family: &str) -> Option<PathBuf> {
+    let rest = path.strip_prefix(appdata).ok()?;
+    Some(
+        local
+            .join("Packages")
+            .join(family)
+            .join("LocalCache")
+            .join("Roaming")
+            .join(rest),
+    )
+}
+
 /// Load the config, or create the default one on first launch. The same as
 /// `load()`, without the word on what went wrong (still in the log, and
 /// still keeping a file that could not be used from being saved over).
@@ -1694,6 +1730,39 @@ mod tests {
             block(load_with(&dir.config(), &QUICK)).config,
             loaded.config
         );
+    }
+
+    /// The Store copy's own folder: a path under %APPDATA% maps into the
+    /// package's `LocalCache\Roaming`; anything else has no such place.
+    /// Outside a package the file is shown where it is.
+    #[test]
+    fn a_package_keeps_its_own_folder_in_local_cache() {
+        let appdata = Path::new(r"C:\Users\u\AppData\Roaming");
+        let local = Path::new(r"C:\Users\u\AppData\Local");
+        let family = "napxlexn.AILimits_t452my99ght66";
+        assert_eq!(
+            package_private(
+                &appdata.join(r"AiLimits\config.toml"),
+                appdata,
+                local,
+                family
+            ),
+            Some(PathBuf::from(
+                r"C:\Users\u\AppData\Local\Packages\napxlexn.AILimits_t452my99ght66\LocalCache\Roaming\AiLimits\config.toml"
+            ))
+        );
+        assert_eq!(
+            package_private(
+                Path::new(r"D:\elsewhere\config.toml"),
+                appdata,
+                local,
+                family
+            ),
+            None
+        );
+        // Not packaged (the test binary): the path itself.
+        let dir = Dir::new("for-others");
+        assert_eq!(path_for_others(&dir.config()), dir.config());
     }
 
     /// A part of a config saved in place of the whole (settings, but

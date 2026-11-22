@@ -584,6 +584,9 @@ impl App {
             let generation = self.config_watch.file.generation();
             let _ = self.config_watch.file.write(&config, generation);
         }
+        // In the Store copy the file may be in the package's own folder,
+        // which Notepad does not see at the %APPDATA% path.
+        let path = storage::path_for_others(&path);
         // CreateProcessW with the path as the one argument: no shell verb,
         // nothing the shell would look up.
         match std::process::Command::new(system_notepad())

@@ -217,7 +217,9 @@ ailimits-auth logout cursor
 Потім видали `%APPDATA%\AiLimits` і ключ реєстру
 `HKCU\Software\Classes\AppUserModelId\napxlexn.AILimits` (назва й іконка, з
 якими показуються тости застосунку). Копія з Microsoft Store: як спершу
-прибрати її ключі, описано в [docs/uk/CONFIG.md](docs/uk/CONFIG.md#секрети).
+прибрати її ключі, описано в [docs/uk/CONFIG.md](docs/uk/CONFIG.md#секрети);
+її видалення забирає й її власну теку налаштувань (теку копії зі Store
+описано на початку того файлу).
 
 ## Швидкий старт
 
