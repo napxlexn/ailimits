@@ -375,10 +375,13 @@ html[data-jump] .tb-stage { visibility: hidden; }
   background: rgba(106, 108, 111, var(--o)); box-shadow: 0 2px 7px rgba(0, 0, 0, calc(0.5 * var(--o))); }
 .tb-pill i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 3px;
   background: rgba(236, 236, 236, var(--o)); }
-.tb-tipbox { position: absolute; right: 4px; top: 7px; padding: 8px 12px; border-radius: 6px;
+/* the 0.7.1 tooltip: a line per provider, its percentage and its reset
+   time, opening upward from the bar as the app's does */
+.tb-tipbox { position: absolute; right: 4px; bottom: 7px; padding: 8px 12px; border-radius: 6px;
   white-space: nowrap; font-size: 13px; line-height: 1.3; font-variant-numeric: tabular-nums; --o: 1;
   background: rgba(32, 33, 34, var(--o)); color: rgba(236, 236, 236, var(--o));
   box-shadow: 0 6px 15px rgba(0, 0, 0, calc(0.55 * var(--o))); }
+.tb-tl { display: block; }
 /* No leader lines on this side: a line drawn to a layer will be met by another
    layer as the rig turns, and shortening or bending it costs more than the line
    is worth. The tag stands at the height of its layer's right end, and hovering

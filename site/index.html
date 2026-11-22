@@ -12,7 +12,7 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="AI Limits">
 <meta property="og:title" content="AI Limits – your AI usage limits, live on the Windows desktop">
-<meta property="og:description" content="Claude, Codex, Copilot, Antigravity, Grok and Cursor limits in one acrylic widget. Reads your existing CLI logins once you allow it, no API keys. Free and open source.">
+<meta property="og:description" content="Claude, Codex, Copilot, Antigravity, Grok and Cursor limits in one acrylic widget. Reads the logins your tools already have once you allow it, no API keys. Free and open source.">
 <meta property="og:url" content="https://napxlexn.github.io/ailimits/">
 <meta property="og:image" content="https://napxlexn.github.io/ailimits/media/og.png">
 <meta property="og:image:width" content="1200">
@@ -77,7 +77,7 @@ document.documentElement.classList.add("js");
     { "@type": "Question", "name": "What is the Rows and models window?",
       "acceptedAnswer": { "@type": "Answer", "text": "Right-click the widget, Rows and models. Every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. Percent and Reset time choose what the panel and its tooltip show for each provider: the percentage, the time until its limit resets, or both. Progress bar, ticked by default, can leave the panel's bar out to take less of the taskbar. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a token you paste, and only the one chosen is used. Model, Version and Effort add the model a tool is using to its row, for example Opus 5.5 · xhigh, and any model can be given a name of your own. A tick shows at once." } },
     { "@type": "Question", "name": "Does it slow the PC down?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back." } },
     { "@type": "Question", "name": "Is AI Limits free?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. Open source under GPL-3.0; the code, releases and issue tracker live on GitHub." } },
     { "@type": "Question", "name": "Does it show GitHub Copilot premium requests?",
@@ -158,7 +158,7 @@ document.documentElement.classList.add("js");
       </h1>
       <p class="lead">A native acrylic widget for Windows 11 that shows how much of your
       Claude, Codex, Copilot, Antigravity, Grok and Cursor limits you have used, and when every window resets.
-      It reads the logins your CLI tools already have, once you allow it. No API keys required.</p>
+      It reads the logins your tools already have once you allow it, and Cursor gets a sign-in of its own. No API keys required.</p>
       <div class="cmd" data-cmd>
         <code>winget install napxlexn.AILimits</code>
         <button type="button" aria-label="Copy install command">Copy</button>
@@ -270,19 +270,19 @@ document.documentElement.classList.add("js");
       <div class="tb-head">
         <p class="hud scene-tag">04 · TASKBAR</p>
         <h2 class="manifesto"><span class="line">Hide the widget.</span><span class="line dim">Keep the signal.</span></h2>
-        <p class="lead">Closed, it does not go away — it moves into the taskbar. Here it is taken apart:
+        <p class="lead">Hidden, it does not go away — it stays on the taskbar. Here it is taken apart:
         the bar, our tray icon integrated into the system row, the mini panel living as its own window
         above it, and the tooltip on top. Scroll to fill the limits and put it back together;
         hover a layer for what it&nbsp;is.</p>
       </div>
       <div class="tb-rig" data-tb-rig>
         <div class="tb-plate"><canvas class="tb-bar" data-tb-note="&lt;b&gt;The taskbar itself.&lt;/b&gt; Real renderer pixels: the system tray, the language, the clock. The empty slot in the icon row is where our tray icon sits — lifted one layer up here."></canvas></div>
-        <div class="tb-plate"><canvas class="tb-tic" data-tb-note="&lt;b&gt;The tray icon.&lt;/b&gt; INTEGRATED into the system row, so it sits closest to the bar and is built differently from the panel: two rings, the busier provider outside, the other inside."></canvas></div>
-        <div class="tb-plate"><div class="tb-panel" data-tb-note="&lt;b&gt;The mini panel.&lt;/b&gt; Its OWN window over the taskbar, beside the tray: two providers you choose, each a percentage and a bar or the reset time. Transparent — a separate object, not part of the bar.">
+        <div class="tb-plate"><canvas class="tb-tic" data-tb-note="&lt;b&gt;The tray icon.&lt;/b&gt; INTEGRATED into the system row, so it sits closest to the bar and is built differently from the panel: two rings for the same two providers as the panel, the busier outside, the other inside."></canvas></div>
+        <div class="tb-plate"><div class="tb-panel" data-tb-note="&lt;b&gt;The mini panel.&lt;/b&gt; Its OWN window over the taskbar, beside the tray: the first two providers, or the two you choose, each a percentage and a bar by default, or the time until it resets, or both. Transparent — a separate object, not part of the bar.">
           <div class="tb-row"><span class="tb-pv" data-tb-pv="0">0%</span><span class="tb-pill"><i data-tb-pb="0"></i></span></div>
           <div class="tb-row r1"><span class="tb-pv" data-tb-pv="1">0%</span><span class="tb-pill"><i data-tb-pb="1"></i></span></div>
         </div></div>
-        <div class="tb-plate"><div class="tb-tipbox" data-tb-note="&lt;b&gt;The tooltip.&lt;/b&gt; Hovering the panel in the bar lists every provider, here in one line. Its numbers are the same ones the panel bars and the icon rings are showing.">Claude <span data-tb-tn="0">0%</span> · Codex <span data-tb-tn="1">0%</span> · Copilot <span data-tb-tn="2">0%</span> · Antigravity <span data-tb-tn="3">0%</span></div></div>
+        <div class="tb-plate"><div class="tb-tipbox" data-tb-note="&lt;b&gt;The tooltip.&lt;/b&gt; Hovering the panel in the bar lists every provider (the Tooltip column chooses), each with its percentage and the time until it resets. Its numbers are the same ones the panel bars and the icon rings are showing."><span class="tb-tl">Claude <span data-tb-tn="0">0%</span> · 1h 12min</span><span class="tb-tl">Codex <span data-tb-tn="1">0%</span> · 3h 40min</span><span class="tb-tl">Copilot <span data-tb-tn="2">0%</span> · 9d 4h</span><span class="tb-tl">Antigravity <span data-tb-tn="3">0%</span> · 4d 2h</span></div></div>
       </div>
       <svg class="tb-csvg" data-tb-csvg aria-hidden="true"><polyline data-tb-cline points=""></polyline></svg>
       <p class="tb-name" data-tb-name aria-hidden="true"></p>
@@ -479,13 +479,13 @@ document.documentElement.classList.add("js");
     <details><summary>What is the Rows and models window?</summary>
       <p>Right-click the widget, <em>Rows and models</em>. Every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. Percent and Reset time choose what the panel and its tooltip show for each provider: the percentage, the time until its limit resets, or both. Progress bar, ticked by default, can leave the panel's bar out to take less of the taskbar. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a token you paste, and only the one chosen is used. Model, Version and Effort add the model a tool is using to its row, for example <code>Opus 5.5 · xhigh</code>, and any model can be given a name of your own. A tick shows at once.</p></details>
     <details><summary>Does it slow the PC down?</summary>
-      <p>Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses after five minutes without input, and while the workstation is locked.</p></details>
+      <p>Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back.</p></details>
     <details><summary>Is it free?</summary>
       <p>Yes. Open source under GPL-3.0; the code, releases and issue tracker live on <a href="https://github.com/napxlexn/ailimits">GitHub</a>.</p></details>
     <details><summary>Does it show GitHub Copilot premium requests?</summary>
       <p>Yes. The Copilot rows show the premium requests, chat and completions quotas with the date each one resets, read from the same endpoint the Copilot extensions use. Plans billed in AI Credits are read too; a quota the plan does not have is left out.</p></details>
     <details><summary>What does the tray icon show?</summary>
-      <p>Two concentric rings: by default the busiest provider on the outer ring, the runner-up inside, both sweeping clockwise from 12 o'clock. A value too small for an arc becomes a dot, and only a true 100% closes the ring, so the shape never lies. It is one of two indicators: the alternative is the taskbar panel, which paints two providers onto the bar as digits and bars, as the time until each limit resets, or both. The Taskbar column of <em>Rows and models</em> picks which two providers the panel and the rings show. You pick the indicator from the Indicator submenu.</p></details>
+      <p>Two concentric rings for the same two providers as the taskbar panel, by default the first two in the widget, the busier one on the outer ring, both sweeping clockwise from 12 o'clock. A value too small for an arc becomes a dot, and only a true 100% closes the ring, so the shape never lies. It is one of two indicators: the alternative is the taskbar panel, which paints two providers onto the bar as digits and bars, as the time until each limit resets, or both. The Taskbar column of <em>Rows and models</em> picks which two providers the panel and the rings show. You pick the indicator from the Indicator submenu.</p></details>
     <details><summary>Can I see a look before I choose it?</summary>
       <p>Yes. Rest the pointer on a detail level, a layout, a width, the arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or a saturation in the context menu, and the widget, the taskbar panel and the tray icon show it at once. A click keeps it; closing the menu without one puts back what was there. Nothing is saved until the click.</p></details>
     <details><summary>How does it update itself?</summary>
