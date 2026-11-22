@@ -48,6 +48,10 @@ pub struct Tray {
     first_install: bool,
     /// The rings' stroke and spacing (`[tune.tray]`).
     rings: Rings,
+    /// The icon's own tooltip (`tray_tip_text`): the rows chosen in the
+    /// Tooltip column, as the panel's tooltip shows them. Empty until the
+    /// app first sets it.
+    tip: String,
 }
 
 impl Tray {
@@ -60,6 +64,7 @@ impl Tray {
             fallback: false,
             first_install: false,
             rings: Rings::DEFAULT,
+            tip: String::new(),
         }
     }
 
@@ -80,7 +85,7 @@ impl Tray {
         if self.first_install != on {
             self.first_install = on;
             if let Some(icon) = self.icon.as_ref() {
-                let _ = icon.set_tooltip(Some(tooltip(providers, on)));
+                let _ = icon.set_tooltip(Some(self.tip_for(providers)));
             }
         }
     }
@@ -151,7 +156,7 @@ impl Tray {
                 let _ = icon.set_icon(Some(img));
             }
         }
-        let _ = icon.set_tooltip(Some(tooltip(providers, self.first_install)));
+        let _ = icon.set_tooltip(Some(self.tip_for(providers)));
         // Second promotion pass once the registry keys surely exist.
         if self.promote_pending {
             self.promote_pending = false;
@@ -244,6 +249,78 @@ fn build_icon(menu: &muda::Menu, tooltip: &str) -> Result<TrayIcon> {
         })
 }
 
+impl Tray {
+    /// The tooltip anew (`tray_tip_text`); shown at once when it changed.
+    pub fn set_tip(&mut self, text: String) {
+        if self.tip == text {
+            return;
+        }
+        self.tip = text;
+        if let Some(icon) = self.icon.as_ref() {
+            let _ = icon.set_tooltip(Some(&self.tip));
+        }
+    }
+
+    /// What the icon's tooltip says: the app's text, or before the app
+    /// first sets one, the providers the icon shows.
+    fn tip_for(&self, providers: &[ProviderData]) -> String {
+        if self.tip.is_empty() {
+            tooltip(providers, self.first_install)
+        } else {
+            self.tip.clone()
+        }
+    }
+}
+
+/// Windows keeps 128 UTF-16 units of a tray icon's tooltip, the last one
+/// its end (`NOTIFYICONDATAW::szTip`).
+const TRAY_TIP_UNITS: usize = 127;
+
+/// The tray icon's own tooltip: the same rows and parts as the panel's
+/// tooltip (the Tooltip column, `[ui.tooltip]`; `tooltip_lines`), one line
+/// each, so hovering either shows the same list. Whole lines within what
+/// Windows keeps, and a last line "…" when some did not fit.
+pub(crate) fn tray_tip_text(rows: &[RowView], first_install: bool, tip: &UiNumbers) -> String {
+    let lines: Vec<String> = tooltip_lines(rows, first_install, tip)
+        .into_iter()
+        .map(|l| {
+            if l.indent {
+                format!("   {}", l.text)
+            } else {
+                l.text
+            }
+        })
+        .collect();
+    let units = |s: &str| s.encode_utf16().count();
+    let all = lines.join("\n");
+    if units(&all) <= TRAY_TIP_UNITS {
+        return all;
+    }
+    let mut kept = String::new();
+    for line in &lines {
+        let next = if kept.is_empty() {
+            line.clone()
+        } else {
+            format!("{kept}\n{line}")
+        };
+        if units(&next) + 2 > TRAY_TIP_UNITS {
+            break;
+        }
+        kept = next;
+    }
+    if kept.is_empty() {
+        // Not even the first line fits: as much of it as does.
+        for ch in lines.first().map(String::as_str).unwrap_or("").chars() {
+            if units(&kept) + ch.len_utf16() + 1 > TRAY_TIP_UNITS {
+                break;
+            }
+            kept.push(ch);
+        }
+        return format!("{kept}…");
+    }
+    format!("{kept}\n…")
+}
+
 /// A provider's primary % if its data is usable.
 pub(crate) fn provider_pct(data: &ProviderData) -> Option<f32> {
     matches!(data.status, ProviderStatus::Ok | ProviderStatus::Estimated)
@@ -276,8 +353,8 @@ pub(crate) fn ring_cache_state(providers: &[ProviderData]) -> Vec<Option<u8>> {
     vec![first, second]
 }
 
-/// The tray icon's own tooltip (Windows keeps 128 UTF-16 units of it): the
-/// providers and their percentages, never models or extra rows. On a fresh
+/// The providers the icon shows and their percentages, as one line: the
+/// icon's tooltip until the app first gives it `tray_tip_text`. On a fresh
 /// install with nothing chosen it says what to do.
 pub(crate) fn tooltip(providers: &[ProviderData], first_install: bool) -> String {
     summary(providers.iter(), first_install)
@@ -2081,6 +2158,58 @@ mod tests {
             row.model = full_label(&row.provider);
         }
         rows
+    }
+
+    /// The tray icon's tooltip says what the panel's does: the rows chosen
+    /// in the Tooltip column, line for line, whatever the icon itself shows
+    /// (its two providers). Within the 127 units Windows keeps, whole lines
+    /// and a last "…" when some did not fit.
+    #[test]
+    fn the_tray_tooltip_lists_the_tooltip_rows_like_the_panel() {
+        let both = UiNumbers {
+            percent: true,
+            reset: true,
+            bar: true,
+        };
+        let four = labelled_rows(&["claude", "codex", "grok", "copilot"], false);
+        let text = tray_tip_text(&four, false, &both);
+        let lines: Vec<String> = tooltip_lines(&four, false, &both)
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert_eq!(text.split('\n').collect::<Vec<_>>(), lines);
+        assert_eq!(text.lines().count(), 4, "{text}");
+        // Percent only and no labels: the panel's one line, the same here.
+        let one = tray_tip_text(&four, false, &UiNumbers::PERCENT_ONLY);
+        assert_eq!(one.lines().count(), 1);
+        assert_eq!(
+            one,
+            tooltip_lines(&four, false, &UiNumbers::PERCENT_ONLY)[0].text
+        );
+        // Every row with its model: cut to whole lines, then "…".
+        let every = labelled_rows(
+            &[
+                "claude",
+                "claude.opus",
+                "claude.sonnet",
+                "codex",
+                "grok",
+                "copilot",
+                "cursor",
+            ],
+            true,
+        );
+        let long = tray_tip_text(&every, false, &both);
+        assert!(long.encode_utf16().count() <= TRAY_TIP_UNITS, "{long}");
+        assert!(long.ends_with("\n…"), "{long}");
+        let full = tooltip_lines(&every, false, &both);
+        for (got, want) in long.lines().zip(full.iter()) {
+            if got != "…" {
+                assert!(got.trim_start() == want.text, "{got} vs {}", want.text);
+            }
+        }
+        // Nothing chosen yet: what to do, as the panel says it.
+        assert_eq!(tray_tip_text(&[], true, &both), FIRST_INSTALL_TIP);
     }
 
     /// The panel's multi-line tooltip, recorded as a new group (the 0.7.0

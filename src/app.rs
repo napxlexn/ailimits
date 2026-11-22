@@ -717,6 +717,11 @@ pub fn run() -> Result<()> {
             }
         }));
     }
+    tray.set_tip(crate::ui::tray::tray_tip_text(
+        &surface_rows(&config, &display, Surface::Tooltip, &models),
+        rows::nothing_chosen(&config),
+        &config.ui.tooltip,
+    ));
     tray.set_first_install(
         rows::nothing_chosen(&config),
         &visible_data(&config, &display),

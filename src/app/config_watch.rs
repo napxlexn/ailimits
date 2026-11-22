@@ -545,6 +545,7 @@ impl App {
         if e.tray_rows {
             self.sync_tray();
         }
+        self.sync_tray_tip();
         if e.repaint {
             self.tray.update(&visible, &self.theme, true);
             self.panel.update(&visible, true);

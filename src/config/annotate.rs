@@ -200,7 +200,7 @@ const TABLES: &[Table] = &[
             ),
             (
                 "tooltip",
-                &["The rows of the taskbar panel's tooltip, as above."],
+                &["The rows of the panel's and the tray icon's tooltip, as above."],
             ),
             (
                 "taskbar",
@@ -246,7 +246,7 @@ const TABLES: &[Table] = &[
     Table {
         path: "ui.tooltip",
         about: &[
-            "What each row of the taskbar panel's tooltip shows besides its name;",
+            "What each tooltip row (panel and tray icon) shows besides its name;",
             "keep one true. Window: Rows and models, Tooltip column.",
         ],
         keys: &[

@@ -6,10 +6,11 @@
 
 use super::{
     auto_open, model_job, open_picker_window, picker_anchor, picker_mode_for,
-    provider_set::Rebuilt, visible_data, widget::apply_ui_change, widget_shape, App, AutoOpen,
-    UserEvent,
+    provider_set::Rebuilt, surface_rows, visible_data, widget::apply_ui_change, widget_shape, App,
+    AutoOpen, UserEvent,
 };
 use crate::{
+    config::schema::Surface,
     providers::ProviderData,
     rows,
     ui::picker::{PickerAction, PickerInput, PickerMode},
@@ -142,8 +143,21 @@ impl App {
         true
     }
 
+    /// The tray icon's tooltip: the rows chosen in the Tooltip column, as
+    /// the panel's tooltip shows them (`tray::tray_tip_text`).
+    pub(super) fn sync_tray_tip(&mut self) {
+        let rows = surface_rows(&self.config, &self.display, Surface::Tooltip, &self.models);
+        let text = crate::ui::tray::tray_tip_text(
+            &rows,
+            rows::nothing_chosen(&self.config),
+            &self.config.ui.tooltip,
+        );
+        self.tray.set_tip(text);
+    }
+
     /// The tray icon follows the providers shown, and whether any is chosen.
     pub(super) fn sync_tray(&mut self) {
+        self.sync_tray_tip();
         let visible = self.visible();
         self.tray
             .set_first_install(rows::nothing_chosen(&self.config), &visible);

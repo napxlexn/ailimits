@@ -209,9 +209,10 @@ Notable, user-visible changes. Dates are release dates.
 
 - **The tray icon shows the same two providers as the taskbar panel.**
   Untouched, both show the first two in the widget, the busier on the outer
-  ring, and its tooltip lists those two; 0.7.0's rings took the two busiest
-  of all. The Taskbar column of *Rows and models* chooses for both, as
-  before.
+  ring; 0.7.0's rings took the two busiest of all. The Taskbar column of
+  *Rows and models* chooses for both, as before. Its tooltip now says what
+  the panel's does: the rows ticked in the Tooltip column, with the
+  percentage and the reset time as chosen there.
 - **Nothing that belongs to another tool is read before you allow it.**
   Each tool's sign-in, the settings files and the session files are asked
   about once, before their first read, and the question names the files

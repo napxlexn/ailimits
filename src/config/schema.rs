@@ -451,8 +451,8 @@ pub enum Surface {
 /// What each row shows besides its name, on the panel's tooltip
 /// (`UIConfig::tooltip`) or on the taskbar panel itself (`UIConfig::panel`):
 /// the percentage, the time left until it resets, or both; never neither
-/// (the picker keeps one on). The tray icon's own tooltip always says the
-/// percentages; the widget always shows both. `bar` is the taskbar panel's
+/// (the picker keeps one on). The tray icon's tooltip says what the panel's
+/// does (`tray::tray_tip_text`); the widget always shows both. `bar` is the taskbar panel's
 /// progress bar, on unless switched off to take less of the taskbar; the
 /// tooltip has none and ignores it.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

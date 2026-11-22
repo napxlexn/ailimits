@@ -34,7 +34,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
 
 <p align="center">
   <img src="docs/images/indicator.gif" width="440" alt="The taskbar indicator: the cursor moves from the desktop onto the panel and then the tray rings, the hover tooltip appears over each at the same height, and every mode switches between the dark and light Windows themes">
-  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the same two providers as the panel as two rings: the first two in the widget, or the two you choose. Hovering the panel gives the full list; the tray icon's tooltip gives those two percentages only. Both follow the system light and dark theme.</sub>
+  <br><sub>With the widget hidden, usage stays on the taskbar. The tray icon shows the same two providers as the panel as two rings: the first two in the widget, or the two you choose. Hovering the panel or the tray icon gives the same list: the rows ticked in the Tooltip column. Both follow the system light and dark theme.</sub>
 </p>
 
 <table>

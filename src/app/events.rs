@@ -599,6 +599,7 @@ impl App {
             self.panel.update(&self.visible(), true);
         }
         self.window.request_redraw();
+        self.sync_tray_tip();
         self.tray.update(&self.visible(), &self.theme, false);
         self.panel.update(&self.visible(), false);
         self.refresh_picker();
@@ -784,6 +785,7 @@ impl App {
         if generation == current && read != self.models {
             self.models = read;
             self.relayout_if_reshaped();
+            self.sync_tray_tip();
             self.window.request_redraw();
             self.refresh_picker();
         }

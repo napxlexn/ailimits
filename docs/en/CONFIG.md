@@ -305,8 +305,9 @@ source  = "configured"
 # The window keeps one on; both false in the file leaves each row its name
 # and a dot. Written only once changed; without it, both. With the
 # percentage alone and no model labels or extra rows, the tooltip is one
-# line, as in 0.7.0; otherwise it has one row per line. The widget always shows both; the tray
-# icon's own tooltip always says the percentages.
+# line, as in 0.7.0; otherwise it has one row per line. The tray icon's
+# tooltip says the same (within the 127 characters Windows keeps); the
+# widget always shows both.
 [ui.tooltip]
 percent = false
 reset   = true
