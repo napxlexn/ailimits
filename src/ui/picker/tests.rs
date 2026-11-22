@@ -840,12 +840,13 @@ fn a_click_places_the_caret() {
 
 // ─── Closing ─────────────────────────────────────────────────
 
-/// The window closes as a program's does: by the cross or Alt+F4. Esc, a
+/// The window closes as a dialog does: by Esc, the cross or Alt+F4. A
 /// click beside the box and another window taking the focus leave it open.
 #[test]
-fn only_the_cross_and_alt_f4_close() {
+fn only_esc_the_cross_and_alt_f4_close() {
     let mut p = picker(input());
-    assert!(key(&mut p, PickerKey::Escape).is_empty());
+    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    let mut p = picker(input());
     assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
     let mut p = picker(input());
     assert_eq!(p.handle(PickerEvent::CloseRequested), [PickerAction::Close]);
@@ -1113,9 +1114,8 @@ fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
     assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
     // Closed without an answer, the welcome is answered by that, once.
     let mut p = picker(welcome(Vec::new()));
-    assert!(key(&mut p, PickerKey::Escape).is_empty());
     assert_eq!(
-        click(&mut p, &Target::Close),
+        key(&mut p, PickerKey::Escape),
         [PickerAction::NoticeDone, PickerAction::Close]
     );
     assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
@@ -1289,28 +1289,98 @@ fn the_box_goes_beside_the_anchor_inside_the_work_area() {
     let size = (404, 584);
     // Right of a widget on the left, top-aligned; the margin is outside.
     assert_eq!(
-        place(at(100, 100, 278, 200), size, 12, 8, WORK),
+        place(at(100, 100, 278, 200), None, size, 12, 8, WORK),
         (100 + 278 + 8 - 12, 88)
     );
     // Against the right edge: to its left.
     assert_eq!(
-        place(at(1600, 100, 278, 200), size, 12, 8, WORK),
+        place(at(1600, 100, 278, 200), None, size, 12, 8, WORK),
         (1600 - 8 - 380 - 12, 88)
     );
     // Low on the screen: slid up into the work area.
-    let (_, y) = place(at(100, 900, 278, 100), size, 12, 8, WORK);
+    let (_, y) = place(at(100, 900, 278, 100), None, size, 12, 8, WORK);
     assert_eq!(y + 12 + 560, 1032);
     // The tray icon in the corner: left of it, bottom held in.
-    let (x, y) = place(at(1840, 1040, 24, 40), size, 12, 8, WORK);
+    let (x, y) = place(at(1840, 1040, 24, 40), None, size, 12, 8, WORK);
     assert_eq!((x + 12 + 380, y + 12 + 560), (1840 - 8, 1032));
     // A widget as wide as the screen: below it.
     assert_eq!(
-        place(at(0, 50, 1920, 100), size, 12, 8, WORK),
+        place(at(0, 50, 1920, 100), None, size, 12, 8, WORK),
         (-12, 50 + 100 + 8 - 12)
     );
     // No room anywhere: held inside all the same.
-    let (x, y) = place(at(10, 10, 1900, 1000), size, 12, 8, WORK);
+    let (x, y) = place(at(10, 10, 1900, 1000), None, size, 12, 8, WORK);
     assert!(x + 12 >= 0 && x + 12 + 380 <= 1920 && y + 12 >= 0 && y + 12 + 560 <= 1032);
+}
+
+/// Beside the widget, the side with more room comes first: away from the
+/// nearer edge of the screen, though the other side would fit too.
+#[test]
+fn the_box_goes_to_the_roomier_side() {
+    let size = (404, 584);
+    // Right of the middle: left of it.
+    assert_eq!(
+        place(at(1100, 100, 278, 200), None, size, 12, 8, WORK),
+        (1100 - 8 - 380 - 12, 88)
+    );
+    // Left of the middle: right of it.
+    assert_eq!(
+        place(at(500, 100, 278, 200), None, size, 12, 8, WORK),
+        (500 + 278 + 8 - 12, 88)
+    );
+}
+
+/// The widget grows while rows are ticked: the box keeps off that side and
+/// out of the room it grows into, so a row ticked comes into sight.
+#[test]
+fn the_box_keeps_off_the_side_the_widget_grows_to() {
+    let size = (404, 584);
+    // Columns side by side grow to the right: the box goes left of them,
+    // though the right has more room.
+    let widget = at(700, 800, 300, 120);
+    let a = Anchor::widget(widget, (700, 120), Some(WORK));
+    assert_eq!(a.grows, Some(Side::Right));
+    assert_eq!(a.reach, at(700, 800, 700, 120));
+    let (x, _) = place(a.reach, a.grows, size, 12, 8, WORK);
+    assert_eq!(x + 12 + 380, 700 - 8);
+    // Near the right edge they are pulled back and grow to the left, and
+    // the right has no room: above the room they take.
+    let widget = at(1500, 800, 300, 120);
+    let a = Anchor::widget(widget, (700, 120), Some(WORK));
+    assert_eq!(a.grows, Some(Side::Left));
+    assert_eq!(a.reach, at(1220, 800, 700, 120));
+    let (x, y) = place(a.reach, a.grows, size, 12, 8, WORK);
+    assert_eq!((x + 12, y + 12 + 560), (1220, 800 - 8));
+    // Against the left edge with no room on the left either: above them
+    // (more room than below), never on the right where they grow.
+    let widget = at(0, 800, 300, 120);
+    let a = Anchor::widget(widget, (1700, 120), Some(WORK));
+    let (x, y) = place(a.reach, a.grows, size, 12, 8, WORK);
+    assert_eq!((x + 12, y + 12 + 560), (0, 800 - 8));
+    // Rows grow downwards: beside them as before, the roomier side first;
+    // never below.
+    let widget = at(1300, 100, 300, 200);
+    let a = Anchor::widget(widget, (300, 500), Some(WORK));
+    assert_eq!(a.grows, Some(Side::Below));
+    let (x, y) = place(a.reach, a.grows, size, 12, 8, WORK);
+    assert_eq!((x + 12 + 380, y + 12), (1300 - 8, 100));
+    // Near the bottom they grow upwards: the reach goes up with them.
+    let widget = at(100, 900, 300, 100);
+    let a = Anchor::widget(widget, (300, 400), Some(WORK));
+    assert_eq!(a.grows, Some(Side::Above));
+    assert_eq!(a.reach, at(100, 632, 300, 400));
+    // A widget as wide as the screen whose rows grow down: above it, the
+    // only side not in their way.
+    let widget = at(0, 700, 1920, 100);
+    let a = Anchor::widget(widget, (1920, 300), Some(WORK));
+    let (_, y) = place(a.reach, a.grows, size, 12, 8, WORK);
+    assert_eq!(y + 12 + 560, 700 - 8);
+    // No row left to tick: it does not grow, nothing is kept clear.
+    let widget = at(700, 800, 300, 120);
+    assert_eq!(
+        Anchor::widget(widget, (300, 120), Some(WORK)),
+        Anchor::fixed(widget)
+    );
 }
 
 /// Opened from the tray icon in the corner, or from a widget against the
@@ -1321,16 +1391,21 @@ fn the_box_keeps_clear_of_the_screens_edges() {
     use super::window::place_window;
     let size = (404, 584);
     // The tray icon in the corner: left of it, and off the taskbar.
-    let (x, y) = place_window(at(1840, 1040, 24, 40), size, 1.0, Some(WORK));
+    let (x, y) = place_window(Anchor::fixed(at(1840, 1040, 24, 40)), size, 1.0, Some(WORK));
     assert_eq!((x + 12 + 380, y + 12 + 560), (1840 - 8, 1032 - 16));
     // A widget flush with the top-left corner: beside it, off the top.
-    let (x, y) = place_window(at(0, 0, 278, 200), size, 1.0, Some(WORK));
+    let (x, y) = place_window(Anchor::fixed(at(0, 0, 278, 200)), size, 1.0, Some(WORK));
     assert_eq!((x + 12, y + 12), (278 + 8, 16));
     // A widget as wide as the screen: below it, off the left edge.
-    let (x, _) = place_window(at(0, 50, 1920, 100), size, 1.0, Some(WORK));
+    let (x, _) = place_window(Anchor::fixed(at(0, 50, 1920, 100)), size, 1.0, Some(WORK));
     assert_eq!(x + 12, 16);
     // At 150% the room scales.
-    let (x, y) = place_window(at(1840, 1040, 24, 40), (606, 876), 1.5, Some(WORK));
+    let (x, y) = place_window(
+        Anchor::fixed(at(1840, 1040, 24, 40)),
+        (606, 876),
+        1.5,
+        Some(WORK),
+    );
     assert_eq!((x + 18 + 570, y + 18 + 840), (1840 - 12, 1032 - 24));
 }
 
@@ -1843,7 +1918,7 @@ fn a_window_that_opened_by_itself_takes_no_stray_key() {
 
 /// Losing the focus to another window, or a click beside the box, keeps
 /// the window and answers nothing: the welcome and the notice are owed
-/// still. The cross, Alt+F4 and a button are answers.
+/// still. Esc, the cross, Alt+F4 and a button are answers.
 #[test]
 fn losing_the_focus_keeps_the_window_and_answers_nothing() {
     for input in [welcome(vec!["claude"]), welcome(Vec::new()), notice()] {
@@ -1878,7 +1953,7 @@ fn a_name_being_typed_keeps_the_window_when_the_focus_goes() {
 }
 
 /// Esc in a name field takes the edit back to the name it had; a second
-/// Esc, with nothing to take back, does nothing (it never closes).
+/// Esc, with nothing to take back, closes the window.
 #[test]
 fn escape_in_a_name_field_takes_the_edit_back() {
     let mut i = with_model();
@@ -1890,7 +1965,7 @@ fn escape_in_a_name_field_takes_the_edit_back() {
     assert_eq!(key(&mut p, PickerKey::Escape), [rename(id, Some("Mine"))]);
     assert_eq!(field_text(&p, id), "Mine");
     assert!(p.editing());
-    assert!(key(&mut p, PickerKey::Escape).is_empty());
+    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
 }
 
 /// The page keys and the scroll bar move the list; the thumb drags and

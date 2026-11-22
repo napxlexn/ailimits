@@ -50,7 +50,7 @@ use crate::{
     ui::{
         context_menu::ContextMenu,
         layout,
-        picker::{PickerInput, PickerMode, PickerWindow, ScreenRect},
+        picker::{Anchor, PickerInput, PickerMode, PickerWindow, ScreenRect},
         renderer::Renderer,
         taskbar_panel::TaskbarPanel,
         theme::ComputedTheme,
@@ -262,30 +262,44 @@ fn picker_mode_for(config: &Config) -> PickerMode {
     }
 }
 
-/// Where the picker opens: beside the widget while it is on screen,
-/// otherwise at the cursor (on the menu or the tray icon just clicked);
-/// where the user left it, once they moved it (`App::picker_at`).
-fn picker_anchor(window: &tao::window::Window, widget_visible: bool) -> ScreenRect {
+/// Where the picker opens: beside the widget while it is on screen, off
+/// the side it grows to (`grown`: its size with every row the window
+/// offers ticked; `Anchor::widget`), otherwise at the cursor (on the menu
+/// or the tray icon just clicked); where the user left it, once they moved
+/// it (`App::picker_at`).
+fn picker_anchor(
+    window: &tao::window::Window,
+    widget_visible: bool,
+    grown: Option<(i32, i32)>,
+) -> Anchor {
     if widget_visible {
         if let Ok(p) = window.outer_position() {
             let s = window.outer_size();
-            return ScreenRect {
+            let rect = ScreenRect {
                 x: p.x,
                 y: p.y,
                 w: s.width as i32,
                 h: s.height as i32,
+            };
+            return match grown {
+                Some(g) => {
+                    let work =
+                        crate::platform::work_area_at(rect.x + rect.w / 2, rect.y + rect.h / 2);
+                    Anchor::widget(rect, g, work)
+                }
+                None => Anchor::fixed(rect),
             };
         }
     }
     let c = window
         .cursor_position()
         .unwrap_or(PhysicalPosition::new(0.0, 0.0));
-    ScreenRect {
+    Anchor::fixed(ScreenRect {
         x: c.x as i32,
         y: c.y as i32,
         w: 1,
         h: 1,
-    }
+    })
 }
 
 /// Open the picker window; a failure is logged and leaves the app as it was.
@@ -296,7 +310,7 @@ fn open_picker_window<T: 'static>(
     target: &tao::event_loop::EventLoopWindowTarget<T>,
     renderer: &Rc<Renderer>,
     input: PickerInput,
-    anchor: ScreenRect,
+    anchor: Anchor,
     at: Option<(i32, i32)>,
     activate: bool,
 ) -> Option<PickerWindow> {

@@ -431,9 +431,9 @@ impl Picker {
         vec![PickerAction::NoticeDone]
     }
 
-    /// The cross or Alt+F4: closed on purpose, so the welcome and the notice
-    /// count as answered. Nothing else closes the window: not a click
-    /// beside it, not another window taking the focus, not Esc.
+    /// Esc, the cross or Alt+F4: closed on purpose, so the welcome and the
+    /// notice count as answered. Nothing else closes the window: not a click
+    /// beside it, not another window taking the focus.
     pub(super) fn close(&mut self) -> Vec<PickerAction> {
         let mut out = Vec::new();
         if matches!(
@@ -613,12 +613,12 @@ impl Picker {
             if self.ask.is_some() {
                 return self.activate(&Target::Cancel);
             }
-            // In a name field Esc takes the edit back; elsewhere it does
-            // nothing (the cross or Alt+F4 close the window).
+            // In a name field Esc first takes the edit back; otherwise it
+            // closes the window, as a dialog's Esc does.
             if let Some(out) = self.revert_edit() {
                 return out;
             }
-            return Vec::new();
+            return self.close();
         }
         // The page keys scroll what shows: the question's text, else the
         // list. The focus stays.

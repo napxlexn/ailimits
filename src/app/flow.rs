@@ -203,17 +203,47 @@ impl App {
         if self.picker.is_none() {
             self.picker_mode = picker_mode_for(&self.config);
             self.found_tools = crate::consent::found_tools();
+            let input = self.picker_input();
+            let anchor =
+                picker_anchor(&self.window, self.window_visible, self.widget_grown(&input));
             self.picker = open_picker_window(
                 target,
                 &self.renderer,
-                self.picker_input(),
-                picker_anchor(&self.window, self.window_visible),
+                input,
+                anchor,
                 self.picker_at,
                 activate,
             );
         } else if let Some(p) = self.picker.as_ref().filter(|_| activate) {
             p.focus();
         }
+    }
+
+    /// The widget's size once every row the window offers is ticked for it:
+    /// how far it may grow while the window is open, which the window keeps
+    /// clear of (`picker_anchor`). None when no row is left to tick.
+    fn widget_grown(&self, input: &PickerInput) -> Option<(i32, i32)> {
+        let more = input
+            .rows
+            .iter()
+            .filter(|r| !input.widget_rows.iter().any(|w| w == r.id))
+            .count();
+        if more == 0 {
+            return None;
+        }
+        let mut shape = self.shape.clone();
+        shape.choose = false;
+        shape.unshown = false;
+        shape.model_lines.extend(std::iter::repeat_n(false, more));
+        let grown = crate::ui::layout::compute_tuned(
+            &self.config.ui.layout,
+            &self.config.ui.detail,
+            &self.config.ui.width_scale,
+            &self.config.ui.column_flow,
+            &shape,
+            &crate::ui::layout::WidgetMetrics::from_tune(&self.config.tune),
+        );
+        Some((grown.width.ceil() as i32, grown.height.ceil() as i32))
     }
 
     /// An owed window that waited for a fullscreen app opens once the app

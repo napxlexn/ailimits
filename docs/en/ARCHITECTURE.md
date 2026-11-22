@@ -201,14 +201,22 @@ with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
 It is a program's window: in the taskbar and Alt+Tab (its icon drawn from
 `assets/icon-48.rgba` with `CreateIcon`, as the tray icon is, so no
 `LoadImageW`), on top only while it is the active window and behind others
-once another one is. Only its cross and Alt+F4 close it
-(`PickerEvent::CloseRequested`); Esc, a click beside the box and the focus
+once another one is. Only Esc, its cross and Alt+F4 close it
+(`PickerEvent::CloseRequested`); a click beside the box and the focus
 going elsewhere leave it open. A press on its title starts Windows' own
 move (`Window::drag_window`); where the user left it is kept in
 `App::picker_at` and used at the next opening while the app runs, held
 inside that monitor's work area (`hold_in`), and the work area and the
 tallest box are found again for the monitor it was moved to
 (`PickerWindow::find_work`).
+Where it first opens keeps clear of the widget's growth: the app lays the
+widget out with every row the window offers ticked (`App::widget_grown`),
+and `Anchor::widget` turns that into the room it may take, held in the
+work area as the widget holds itself (columns near the right edge grow to
+the left, rows near the bottom upwards), and the side it grows to.
+`place` puts the box beside that room, then below or above it, the roomier
+side of each pair first (away from the nearer edge of the screen), and the
+side it grows to only when no other has room.
 
 ## Key decisions
 

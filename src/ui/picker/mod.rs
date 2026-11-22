@@ -124,10 +124,10 @@ pub enum PickerAction {
     /// Open config.toml (in Notepad), for the fine-tuning that has no place
     /// in the window. The app applies what is saved there.
     OpenSettingsFile,
-    /// The welcome or the update notice was answered (a button, the cross,
-    /// Alt+F4 or an answered question); it is not owed again.
+    /// The welcome or the update notice was answered (a button, Esc, the
+    /// cross, Alt+F4 or an answered question); it is not owed again.
     NoticeDone,
-    /// The cross or Alt+F4.
+    /// Esc, the cross or Alt+F4.
     Close,
 }
 
@@ -1984,7 +1984,7 @@ mod scene;
 mod text;
 mod window;
 
-pub use window::{place, PickerWindow, ScreenRect};
+pub use window::{place, Anchor, PickerWindow, ScreenRect, Side};
 
 #[cfg(test)]
 mod tests;

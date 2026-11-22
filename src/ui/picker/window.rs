@@ -24,13 +24,90 @@ pub struct ScreenRect {
     pub h: i32,
 }
 
-/// Where the window goes, all in physical pixels: its box beside the anchor
-/// (right of it, else left, else below, else above), `gap` away, then held
-/// inside the work area (left, top, right, bottom). `size` is the window's,
-/// `margin` its transparent edge on every side. Returns the window's
-/// top-left corner.
+/// A side of the anchor: where the box goes, or where the widget grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Right,
+    Left,
+    Below,
+    Above,
+}
+
+/// What the window opens beside, in physical pixels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Anchor {
+    /// The widget as it is now (or the tray icon, the cursor): the window
+    /// opens on its monitor.
+    pub rect: ScreenRect,
+    /// `rect` joined with the room the widget may grow into while the
+    /// window is open: the box keeps out of it, so a row ticked shows
+    /// beside the window, never under it.
+    pub reach: ScreenRect,
+    /// The side the widget grows to as rows are ticked.
+    pub grows: Option<Side>,
+}
+
+impl Anchor {
+    /// A spot that does not grow: the tray icon, the cursor, a widget with
+    /// no row left to tick.
+    pub fn fixed(rect: ScreenRect) -> Self {
+        Self {
+            rect,
+            reach: rect,
+            grows: None,
+        }
+    }
+
+    /// The widget at `rect`; `grown` its size once every row the window
+    /// offers is ticked for it. It keeps its corner as it grows, pulled
+    /// back into `work` where it would cross the edge
+    /// (`ui::window::clamp_to_work_area`, as `widget::apply_ui_change`
+    /// does), so near the right edge its columns grow to the left, near
+    /// the bottom its rows grow upwards.
+    pub fn widget(rect: ScreenRect, grown: (i32, i32), work: Option<(i32, i32, i32, i32)>) -> Self {
+        let (dw, dh) = (grown.0 - rect.w, grown.1 - rect.h);
+        if dw <= 0 && dh <= 0 {
+            return Self::fixed(rect);
+        }
+        let (gx, gy) = match work {
+            Some((l, t, r, b)) => (
+                rect.x.min(r - grown.0).max(l),
+                rect.y.min(b - grown.1).max(t),
+            ),
+            None => (rect.x, rect.y),
+        };
+        let (x0, y0) = (rect.x.min(gx), rect.y.min(gy));
+        let x1 = (rect.x + rect.w).max(gx + grown.0);
+        let y1 = (rect.y + rect.h).max(gy + grown.1);
+        let grows = match (dw > dh, gx < rect.x, gy < rect.y) {
+            (true, true, _) => Side::Left,
+            (true, false, _) => Side::Right,
+            (false, _, true) => Side::Above,
+            (false, _, false) => Side::Below,
+        };
+        Self {
+            rect,
+            reach: ScreenRect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            },
+            grows: Some(grows),
+        }
+    }
+}
+
+/// Where the window goes, all in physical pixels: its box beside `anchor`
+/// (the widget's reach), `gap` away, then held inside the work area (left,
+/// top, right, bottom). Beside it first, else below or above; of each pair
+/// the side with more room first, away from the nearer edge of the screen;
+/// the side the widget `grows` to last of all, so the rows ticked in the
+/// window come into sight beside it. `size` is the window's, `margin` its
+/// transparent edge on every side. Returns the window's top-left corner.
 pub fn place(
     anchor: ScreenRect,
+    grows: Option<Side>,
     size: (i32, i32),
     margin: i32,
     gap: i32,
@@ -38,24 +115,47 @@ pub fn place(
 ) -> (i32, i32) {
     let (l, t, r, b) = work;
     let (bw, bh) = (size.0 - 2 * margin, size.1 - 2 * margin);
-    let right = (anchor.x + anchor.w + gap, anchor.y);
-    let left = (anchor.x - gap - bw, anchor.y);
-    let below = (anchor.x, anchor.y + anchor.h + gap);
-    let above = (anchor.x, anchor.y - gap - bh);
+    let room = |s: Side| match s {
+        Side::Right => r - (anchor.x + anchor.w),
+        Side::Left => anchor.x - l,
+        Side::Below => b - (anchor.y + anchor.h),
+        Side::Above => anchor.y - t,
+    };
+    let spot = |s: Side| match s {
+        Side::Right => (anchor.x + anchor.w + gap, anchor.y),
+        Side::Left => (anchor.x - gap - bw, anchor.y),
+        Side::Below => (anchor.x, anchor.y + anchor.h + gap),
+        Side::Above => (anchor.x, anchor.y - gap - bh),
+    };
     // A side fits when the box clears the work area's edge on that side;
     // sliding along the anchor is the clamp's job.
-    let fits = [
-        right.0 + bw <= r,
-        left.0 >= l,
-        below.1 + bh <= b,
-        above.1 >= t,
-    ];
-    let cands = [right, left, below, above];
-    let (x, y) = match fits.iter().position(|f| *f) {
-        Some(i) => cands[i],
-        // No side has room: the wider one, held in below.
-        None if r - (anchor.x + anchor.w) >= anchor.x - l => right,
-        None => left,
+    let fits = |s: Side| {
+        let (x, y) = spot(s);
+        match s {
+            Side::Right => x + bw <= r,
+            Side::Left => x >= l,
+            Side::Below => y + bh <= b,
+            Side::Above => y >= t,
+        }
+    };
+    // The roomier of two sides first; a tie keeps the first.
+    let roomier = |a: Side, z: Side| if room(z) > room(a) { [z, a] } else { [a, z] };
+    let beside = roomier(Side::Right, Side::Left);
+    let mut order = beside
+        .into_iter()
+        .chain(roomier(Side::Below, Side::Above))
+        .filter(|s| Some(*s) != grows)
+        .chain(grows);
+    let (x, y) = match order.find(|s| fits(*s)) {
+        Some(s) => spot(s),
+        // No side has room: the roomier one beside it that the widget
+        // does not grow to, held in below.
+        None => spot(
+            beside
+                .into_iter()
+                .find(|s| Some(*s) != grows)
+                .unwrap_or(beside[0]),
+        ),
     };
     let x = x.min(r - bw).max(l);
     let y = y.min(b - bh).max(t);
@@ -77,7 +177,7 @@ const EDGE: f32 = 16.0;
 /// softbuffer exactly like the widget. It behaves as any program's window:
 /// in the taskbar and Alt+Tab, moved by its title, above other windows
 /// while in use and behind them once another one is, and closed only on
-/// purpose (the cross, Alt+F4). It exists only while open and repaints
+/// purpose (Esc, the cross, Alt+F4). It exists only while open and repaints
 /// only on input.
 ///
 /// The app keeps it in an `Option`, routes this window's events to
@@ -126,8 +226,8 @@ pub struct PickerWindow {
 }
 
 impl PickerWindow {
-    /// Open beside `anchor` (the widget's screen rect, or the tray icon or
-    /// panel when the widget is hidden), on that monitor, at its scale,
+    /// Open beside `anchor` (the widget and the room it may grow into, or
+    /// the cursor when the widget is hidden), on that monitor, at its scale,
     /// with the keyboard focus: opened from the menu or by a click. `at`:
     /// where the user left it the last time (`close`), used while a monitor
     /// is still there. `renderer` is the widget's: its font measures and
@@ -136,7 +236,7 @@ impl PickerWindow {
         target: &EventLoopWindowTarget<T>,
         renderer: Rc<Renderer>,
         input: PickerInput,
-        anchor: ScreenRect,
+        anchor: Anchor,
         at: Option<(i32, i32)>,
     ) -> anyhow::Result<Self> {
         Self::open_with(target, renderer, input, anchor, at, true)
@@ -151,7 +251,7 @@ impl PickerWindow {
         target: &EventLoopWindowTarget<T>,
         renderer: Rc<Renderer>,
         input: PickerInput,
-        anchor: ScreenRect,
+        anchor: Anchor,
         at: Option<(i32, i32)>,
     ) -> anyhow::Result<Self> {
         Self::open_with(target, renderer, input, anchor, at, false)
@@ -161,7 +261,7 @@ impl PickerWindow {
         target: &EventLoopWindowTarget<T>,
         renderer: Rc<Renderer>,
         input: PickerInput,
-        anchor: ScreenRect,
+        anchor: Anchor,
         at: Option<(i32, i32)>,
         activate: bool,
     ) -> anyhow::Result<Self> {
@@ -172,7 +272,10 @@ impl PickerWindow {
         });
         let (cx, cy) = match at {
             Some((x, y)) => (x + TITLE_SPOT.0, y + TITLE_SPOT.1),
-            None => (anchor.x + anchor.w / 2, anchor.y + anchor.h / 2),
+            None => (
+                anchor.rect.x + anchor.rect.w / 2,
+                anchor.rect.y + anchor.rect.h / 2,
+            ),
         };
         let mut scale = target
             .monitor_from_point(cx as f64, cy as f64)
@@ -822,7 +925,7 @@ pub(super) fn max_box_height(work: (i32, i32, i32, i32), scale: f64) -> f32 {
 /// The window's corner: `place` inside the work area drawn in by `EDGE` on
 /// every side, so the box never touches the screen's edge or the taskbar.
 pub(super) fn place_window(
-    anchor: ScreenRect,
+    anchor: Anchor,
     size: (u32, u32),
     scale: f64,
     work: Option<(i32, i32, i32, i32)>,
@@ -835,5 +938,12 @@ pub(super) fn place_window(
         Some((l, t, r, b)) => (l + edge, t + edge, r - edge, b - edge),
         None => (i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4),
     };
-    place(anchor, (size.0 as i32, size.1 as i32), margin, gap, work)
+    place(
+        anchor.reach,
+        anchor.grows,
+        (size.0 as i32, size.1 as i32),
+        margin,
+        gap,
+        work,
+    )
 }

@@ -157,12 +157,17 @@ Notable, user-visible changes. Dates are release dates.
   disc, like a clock face. Each is monochrome in the taskbar's theme, and the
   tooltip names both providers.
 - ***Rows and models* is a window like any program's.** It stays open until
-  its cross or Alt+F4 closes it: Esc, a click beside it and another window
+  Esc, its cross or Alt+F4 closes it: a click beside it and another window
   taking the focus no longer close it. It moves by its title and opens
   where it was left the next time (until the app restarts), is in the
   taskbar and Alt+Tab so it can be found behind other windows, and stays on
   top only while it is the window in use. The same goes for the welcome
   and the update notice.
+- ***Rows and models* opens out of the widget's way.** It opens on the side
+  away from the nearer edge of the screen, and never where the widget
+  grows as rows are ticked (to the right for columns, downwards for rows,
+  the other way near the screen's edge), so a row ticked comes into sight
+  at once instead of under the window.
 - **Descriptions in *Rows and models* wait for the pointer.** One shows after
   the pointer has rested 0.6 s on what it describes, as Windows' tooltips do,
   and the next one straight after follows sooner; on keyboard focus it shows
