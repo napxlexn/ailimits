@@ -2550,3 +2550,40 @@ fn visual_baseline_picker() {
 
     vb::check("picker", items);
 }
+
+/// The keyboard on a provider's own row: the Taskbar tick's description
+/// shows for that tick alone, never for the Widget or Tooltip tick beside
+/// it (it used to, being the one hint on the row; E2E 2026-11-22).
+#[test]
+fn a_focused_tick_shows_its_own_description_only() {
+    let mut p = picker(with_model());
+    let shown = |p: &Picker| {
+        let f = p.frame();
+        p.focus_hint(&f).and_then(|i| match &f.els[i].1 {
+            El::Hint { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+    };
+    let widget = row("claude", Surface::Widget);
+    while p.focus != Some(widget.clone()) {
+        key(&mut p, PickerKey::Tab);
+    }
+    assert_ne!(shown(&p).as_deref(), Some(TASKBAR_HINT), "Widget tick");
+    key(&mut p, PickerKey::Tab);
+    assert_eq!(p.focus, Some(row("claude", Surface::Tooltip)));
+    assert_ne!(shown(&p).as_deref(), Some(TASKBAR_HINT), "Tooltip tick");
+    key(&mut p, PickerKey::Tab);
+    assert_eq!(p.focus, Some(Target::Taskbar("claude".into())));
+    assert_eq!(shown(&p).as_deref(), Some(TASKBAR_HINT), "Taskbar tick");
+    // An extra row keeps its row's description on every tick.
+    let fable = row("claude.fable", Surface::Widget);
+    while p.focus != Some(fable.clone()) {
+        key(&mut p, PickerKey::Tab);
+    }
+    let fable_hint = crate::rows::SUB_ROWS
+        .iter()
+        .find(|r| r.id == "claude.fable")
+        .unwrap()
+        .hint;
+    assert_eq!(shown(&p).as_deref(), Some(fable_hint));
+}

@@ -627,13 +627,39 @@ impl Picker {
             let (et, r, _) = el.active()?;
             (*layer == Layer::Body && et == t).then_some(r)
         })?;
-        if !f.in_list(r.x + r.w / 2.0, r.y + r.h / 2.0) {
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        if !f.in_list(cx, cy) {
             return None;
         }
-        f.els.iter().position(|(layer, el)| {
-            *layer == Layer::Body
-                && matches!(el, El::Hint { rect, .. } if rect.y == r.y && rect.h == r.h)
-        })
+        let on_row = |i: usize| match &f.els[i] {
+            (Layer::Body, El::Hint { rect, .. }) => rect.y == r.y && rect.h == r.h,
+            _ => false,
+        };
+        // Another control's own description: a hint laid over exactly the
+        // cell of a control other than the focused one (the Taskbar tick's
+        // says what the taskbar shows, never what Widget or Tooltip does).
+        let others: Vec<Rect> = f
+            .els
+            .iter()
+            .filter_map(|(layer, el)| {
+                let (et, er, _) = el.active()?;
+                (*layer == Layer::Body && et != t).then_some(er)
+            })
+            .collect();
+        let own = |i: usize| match &f.els[i].1 {
+            El::Hint { rect, .. } => contains(rect, cx, cy),
+            _ => false,
+        };
+        let foreign = |i: usize| match &f.els[i].1 {
+            El::Hint { rect, .. } => others
+                .iter()
+                .any(|o| (o.x, o.y, o.w, o.h) == (rect.x, rect.y, rect.w, rect.h)),
+            _ => true,
+        };
+        // The focused control's own description, else its row's.
+        (0..f.els.len())
+            .find(|&i| on_row(i) && own(i))
+            .or_else(|| (0..f.els.len()).find(|&i| on_row(i) && !foreign(i)))
     }
 
     /// A description as a small box under what it describes (above it when
