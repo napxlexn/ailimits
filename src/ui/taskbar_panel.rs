@@ -942,7 +942,20 @@ impl TaskbarPanel {
         if !Self::is_panel_mode(self.mode) || self.suppressed {
             return;
         }
+        let before = self.rect;
+        let settling = self.moved_at.is_some() || self.moved_settle > 0;
         self.reposition();
+        // Placed where it already was, and not settling after a move of the
+        // bar: nothing to present. A present re-asserts the z-order, which
+        // is a z change of its own; a re-check brought by one (a pure
+        // re-stack, `UserEvent::PanelRecheck`) then brought itself back
+        // every 150 ms against any other topmost window re-asserting its
+        // own - measured 160 wakeups a second and 1% of a core, with a
+        // hardware monitor's overlay above the bar. Covered, the panel is
+        // still lifted by the fallback's judgement (`raise`).
+        if before.is_some() && self.rect == before && !settling {
+            return;
+        }
         self.redraw(providers);
     }
 
