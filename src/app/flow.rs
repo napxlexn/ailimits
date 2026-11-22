@@ -190,8 +190,8 @@ impl App {
 
     /// Open the picker (or bring it forward). `activate`: the user opened
     /// it (the menu, a click), so it takes the keyboard focus; the welcome
-    /// or the update notice opening by itself does not, and a focus it
-    /// never had cannot close it (`PickerWindow::open_quietly`).
+    /// or the update notice opening by itself does not
+    /// (`PickerWindow::open_quietly`).
     pub(super) fn open_picker(
         &mut self,
         target: &EventLoopWindowTarget<UserEvent>,
@@ -208,6 +208,7 @@ impl App {
                 &self.renderer,
                 self.picker_input(),
                 picker_anchor(&self.window, self.window_visible),
+                self.picker_at,
                 activate,
             );
         } else if let Some(p) = self.picker.as_ref().filter(|_| activate) {
@@ -278,7 +279,9 @@ impl App {
             }
             if done.close {
                 if let Some(p) = self.picker.take() {
-                    p.close();
+                    if let Some(at) = p.close() {
+                        self.picker_at = Some(at);
+                    }
                 }
             }
             if let Some(pid) = &done.provider {

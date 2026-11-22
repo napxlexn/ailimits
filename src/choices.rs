@@ -395,7 +395,7 @@ fn base_note(
 
 /// The note under an extra row whose numbers are asked for only while it is
 /// chosen (`SubRow::on_request`), while it is not.
-pub const ON_REQUEST_NOTE: &str = "Its share of the same limit, asked for once this row is ticked";
+pub const ON_REQUEST_NOTE: &str = "Asked for once this row is ticked";
 
 /// Everything the picker shows.
 pub fn picker_input(
@@ -440,6 +440,7 @@ pub(crate) fn picker_input_with(
             provider: pid.config_id(),
             name: pid.display_name(),
             note: base_note(data, &pid, config.provider_active(pc)),
+            short: "",
             hint: "",
             has_data: ok,
             provider_ok: ok,
@@ -473,8 +474,9 @@ pub(crate) fn picker_input_with(
                 note: if unasked {
                     ON_REQUEST_NOTE.into()
                 } else {
-                    sub.note.into()
+                    "".into()
                 },
+                short: sub.short,
                 hint: sub.hint,
                 has_data: has,
                 provider_ok: ok && !unasked,
@@ -1650,7 +1652,8 @@ bar = false
         assert!(!unticked.provider_ok && !unticked.has_data);
         config.ui.rows.tooltip = Some(vec!["cursor".into(), "cursor.bot".into()]);
         let ticked = bot(&config);
-        assert_eq!(ticked.note, "Its share of the same limit");
+        assert_eq!(ticked.note, "");
+        assert_eq!(ticked.short, "share of the same");
         assert!(ticked.provider_ok && !ticked.has_data);
     }
 }

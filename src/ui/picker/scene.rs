@@ -386,68 +386,79 @@ impl Picker {
                 label,
                 count,
                 open,
-                bold,
-                arrow,
+                arrow: true,
                 ..
             } => {
-                let lx = r.x + 22.0;
-                // A sign-in line is a chip as wide as what it says; a
-                // heading washes its whole line under the pointer.
-                let chip = arrow.then(|| {
-                    let cx = lx + self.adv_styled(label, SIZE_TEXT, *bold) + 8.0;
-                    let end = if count.is_empty() {
-                        lx + self.adv_styled(label, SIZE_TEXT, *bold)
-                    } else {
-                        cx + self.adv(count, SIZE_NOTE)
-                    };
-                    let h = 22.0;
-                    rect(
-                        r.x + 1.0,
-                        r.y + ((r.h - h) / 2.0).round(),
-                        (end + 11.0 - r.x).ceil(),
-                        h,
-                    )
-                });
-                let wash = |level| Shape::Fill {
-                    rect: chip.unwrap_or(*r),
-                    radius: if chip.is_some() { 11.0 } else { 4.0 },
+                // A sign-in: a chip, "Sign-in Claude Code · works ›".
+                let radius = r.h / 2.0;
+                out.push(Shape::Fill {
+                    rect: *r,
+                    radius,
                     ink: Ink::Hover,
-                    alpha: level,
-                };
-                if hovered == Some(target) {
-                    out.push(wash(if pressed(target) || chip.is_some() {
+                    alpha: if hovered == Some(target) {
                         Level::Hovered
                     } else {
                         Level::Full
-                    }));
-                } else if chip.is_some() {
-                    out.push(wash(Level::Full));
+                    },
+                });
+                if self.ring(target) {
+                    out.push(Shape::Stroke {
+                        rect: *r,
+                        radius,
+                        width: 2.0,
+                        ink: Ink::Text,
+                        alpha: Level::Full,
+                    });
+                }
+                let ty = r.y + ((r.h - lh(SIZE_NOTE)) / 2.0).round();
+                let (source, how) = Self::chip_parts(count);
+                let mut x = r.x + CHIP_PAD;
+                out.push(text_shape(x, ty, label, SIZE_NOTE, Ink::Muted, false));
+                x = (x + self.adv(label, SIZE_NOTE) + CHIP_GAP).round();
+                out.push(text_shape(x, ty, source, SIZE_NOTE, Ink::Text, true));
+                x = (x + self.adv_styled(source, SIZE_NOTE, true) + CHIP_GAP).round();
+                if let Some(how) = how {
+                    out.push(text_shape(x, ty, &how, SIZE_NOTE, Ink::Muted, false));
+                    x = (x + self.adv(&how, SIZE_NOTE) + CHIP_GAP).round();
+                }
+                let sign = if *open { CHIP_OPEN } else { CHIP_CLOSED };
+                out.push(text_shape(x, ty, sign, SIZE_NOTE, Ink::Dim, false));
+            }
+            El::Toggle {
+                target,
+                rect: r,
+                label,
+                count,
+                open,
+                bold,
+                ..
+            } => {
+                let lx = r.x + 22.0;
+                // A heading washes its whole line under the pointer.
+                if hovered == Some(target) {
+                    out.push(Shape::Fill {
+                        rect: *r,
+                        radius: 4.0,
+                        ink: Ink::Hover,
+                        alpha: if pressed(target) {
+                            Level::Hovered
+                        } else {
+                            Level::Full
+                        },
+                    });
                 }
                 if self.ring(target) {
                     out.push(Shape::Stroke {
-                        rect: chip.unwrap_or(*r),
-                        radius: if chip.is_some() { 11.0 } else { 6.0 },
+                        rect: *r,
+                        radius: 6.0,
                         width: 2.0,
                         ink: Ink::Text,
                         alpha: Level::Full,
                     });
                 }
                 let ty = r.y + ((r.h - lh(SIZE_TEXT)) / 2.0).round();
-                let sign = match (*arrow, *open) {
-                    // Arrowheads the UI font has (it lacks the triangles).
-                    (true, true) => "\u{02C5}",
-                    (true, false) => "\u{02C3}",
-                    (false, true) => "\u{2212}",
-                    (false, false) => "+",
-                };
-                out.push(text_shape(
-                    r.x + 8.0,
-                    ty,
-                    sign,
-                    SIZE_TEXT,
-                    Ink::Muted,
-                    false,
-                ));
+                let sign = if *open { "\u{2212}" } else { "+" };
+                out.push(text_shape(r.x + 8.0, ty, sign, SIZE_TEXT, Ink::Dim, false));
                 out.push(text_shape(lx, ty, label, SIZE_TEXT, Ink::Text, *bold));
                 if !count.is_empty() {
                     let cx = (lx + self.adv_styled(label, SIZE_TEXT, *bold) + 8.0).round();
@@ -543,7 +554,7 @@ impl Picker {
                         alpha: Level::Full,
                     });
                 }
-                let top = r.y + 9.0;
+                let top = r.y + 8.0;
                 out.push(Shape::TrayIcon {
                     rect: rect(
                         (r.x + (r.w - TILE_ICON) / 2.0).round(),
@@ -557,7 +568,7 @@ impl Picker {
                 let w = self.adv_styled(label, SIZE_NOTE, *on);
                 out.push(text_shape(
                     (r.x + (r.w - w) / 2.0).round(),
-                    top + TILE_ICON + 5.0,
+                    top + TILE_ICON + 6.0,
                     label,
                     SIZE_NOTE,
                     if *on { Ink::Text } else { Ink::Muted },

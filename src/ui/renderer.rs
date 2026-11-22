@@ -4490,6 +4490,9 @@ fn picker_ink(theme: &PickerTheme, ink: Ink, level: Level) -> Color {
         Ink::OnAccent => theme.on_accent,
         Ink::Hover => theme.hover,
         Ink::Separator => theme.separator,
+        Ink::Dim => theme.dim,
+        Ink::Good => theme.good,
+        Ink::Warn => theme.warn,
     };
     Color {
         a: (c.a as f32 * alpha).round().clamp(0.0, 255.0) as u8,

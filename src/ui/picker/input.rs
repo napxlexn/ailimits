@@ -13,8 +13,12 @@ impl Picker {
         self.dirty = true;
         let f = self.frame();
         match self.hit(&f, x, y) {
-            // A click beside the box closes it; it answers nothing.
-            Hit::Outside => self.dismiss(),
+            // Beside the box (its shadow's margin): nothing, as on the
+            // desktop under it.
+            Hit::Outside => {
+                self.pressed = None;
+                Vec::new()
+            }
             Hit::Bar { ask } => {
                 self.pressed = None;
                 self.press_bar(&f, ask, y);
@@ -427,8 +431,9 @@ impl Picker {
         vec![PickerAction::NoticeDone]
     }
 
-    /// Esc, the cross, Alt+F4: closed on purpose, so the welcome and the
-    /// notice count as answered.
+    /// The cross or Alt+F4: closed on purpose, so the welcome and the notice
+    /// count as answered. Nothing else closes the window: not a click
+    /// beside it, not another window taking the focus, not Esc.
     pub(super) fn close(&mut self) -> Vec<PickerAction> {
         let mut out = Vec::new();
         if matches!(
@@ -444,22 +449,21 @@ impl Picker {
         out
     }
 
-    /// A click outside or the focus gone to another window: the window
-    /// closes, but the welcome and the notice are owed still (a question
-    /// answered in the welcome has answered it already, `answered`).
-    pub(super) fn dismiss(&mut self) -> Vec<PickerAction> {
-        self.ask = None;
-        vec![PickerAction::Close]
+    /// The focus went to another window: the window stays open, as a
+    /// program's does. A press held then acts on nothing, a thumb held is
+    /// let go; a name being typed goes on when the focus comes back (it
+    /// may be a shell panel, Win+V or Win+., typing into the field).
+    pub(super) fn focus_lost(&mut self) -> Vec<PickerAction> {
+        self.pressed = None;
+        self.drag = None;
+        Vec::new()
     }
 
-    /// The focus went to another window. Typing a name, that may be a shell
-    /// panel (Win+V, Win+.) that types into the field: the window stays,
-    /// and the edit goes on when the focus comes back.
-    pub(super) fn focus_lost(&mut self) -> Vec<PickerAction> {
-        if self.editing() {
-            return Vec::new();
-        }
-        self.dismiss()
+    /// Whether a press at `x`, `y` moves the window: on its title, beside
+    /// the cross.
+    pub fn drags_at(&self, x: f32, y: f32) -> bool {
+        let f = self.frame();
+        contains(&f.boxr, x, y) && y < f.boxr.y + HEADER_H && self.hit(&f, x, y) == Hit::Nothing
     }
 
     // ─── Focus ───────────────────────────────────────────────────
@@ -609,11 +613,12 @@ impl Picker {
             if self.ask.is_some() {
                 return self.activate(&Target::Cancel);
             }
-            // In a name field Esc first takes the edit back.
+            // In a name field Esc takes the edit back; elsewhere it does
+            // nothing (the cross or Alt+F4 close the window).
             if let Some(out) = self.revert_edit() {
                 return out;
             }
-            return self.close();
+            return Vec::new();
         }
         // The page keys scroll what shows: the question's text, else the
         // list. The focus stays.

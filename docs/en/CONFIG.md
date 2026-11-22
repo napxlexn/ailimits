@@ -568,9 +568,9 @@ Every read of another tool's file is optional and asked for first:
   a button. They wait while a fullscreen window (a game, a video, a browser
   on F11, a slide show) fills its monitor, and open at the next change of
   the window in front, the next update or the next start of the app. An
-  answered question, the close button, Esc, Alt+F4, OK or Review counts as
-  seen. A click beside the box, or going to another window once it had the
-  focus, closes it unanswered, so it opens again on the next start.
+  answered question, the close button, Alt+F4, OK or Review counts as
+  seen. Nothing else closes it: Esc, a click beside the box and going to
+  another window leave it open, as they leave *Rows and models*.
 - **After updating from 0.7.0 or older** nothing stops: the providers that
   were switched on keep reading as before (`sign_in` is filled with them),
   and one window lists every file read and every host contacted, once. A

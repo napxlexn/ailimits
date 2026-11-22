@@ -227,9 +227,8 @@ at the top of that file).
    *Allow* starts the ticked ones; *Cancel* reads nothing and lets you tick
    what you want, each tool asking once. The window takes no keyboard focus
    (Enter allows nothing by accident) and waits while a fullscreen app is in
-   front. The cross closes it; Esc and a click elsewhere close it too once
-   you have clicked into it, as they close *Rows and models*. A welcome
-   closed by a click elsewhere opens again at the next start. Cursor needs
+   front. Like *Rows and models*, it stays open until its cross (or
+   Alt+F4) closes it, and moves by its title. Cursor needs
    a sign-in of the app's own, once: in the same window, open the *Sign-in*
    line under Cursor and click *Sign in to Cursor...*.
    Updating from 0.7.0 needs nothing: the providers you had keep working,

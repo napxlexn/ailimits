@@ -24,8 +24,9 @@ pub struct SubRow {
     pub metric: &'static str,
     /// The row's name, longest first; a narrow place takes a shorter one.
     pub names: &'static [&'static str],
-    /// What the row is, for the picker.
-    pub note: &'static str,
+    /// What the row is, in a word or two, beside its name in the picker;
+    /// the hint says the rest.
+    pub short: &'static str,
     /// What the row counts, shown when the pointer rests on it.
     pub hint: &'static str,
     /// Its numbers come from a request of their own, made only while the
@@ -41,7 +42,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Claude,
         metric: "Opus",
         names: &["Claude · Opus", "Cl · Opus", "Opus"],
-        note: "Weekly, a limit of its own",
+        short: "weekly",
         hint: "Claude's separate weekly limit for Opus models, on plans that have one. It fills apart from the weekly limit.",
         on_request: false,
     },
@@ -50,7 +51,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Claude,
         metric: "Sonnet",
         names: &["Claude · Sonnet", "Cl · Sonnet", "Sonnet"],
-        note: "Weekly, a limit of its own",
+        short: "weekly",
         hint: "Claude's separate weekly limit for Sonnet models, on plans that have one. It fills apart from the weekly limit.",
         on_request: false,
     },
@@ -59,7 +60,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Claude,
         metric: "Fable",
         names: &["Claude · Fable", "Cl · Fable", "Fable"],
-        note: "Weekly, a limit of its own",
+        short: "weekly",
         hint: "Fable's own weekly allowance, a share of the weekly limit: Current week (Fable) in Claude Code's /usage.",
         on_request: false,
     },
@@ -74,7 +75,7 @@ pub const SUB_ROWS: &[SubRow] = &[
             "Claude+GPT",
             "C+GPT",
         ],
-        note: "A weekly pool of its own",
+        short: "weekly pool",
         hint: "Antigravity's weekly pool for its Claude and GPT models, counted apart from the Gemini models.",
         on_request: false,
     },
@@ -83,7 +84,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Grok,
         metric: "Build",
         names: &["Grok · Build", "Build"],
-        note: "Its share of the weekly limit",
+        short: "share of the weekly",
         hint: "How much of the shared weekly limit Grok Build has used.",
         on_request: false,
     },
@@ -92,7 +93,7 @@ pub const SUB_ROWS: &[SubRow] = &[
         provider: ProviderId::Cursor,
         metric: "Grok Bot",
         names: &["Cursor · Grok Bot", "Grok Bot", "Bot"],
-        note: "Its share of the same limit",
+        short: "share of the same",
         hint: "How much of the limit Cursor and Grok share Grok Bot has used.",
         on_request: true,
     },
@@ -202,7 +203,7 @@ fn model_row(label: &str) -> Option<&'static SubRow> {
         provider: ProviderId::Claude,
         metric: keep(name.to_string()),
         names: Box::leak(names.into_boxed_slice()),
-        note: "Weekly, a limit of its own",
+        short: "weekly",
         hint: keep(format!(
             "{shown}'s own weekly allowance, a share of the weekly limit: Current week ({shown}) in Claude Code's /usage."
         )),

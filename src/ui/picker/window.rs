@@ -73,13 +73,17 @@ const GAP: f32 = 8.0;
 /// than the 12 px the shell's own flyouts keep.
 const EDGE: f32 = 16.0;
 
-/// The picker's own window: borderless, transparent, on top, out of the
-/// taskbar, presented through softbuffer exactly like the widget. It exists
-/// only while open and repaints only on input.
+/// The picker's own window: borderless, transparent, presented through
+/// softbuffer exactly like the widget. It behaves as any program's window:
+/// in the taskbar and Alt+Tab, moved by its title, above other windows
+/// while in use and behind them once another one is, and closed only on
+/// purpose (the cross, Alt+F4). It exists only while open and repaints
+/// only on input.
 ///
 /// The app keeps it in an `Option`, routes this window's events to
 /// `handle_window_event`, applies the actions (then `set_input`), calls
-/// `redraw` on its `RedrawRequested`, and drops it after `Close`.
+/// `redraw` on its `RedrawRequested`, and drops it after `Close`, keeping
+/// where it was moved to (`close`) for the next opening.
 ///
 /// It follows Windows' apps mode (light or dark), High contrast (the
 /// colours it sets) and Text size (the whole picker drawn larger).
@@ -105,12 +109,18 @@ pub struct PickerWindow {
     /// The cursor in the window, physical pixels, once it moved there.
     cursor: Option<(f64, f64)>,
     modifiers: ModifiersState,
-    /// A focus loss counts as a click outside only after the focus came.
-    had_focus: bool,
     text_cursor: bool,
-    /// Let go behind other windows while a name is typed from a shell
-    /// panel (Win+V, Win+.); on top again with the focus back.
+    /// Let go behind other windows while another one is in use; on top
+    /// again with the focus back.
     behind: bool,
+    /// Pressed on its title: a move that follows is the user's.
+    dragging: bool,
+    /// Where it is was chosen by the user: moved by its title, or opened
+    /// where it was left.
+    placed: bool,
+    /// Moved since the work area was found: found again at the next redraw,
+    /// as the window may be on another monitor now.
+    moved: bool,
     /// When a description the pointer rests on is due: drawn then.
     hint_due: Option<std::time::Instant>,
 }
@@ -118,15 +128,18 @@ pub struct PickerWindow {
 impl PickerWindow {
     /// Open beside `anchor` (the widget's screen rect, or the tray icon or
     /// panel when the widget is hidden), on that monitor, at its scale,
-    /// with the keyboard focus: opened from the menu or by a click.
-    /// `renderer` is the widget's: its font measures and draws the picker.
+    /// with the keyboard focus: opened from the menu or by a click. `at`:
+    /// where the user left it the last time (`close`), used while a monitor
+    /// is still there. `renderer` is the widget's: its font measures and
+    /// draws the picker.
     pub fn open<T: 'static>(
         target: &EventLoopWindowTarget<T>,
         renderer: Rc<Renderer>,
         input: PickerInput,
         anchor: ScreenRect,
+        at: Option<(i32, i32)>,
     ) -> anyhow::Result<Self> {
-        Self::open_with(target, renderer, input, anchor, true)
+        Self::open_with(target, renderer, input, anchor, at, true)
     }
 
     /// Open as `open` does, but leave the keyboard focus with the window in
@@ -139,8 +152,9 @@ impl PickerWindow {
         renderer: Rc<Renderer>,
         input: PickerInput,
         anchor: ScreenRect,
+        at: Option<(i32, i32)>,
     ) -> anyhow::Result<Self> {
-        Self::open_with(target, renderer, input, anchor, false)
+        Self::open_with(target, renderer, input, anchor, at, false)
     }
 
     fn open_with<T: 'static>(
@@ -148,10 +162,18 @@ impl PickerWindow {
         renderer: Rc<Renderer>,
         input: PickerInput,
         anchor: ScreenRect,
+        at: Option<(i32, i32)>,
         activate: bool,
     ) -> anyhow::Result<Self> {
         use anyhow::Context as _;
-        let (cx, cy) = (anchor.x + anchor.w / 2, anchor.y + anchor.h / 2);
+        // Where it was left, while a monitor still shows its title there.
+        let at = at.filter(|&(x, y)| {
+            crate::platform::safe_area_at(x + TITLE_SPOT.0, y + TITLE_SPOT.1).is_some()
+        });
+        let (cx, cy) = match at {
+            Some((x, y)) => (x + TITLE_SPOT.0, y + TITLE_SPOT.1),
+            None => (anchor.x + anchor.w / 2, anchor.y + anchor.h / 2),
+        };
         let mut scale = target
             .monitor_from_point(cx as f64, cy as f64)
             .map_or(1.0, |m| m.scale_factor());
@@ -165,15 +187,22 @@ impl PickerWindow {
             picker.set_max_height(max_box_height(w, scale * zoom));
         }
         let mut size = physical(picker.window_size(), scale * zoom);
-        let mut pos = place_window(anchor, size, scale * zoom, work);
+        let spot = |size, scale| match at {
+            Some(p) => hold_in(p, size, scale, work),
+            None => place_window(anchor, size, scale, work),
+        };
+        let mut pos = spot(size, scale * zoom);
 
         let mut builder = WindowBuilder::new()
             // What a screen reader says for the window.
             .with_title(picker.title())
+            .with_window_icon(app_icon())
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top(true)
             .with_resizable(false)
+            .with_minimizable(false)
+            .with_maximizable(false)
             .with_visible(false)
             .with_focused(activate)
             .with_min_inner_size(PhysicalSize::new(40u32, 40u32))
@@ -182,10 +211,9 @@ impl PickerWindow {
         #[cfg(target_os = "windows")]
         {
             use tao::platform::windows::WindowBuilderExtWindows;
-            // Out of the taskbar and Alt+Tab; no DWM frame seam (see app.rs).
-            builder = builder
-                .with_skip_taskbar(true)
-                .with_undecorated_shadow(false);
+            // In the taskbar and Alt+Tab, as a program's window is, so it can
+            // be found behind others; no DWM frame seam (see app.rs).
+            builder = builder.with_undecorated_shadow(false);
         }
         let window = Rc::new(builder.build(target).context("picker window")?);
 
@@ -197,7 +225,7 @@ impl PickerWindow {
                 picker.set_max_height(max_box_height(w, scale * zoom));
             }
             size = physical(picker.window_size(), scale * zoom);
-            pos = place_window(anchor, size, scale * zoom, work);
+            pos = spot(size, scale * zoom);
             window.set_outer_position(PhysicalPosition::new(pos.0, pos.1));
         }
         // Windows clamps the size at creation; set it again (as app.rs does).
@@ -232,9 +260,11 @@ impl PickerWindow {
             size,
             cursor: None,
             modifiers: ModifiersState::empty(),
-            had_focus: false,
             text_cursor: false,
             behind: false,
+            dragging: false,
+            placed: at.is_some(),
+            moved: false,
             hint_due: None,
         };
         me.redraw();
@@ -265,13 +295,32 @@ impl PickerWindow {
                 self.cursor = None;
                 Some(PickerEvent::PointerLeave)
             }
+            // Pressed on its title: moved as any window is, by Windows.
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if self.cursor.is_some_and(|c| {
+                let (x, y) = at(c);
+                self.picker.drags_at(x, y)
+            }) =>
+            {
+                self.dragging = true;
+                if let Err(e) = self.window.drag_window() {
+                    tracing::debug!("the picker could not be moved: {e}");
+                }
+                None
+            }
             // A press before any move (the window appeared under a still
-            // cursor) has no position: it is not taken for a click outside.
+            // cursor) has no position: it is not taken for a click.
             WindowEvent::MouseInput {
                 state,
                 button: MouseButton::Left,
                 ..
             } => self.cursor.map(|c| {
+                if *state == ElementState::Pressed {
+                    self.dragging = false;
+                }
                 let (x, y) = at(c);
                 match state {
                     ElementState::Pressed => PickerEvent::PointerDown { x, y },
@@ -297,32 +346,35 @@ impl PickerWindow {
                 None
             }
             WindowEvent::Focused(true) => {
-                self.had_focus = true;
                 if self.behind {
                     self.behind = false;
                     self.set_on_top(true);
                 }
                 None
             }
+            // Another window in use: the picker stays open, behind it, as a
+            // program's window does (a name typed from a shell panel, Win+V
+            // or Win+., goes on when the focus comes back).
             WindowEvent::Focused(false) => {
-                // Typing a name, the focus may have gone to a shell panel
-                // that types into the field: the picker stays (see
-                // `Picker::focus_lost`), behind whatever took the focus.
-                if self.had_focus && self.picker.editing() {
-                    self.behind = true;
-                    self.set_on_top(false);
-                }
-                self.had_focus.then_some(PickerEvent::FocusLost)
+                self.behind = true;
+                self.set_on_top(false);
+                Some(PickerEvent::FocusLost)
             }
             WindowEvent::CloseRequested => Some(PickerEvent::CloseRequested),
+            WindowEvent::Moved(p) => {
+                if (p.x, p.y) != self.pos {
+                    self.pos = (p.x, p.y);
+                    self.moved = true;
+                    self.placed |= self.dragging;
+                }
+                None
+            }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                // The size follows in the next redraw; glyphs come anew.
+                // The size follows in the next redraw, for the monitor it
+                // is on now; glyphs come anew.
                 self.scale = *scale_factor;
                 self.glyphs = PickerGlyphs::default();
-                if let Some(w) = self.work {
-                    self.picker
-                        .set_max_height(max_box_height(w, self.draw_scale()));
-                }
+                self.moved = true;
                 self.window.request_redraw();
                 None
             }
@@ -398,6 +450,9 @@ impl PickerWindow {
 
     /// Paint and present (on `RedrawRequested` for this window).
     pub fn redraw(&mut self) {
+        if self.moved {
+            self.find_work();
+        }
         let scale = self.draw_scale();
         let want = physical(self.picker.window_size(), scale);
         if want != self.size {
@@ -441,9 +496,28 @@ impl PickerWindow {
         self.hint_due = self.hint_due.or_else(|| self.picker.next_wake());
     }
 
-    /// Hide and destroy the window.
-    pub fn close(self) {
+    /// Hide and destroy the window. Returns where it is when the user chose
+    /// that (moved it by its title, or it opened where they left it), for
+    /// the next opening.
+    pub fn close(self) -> Option<(i32, i32)> {
         self.window.set_visible(false);
+        self.placed.then_some(self.pos)
+    }
+
+    /// The work area of the monitor the window is on now, and the tallest
+    /// box it allows.
+    fn find_work(&mut self) {
+        self.moved = false;
+        let (cx, cy) = (
+            self.pos.0 + self.size.0 as i32 / 2,
+            self.pos.1 + self.size.1 as i32 / 2,
+        );
+        if let Some(a) = crate::platform::safe_area_at(cx, cy) {
+            let w = even_area(a.monitor, a.safe);
+            self.work = Some(w);
+            self.picker
+                .set_max_height(max_box_height(w, self.draw_scale()));
+        }
     }
 
     /// Grow or shrink in place; a box that grew past the work area's bottom
@@ -460,14 +534,10 @@ impl PickerWindow {
         if let Some(pm) = tiny_skia::Pixmap::new(want.0, want.1) {
             self.pixmap = pm;
         }
-        if let Some((l, t, r, b)) = self.work {
-            // Grown or shrunk: held in as when it opened, `EDGE` off the
-            // work area's edges.
-            let m = (MARGIN as f64 * self.draw_scale()).round() as i32;
-            let e = (EDGE as f64 * self.draw_scale()).round() as i32;
-            let (l, t, r, b) = (l + e, t + e, r - e, b - e);
-            let x = self.pos.0.min(r - want.0 as i32 + m).max(l - m);
-            let y = self.pos.1.min(b - want.1 as i32 + m).max(t - m);
+        // Grown or shrunk: held in as when it opened, `EDGE` off the work
+        // area's edges.
+        if self.work.is_some() {
+            let (x, y) = hold_in(self.pos, want, self.draw_scale(), self.work);
             if (x, y) != self.pos {
                 self.pos = (x, y);
                 self.window.set_outer_position(PhysicalPosition::new(x, y));
@@ -712,6 +782,37 @@ pub(super) fn even_area(
         return safe;
     }
     even
+}
+
+/// A spot on the title, from the window's corner, physical pixels: where a
+/// window left there is looked for when it opens again.
+const TITLE_SPOT: (i32, i32) = (60, 30);
+
+/// A window corner `pos` held inside the work area drawn in by `EDGE`, as
+/// far as its box fits; without a work area, `pos` as it is.
+pub(super) fn hold_in(
+    pos: (i32, i32),
+    size: (u32, u32),
+    scale: f64,
+    work: Option<(i32, i32, i32, i32)>,
+) -> (i32, i32) {
+    let Some((l, t, r, b)) = work else {
+        return pos;
+    };
+    let m = (MARGIN as f64 * scale).round() as i32;
+    let e = (EDGE as f64 * scale).round() as i32;
+    let (l, t, r, b) = (l + e, t + e, r - e, b - e);
+    let x = pos.0.min(r - size.0 as i32 + m).max(l - m);
+    let y = pos.1.min(b - size.1 as i32 + m).max(t - m);
+    (x, y)
+}
+
+/// The app's icon, for the taskbar and Alt+Tab: drawn from raw pixels
+/// (`CreateIcon`, as the tray icon is), not loaded from the exe's resource.
+fn app_icon() -> Option<tao::window::Icon> {
+    const SIZE: u32 = 48;
+    const ICON: &[u8] = include_bytes!("../../../assets/icon-48.rgba");
+    tao::window::Icon::from_rgba(ICON.to_vec(), SIZE, SIZE).ok()
 }
 
 pub(super) fn max_box_height(work: (i32, i32, i32, i32), scale: f64) -> f32 {

@@ -437,6 +437,15 @@ pub struct PickerTheme {
     /// The wash of a hovered row, a field, a secondary button.
     pub hover: Color,
     pub separator: Color,
+    /// Small marks and words that step back: the + of an extra row, a dash,
+    /// a section's title, a sign-in's arrow, the dot of a provider that
+    /// is off. At least 4.5:1 against the box.
+    pub dim: Color,
+    /// A provider's dot: it works.
+    pub good: Color,
+    /// A provider's dot: it runs but has no fresh numbers (retrying, an
+    /// error, not signed in, loading).
+    pub warn: Color,
     /// The shadow's colour; the rings below set its alpha.
     pub shadow_color: Color,
     /// Shadow rings around a box, outermost first: (spread px, alpha). The
@@ -517,6 +526,9 @@ impl PickerTheme {
             on_accent: Color::rgba(0, 0, 0, 255),
             hover: Color::rgba(255, 255, 255, 15),
             separator: Color::rgba(62, 62, 62, 255),
+            dim: Color::rgba(153, 153, 153, 255),
+            good: Color::rgba(108, 203, 95, 255),
+            warn: Color::rgba(252, 225, 0, 255),
             shadow_color: Color::rgba(0, 0, 0, 255),
             shadow: [
                 (10.0, 3),
@@ -541,6 +553,9 @@ impl PickerTheme {
             on_accent: Color::rgba(255, 255, 255, 255),
             hover: Color::rgba(0, 0, 0, 11),
             separator: Color::rgba(225, 225, 225, 255),
+            dim: Color::rgba(112, 112, 112, 255),
+            good: Color::rgba(15, 123, 15, 255),
+            warn: Color::rgba(157, 93, 0, 255),
             shadow_color: Color::rgba(0, 0, 0, 255),
             shadow: [(10.0, 1), (8.0, 2), (6.0, 3), (4.0, 4), (2.0, 6), (1.0, 8)],
             shadow_drop: 3.0,
@@ -562,6 +577,9 @@ impl PickerTheme {
             on_accent: rgb(c.highlight_text, 255),
             hover: rgb(c.highlight, 48),
             separator: rgb(c.gray_text, 255),
+            dim: rgb(c.window_text, 255),
+            good: rgb(c.window_text, 255),
+            warn: rgb(c.highlight, 255),
             shadow_color: rgb(c.window_text, 255),
             shadow: [(10.0, 0), (8.0, 0), (6.0, 0), (4.0, 0), (2.0, 0), (1.0, 0)],
             shadow_drop: 0.0,
@@ -838,5 +856,27 @@ mod tests {
         );
         assert_eq!(theme.name_color(&ProviderId::Codex), theme.provider_name);
         assert_eq!(theme.name_color(&ProviderId::Cursor), theme.provider_name);
+    }
+
+    /// The picker's dim words (an extra row's "weekly", a section's title)
+    /// still read: at least 4.5:1 against the box, light and dark.
+    #[test]
+    fn the_picker_dim_ink_reads_on_its_box() {
+        let lum = |c: Color| {
+            let f = |v: u8| {
+                let v = v as f64 / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+        };
+        for t in [PickerTheme::dark(), PickerTheme::light()] {
+            let (a, b) = (lum(t.dim), lum(t.surface));
+            let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+            assert!(ratio >= 4.5, "dim on the box: {ratio:.2}:1");
+        }
     }
 }

@@ -42,6 +42,7 @@ fn rows() -> Vec<RowChoice> {
             provider: id,
             name,
             note: note.into(),
+            short: "",
             hint: "",
             has_data: true,
             provider_ok: true,
@@ -52,7 +53,8 @@ fn rows() -> Vec<RowChoice> {
                 id: s.id,
                 provider: id,
                 name: s.names[0],
-                note: s.note.into(),
+                note: "".into(),
+                short: s.short,
                 hint: s.hint,
                 has_data: true,
                 provider_ok: true,
@@ -90,7 +92,8 @@ fn made_rows() -> Vec<RowChoice> {
             id: s.id,
             provider: "claude",
             name: s.names[0],
-            note: s.note.into(),
+            note: "".into(),
+            short: s.short,
             hint: s.hint,
             has_data: true,
             provider_ok: true,
@@ -837,24 +840,50 @@ fn a_click_places_the_caret() {
 
 // ─── Closing ─────────────────────────────────────────────────
 
+/// The window closes as a program's does: by the cross or Alt+F4. Esc, a
+/// click beside the box and another window taking the focus leave it open.
 #[test]
-fn escape_the_cross_and_a_click_outside_close() {
+fn only_the_cross_and_alt_f4_close() {
     let mut p = picker(input());
-    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
-    let mut p = picker(input());
+    assert!(key(&mut p, PickerKey::Escape).is_empty());
     assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
+    let mut p = picker(input());
+    assert_eq!(p.handle(PickerEvent::CloseRequested), [PickerAction::Close]);
     let mut p = picker(input());
     // The shadow margin is outside the box.
-    assert_eq!(
-        p.handle(PickerEvent::PointerDown { x: 3.0, y: 3.0 }),
-        [PickerAction::Close]
-    );
-    let mut p = picker(input());
-    assert_eq!(p.handle(PickerEvent::FocusLost), [PickerAction::Close]);
-    // An open question goes with the window.
+    assert!(p
+        .handle(PickerEvent::PointerDown { x: 3.0, y: 3.0 })
+        .is_empty());
+    assert!(p
+        .handle(PickerEvent::PointerUp { x: 3.0, y: 3.0 })
+        .is_empty());
+    assert!(p.handle(PickerEvent::FocusLost).is_empty());
+    // An open question stays with the window, and goes with it.
     let mut p = picker(input());
     click(&mut p, &row("cursor", Surface::Widget));
+    assert!(p.handle(PickerEvent::FocusLost).is_empty());
+    assert!(p.ask.is_some());
     assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
+}
+
+/// A press on the title moves the window; on the cross, on the tabs, in
+/// the list or beside the box it does not.
+#[test]
+fn the_title_moves_the_window() {
+    let p = picker(input());
+    let b = p.frame().boxr;
+    assert!(p.drags_at(b.x + 20.0, b.y + 10.0));
+    assert!(p.drags_at(b.x + b.w / 2.0, b.y + HEADER_H - 1.0));
+    let (_, cross) = area(&p, &Target::Close).unwrap();
+    assert!(!p.drags_at(cross.x + cross.w / 2.0, cross.y + cross.h / 2.0));
+    let (_, tab) = area(&p, &Target::Tab(Tab::Shows)).unwrap();
+    assert!(!p.drags_at(tab.x + tab.w / 2.0, tab.y + tab.h / 2.0));
+    assert!(!p.drags_at(b.x + 20.0, b.y + HEADER_H + TABS_H + 30.0));
+    assert!(!p.drags_at(3.0, 3.0));
+    // The notice's title too.
+    let n = picker(notice());
+    let nb = n.frame().boxr;
+    assert!(n.drags_at(nb.x + 20.0, nb.y + 10.0));
 }
 
 // ─── Welcome and the update notice ───────────────────────────
@@ -1081,14 +1110,15 @@ fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
     );
     assert!(click(&mut p, &Target::Cancel).is_empty());
     // Answered already: closing owes nothing more.
-    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
     // Closed without an answer, the welcome is answered by that, once.
     let mut p = picker(welcome(Vec::new()));
+    assert!(key(&mut p, PickerKey::Escape).is_empty());
     assert_eq!(
-        key(&mut p, PickerKey::Escape),
+        click(&mut p, &Target::Close),
         [PickerAction::NoticeDone, PickerAction::Close]
     );
-    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
 }
 
 #[test]
@@ -1145,7 +1175,7 @@ fn ok_closes_the_notice_and_review_opens_the_picker() {
     // A late snapshot still saying UpdateNotice keeps the picker.
     p.set_input(notice());
     assert!(texts(&p).starts_with(TITLE_ROWS));
-    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    assert_eq!(click(&mut p, &Target::Close), [PickerAction::Close]);
     // The cross on the notice answers it too.
     let mut p = picker(notice());
     assert_eq!(
@@ -1811,20 +1841,18 @@ fn a_window_that_opened_by_itself_takes_no_stray_key() {
     assert_eq!(p.focus, Some(Target::Allow));
 }
 
-/// Losing the focus to another window, or a click beside the box,
-/// closes the window but answers nothing: the welcome and the notice
-/// are owed still. The cross, Esc, Alt+F4 and a button are answers.
+/// Losing the focus to another window, or a click beside the box, keeps
+/// the window and answers nothing: the welcome and the notice are owed
+/// still. The cross, Alt+F4 and a button are answers.
 #[test]
-fn losing_the_focus_answers_nothing() {
+fn losing_the_focus_keeps_the_window_and_answers_nothing() {
     for input in [welcome(vec!["claude"]), welcome(Vec::new()), notice()] {
-        let mut p = picker(input.clone());
-        assert_eq!(p.handle(PickerEvent::FocusLost), [PickerAction::Close]);
-        let mut p = picker(input.clone());
-        assert_eq!(
-            p.handle(PickerEvent::PointerDown { x: 3.0, y: 3.0 }),
-            [PickerAction::Close]
-        );
         let mut p = picker(input);
+        assert!(p.handle(PickerEvent::FocusLost).is_empty());
+        assert!(p
+            .handle(PickerEvent::PointerDown { x: 3.0, y: 3.0 })
+            .is_empty());
+        assert!(!p.notice_done);
         assert_eq!(
             p.handle(PickerEvent::CloseRequested),
             [PickerAction::NoticeDone, PickerAction::Close]
@@ -1843,14 +1871,14 @@ fn a_name_being_typed_keeps_the_window_when_the_focus_goes() {
     assert!(p.handle(PickerEvent::FocusLost).is_empty());
     assert!(p.editing());
     assert_eq!(typed(&mut p, "us"), [rename(id, Some("Opus"))]);
-    // Not typing: the window goes.
+    // Not typing: the window stays all the same.
     key(&mut p, PickerKey::Tab);
     assert!(!p.editing());
-    assert_eq!(p.handle(PickerEvent::FocusLost), [PickerAction::Close]);
+    assert!(p.handle(PickerEvent::FocusLost).is_empty());
 }
 
 /// Esc in a name field takes the edit back to the name it had; a second
-/// Esc, with nothing to take back, closes.
+/// Esc, with nothing to take back, does nothing (it never closes).
 #[test]
 fn escape_in_a_name_field_takes_the_edit_back() {
     let mut i = with_model();
@@ -1862,7 +1890,7 @@ fn escape_in_a_name_field_takes_the_edit_back() {
     assert_eq!(key(&mut p, PickerKey::Escape), [rename(id, Some("Mine"))]);
     assert_eq!(field_text(&p, id), "Mine");
     assert!(p.editing());
-    assert_eq!(key(&mut p, PickerKey::Escape), [PickerAction::Close]);
+    assert!(key(&mut p, PickerKey::Escape).is_empty());
 }
 
 /// The page keys and the scroll bar move the list; the thumb drags and
@@ -2225,8 +2253,10 @@ fn check_question(p: &mut Picker, draw: Option<(&Renderer, f32)>, what: &str) {
             "{what}: a button under the text"
         );
     }
-    // Drawn where they are: Allow's face is the accent.
+    // Drawn where they are: Allow's face is the accent (the pointer gone,
+    // so nothing is hovered).
     if let Some((renderer, scale)) = draw {
+        p.handle(PickerEvent::PointerLeave);
         let (w, h) = p.window_size();
         let mut pm =
             tiny_skia::Pixmap::new((w * scale).ceil() as u32, (h * scale).ceil() as u32).unwrap();

@@ -198,6 +198,17 @@ window fills its monitor (`platform::foreground_fills_its_monitor`); it
 opens at the next change of the foreground window, the next provider
 update, or the next start of the app (a second start wakes the running one
 with a message to its hidden tooltip window, `UserEvent::ShowWidget`).
+It is a program's window: in the taskbar and Alt+Tab (its icon drawn from
+`assets/icon-48.rgba` with `CreateIcon`, as the tray icon is, so no
+`LoadImageW`), on top only while it is the active window and behind others
+once another one is. Only its cross and Alt+F4 close it
+(`PickerEvent::CloseRequested`); Esc, a click beside the box and the focus
+going elsewhere leave it open. A press on its title starts Windows' own
+move (`Window::drag_window`); where the user left it is kept in
+`App::picker_at` and used at the next opening while the app runs, held
+inside that monitor's work area (`hold_in`), and the work area and the
+tallest box are found again for the monitor it was moved to
+(`PickerWindow::find_work`).
 
 ## Key decisions
 

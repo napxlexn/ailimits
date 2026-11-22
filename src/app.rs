@@ -263,7 +263,8 @@ fn picker_mode_for(config: &Config) -> PickerMode {
 }
 
 /// Where the picker opens: beside the widget while it is on screen,
-/// otherwise at the cursor (on the menu or the tray icon just clicked).
+/// otherwise at the cursor (on the menu or the tray icon just clicked);
+/// where the user left it, once they moved it (`App::picker_at`).
 fn picker_anchor(window: &tao::window::Window, widget_visible: bool) -> ScreenRect {
     if widget_visible {
         if let Ok(p) = window.outer_position() {
@@ -296,12 +297,13 @@ fn open_picker_window<T: 'static>(
     renderer: &Rc<Renderer>,
     input: PickerInput,
     anchor: ScreenRect,
+    at: Option<(i32, i32)>,
     activate: bool,
 ) -> Option<PickerWindow> {
     let opened = if activate {
-        PickerWindow::open(target, renderer.clone(), input, anchor)
+        PickerWindow::open(target, renderer.clone(), input, anchor, at)
     } else {
-        PickerWindow::open_quietly(target, renderer.clone(), input, anchor)
+        PickerWindow::open_quietly(target, renderer.clone(), input, anchor, at)
     };
     match opened {
         Ok(p) => Some(p),
@@ -455,6 +457,10 @@ struct App {
     found_tools: Vec<&'static str>,
     picker_mode: PickerMode,
     picker: Option<PickerWindow>,
+    /// Where the user left the picker the last time it was open (moved by
+    /// its title), physical pixels: it opens there again while this run
+    /// lasts.
+    picker_at: Option<(i32, i32)>,
     /// An owed window held back while a fullscreen app is in front; it opens
     /// when that app is no longer in front (a foreground change, the next
     /// provider update, or the app started again by hand).
@@ -819,6 +825,7 @@ pub fn run() -> Result<()> {
         found_tools: Vec::new(),
         picker_mode,
         picker: None,
+        picker_at: None,
         auto_open_waiting: false,
     };
 

@@ -125,10 +125,9 @@ pub enum PickerAction {
     /// in the window. The app applies what is saved there.
     OpenSettingsFile,
     /// The welcome or the update notice was answered (a button, the cross,
-    /// Esc, Alt+F4 or an answered question); it is not owed again. Losing
-    /// the focus to another window is no answer.
+    /// Alt+F4 or an answered question); it is not owed again.
     NoticeDone,
-    /// Esc, the cross, or a click outside.
+    /// The cross or Alt+F4.
     Close,
 }
 
@@ -143,9 +142,13 @@ pub struct RowChoice {
     pub provider: &'static str,
     /// "Claude" or "Claude · Opus".
     pub name: &'static str,
-    /// "Today's row", "Weekly, a limit of its own", or the provider's own
-    /// short status ("token expired") as the widget words it.
+    /// The line under the name: a provider's "Today's row" or its own short
+    /// status ("token expired") as the widget words it; an extra row's
+    /// "Asked for once this row is ticked"; empty for none.
     pub note: std::borrow::Cow<'static, str>,
+    /// An extra row's word or two beside its name ("weekly"); empty for a
+    /// provider's own row.
+    pub short: &'static str,
     /// The provider reports this row's metric right now. A row without it
     /// can still be ticked; it appears when the metric does.
     pub has_data: bool,
@@ -345,6 +348,12 @@ pub enum Ink {
     /// The translucent wash of a hovered row or a field.
     Hover,
     Separator,
+    /// Small marks and words that step back.
+    Dim,
+    /// A provider's dot: it works.
+    Good,
+    /// A provider's dot: it runs without fresh numbers.
+    Warn,
 }
 
 /// How strongly an ink is laid on. `PickerTheme` (ui/theme.rs) gives each
@@ -503,14 +512,27 @@ const MIN_BOX_H: f32 = 200.0;
 const HEADER_H: f32 = 42.0;
 /// The tabs under the title: the control and the air under it.
 const TABS_H: f32 = 38.0;
-/// A tray icon look's tile.
-const TILE_H: f32 = 60.0;
-/// A tile's icon, square.
-const TILE_ICON: f32 = 24.0;
+/// A tray icon look's tile: its icon, then its label.
+const TILE_H: f32 = 67.0;
+/// A tile's icon, square: the tray icon's own 32 px drawing.
+const TILE_ICON: f32 = 32.0;
 /// How long the pointer rests on something before its description shows,
 /// as Windows' own tooltips wait; one shown, the next follows sooner.
 const HINT_DELAY: std::time::Duration = std::time::Duration::from_millis(600);
 const HINT_RESHOW: std::time::Duration = std::time::Duration::from_millis(100);
+/// A provider's dot before its name, the room after it, and its top
+/// below the top of the name's line.
+const DOT: f32 = 7.0;
+const DOT_GAP: f32 = 6.0;
+const DOT_TOP: f32 = 5.0;
+/// A sign-in's chip: its height, the room inside its ends and between
+/// what it says.
+const CHIP_H: f32 = 22.0;
+const CHIP_PAD: f32 = 9.0;
+const CHIP_GAP: f32 = 6.0;
+/// The chip's arrow: closed, open (arrowheads the UI font has).
+const CHIP_CLOSED: &str = "\u{203A}";
+const CHIP_OPEN: &str = "\u{02C5}";
 /// The notice's button row.
 const FOOTER_H: f32 = 50.0;
 const PAD_X: f32 = 14.0;
@@ -1749,6 +1771,46 @@ impl Picker {
     fn enabled(&self, provider: &str) -> bool {
         let p = canonical(provider);
         self.input.enabled.iter().any(|e| canonical(e) == p)
+    }
+
+    /// A provider's dot: `Good` while it brings numbers, `Warn` while it
+    /// runs without them (loading, retrying, not signed in), `Dim` (an
+    /// outline) while it is off or not allowed.
+    fn dot_of(&self, row: &RowChoice) -> Ink {
+        if !(self.allowed(row.provider) && self.enabled(row.provider)) {
+            Ink::Dim
+        } else if row.provider_ok {
+            Ink::Good
+        } else {
+            Ink::Warn
+        }
+    }
+
+    /// A sign-in summary, split for its chip: the source in bold, then how
+    /// it went ("Claude Code", "· works").
+    fn chip_parts(summary: &str) -> (&str, Option<String>) {
+        match summary.split_once(" \u{b7} ") {
+            Some((source, how)) => (source, Some(format!("\u{b7} {how}"))),
+            None => (summary, None),
+        }
+    }
+
+    /// How wide a sign-in's chip is: "Sign-in", the source, how it went and
+    /// the arrow, `CHIP_GAP` apart, `CHIP_PAD` in from its ends.
+    fn chip_w(&self, label: &str, summary: &str) -> f32 {
+        let (source, how) = Self::chip_parts(summary);
+        let mut w = CHIP_PAD * 2.0
+            + self.adv(label, SIZE_NOTE)
+            + CHIP_GAP
+            + self.adv_styled(source, SIZE_NOTE, true)
+            + CHIP_GAP
+            + self
+                .adv(CHIP_CLOSED, SIZE_NOTE)
+                .max(self.adv(CHIP_OPEN, SIZE_NOTE));
+        if let Some(how) = how {
+            w += self.adv(&how, SIZE_NOTE) + CHIP_GAP;
+        }
+        w.ceil()
     }
 
     /// Whether a provider is ticked in the Taskbar column.

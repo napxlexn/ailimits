@@ -366,23 +366,21 @@ impl Picker {
             }
         }
         for (gi, g) in groups.iter().enumerate() {
+            // A hairline between providers.
             if gi > 0 {
-                f.y += 6.0;
-            }
-            for row in g {
-                self.flow_row(f, row, welcome);
+                f.y += 4.0;
+                f.shape(Shape::Fill {
+                    rect: rect(PAD_X, f.y, BOX_W - PAD_X * 2.0, 1.0),
+                    radius: 0.0,
+                    ink: Ink::Separator,
+                    alpha: Level::Full,
+                });
+                f.y += 5.0;
             }
             // A provider with one limit for everything has no extra rows.
-            if g.len() == 1 && !g[0].id.contains('.') {
-                f.shape(text_shape(
-                    SUB_X,
-                    f.y,
-                    ONE_LIMIT,
-                    SIZE_NOTE,
-                    Ink::Muted,
-                    false,
-                ));
-                f.y += lh(SIZE_NOTE) + 4.0;
+            let one_limit = g.len() == 1 && !g[0].id.contains('.');
+            for row in g {
+                self.flow_row(f, row, welcome, one_limit);
             }
             // Where its sign-in comes from, at the end of its group.
             if !welcome {
@@ -422,7 +420,7 @@ impl Picker {
     /// A section's title: small capitals over the rows under it.
     pub(super) fn flow_section(&self, f: &mut Flow, title: &str) {
         f.y += 8.0;
-        f.shape(text_shape(PAD_X, f.y, title, SIZE_NOTE, Ink::Muted, true));
+        f.shape(text_shape(PAD_X, f.y, title, SIZE_NOTE, Ink::Dim, true));
         f.y += lh(SIZE_NOTE) + 2.0;
     }
 
@@ -461,7 +459,7 @@ impl Picker {
             y + ((h - lh(SIZE_NOTE)) / 2.0).round(),
             DASH,
             SIZE_NOTE,
-            Ink::Muted,
+            Ink::Dim,
             false,
         ));
     }
@@ -537,8 +535,8 @@ impl Picker {
             x: PAD_X,
             y: f.y,
             text: MODEL_SHOWN.to_string(),
-            size: SIZE_TEXT,
-            ink: Ink::Text,
+            size: SIZE_NOTE,
+            ink: Ink::Dim,
             bold: false,
             italic: false,
             alpha: if enabled {
@@ -547,7 +545,7 @@ impl Picker {
                 Level::Disabled
             },
         });
-        f.y += lh(SIZE_TEXT) + 4.0;
+        f.y += lh(SIZE_NOTE) + 4.0;
         let mut x = PAD_X;
         for (col, (source, label, hint)) in [
             (ModelSource::Configured, SOURCE_SET, SOURCE_SET_HINT),
@@ -730,8 +728,12 @@ impl Picker {
         f.y += r.h;
     }
 
-    /// One row: its name (and note) with a Widget and a Tooltip tick.
-    pub(super) fn flow_row(&self, f: &mut Flow, row: &RowChoice, welcome: bool) {
+    /// One row: its name (and note) with a Widget and a Tooltip tick. A
+    /// provider's own row has a dot for how it runs (not in the welcome,
+    /// where nothing runs yet); an extra row says what it is in a word or
+    /// two beside its name. `one_limit`: the provider has no extra rows,
+    /// which its note says while it works.
+    pub(super) fn flow_row(&self, f: &mut Flow, row: &RowChoice, welcome: bool, one_limit: bool) {
         let own = !row.id.contains('.');
         let x = if own { PAD_X } else { SUB_X };
         let width = LABEL_RIGHT - x;
@@ -740,8 +742,12 @@ impl Picker {
         } else {
             row.name.split_once(" · ").map_or(row.name, |(_, b)| b)
         };
+        let dot = (own && !welcome).then(|| self.dot_of(row));
+        let name_x = if dot.is_some() { x + DOT + DOT_GAP } else { x };
         let mut notes: Vec<String> = Vec::new();
-        if !row.note.is_empty() {
+        if one_limit && row.provider_ok {
+            notes.push(ONE_LIMIT.to_string());
+        } else if !row.note.is_empty() {
             notes.push(row.note.to_string());
         }
         // Allowed but switched off: the menu, not a missing consent.
@@ -768,11 +774,44 @@ impl Picker {
                 top,
                 "+",
                 SIZE_TEXT,
-                Ink::Muted,
+                Ink::Dim,
                 false,
             ));
         }
-        f.shape(text_shape(x, top, name, SIZE_TEXT, Ink::Text, own));
+        if let Some(ink) = dot {
+            let r = rect(x, top + DOT_TOP, DOT, DOT);
+            f.shape(if ink == Ink::Dim {
+                Shape::Stroke {
+                    rect: r,
+                    radius: DOT / 2.0,
+                    width: 1.0,
+                    ink,
+                    alpha: Level::Full,
+                }
+            } else {
+                Shape::Fill {
+                    rect: r,
+                    radius: DOT / 2.0,
+                    ink,
+                    alpha: Level::Full,
+                }
+            });
+        }
+        f.shape(text_shape(name_x, top, name, SIZE_TEXT, Ink::Text, own));
+        // An extra row's word or two, beside its name when there is room.
+        if !row.short.is_empty() {
+            let sx = (name_x + self.adv(name, SIZE_TEXT) + 6.0).round();
+            if sx + self.adv(row.short, SIZE_NOTE) <= LABEL_RIGHT {
+                f.shape(text_shape(
+                    sx,
+                    top + (lh(SIZE_TEXT) - lh(SIZE_NOTE)),
+                    row.short,
+                    SIZE_NOTE,
+                    Ink::Dim,
+                    false,
+                ));
+            }
+        }
         if !row.hint.is_empty() {
             f.els.push(El::Hint {
                 rect: rect(x, y, LABEL_RIGHT - x, h),
@@ -780,7 +819,7 @@ impl Picker {
             });
         }
         if own && welcome && self.found(row.provider) {
-            let bx = (x + self.adv_styled(name, SIZE_TEXT, true) + 8.0).round();
+            let bx = (name_x + self.adv_styled(name, SIZE_TEXT, true) + 8.0).round();
             let bw = (self.adv_styled(FOUND, SIZE_BADGE, true) + 14.0).round();
             f.shape(Shape::Fill {
                 rect: rect(bx, top, bw, lh(SIZE_TEXT)),
@@ -851,11 +890,16 @@ impl Picker {
             return;
         };
         let open = self.open_sign_in.iter().any(|o| o == p);
-        let h = ROW_H - 12.0;
-        let line = rect(SUB_X - 8.0, f.y, BOX_W - SUB_X - PAD_X + 8.0, h);
+        // A chip as wide as what it says: "Sign-in Claude Code · works ›".
+        let chip = rect(
+            SUB_X,
+            f.y + 2.0,
+            self.chip_w(SIGN_IN, &s.summary).min(BOX_W - PAD_X - SUB_X),
+            CHIP_H,
+        );
         f.els.push(El::Toggle {
             target: Target::SignIn(p.to_string()),
-            rect: line,
+            rect: chip,
             label: SIGN_IN.to_string(),
             count: s.summary.clone(),
             open,
@@ -864,18 +908,16 @@ impl Picker {
             nav: (f.nav, 0),
         });
         f.els.push(El::Hint {
-            rect: line,
+            rect: chip,
             text: SIGN_IN_HINT.to_string(),
         });
         f.nav += 1;
-        f.y += h;
+        f.y = bottom(&chip) + 6.0;
         if !open {
-            f.y += 2.0;
             return;
         }
         let x = SUB_X + 14.0;
         let width = BOX_W - PAD_X - x;
-        f.y += 2.0;
         for (col, src) in s.sources.iter().enumerate() {
             let w = (RADIO + 8.0 + self.adv(src.label, SIZE_TEXT)).ceil();
             f.els.push(El::Radio {

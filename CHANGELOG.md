@@ -145,12 +145,24 @@ Notable, user-visible changes. Dates are release dates.
   ("Claude   2h 14min  25%") and the widget is only as wide as its texts; an
   Expanded row keeps the line of its weekly limit; a narrower width step
   drops the reset before the name. The panel can show its bar alone.
-  Untouched, the widget looks as it always did.
+  Untouched, the widget looks as it always did. On *Rows*, each provider
+  has a dot for how it runs (green: it brings numbers; yellow: it runs
+  without them, loading, retrying or not signed in; hollow: off), a hairline
+  sets the providers apart, an extra row is one line ("+ Opus  weekly",
+  the rest on hover), and the sign-in is a chip under its rows ("Sign-in
+  Claude Code · works").
 - **The tray icon has other looks.** *What shows*, *Tray icon* (`[ui.tray]
   style`): the two rings, as before and by default; two upright bars, like a
   level meter; the busier provider's percentage in digits; or its slice of a
   disc, like a clock face. Each is monochrome in the taskbar's theme, and the
   tooltip names both providers.
+- ***Rows and models* is a window like any program's.** It stays open until
+  its cross or Alt+F4 closes it: Esc, a click beside it and another window
+  taking the focus no longer close it. It moves by its title and opens
+  where it was left the next time (until the app restarts), is in the
+  taskbar and Alt+Tab so it can be found behind other windows, and stays on
+  top only while it is the window in use. The same goes for the welcome
+  and the update notice.
 - **Descriptions in *Rows and models* wait for the pointer.** One shows after
   the pointer has rested 0.6 s on what it describes, as Windows' tooltips do,
   and the next one straight after follows sooner; on keyboard focus it shows
