@@ -91,9 +91,9 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   is enough. After that your normal CLI use keeps their tokens valid, so
   there is nothing else to configure. Only Cursor asks you to sign in once,
   in *Settings*.
-- **Low load, measured on the running app.** 0.0097% of one CPU core, no GPU
-  use (it renders on the CPU), a 54 MB working set, no raised timer
-  resolution (measured for 0.7.1 on 2026-11-21), a 4 MB exe. Reproduce it with
+- **Low load, measured on the running app.** 0.014% of one CPU core, no GPU
+  use (it renders on the CPU), a 53 MB working set (25 MB private), measured
+  for 0.7.1 on 2026-11-23; no raised timer resolution (2026-11-21); a 4 MB exe. Reproduce it with
   `bench/perf_audit.ps1`; the full numbers are in
   [docs/en/ARCHITECTURE.md](docs/en/ARCHITECTURE.md#resource-footprint-measured-not-estimated).
 - **Stale data is marked as stale.** A value that stops updating greys out and

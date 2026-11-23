@@ -600,10 +600,18 @@ shell for the bar's room at least once, which is the state it is in
 whenever it is on screen; about 20 MB of the memory is UI Automation,
 loaded for that question.
 
-The README quotes the first 0.7.1 run, of b1ca5da on 2026-11-21 (322 s,
-`bench/results/perf-audit-2026-11-21_0423.json`): 0.0097% of one core
-(0.031 CPU-s), no GPU, a 54 MB working set, ~11 threads (14 peak), no
-timer request. CLAUDE.md quotes both runs. The release build of 0.7.1 is
+The README quotes the latest 0.7.1 run, of 6c69e28 on 2026-11-23: three
+240 s runs with the polling on, on a quiet machine (a measurement copy with
+the five-minute idle pause off, so the polling went on with nobody at the
+PC; `bench/results/perf-audit-published-2026-11-23-*.json`): 0.014% of one
+core on average (0.012 / 0.006 / 0.024%; one 15.6 ms CPU tick is 0.0065% of
+a 240 s window, so single runs are coarse), no GPU, a 53 MB working set
+(25 MB private), ~10 threads (12 peak). 6c69e28 is the build that shares one
+parsed font across the app: the one before it measured 45 MB private and a
+72 MB working set. The first 0.7.1 run, of b1ca5da on 2026-11-21 (322 s,
+`bench/results/perf-audit-2026-11-21_0423.json`): 0.0097% of one core,
+a 54 MB working set, ~11 threads (14 peak), no timer request. CLAUDE.md
+quotes the runs. The release build of 0.7.1 is
 measured the same way before its release.
 
 The earlier column is the 0.6.3 audit of 2026-08-23 with

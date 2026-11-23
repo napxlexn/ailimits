@@ -77,7 +77,7 @@ document.documentElement.classList.add("js");
     { "@type": "Question", "name": "What is the Settings window?",
       "acceptedAnswer": { "@type": "Answer", "text": "Right-click the widget and open Settings. On its Providers tab every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. On its Display tab, Percentage, Time to reset and Progress bar choose what each row shows on the widget, the tooltip and the taskbar panel: the percentage, the time until its limit resets, the bar, in any mix; without the bar the widget and the panel get smaller. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a key or token you paste, and only the one chosen is used. Each tool is asked once: clearing its rows pauses it, Forget permission takes the permission back. Model, Version and Reasoning effort add the model a tool is using to its row, for example Opus 5.5 · xhigh, and any model can be given a name of your own. A tick shows at once." } },
     { "@type": "Question", "name": "Does it slow the PC down?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back." } },
+      "acceptedAnswer": { "@type": "Answer", "text": "Measured, not estimated: an automated audit of the 0.7.1 release build records 0.014% of one CPU core, no GPU engine time at all, a working set around 53 MB, about 10 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back." } },
     { "@type": "Question", "name": "Is AI Limits free?",
       "acceptedAnswer": { "@type": "Answer", "text": "Yes. Open source under GPL-3.0; the code, releases and issue tracker live on GitHub." } },
     { "@type": "Question", "name": "Does it show GitHub Copilot premium requests?",
@@ -243,16 +243,16 @@ document.documentElement.classList.add("js");
 
 <!-- ════ 03 · TELEMETRY ════ -->
 <section class="scene telemetry" id="telemetry" aria-label="Measured footprint">
-  <p class="ghost" aria-hidden="true"><b data-count="0.0097" data-decimals="4">0.0097</b>%</p>
+  <p class="ghost" aria-hidden="true"><b data-count="0.014" data-decimals="3">0.014</b>%</p>
   <div class="tele-head">
     <p class="hud scene-tag">03 · TELEMETRY</p>
     <h2 class="manifesto"><span class="line">Measured.</span><span class="line dim">Not promised.</span></h2>
     <p class="hud">AUDIT 2026-11-21 · RELEASE-MIN BUILD 0.7.1 · QUIET MACHINE</p>
   </div>
   <div class="numbers">
-    <div class="num"><b data-count="0.0097" data-decimals="4">0.0097</b><i>%</i><span>of one CPU core at idle</span></div>
+    <div class="num"><b data-count="0.014" data-decimals="3">0.014</b><i>%</i><span>of one CPU core at idle</span></div>
     <div class="num"><b data-count="0.00" data-decimals="2">0.00</b><i>%</i><span>GPU engine time — the UI is drawn on the CPU</span></div>
-    <div class="num"><b data-count="54" data-decimals="0">54</b><i>MB</i><span>working set</span></div>
+    <div class="num"><b data-count="53" data-decimals="0">53</b><i>MB</i><span>working set</span></div>
     <div class="num"><b data-count="3.9" data-decimals="1">3.9</b><i>MB</i><span>the 0.7.1 installer, no runtime dependencies</span></div>
   </div>
   <div class="honesty">
@@ -479,7 +479,7 @@ document.documentElement.classList.add("js");
     <details><summary>What is the Settings window?</summary>
       <p>Right-click the widget and open <em>Settings</em>. On its <em>Providers</em> tab every row is in one list with a Widget, a Tooltip and a Taskbar column: the widget and the taskbar panel's tooltip are chosen separately, and the Taskbar column picks the two providers the panel and the tray icon show. On its Display tab, Percentage, Time to reset and Progress bar choose what each row shows on the widget, the tooltip and the taskbar panel: the percentage, the time until its limit resets, the bar, in any mix; without the bar the widget and the panel get smaller. Extra rows cover what a provider meters on its own: Claude's Fable, Opus and Sonnet weeks on plans that have them, Antigravity's Claude and GPT pool, Grok Build and Cursor's Grok Bot. Once a provider has answered, only the rows it reports are offered. Under each provider's rows, its Sign-in chooses where the token comes from: the tool's own sign-in or a key or token you paste, and only the one chosen is used. Each tool is asked once: clearing its rows pauses it, Forget permission takes the permission back. Model, Version and Reasoning effort add the model a tool is using to its row, for example <code>Opus 5.5 · xhigh</code>, and any model can be given a name of your own. A tick shows at once.</p></details>
     <details><summary>Does it slow the PC down?</summary>
-      <p>Measured, not estimated: an automated audit of the 0.7.1 release build records 0.0097% of one CPU core, no GPU engine time at all, a working set around 54 MB, about 11 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back.</p></details>
+      <p>Measured, not estimated: an automated audit of the 0.7.1 release build records 0.014% of one CPU core, no GPU engine time at all, a working set around 53 MB, about 10 threads and no raised timer resolution. Polling pauses once there has been no input for five minutes, a locked PC included, and picks up again when you are back.</p></details>
     <details><summary>Is it free?</summary>
       <p>Yes. Open source under GPL-3.0; the code, releases and issue tracker live on <a href="https://github.com/napxlexn/ailimits">GitHub</a>.</p></details>
     <details><summary>Does it show GitHub Copilot premium requests?</summary>

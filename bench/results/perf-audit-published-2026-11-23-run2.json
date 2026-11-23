@@ -1,0 +1,56 @@
+{
+  "date": "2026-11-23 16:11",
+  "machine": {
+    "logical_cores": 32,
+    "os": "Майкрософт Windows 11 Pro",
+    "cpu": "AMD Ryzen 9 9950X3D 16-Core Processor          ",
+    "build": "26300"
+  },
+  "process": {
+    "name": "ailimits",
+    "duration_sec": 257.5,
+    "pid": 75248,
+    "samples": 238
+  },
+  "cpu_exact": {
+    "pct_of_one_core": 0.0061,
+    "pct_of_machine": 0.0002,
+    "cpu_seconds_total": 0.016
+  },
+  "cpu_sampled_pct": {
+    "avg": 0.0,
+    "max": 0.0,
+    "min": 0.0
+  },
+  "gpu_engine": {
+    "utilization_pct": {
+      "avg": 0.0,
+      "max": 0.0,
+      "min": 0.0
+    },
+    "instances_for_pid": false
+  },
+  "working_set_mb": {
+    "avg": 53.23,
+    "max": 53.28,
+    "min": 53.08
+  },
+  "threads": {
+    "avg": 9.441,
+    "max": 12.0,
+    "min": 8.0
+  },
+  "handles": {
+    "avg": 290.311,
+    "max": 295.0,
+    "min": 288.0
+  },
+  "io_bytes_per_sec": {
+    "avg": 659.126,
+    "max": 76560.0,
+    "min": 0.0
+  },
+  "context_switches_per_sec": 2.54,
+  "platform_timer": "skipped (needs elevated shell)",
+  "srum_energy_rows": []
+}
