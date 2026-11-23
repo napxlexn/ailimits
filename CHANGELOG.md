@@ -292,13 +292,26 @@ Notable, user-visible changes. Dates are release dates.
   without a question, nothing has to be ticked again, and one window, shown
   once, lists every file read and every host contacted. A provider the
   earlier version did not have starts switched off and asks when ticked.
-- **Unticking stops reading.** Untick every row of a provider and nothing of
-  it is read any more until it is ticked and allowed again; its cached
-  numbers are cleared too. Unticking Model, Version and Reasoning effort takes
-  back the settings and session reads, and switching back to "Tool
-  settings" takes back the session read; the next tick asks again. A key or
-  usage token you paste, or Cursor's sign-in, allows that alone: such a
-  provider never falls back to the tool's own sign-in.
+- **Each permission is asked for once.** Clear every row of a provider
+  (Widget, Tooltip and Taskbar) and it pauses: nothing of it is read or
+  sent and its cached numbers are cleared, but the permission stays, so a
+  tick starts it again without a question. *Forget permission*, in the
+  provider's *Sign-in* while the tool's own sign-in is the source, takes the
+  permission back in one click: the sign-in is not read any more, its rows
+  are cleared everywhere, and the next tick asks again (Cursor's *Sign out*
+  and a pasted key's *Remove* are as before). Clearing Model, Version and
+  Reasoning effort pauses the model label alike; *Forget permission* under
+  them on the *Display* tab takes back the settings and session reads, and
+  switching back to "Tool settings" still stops the session read. Each
+  permission keeps the terms it was given under (`[reads] sign_in_terms`,
+  `model_terms`): a later version that reads another file for a tool, or
+  sends its token elsewhere, takes that permission back at its first
+  start, clears the tool's rows and says so in a notification, so the next
+  tick asks with the new reads. The questions, the welcome and the update
+  notice say how. Permissions are per Windows user; nothing new is read or
+  contacted for this. A key or usage token you paste, or Cursor's sign-in,
+  allows that alone: such a provider never falls back to the tool's own
+  sign-in.
 - **Sign-in moves into *Settings*; the source you choose is the only
   one.** The context menu's Providers submenu is gone. Each provider has a
   *Sign-in* line under its rows that says where its sign-in comes from and

@@ -35,6 +35,22 @@ pub struct ReadInfo {
     /// is asked for or listed (the question, the welcome, Allow all, the
     /// update notice), if anything.
     pub risk: Option<&'static str>,
+    /// The terms the permission is given under: raised whenever what is
+    /// read for the sign-in or where its token goes changes, so a
+    /// permission given under older terms is asked for again
+    /// (`choices::settle_terms`). `terms_follow_what_is_read` holds it to
+    /// the files and hosts.
+    pub terms: u32,
+}
+
+/// The terms of the model label's reads (the settings files and the
+/// session files of every tool): raised whenever what is read for the
+/// label changes, so the permission is asked for again.
+pub const MODEL_TERMS: u32 = 1;
+
+/// The terms a provider's permission is given under now.
+pub fn terms_of(id: &str) -> u32 {
+    read_info(id).map_or(1, |r| r.terms)
 }
 
 /// The risk of reading Antigravity's sign-in. Google has suspended accounts
@@ -68,6 +84,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         ),
         session: Some(r"%USERPROFILE%\.claude\projects\...\*.jsonl (the end of the newest)"),
         risk: None,
+        terms: 1,
     },
     ReadInfo {
         id: "codex",
@@ -83,6 +100,7 @@ pub const READ_INFO: &[ReadInfo] = &[
             r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest; in CODEX_HOME when it is set)",
         ),
         risk: None,
+        terms: 1,
     },
     ReadInfo {
         id: "copilot",
@@ -98,6 +116,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         ),
         session: None,
         risk: None,
+        terms: 1,
     },
     ReadInfo {
         id: "antigravity",
@@ -112,6 +131,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         settings: Some(r"%USERPROFILE%\.gemini\antigravity-cli\settings.json: model"),
         session: None,
         risk: Some(ANTIGRAVITY_RISK),
+        terms: 1,
     },
     ReadInfo {
         id: "grok",
@@ -125,6 +145,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         ),
         session: None,
         risk: None,
+        terms: 1,
     },
     ReadInfo {
         id: "cursor",
@@ -141,6 +162,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         ),
         session: None,
         risk: None,
+        terms: 1,
     },
 ];
 
@@ -221,6 +243,65 @@ fn detect(paths: &ToolPaths, exists: impl Fn(&Path) -> bool) -> Vec<(&'static st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FNV-1a over the parts, each ended by a zero byte: a fingerprint of
+    /// what a permission covers.
+    fn fingerprint(parts: &[&str]) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for p in parts {
+            for b in p.bytes().chain([0]) {
+                h ^= b as u64;
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    /// The terms are held to what is read and where it goes: a change to a
+    /// provider's sign-in files, its hosts or its pages, or to the files
+    /// read for the model label, fails here until it is decided. If what
+    /// is read or where its token goes changed, raise that provider's
+    /// `terms` (or `MODEL_TERMS`): the permission is asked for again. If
+    /// only the wording changed, update the pin.
+    #[test]
+    fn terms_follow_what_is_read() {
+        const PINS: &[(&str, u32, u64)] = &[
+            ("claude", 1, 10_370_255_469_873_492_543),
+            ("codex", 1, 11_683_590_913_293_595_248),
+            ("copilot", 1, 15_924_267_558_532_384_078),
+            ("antigravity", 1, 13_512_175_579_456_921_872),
+            ("grok", 1, 4_705_202_258_529_479_122),
+            ("cursor", 1, 1_854_238_065_954_613_056),
+        ];
+        const MODEL_PIN: (u32, u64) = (1, 5040231675459605952);
+        let mut wrong = Vec::new();
+        for r in READ_INFO {
+            let mut parts: Vec<&str> = vec![r.id, if r.tool_sign_in { "tool" } else { "own" }];
+            parts.extend(r.sign_in);
+            parts.push("hosts");
+            parts.extend(r.hosts);
+            parts.push("pages");
+            parts.extend(r.pages);
+            let now = (r.id, r.terms, fingerprint(&parts));
+            if !PINS.contains(&now) {
+                wrong.push(format!("{now:?}"));
+            }
+        }
+        let mut parts = Vec::new();
+        for r in READ_INFO {
+            parts.extend([r.id, r.settings.unwrap_or("-"), r.session.unwrap_or("-")]);
+        }
+        let model = (MODEL_TERMS, fingerprint(&parts));
+        if model != MODEL_PIN {
+            wrong.push(format!("model {model:?}"));
+        }
+        assert!(
+            wrong.is_empty(),
+            "decide each and pin it: {}",
+            wrong.join(", ")
+        );
+        assert_eq!(PINS.len(), READ_INFO.len());
+    }
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::PathBuf;
 

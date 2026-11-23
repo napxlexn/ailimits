@@ -498,7 +498,10 @@ pub fn run() -> Result<()> {
     // is (storage.rs); the app then runs on a config in memory and says so
     // once, below.
     let loaded = runtime.block_on(storage::load());
-    let config = loaded.config;
+    let mut config = loaded.config;
+    // Every permission held to the terms it was given under, before any
+    // provider is built (`choices::settle_terms`).
+    let (asked_again, terms_changed) = crate::choices::settle_terms(&mut config);
     info!("Config loaded: {} providers", config.providers.len());
     // The file as it was found: the writer replaces only that, and the
     // watch takes every other change for an edit (app/config_watch.rs).
@@ -511,6 +514,16 @@ pub fn run() -> Result<()> {
     // are saved this session.)
     if let Some(problem) = &loaded.problem {
         feedback("AI Limits", &problem.message());
+    }
+    // What a newer version reads differently is asked for again.
+    if !asked_again.is_empty() {
+        feedback(
+            "AI Limits",
+            &format!(
+                "What AI Limits reads for {} has changed. Select it again in Settings to allow the new reads.",
+                asked_again.join(", ")
+            ),
+        );
     }
     // An update that did not finish is said once (updater.rs).
     if let Some(note) = updater::unfinished_update_note() {
@@ -846,6 +859,9 @@ pub fn run() -> Result<()> {
     // Which keys and tokens of the app's own are stored, where Cursor's
     // sign-in stands; a source left to the old order settled.
     app.init_sign_in_state();
+    if terms_changed {
+        app.save_config();
+    }
 
     // On a fresh install the picker opens by itself as the welcome, after
     // the update that added [reads] as the one-time notice - unless a

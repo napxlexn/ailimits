@@ -370,6 +370,8 @@ impl Picker {
                 }
                 vec![PickerAction::RemoveSecret(p.clone())]
             }
+            Target::Forget(p) => vec![PickerAction::ForgetSignIn(p.clone())],
+            Target::ForgetModelReads => vec![PickerAction::ForgetModelReads],
             Target::CursorSignIn => vec![PickerAction::CursorSignIn],
             Target::CursorCancel => vec![PickerAction::CursorCancel],
             Target::CursorSignOut => vec![PickerAction::CursorSignOut],

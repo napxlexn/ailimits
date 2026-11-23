@@ -527,6 +527,25 @@ impl Picker {
             BOX_W - SUB_X - PAD_X,
         );
         f.y += f.lines(&read_note, SUB_X, f.y, lh(SIZE_NOTE)) + 4.0;
+        // Allowed once: Forget permission takes it back.
+        if self.input.reads.tool_settings || self.input.reads.last_session {
+            const PAD: f32 = 4.0;
+            let w = self.adv(FORGET, SIZE_NOTE).ceil();
+            let r = rect(SUB_X - PAD, f.y, w + PAD * 2.0, lh(SIZE_NOTE) + 8.0);
+            f.els.push(El::Link {
+                target: Target::ForgetModelReads,
+                rect: r,
+                label: FORGET.to_string(),
+                pad: PAD,
+                nav: (f.nav, 0),
+            });
+            f.els.push(El::Hint {
+                rect: r,
+                text: FORGET_MODELS_HINT.to_string(),
+            });
+            f.nav += 1;
+            f.y += r.h;
+        }
 
         // Where the model comes from.
         let enabled = self.any_part_on();
@@ -964,13 +983,28 @@ impl Picker {
             }
             None => {}
         }
+        if s.forget {
+            buttons.push((
+                Target::Forget(p.to_string()),
+                FORGET.to_string(),
+                false,
+                true,
+            ));
+        }
         if !buttons.is_empty() {
             let mut bx = x;
             for (col, (target, label, primary, enabled)) in buttons.into_iter().enumerate() {
                 let w = self.button_w(&label);
+                let r = rect(bx, f.y, w, BUTTON_H);
+                if matches!(target, Target::Forget(_)) {
+                    f.els.push(El::Hint {
+                        rect: r,
+                        text: FORGET_HINT.to_string(),
+                    });
+                }
                 f.els.push(El::Button {
                     target,
-                    rect: rect(bx, f.y, w, BUTTON_H),
+                    rect: r,
                     label,
                     primary,
                     enabled,
@@ -1112,7 +1146,7 @@ impl Picker {
         self.flow_para(
             f,
             &[span(
-                "A new tool or option asks once before its first read. Untick a tool in Settings to stop reading its file.",
+                "A new tool or option asks once before its first read. Clearing a tool's rows pauses it; Forget permission under its Sign-in stops reading its file.",
                 SIZE_TEXT,
                 Ink::Text,
                 false,
@@ -1196,7 +1230,7 @@ impl Picker {
                         ),
                         list,
                         format!(
-                            "The session stays on this PC{goes}. AI Limits renews it before it runs out; the editor's own sign-in is never touched. Untick its rows to stop."
+                            "The session stays on this PC{goes}. AI Limits renews it before it runs out; the editor's own sign-in is never touched. Asked once: clearing its rows pauses it, Sign out ends it."
                         ),
                     );
                 }
@@ -1205,7 +1239,7 @@ impl Picker {
                     format!("To show your {name} limits, AI Limits reads:"),
                     list,
                     format!(
-                        "The token stays on this PC{goes}. It is never changed or refreshed. Untick its rows to stop."
+                        "The token stays on this PC{goes}. It is never changed or refreshed. Asked once: clearing its rows pauses it, Forget permission under its Sign-in takes it back."
                     ),
                 )
             }
@@ -1219,13 +1253,13 @@ impl Picker {
                 "Allow reading tool settings files?".to_string(),
                 "To show the model, its version and effort, AI Limits reads these values from each tool's own settings file:".to_string(),
                 files(|i| i.settings),
-                "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one signed in with a pasted key or token. Untick Model, Version and Effort to stop.".to_string(),
+                "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one signed in with a pasted key or token. Asked once: clearing Model, Version and Reasoning effort pauses it, Forget permission under them takes it back.".to_string(),
             ),
             Question::Read(ReadKind::LastSession) => (
                 "Allow reading the latest session file?".to_string(),
                 "For Last session, AI Limits reads the newest session file back from its end until it finds the model, at most the last 1 MB:".to_string(),
                 files(|i| i.session),
-                "Only the model and its effort are kept, in memory. Your conversations are not stored or sent anywhere. Switch back to Tool settings to stop.".to_string(),
+                "Only the model and its effort are kept, in memory. Your conversations are not stored or sent anywhere. Switch back to Tool settings to stop, or Forget permission under Model, Version and Reasoning effort.".to_string(),
             ),
         }
     }

@@ -430,6 +430,17 @@ const TABLES: &[Table] = &[
                 &["The app's own (a window it still has to show); leave it as it is."],
             ),
             ("sources_settled", &["The app's own; leave it as it is."]),
+            (
+                "sign_in_terms",
+                &[
+                    "The terms each sign-in was allowed under; a version that reads",
+                    "another file or sends a token elsewhere asks again. The app's own.",
+                ],
+            ),
+            (
+                "model_terms",
+                &["The terms the model label's reads were allowed under. The app's own."],
+            ),
         ],
     },
 ];

@@ -186,8 +186,9 @@ are matched by `WindowId` ahead of the widget's arms and go to
 re-lay, close); the app then updates the widget, the panel, the tray and the
 menu at once and hands the picker a fresh `PickerInput`. The Sign-in
 block's actions (choose a source, paste, remove, Cursor's sign-in, cancel,
-sign-out) go to `app/sign_in.rs` instead, which reaches the clipboard,
-Credential Manager and the browser and puts its result in the
+sign-out; not *Forget permission*, a config change alone that
+`choices::apply` makes) go to `app/sign_in.rs` instead, which reaches the
+clipboard, Credential Manager and the browser and puts its result in the
 `PickerInput` (`choices::SignInState`). The picker never touches a file.
 It opens from the menu (*Settings…*), from a click on the widget's
 "Setup required" or "No data yet", and by itself at start
@@ -322,8 +323,22 @@ side it grows to only when no other has room.
   token, Cursor's own sign-in) never reads the tool's sign-in; its settings
   file is still read for the model label under `[reads] tool_settings`, and
   its newest session under `last_session`, as for every provider that
-  runs. Unticking every
-  row of a provider in the picker calls `Config::revoke`. The text of each
+  runs. Clearing every
+  row of a provider in the picker calls `Config::pause` (`enabled = false`;
+  the permission stays, so a tick asks nothing). *Forget permission* in its
+  Sign-in (`PickerAction::ForgetSignIn`, `choices::forget_provider`) calls
+  `Config::forget_sign_in` and clears its rows on every surface, and
+  `PickerAction::ForgetModelReads` takes back the model label's reads and
+  clears its parts; the next tick asks again. A permission records the
+  terms it was given under (`[reads] sign_in_terms`, `model_terms`, from
+  `consent::ReadInfo::terms` and `consent::MODEL_TERMS`): at start, before
+  any provider is built, `choices::settle_terms` gives one from before terms
+  were kept today's, and takes back one given under older terms, its rows
+  or parts cleared, with one notification.
+  `consent::tests::terms_follow_what_is_read` pins a fingerprint of each
+  provider's sign-in files, hosts and pages and of the model files, so a
+  change to them fails until the terms are raised (or, for wording alone,
+  the pin is updated). The text of each
   question comes from `consent::READ_INFO`; tests hold its hosts to the URLs
   in every file under `src/providers` (both ways: every host called is named,
   every host named is called), and every file name and Credential Manager

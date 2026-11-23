@@ -120,7 +120,9 @@ The welcome has no such link.
   a tick in Settings does: the files it names are read from the next
   fetch on, without a question. A provider taken out of `[reads]` by hand
   stops at once. A provider allowed by hand also needs `enabled = true` in
-  its `[[providers]]` table: it runs only with both. Deleting the whole
+  its `[[providers]]` table: it runs only with both. The terms a read
+  allowed by hand is given under (`sign_in_terms`, `model_terms`) are
+  written at the next start. Deleting the whole
   `[reads]` table by hand makes the file read as a 0.7.0 config: every
   provider with `enabled = true` is then allowed at once, without a
   question.
@@ -376,8 +378,9 @@ style = "rings"
 # their provider).
 id = "claude"
 # Switched on. A provider runs when it is switched on AND allowed in
-# [reads]. Ticking a row of it switches it on; unticking its last row
-# switches it off and removes it from [reads].
+# [reads]. Ticking a row of it switches it on; clearing its last row
+# switches it off (paused: nothing of it is read or sent) and leaves it in
+# [reads], so a tick switches it on again without asking.
 enabled = true
 # Where the sign-in comes from: chosen under the provider's rows in
 # Settings (Sign-in). Only this source is used, never another as a
@@ -467,8 +470,10 @@ on_startup = ""
 # only hosts the token goes to (see "What is read, and when" below).
 [reads]
 # Providers whose sign-in may be read. Ticking a provider's row in the
-# picker asks first; unticking every row of a provider in the picker
-# removes it from here again (and switches it off).
+# picker asks first, once: clearing every row of a provider only switches it
+# off (enabled = false) and keeps it here. Forget permission, in its opened
+# Sign-in, removes it from here (and from sign_in_terms), switches it off and
+# clears its rows; the next tick asks again.
 sign_in       = ["claude", "codex", "grok"]
 # Providers set up only with the app's own sign-in: a key or usage token you
 # pasted (kept in Credential Manager) or Cursor's own sign-in. They use
@@ -479,12 +484,14 @@ sign_in       = ["claude", "codex", "grok"]
 app_sign_in   = ["cursor"]
 # The settings files of every running tool, for the model and effort
 # ([ui.model]), however the tool signs in; Cursor's state database is one of
-# them. Unticking the last of Model, Version and Reasoning effort on both
-# surfaces sets this and last_session back to false.
-tool_settings = false
+# them. With none of Model, Version and Reasoning effort ticked nothing is
+# read, and this stays as it is. Forget permission (Settings, Display, under
+# Model, Version and Reasoning effort) sets this and last_session back to
+# false and clears the parts.
+tool_settings = true
 # The end of the newest Claude Code / Codex CLI session file, for the model
 # last used ([ui.model] source = "last_used"). Switching back to "Tool
-# settings" sets it back to false.
+# settings" sets it back to false, and so does Forget permission.
 last_session  = false
 # A one-time window still owed: "welcome" (fresh install), "update_notice"
 # (the first start after updating from 0.7.0 or older), or "none".
@@ -494,6 +501,20 @@ pending       = "none"
 # Never again after that, so a source chosen in the window stays. Written
 # only when true; a fresh install writes it at once.
 sources_settled = true
+# The terms each permission in sign_in was given under, by provider (1 for
+# every provider today). A later version that reads another file for a
+# provider's sign-in, or sends its token to another host, has higher terms:
+# at its first start the permission is taken back (removed from sign_in,
+# the provider switched off, its rows cleared, a notification names the
+# tool), and the next tick asks again. One given before terms were kept
+# gets today's, written once at start. The app's own: leave it as it is.
+# Written only when not empty.
+sign_in_terms = { claude = 1, codex = 1, grok = 1 }
+# The terms the model label's reads (tool_settings, last_session) were given
+# under, held the same way: under older terms both go back to false and the
+# parts are cleared. 0 = never allowed, and then not written. The app's
+# own: leave it as it is.
+model_terms   = 1
 ```
 
 ## Secrets
@@ -598,12 +619,37 @@ Every read of another tool's file is optional and asked for first:
 - **A fresh install switches every provider off** as well as allowing
   nothing, so even an older version started on the same config afterwards
   reads only what was allowed.
-- **To stop reading a tool**, untick all of its rows in Settings,
-  the Taskbar column included. Its cached numbers, last error,
-  trend and alert marks are cleared. Unticking the last of Model, Version and
-  Reasoning effort on both surfaces takes back the settings and session reads
-  (`tool_settings` and `last_session` become false); switching back to "Tool
-  settings" takes back the session read. The next tick asks again.
+- **Each tool is asked once; clearing its rows pauses it.** Clearing all of
+  a tool's rows in Settings, the Taskbar column included, switches it off
+  (`enabled = false`): nothing of it is read or sent, and its cached
+  numbers, last error, trend and alert marks are cleared. Its permission
+  stays in `[reads]`, so ticking a row again switches it on without a
+  question. Clearing the last of Model, Version and Reasoning effort on
+  both surfaces pauses the model label the same way: nothing is read
+  without a part, and `tool_settings` and `last_session` stay as they are.
+- **To take a permission back**, use *Forget permission*. In a provider's
+  opened Sign-in (shown while the tool's own sign-in is the source chosen
+  and allowed) it removes the provider from `sign_in`, switches it off and
+  clears its rows on every surface. On the Display tab, under the note
+  "Read from each running tool's own settings file; asked once, before the
+  first read." (shown once those reads are allowed), it sets
+  `tool_settings` and `last_session` to false and clears Model, Version and
+  Reasoning effort. The next tick asks again. Switching back to "Tool
+  settings" still takes back the session read alone. Cursor's own sign-in
+  ends with *Sign out*, a pasted key or token with *Remove*, as before.
+- **A permission keeps its terms.** Each is recorded with the terms it was
+  given under (`[reads] sign_in_terms`, `model_terms`). A later version that
+  reads another file for a tool, or sends its token to another host, has
+  higher terms for it: at its first start, before any provider runs, it
+  takes that permission back, clears the tool's rows (or the model label's
+  parts) and says once "What AI Limits reads for <tool> has changed. Select
+  it again in Settings to allow the new reads." The next tick asks with the
+  new files and hosts. A permission from before terms were kept gets
+  today's, with no question.
+- **Taking back is as easy as giving.** A permission is one click to give
+  and one click to take back. Permissions are per Windows user, kept in
+  that user's `config.toml`. Pausing and forgetting add no host, file or
+  system call: they only stop reads.
 - **A provider set up with the app's own sign-in** (a pasted key or usage
   token, Cursor's own sign-in) never has the tool's own sign-in read. Its
   settings file is read for the model label when `tool_settings` allows it,

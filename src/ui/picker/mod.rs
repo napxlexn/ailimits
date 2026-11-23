@@ -117,6 +117,13 @@ pub enum PickerAction {
     PasteSecret(String),
     /// Remove the chosen source's stored key or token.
     RemoveSecret(String),
+    /// Take back the permission to read this provider's tool sign-in: it
+    /// stops, its rows are cleared, and a tick asks again.
+    ForgetSignIn(String),
+    /// Take back the permission to read the tools' settings and session
+    /// files for the model label: its parts are cleared, and a tick asks
+    /// again.
+    ForgetModelReads,
     /// Sign in to Cursor in the browser; cancel the wait; sign out.
     CursorSignIn,
     CursorCancel,
@@ -176,6 +183,9 @@ pub struct SignInChoice {
     pub paste: Option<&'static str>,
     /// A pasted secret of the source chosen is stored: Remove can be used.
     pub stored: bool,
+    /// The tool's sign-in is the source chosen and it may be read: Forget
+    /// permission takes that back.
+    pub forget: bool,
     /// What the last action came to ("Checking it...", "Refused, so not
     /// stored"), until the next one.
     pub note: Option<String>,
@@ -653,7 +663,11 @@ const ONE_LIMIT: &str = "Single limit for all models";
 const OFF_IN_MENU: &str = "Disabled. Select a row to enable";
 const NOT_REPORTED: &str = "Not reported by the provider yet";
 const READ_NOTE: &str =
-    "Read from each running tool's own settings file; asked before the first read.";
+    "Read from each running tool's own settings file; asked once, before the first read.";
+const FORGET: &str = "Forget permission";
+const FORGET_HINT: &str =
+    "AI Limits stops reading this tool's sign-in and clears its rows. Selecting a row asks again.";
+const FORGET_MODELS_HINT: &str = "AI Limits stops reading the tools' settings and session files and clears Model, Version and Reasoning effort. Selecting one asks again.";
 const MODEL_SHOWN: &str = "Model source";
 const SOURCE_SET: &str = "Tool settings";
 const SOURCE_LAST: &str = "Last session";
@@ -685,8 +699,8 @@ const ALLOW_ALL: &str = "Allow all";
 const ALLOW_ALL_LEAD: &str =
     "Allow all also allows the other detected tools, so ticking them later asks nothing. Their rows stay unticked:";
 const FOUND_TITLE: &str = "Show the detected tools?";
-const FOUND_LEAD: &str = "Tick the tools to show. For each one ticked, AI Limits reads:";
-const FOUND_OUTRO: &str = "Each sign-in stays on this PC and goes only to the service named with it, to ask for your usage. A tool's own token is never changed or refreshed. Cancel to tick the tools yourself; untick a tool's rows to stop.";
+const FOUND_LEAD: &str = "Select the tools to show. For each one selected, AI Limits reads:";
+const FOUND_OUTRO: &str = "Each sign-in stays on this PC and goes only to the service named with it, to ask for your usage. A tool's own token is never changed or refreshed. Each tool is asked once: clearing its rows pauses it, Forget permission under its Sign-in takes the permission back. Cancel to select the tools yourself.";
 /// Ordinary text for the "room left" estimate: what typing would add.
 const ROOM_SAMPLE: &str = "Sonnet 4.6 Opus Max GPT 5.5 Haiku Grok Fast ";
 
@@ -853,11 +867,15 @@ enum Target {
     /// Paste or remove the chosen source's secret.
     Paste(String),
     Remove(String),
+    /// Forget permission, under a provider's Sign-in.
+    Forget(String),
     CursorSignIn,
     CursorCancel,
     CursorSignOut,
     /// The "Edit config.toml…" link.
     SettingsFile,
+    /// Forget permission, under the model label's note.
+    ForgetModelReads,
 }
 
 /// Keyboard grid position: (row, column).

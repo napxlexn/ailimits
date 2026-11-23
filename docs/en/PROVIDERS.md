@@ -35,7 +35,8 @@ Ground rules that apply to every provider:
   settings or account may have changed: a sign-in or sign-out of Cursor, a
   key or usage token pasted or removed, another source chosen in its
   Sign-in, the provider switched on or off (its first row ticked, its last
-  unticked), a consent given or taken back. Its cached numbers, last error,
+  cleared: it pauses, its permission kept), a consent given or taken back
+  (*Forget permission*). Its cached numbers, last error,
   trend and alert marks are then cleared, and the row reads Loading until
   the first answer. A rebuilt provider is fetched at once. A change to one
   provider leaves the other providers alone (and their caches: gh's token,
@@ -53,7 +54,12 @@ Ground rules that apply to every provider:
   short name ("Claude Code", "Usage token", "API key", "Fine-grained
   token"). Cursor's reads "Not signed in",
   "Waiting for the browser" or "Signed in · " and the same words (only
-  "Signed in" while Cursor is off).
+  "Signed in" while Cursor is off). A provider paused by clearing its rows
+  reads "<source> · disabled" and keeps its permission. Opened, the Sign-in
+  offers *Forget permission* while the tool's own sign-in is the source
+  chosen and allowed: the sign-in is not read any more, the provider's rows
+  are cleared, and, with nothing else allowed, the closed Sign-in reads "Not
+  authorized" again until a tick asks and is allowed.
 
 ## Requests per cycle
 
@@ -886,9 +892,14 @@ Each read is asked for first and is off by default:
 They are read for every provider that runs (`Config::provider_active`),
 however it signs in: also for one set up only with the app's own sign-in (a
 pasted key or usage token, Cursor's sign-in of its own), whose tool's sign-in
-is never read. The settings question says so. Unticking the last of Model,
-Version and Reasoning effort on both surfaces sets both reads back to false;
-switching back to "Tool settings" sets `last_session` back to false.
+is never read. The settings question says so. Each is asked for once:
+with none of Model, Version and Reasoning effort ticked on either surface
+nothing is read, and both reads stay allowed, so a tick asks nothing.
+*Forget permission*, under those ticks on the Display tab, sets both reads
+back to false and clears the parts (the next tick asks again); switching
+back to "Tool settings" sets `last_session` back to false. A permission
+given under older terms (`[reads] model_terms` below
+`consent::MODEL_TERMS`) is taken back the same way at start.
 At most one read runs at a time; one asked for while another runs is done
 by the same worker right after it, and a read that was taken back reads
 nothing.

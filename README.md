@@ -84,7 +84,8 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   the proxy set in Windows, and sends no telemetry.
 - **Asks before it reads.** Nothing that belongs to another tool is read
   until you allow it, and each question names the file and where its token
-  is sent. See [What is read, and when](docs/en/CONFIG.md#what-is-read-and-when).
+  is sent. Each is asked once, and *Forget permission* takes it back in one
+  click. See [What is read, and when](docs/en/CONFIG.md#what-is-read-and-when).
 - **Little setup.** On first launch the tools found on this PC are already
   ticked, and one question names every sign-in file it would read: *Allow*
   is enough. After that your normal CLI use keeps their tokens valid, so
@@ -299,6 +300,17 @@ account above (*Claude Code account* and so on) or, for Claude,
 Codex and Copilot, a key or token of your own (see Manual authorization
 below). Only the source chosen is used; no other one stands in when it
 fails.
+
+Each tool is asked once. Clearing all of a provider's rows (Widget, Tooltip
+and Taskbar) pauses it: nothing of it is read or sent, and a tick starts it
+again without a question. To take the permission back, open its *Sign-in*
+and click *Forget permission* (shown while the tool's own sign-in is the
+source): its sign-in is not read any more, its rows are cleared, and the
+next tick asks again. Cursor's session ends with *Sign out*, a pasted key or
+token goes with *Remove*. The model label's reads have a *Forget
+permission* of their own on the *Display* tab, under Model, Version and
+Reasoning effort. Permissions are kept per Windows user, in that user's
+`config.toml`.
 
 Codex CLI writes `auth.json` only when it keeps its sign-in in a file: with
 `cli_auth_credentials_store = "keyring"` or `"auto"` in its `config.toml`

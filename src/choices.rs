@@ -228,6 +228,70 @@ pub struct Applied {
     pub close: bool,
 }
 
+/// Take back the permission to read a provider's tool sign-in, switch it
+/// off and clear its rows on every surface, so a tick asks again.
+fn forget_provider(config: &mut Config, provider: &str) {
+    let rows: Vec<&str> = catalogue(config)
+        .into_iter()
+        .filter(|r| provider_of(r) == provider)
+        .collect();
+    for surface in [Surface::Widget, Surface::Tooltip] {
+        for row in &rows {
+            set_row(config, surface, row, false);
+        }
+    }
+    set_taskbar(config, provider, false);
+    config.forget_sign_in(provider);
+}
+
+/// Take back the permission to read the tools' files for the model label
+/// and clear its parts, so a tick asks again.
+fn forget_model_reads(config: &mut Config) {
+    config.reads.tool_settings = false;
+    config.reads.last_session = false;
+    config.reads.model_terms = 0;
+    config.ui.model.widget.clear();
+    config.ui.model.tooltip.clear();
+}
+
+/// Hold every permission to the terms it was given under, once at start:
+/// one given before terms were kept gets today's; one given under older
+/// terms (a newer version reads another file or sends a token elsewhere)
+/// is taken back, its rows or parts cleared, so a tick asks with the new
+/// terms. Returns what was taken back, by name, for a notification; and
+/// whether the config changed.
+pub fn settle_terms(config: &mut Config) -> (Vec<&'static str>, bool) {
+    let mut asked = Vec::new();
+    let mut changed = false;
+    for id in config.reads.sign_in.clone() {
+        let now = crate::consent::terms_of(&id);
+        match config.reads.sign_in_terms.get(&id).copied() {
+            Some(t) if t >= now => {}
+            Some(_) => {
+                forget_provider(config, &id);
+                asked.push(crate::consent::read_info(&id).map_or("AI Limits", |r| r.tool));
+                changed = true;
+            }
+            None => {
+                config.reads.sign_in_terms.insert(id.clone(), now);
+                changed = true;
+            }
+        }
+    }
+    if config.reads.tool_settings || config.reads.last_session {
+        let now = crate::consent::MODEL_TERMS;
+        if config.reads.model_terms == 0 {
+            config.reads.model_terms = now;
+            changed = true;
+        } else if config.reads.model_terms < now {
+            forget_model_reads(config);
+            asked.push("the model label");
+            changed = true;
+        }
+    }
+    (asked, changed)
+}
+
 /// Apply one picker action to the config.
 pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
     let mut out = Applied {
@@ -246,13 +310,14 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 }
             }
             set_row(config, *surface, row, *on);
-            // No row of the provider left on either surface: the user is
-            // done with it, so nothing of it is read any more ("Untick its
-            // rows to stop"). Ticking a row again asks again.
+            // No row of the provider left on any surface: it pauses, so
+            // nothing of it is read or sent; its permission stays, and a
+            // tick switches it on again without asking. Forget permission
+            // takes the permission back (`ForgetSignIn`).
             let allowed =
                 config.sign_in_allowed(&provider) || config.app_sign_in_allowed(&provider);
             if !*on && allowed && !has_any_row(config, &provider) {
-                config.revoke(&provider);
+                config.pause(&provider);
                 out.provider = Some(provider);
             }
             out.models = out.provider.is_some();
@@ -270,11 +335,11 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 out.changed = false;
                 return out;
             }
-            // Off the taskbar with no row of it left anywhere: done with it,
-            // as an unticked row (`SetRow`).
+            // Off the taskbar with no row of it left anywhere: paused, as a
+            // provider whose last row is cleared (`SetRow`).
             let allowed = config.sign_in_allowed(provider) || config.app_sign_in_allowed(provider);
             if !*on && allowed && !has_any_row(config, provider) {
-                config.revoke(provider);
+                config.pause(provider);
                 out.provider = Some(provider.clone());
             }
             out.models = out.provider.is_some();
@@ -295,12 +360,9 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
                 });
             }
             // No part left on either surface: nothing of the tools' files is
-            // read for the label any more, and the next tick asks again
-            // ("Untick Model, Version and Effort to stop").
-            if config.ui.model.widget.is_empty() && config.ui.model.tooltip.is_empty() {
-                config.reads.tool_settings = false;
-                config.reads.last_session = false;
-            }
+            // read for the label (`model_job` asks for parts), and the
+            // permission stays for the next tick; Forget permission takes
+            // it back (`ForgetModelReads`).
             out.models = true;
         }
         PickerAction::SetTip { part, place, on } => {
@@ -339,15 +401,30 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
             }
             ReadKind::ToolSettings => {
                 config.reads.tool_settings = true;
+                config.reads.model_terms = crate::consent::MODEL_TERMS;
                 out.models = true;
             }
             ReadKind::LastSession => {
                 config.reads.last_session = true;
+                config.reads.model_terms = crate::consent::MODEL_TERMS;
                 out.models = true;
             }
         },
         // Allowed, not switched on: nothing runs until a row is ticked.
         PickerAction::Consent(provider) => config.allow_sign_in(provider),
+        // Forget permission: the tool's sign-in is not read any more, the
+        // provider stops and its rows are cleared, so a tick asks again.
+        PickerAction::ForgetSignIn(provider) => {
+            forget_provider(config, provider);
+            out.provider = Some(provider.clone());
+            out.models = true;
+        }
+        // Forget permission for the model label: no settings or session
+        // file is read for it, and its parts are cleared.
+        PickerAction::ForgetModelReads => {
+            forget_model_reads(config);
+            out.models = true;
+        }
         // The sign-in's actions reach the Credential Manager, the clipboard
         // and the browser: the app carries them out (app/flow.rs).
         PickerAction::SetSignInSource { .. }
@@ -630,6 +707,7 @@ pub fn sign_in_choices(
                 ),
                 paste: None,
                 stored: false,
+                forget: false,
                 note,
                 cursor: Some(cursor),
             });
@@ -696,6 +774,7 @@ pub fn sign_in_choices(
             detail,
             paste,
             stored,
+            forget: chosen == SourceId::Tool && config.sign_in_allowed(id),
             note,
             cursor: None,
         });
@@ -818,9 +897,11 @@ mod tests {
         apply(&mut config, &row(Surface::Widget, "grok", false));
         apply(&mut config, &row(Surface::Tooltip, "grok", false));
         assert!(config.sign_in_allowed("grok"));
-        // Off the taskbar too: done with it.
+        // Off the taskbar too: paused, its permission kept.
         apply(&mut config, &taskbar("grok", false));
-        assert!(!config.sign_in_allowed("grok"));
+        assert!(config.sign_in_allowed("grok"));
+        let pc = config.providers.iter().find(|p| p.id == "grok").unwrap();
+        assert!(!pc.enabled);
         assert_eq!(rows::taskbar_ticked(&config), ["claude"]);
     }
 
@@ -981,9 +1062,11 @@ mod tests {
         apply(&mut config, &row(Surface::Tooltip, "claude", false));
         assert!(config.sign_in_allowed("claude"));
         assert_eq!(input(&config).widget_rows, ["claude.haiku"]);
-        // Its last row off: done with Claude.
+        // Its last row off: Claude pauses, its permission kept.
         apply(&mut config, &row(Surface::Widget, "claude.haiku", false));
-        assert!(!config.sign_in_allowed("claude"));
+        assert!(config.sign_in_allowed("claude"));
+        let pc = config.providers.iter().find(|p| p.id == "claude").unwrap();
+        assert!(!pc.enabled);
     }
 
     /// The tooltip's Percent and Reset time: untouched, both and nothing
@@ -1312,9 +1395,10 @@ bar = false
         assert!(close.close && !close.changed);
     }
 
-    /// Unticking the last model part stops the reads of the tools' files
-    /// for the label: the next tick asks again. Going back to "As set in
-    /// the tool" stops the session reads alone.
+    /// Clearing the last model part pauses the label (nothing is read
+    /// without a part) and keeps the permission; Forget permission takes it
+    /// back and clears the parts, so the next tick asks again. Going back
+    /// to Tool settings stops the session reads alone.
     #[test]
     fn the_model_reads_can_be_taken_back() {
         let mut config = Config::default();
@@ -1337,17 +1421,67 @@ bar = false
         // One part still on: everything stays.
         apply(&mut config, &part(Surface::Widget, ModelPart::Model, false));
         assert!(config.reads.tool_settings && config.reads.last_session);
-        // The last one off: both stop.
+        // The last one off: paused, the permission kept.
         let done = apply(
             &mut config,
             &part(Surface::Tooltip, ModelPart::Effort, false),
         );
         assert!(done.models);
+        assert!(config.reads.tool_settings && config.reads.last_session);
+        // Forget permission: both stop and the parts go.
+        apply(&mut config, &part(Surface::Widget, ModelPart::Model, true));
+        let done = apply(&mut config, &PickerAction::ForgetModelReads);
+        assert!(done.changed && done.models);
         assert!(!config.reads.tool_settings && !config.reads.last_session);
+        assert!(config.ui.model.widget.is_empty() && config.ui.model.tooltip.is_empty());
     }
 
+    /// Every permission is held to the terms it was given under: one given
+    /// before terms were kept gets today's, one under older terms is taken
+    /// back with its rows, and a new permission records today's terms.
     #[test]
-    fn unticking_every_row_of_a_provider_stops_reading_it() {
+    fn a_permission_under_older_terms_is_asked_for_again() {
+        let mut config = Config::default();
+        config.reads.sign_in = vec!["claude".into(), "codex".into()];
+        config.reads.tool_settings = true;
+        for p in config.providers.iter_mut() {
+            p.enabled = true;
+        }
+        apply(&mut config, &row(Surface::Widget, "claude.opus", true));
+        // Before terms were kept: today's, nothing asked.
+        let (asked, changed) = settle_terms(&mut config);
+        assert!(asked.is_empty() && changed);
+        assert_eq!(
+            config.reads.sign_in_terms.get("claude"),
+            Some(&crate::consent::terms_of("claude"))
+        );
+        assert_eq!(config.reads.model_terms, crate::consent::MODEL_TERMS);
+        assert_eq!(settle_terms(&mut config), (Vec::new(), false));
+        // Given under older terms: taken back, its rows cleared.
+        config.reads.sign_in_terms.insert("claude".into(), 0);
+        let (asked, changed) = settle_terms(&mut config);
+        assert_eq!(asked, ["Claude Code"]);
+        assert!(changed && !config.sign_in_allowed("claude") && !has_any_row(&config, "claude"));
+        assert!(config.sign_in_allowed("codex"));
+        // Allowed again: today's terms.
+        apply(
+            &mut config,
+            &PickerAction::Allow(ReadKind::SignIn("claude".into())),
+        );
+        assert_eq!(
+            config.reads.sign_in_terms.get("claude"),
+            Some(&crate::consent::terms_of("claude"))
+        );
+        let text = toml::to_string(&config).unwrap();
+        assert!(text.contains("sign_in_terms"), "{text}");
+    }
+
+    /// Clearing every row of a provider pauses it: switched off, so nothing
+    /// of it is read or sent, its permission kept, so a tick switches it on
+    /// again without asking. Forget permission takes the permission back
+    /// and clears its rows.
+    #[test]
+    fn clearing_every_row_of_a_provider_pauses_it() {
         let mut config = Config::default();
         apply(
             &mut config,
@@ -1362,11 +1496,24 @@ bar = false
         assert!(done.provider.is_none(), "the Opus row is still on");
         let done = apply(&mut config, &row(Surface::Widget, "claude.opus", false));
         assert_eq!(done.provider.as_deref(), Some("claude"));
+        assert!(config.sign_in_allowed("claude"));
+        let pc = config.providers.iter().find(|p| p.id == "claude").unwrap();
+        assert!(!pc.enabled && !config.provider_active(pc));
+        // A tick switches it on again; the permission was kept.
+        let done = apply(&mut config, &row(Surface::Widget, "claude", true));
+        assert_eq!(done.provider.as_deref(), Some("claude"));
+        let pc = config.providers.iter().find(|p| p.id == "claude").unwrap();
+        assert!(config.provider_active(pc));
+        // Forget permission: not allowed, switched off, every row cleared.
+        apply(&mut config, &row(Surface::Tooltip, "claude.opus", true));
+        let done = apply(&mut config, &PickerAction::ForgetSignIn("claude".into()));
+        assert_eq!(done.provider.as_deref(), Some("claude"));
         assert!(!config.sign_in_allowed("claude"));
         let pc = config.providers.iter().find(|p| p.id == "claude").unwrap();
         assert!(!pc.enabled && !config.provider_active(pc));
-        // The app's own sign-in goes too. Both surfaces are spelled out by
-        // now and neither has Cursor's row, so one untick ends it.
+        assert!(!has_any_row(&config, "claude"));
+        // The app's own sign-in pauses alike. Both surfaces are spelled out
+        // by now and neither has Cursor's row, so one untick pauses it.
         config.allow_app_sign_in("cursor");
         config
             .providers
@@ -1376,7 +1523,9 @@ bar = false
             .enabled = true;
         let done = apply(&mut config, &row(Surface::Widget, "cursor", false));
         assert_eq!(done.provider.as_deref(), Some("cursor"));
-        assert!(!config.app_sign_in_allowed("cursor"));
+        assert!(config.app_sign_in_allowed("cursor"));
+        let pc = config.providers.iter().find(|p| p.id == "cursor").unwrap();
+        assert!(!pc.enabled);
     }
 
     fn uses(models: &mut Models, p: ProviderId, id: &str) {

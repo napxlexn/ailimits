@@ -83,13 +83,16 @@ impl Config {
             .any(|p| canonical_provider_id(p) == id)
     }
 
-    /// Record that the user allowed reading this provider's sign-in.
+    /// Record that the user allowed reading this provider's sign-in, and
+    /// the terms it was allowed under (`consent::terms_of`).
     pub fn allow_sign_in(&mut self, provider_id: &str) {
-        if !self.sign_in_allowed(provider_id) {
-            self.reads
-                .sign_in
-                .push(canonical_provider_id(provider_id).to_string());
+        let id = canonical_provider_id(provider_id).to_string();
+        if !self.sign_in_allowed(&id) {
+            self.reads.sign_in.push(id.clone());
         }
+        self.reads
+            .sign_in_terms
+            .insert(id.clone(), crate::consent::terms_of(&id));
     }
 
     /// Whether the provider was set up with a sign-in of the app's own: a
@@ -127,6 +130,29 @@ impl Config {
                 p.enabled = false;
             }
         }
+    }
+
+    /// Pause a provider: switched off, so nothing of it is read or sent,
+    /// while its permission stays. A tick switches it on again without
+    /// asking.
+    pub fn pause(&mut self, provider_id: &str) {
+        let id = canonical_provider_id(provider_id).to_string();
+        for p in self.providers.iter_mut() {
+            if canonical_provider_id(&p.id) == id {
+                p.enabled = false;
+            }
+        }
+    }
+
+    /// Take back the permission to read the provider's tool sign-in, and
+    /// switch it off. A sign-in of the app's own (a pasted key) stays.
+    pub fn forget_sign_in(&mut self, provider_id: &str) {
+        let id = canonical_provider_id(provider_id).to_string();
+        self.reads
+            .sign_in
+            .retain(|p| canonical_provider_id(p) != id);
+        self.reads.sign_in_terms.remove(&id);
+        self.pause(&id);
     }
 
     /// A provider that may fetch: switched on AND allowed, either to read
@@ -179,6 +205,21 @@ pub struct Reads {
     /// Never again after that, so a source chosen in the window stays.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sources_settled: bool,
+    /// The terms each provider's sign-in was allowed under
+    /// (`consent::ReadInfo::terms`). A version that reads another file for
+    /// it or sends its token elsewhere has higher terms: the permission is
+    /// asked for again (`choices::settle_terms`). One allowed before terms
+    /// were kept gets today's.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub sign_in_terms: std::collections::BTreeMap<String, u32>,
+    /// The terms the model label's reads were allowed under
+    /// (`consent::MODEL_TERMS`); 0 when never allowed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub model_terms: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The one-time window the app still has to show.

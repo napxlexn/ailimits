@@ -28,11 +28,11 @@ const ALL: [&str; 6] = [
 /// Every row there is, as the app offers them.
 fn rows() -> Vec<RowChoice> {
     let own = [
-        ("claude", "Claude", "Today’s row"),
-        ("codex", "Codex", "Today’s row"),
-        ("grok", "Grok", "Shared with Cursor and Grok Bot"),
-        ("cursor", "Cursor", "The same limit as the Grok row"),
-        ("antigravity", "Antigravity", "Gemini models, weekly"),
+        ("claude", "Claude", "Current limit"),
+        ("codex", "Codex", "Current limit"),
+        ("grok", "Grok", "Current limit"),
+        ("cursor", "Cursor", "Current limit"),
+        ("antigravity", "Antigravity", "Current limit"),
         ("copilot", "Copilot", "Premium requests, monthly"),
     ];
     let mut out = Vec::new();
@@ -165,38 +165,41 @@ fn sign_ins() -> Vec<SignInChoice> {
     vec![
         SignInChoice {
             provider: "claude",
-            summary: "Claude Code \u{b7} works".into(),
+            summary: "Claude Code \u{b7} connected".into(),
             sources: vec![
-                src(SourceId::Tool, "Claude Code's sign-in", true),
-                src(SourceId::UsageToken, "A usage token you paste", false),
-                src(SourceId::Key, "An API key you paste", false),
+                src(SourceId::Tool, "Claude Code account", true),
+                src(SourceId::UsageToken, "Usage token", false),
+                src(SourceId::Key, "API key", false),
             ],
             detail: "Reads %USERPROFILE%\\.claude\\.credentials.json; its token goes only to api.anthropic.com. Claude Code renews it as you use it.".into(),
             paste: None,
             stored: false,
+            forget: true,
             note: None,
             cursor: None,
         },
         SignInChoice {
             provider: "codex",
-            summary: "Codex CLI \u{b7} works".into(),
+            summary: "Codex CLI \u{b7} connected".into(),
             sources: vec![
-                src(SourceId::Tool, "Codex CLI's sign-in", true),
-                src(SourceId::UsageToken, "A usage token you paste", false),
+                src(SourceId::Tool, "Codex CLI account", true),
+                src(SourceId::UsageToken, "Usage token", false),
             ],
             detail: "Reads %USERPROFILE%\\.codex\\auth.json (in CODEX_HOME when it is set); its token goes only to chatgpt.com.".into(),
             paste: None,
             stored: false,
+            forget: true,
             note: None,
             cursor: None,
         },
         SignInChoice {
             provider: "grok",
-            summary: "Grok CLI \u{b7} works".into(),
+            summary: "Grok CLI \u{b7} connected".into(),
             sources: Vec::new(),
             detail: "Reads %USERPROFILE%\\.grok\\auth.json (in GROK_HOME when it is set); its token goes only to cli-chat-proxy.grok.com.".into(),
             paste: None,
             stored: false,
+            forget: true,
             note: None,
             cursor: None,
         },
@@ -207,6 +210,7 @@ fn sign_ins() -> Vec<SignInChoice> {
             detail: "Signs in to Cursor in your browser, as the Cursor editor does, and keeps that session in Windows Credential Manager. Nothing of the editor's own sign-in is read.".into(),
             paste: None,
             stored: false,
+            forget: false,
             note: None,
             cursor: Some(CursorState::SignedOut),
         },
@@ -217,20 +221,22 @@ fn sign_ins() -> Vec<SignInChoice> {
             detail: "Reads the Antigravity CLI's sign-in in Windows Credential Manager (gemini:antigravity); its token goes only to cloudcode-pa.googleapis.com. It lasts about an hour: run agy to renew it.".into(),
             paste: None,
             stored: false,
+            forget: true,
             note: None,
             cursor: None,
         },
         SignInChoice {
             provider: "copilot",
-            summary: "Your token \u{b7} works".into(),
+            summary: "Fine-grained token \u{b7} connected".into(),
             sources: vec![
-                src(SourceId::Tool, "GitHub CLI's sign-in", false),
-                src(SourceId::Key, "A fine-grained token you paste", true),
+                src(SourceId::Tool, "GitHub CLI account", false),
+                src(SourceId::Key, "Fine-grained token", true),
             ],
             detail: "Kept in Windows Credential Manager; it goes only to api.github.com. It needs no permissions at all.".into(),
             paste: Some("Paste token from clipboard"),
             stored: true,
-            note: Some("Checked with GitHub: it works. Stored in Credential Manager.".into()),
+            forget: false,
+            note: Some("Verified with GitHub and saved to Credential Manager.".into()),
             cursor: None,
         },
     ]
@@ -839,6 +845,33 @@ fn a_click_places_the_caret() {
 }
 
 // ─── Closing ─────────────────────────────────────────────────
+
+/// Forget permission under a provider's Sign-in, where its tool's sign-in
+/// is the source and may be read; under the model label's note once the
+/// settings files may be read.
+#[test]
+fn forget_permission_takes_a_permission_back() {
+    let mut i = input();
+    i.sign_in = sign_ins();
+    let mut p = picker(i.clone());
+    p.open_sign_in = vec!["claude".into(), "copilot".into()];
+    assert_eq!(
+        click(&mut p, &Target::Forget("claude".into())),
+        [PickerAction::ForgetSignIn("claude".into())]
+    );
+    // A pasted token is the source: Remove, no Forget permission.
+    assert!(area(&p, &Target::Forget("copilot".into())).is_none());
+    // The model label: the link only once its reads are allowed.
+    let mut p = picker(input());
+    on_tab(&mut p, Tab::Shows);
+    assert!(area(&p, &Target::ForgetModelReads).is_none());
+    let mut p = picker(with_model());
+    on_tab(&mut p, Tab::Shows);
+    assert_eq!(
+        click(&mut p, &Target::ForgetModelReads),
+        [PickerAction::ForgetModelReads]
+    );
+}
 
 /// The window closes as a dialog does: by Esc, the cross or Alt+F4. A
 /// click beside the box and another window taking the focus leave it open.
@@ -2614,6 +2647,26 @@ fn visual_baseline_picker() {
     items.push((
         "signin-cursor-waiting-dark".to_string(),
         draw(&cursor, false, 1.0),
+    ));
+
+    // Asked once: Forget permission under Claude's Sign-in, its
+    // description under the pointer; and under the model label's note.
+    let mut forget = make(i.clone());
+    forget.open_sign_in = vec!["claude".into()];
+    let (x, y) = spot(&mut forget, &Target::Forget("claude".into()));
+    forget.handle(PickerEvent::PointerMove { x, y });
+    items.push((
+        "signin-forget-hint-dark".to_string(),
+        draw(&forget, false, 1.0),
+    ));
+    let mut allowed = make(with_model());
+    on_tab(&mut allowed, Tab::Shows);
+    items.push(("shows-allowed-dark".to_string(), draw(&allowed, false, 1.0)));
+    let (x, y) = spot(&mut allowed, &Target::ForgetModelReads);
+    allowed.handle(PickerEvent::PointerMove { x, y });
+    items.push((
+        "shows-forget-hint-dark".to_string(),
+        draw(&allowed, false, 1.0),
     ));
 
     // Model names with Effort alone shown: the fields are there, and a
