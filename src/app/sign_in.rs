@@ -477,7 +477,7 @@ impl App {
                     TokenOutcome::StoredUnchecked(why) => format!(
                         "Stored, but not checked: {why}. If the row shows an error, paste it again."
                     ),
-                    _ => "It works. Stored in Windows Credential Manager.".to_string(),
+                    _ => "Verified and saved to Windows Credential Manager.".to_string(),
                 };
                 self.tell(id, text);
             }

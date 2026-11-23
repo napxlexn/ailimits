@@ -1,6 +1,6 @@
 // config/tune.rs — `[tune]`: fine-tuning that lives only in config.toml.
 //
-// Knobs too fine for the context menu or Rows and models: sizes, spacing,
+// Knobs too fine for the context menu or Settings: sizes, spacing,
 // colours, thresholds and formats of the widget, the taskbar panel and the
 // tray icon. Every field is optional; its default is exactly the look the
 // app has without it (the pinned visual baselines hold that), and a table

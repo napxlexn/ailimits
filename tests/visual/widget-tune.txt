@@ -3,7 +3,7 @@
 all-columns-compact 218x71 ef1b6824d90b477e
 all-columns-expanded 282x133 5f678049acba9aa7
 all-columns-medium 250x106 b55e3c0a39ebc33a
-all-first-install 345x66 c5a74f1d40ef8d50
+all-first-install 345x66 496b653a5c2cd46d
 all-labels-compact 294x219 23e8ff00c18fb21d
 all-labels-expanded 398x579 a1f81cde4f1b4d04
 all-labels-medium 345x393 da50305c83081bab

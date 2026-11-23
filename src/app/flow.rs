@@ -54,7 +54,7 @@ impl App {
         }
     }
 
-    /// What Rows and models answered to losing the focus (closing, unless
+    /// What Settings answered to losing the focus (closing, unless
     /// a name is being typed), applied now: once the messages of that
     /// moment are handled, and before a menu opens. Hidden while the focus
     /// was still on its way to the window clicked, the picker took that

@@ -374,28 +374,28 @@ pub fn apply(config: &mut Config, action: &PickerAction) -> Applied {
 /// The note under a provider's own row in the picker: in an error, the
 /// widget's own words for it (`renderer::error_words`), so the two never
 /// disagree; a running provider with nothing to sign in with says what is
-/// missing; before any data, "No data yet".
+/// missing; before any data, "Waiting for data".
 fn base_note(
     data: Option<&ProviderData>,
     pid: &ProviderId,
     runs: bool,
 ) -> std::borrow::Cow<'static, str> {
     match data.map(|d| &d.status) {
-        Some(ProviderStatus::Ok) => "Today's row".into(),
+        Some(ProviderStatus::Ok) => "Current limit".into(),
         Some(ProviderStatus::NotConfigured) if runs => match pid {
-            ProviderId::Cursor => "Not signed in: open its Sign-in below".into(),
-            _ => "No sign-in found on this PC".into(),
+            ProviderId::Cursor => "Signed out. See Sign-in below".into(),
+            _ => "No sign-in found".into(),
         },
         Some(status) => crate::ui::renderer::error_words(status)
             .filter(|w| !w.trim().is_empty())
-            .unwrap_or_else(|| "No data yet".into()),
-        None => "No data yet".into(),
+            .unwrap_or_else(|| "Waiting for data".into()),
+        None => "Waiting for data".into(),
     }
 }
 
 /// The note under an extra row whose numbers are asked for only while it is
 /// chosen (`SubRow::on_request`), while it is not.
-pub const ON_REQUEST_NOTE: &str = "Asked for once this row is ticked";
+pub const ON_REQUEST_NOTE: &str = "Requested only while selected";
 
 /// Everything the picker shows.
 pub fn picker_input(
@@ -566,27 +566,27 @@ pub fn secret_label(provider: &str, source: SourceId) -> Option<&'static str> {
 /// A source's name in the window: its radio, and the closed line.
 fn source_names(provider: &str, source: SourceId) -> (&'static str, &'static str) {
     match (provider, source) {
-        ("claude", SourceId::Tool) => ("Claude Code's sign-in", "Claude Code"),
-        ("codex", SourceId::Tool) => ("Codex CLI's sign-in", "Codex CLI"),
-        ("copilot", SourceId::Tool) => ("GitHub CLI's sign-in", "GitHub CLI"),
-        ("antigravity", _) => ("Antigravity CLI's sign-in", "Antigravity CLI"),
-        ("grok", _) => ("Grok CLI's sign-in", "Grok CLI"),
-        (_, SourceId::UsageToken) => ("A usage token you paste", "Your usage token"),
-        ("copilot", SourceId::Key) => ("A fine-grained token you paste", "Your token"),
-        (_, SourceId::Key) => ("An API key you paste", "Your API key"),
-        (_, SourceId::Tool) => ("The tool's sign-in", "The tool"),
+        ("claude", SourceId::Tool) => ("Claude Code account", "Claude Code"),
+        ("codex", SourceId::Tool) => ("Codex CLI account", "Codex CLI"),
+        ("copilot", SourceId::Tool) => ("GitHub CLI account", "GitHub CLI"),
+        ("antigravity", _) => ("Antigravity CLI account", "Antigravity CLI"),
+        ("grok", _) => ("Grok CLI account", "Grok CLI"),
+        (_, SourceId::UsageToken) => ("Usage token", "Usage token"),
+        ("copilot", SourceId::Key) => ("Fine-grained token", "Fine-grained token"),
+        (_, SourceId::Key) => ("API key", "API key"),
+        (_, SourceId::Tool) => ("Tool account", "Tool"),
     }
 }
 
 /// How a provider's last answer went, in a few words for the closed line.
 fn how_it_went(data: Option<&ProviderData>) -> std::borrow::Cow<'static, str> {
     match data.map(|d| &d.status) {
-        Some(ProviderStatus::Ok) | Some(ProviderStatus::Estimated) => "works".into(),
-        Some(ProviderStatus::NotConfigured) => "no sign-in found".into(),
-        Some(ProviderStatus::Loading) | None => "checking".into(),
+        Some(ProviderStatus::Ok) | Some(ProviderStatus::Estimated) => "connected".into(),
+        Some(ProviderStatus::NotConfigured) => "not found".into(),
+        Some(ProviderStatus::Loading) | None => "verifying".into(),
         Some(status) => crate::ui::renderer::error_words(status)
             .filter(|w| !w.trim().is_empty())
-            .unwrap_or_else(|| "not working".into()),
+            .unwrap_or_else(|| "error".into()),
     }
 }
 
@@ -650,11 +650,11 @@ pub fn sign_in_choices(
         let stored = label.is_some_and(|l| state.stored.contains(&l));
         let (_, short) = source_names(id, chosen);
         let summary = if !allowed {
-            "Not allowed yet".to_string()
+            "Not authorized".to_string()
         } else if label.is_some() && !stored {
-            format!("{short} \u{b7} none stored")
+            format!("{short} \u{b7} not set")
         } else if !runs {
-            format!("{short} \u{b7} off")
+            format!("{short} \u{b7} disabled")
         } else {
             format!("{short} \u{b7} {}", how_it_went(data))
         };
@@ -1171,7 +1171,7 @@ bar = false
         let all = sign_in_choices(&config, &display, &state);
         let of = |id: &str| all.iter().find(|s| s.provider == id).unwrap().clone();
         let claude = of("claude");
-        assert_eq!(claude.summary, "Claude Code \u{b7} works");
+        assert_eq!(claude.summary, "Claude Code \u{b7} connected");
         assert_eq!(claude.sources.len(), 3);
         assert!(claude.sources[0].on && claude.sources[0].id == SourceId::Tool);
         assert!(
@@ -1182,13 +1182,13 @@ bar = false
         assert!(claude.detail.contains("api.anthropic.com"));
         assert_eq!(claude.paste, None);
         let codex = of("codex");
-        assert_eq!(codex.summary, "Codex CLI \u{b7} checking");
+        assert_eq!(codex.summary, "Codex CLI \u{b7} verifying");
         let copilot = of("copilot");
-        assert_eq!(copilot.summary, "Your token \u{b7} works");
+        assert_eq!(copilot.summary, "Fine-grained token \u{b7} connected");
         assert!(copilot.stored);
         assert!(copilot.detail.contains("copilot_pat"));
         assert_eq!(copilot.paste, Some("Paste token from clipboard"));
-        assert_eq!(of("grok").summary, "Not allowed yet");
+        assert_eq!(of("grok").summary, "Not authorized");
         assert!(of("grok").sources.is_empty());
         assert_eq!(of("cursor").summary, "Not signed in");
         assert_eq!(of("cursor").cursor, Some(CursorState::SignedOut));
@@ -1199,7 +1199,7 @@ bar = false
             .into_iter()
             .find(|s| s.provider == "copilot")
             .unwrap();
-        assert_eq!(copilot.summary, "Your token \u{b7} none stored");
+        assert_eq!(copilot.summary, "Fine-grained token \u{b7} not set");
         assert!(!copilot.stored);
         assert_eq!(copilot.note.as_deref(), Some("Removed."));
         // Sources and methods map both ways.
@@ -1613,16 +1613,16 @@ bar = false
             .find(|r| r.id == "grok.build")
             .unwrap();
         assert!(build.provider_ok && !build.has_data);
-        assert_eq!(row("cursor").note, "Not signed in: open its Sign-in below");
-        assert_eq!(row("codex").note, "No sign-in found on this PC");
+        assert_eq!(row("cursor").note, "Signed out. See Sign-in below");
+        assert_eq!(row("codex").note, "No sign-in found");
         // Grok Bot is asked for only once its row is ticked: until then it
         // says so, and is not called missing.
         let bot = row("cursor.bot");
         assert_eq!(bot.note, ON_REQUEST_NOTE);
         assert!(!bot.provider_ok);
-        assert_eq!(row("grok").note, "Today's row");
+        assert_eq!(row("grok").note, "Current limit");
         // Not running: nothing to say yet.
-        assert_eq!(row("copilot").note, "No data yet");
+        assert_eq!(row("copilot").note, "Waiting for data");
     }
 
     /// The Grok Bot row, with Cursor answering: not asked for while it is
@@ -1653,7 +1653,7 @@ bar = false
         config.ui.rows.tooltip = Some(vec!["cursor".into(), "cursor.bot".into()]);
         let ticked = bot(&config);
         assert_eq!(ticked.note, "");
-        assert_eq!(ticked.short, "share of the same");
+        assert_eq!(ticked.short, "Share of Cursor–Grok limit");
         assert!(ticked.provider_ok && !ticked.has_data);
     }
 }

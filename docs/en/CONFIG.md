@@ -8,7 +8,7 @@ folder, and only the installer's uninstaller removes it. A Microsoft Store
 copy that finds no such folder makes its own, which Windows keeps with the
 package:
 `%LOCALAPPDATA%\Packages\napxlexn.AILimits_<publisher id>\LocalCache\Roaming\AiLimits`.
-The app still sees it at the usual path, *Settings file...* opens it where
+The app still sees it at the usual path, *Edit config.toml...* opens it where
 it is, and removing the Store copy removes it; other programs (an
 `ailimits-auth` from another copy among them) do not see it at
 `%APPDATA%\AiLimits`. A folder another copy left there is shared with the
@@ -76,8 +76,8 @@ uninstaller together with the folder):
 ## Live edits
 
 Edits saved in `config.toml` apply while the app runs, without a restart.
-Rows and models has a small link at the end of its list, *Settings
-file...*, for the fine-tuning that has no place in the window (sizes,
+*Settings* has a small link at the end of its *Display* tab, *Edit
+config.toml...*, for the fine-tuning that has no place in the window (sizes,
 colours, thresholds): it opens this file in Notepad
 (`%SystemRoot%\System32\notepad.exe`, started directly, no shell verb).
 The welcome has no such link.
@@ -86,10 +86,10 @@ The welcome has no such link.
   used: the app compares the file's size and last write time (one metadata
   call, about 20 µs, nothing read) every 2 seconds while you are at the PC
   (any input in the last 5 minutes), every 30 seconds while you are away,
-  and every 2 seconds for 30 minutes after *Settings file...* opened the
+  and every 2 seconds for 30 minutes after *Edit config.toml...* opened the
   file, away or not: an edit applies within about two seconds of its save.
   It also looks once per update cycle, right before it applies a
-  context-menu or Rows and models action, before each save of its own (the
+  context-menu or Settings action, before each save of its own (the
   end of a drag saves the position), and when it quits, so a change made in
   the app lands on top of the file as saved.
 - **The app's own saves are not edits.** The writer records the size and
@@ -109,7 +109,7 @@ The welcome has no such link.
   on top, Lock position, the menu's ticks, the tray icon, the taskbar panel
   (mode, display, offset, what it shows), the update interval (after the
   current wait, as from the menu), automatic updates, notifications, hooks,
-  `[tune]`, and Rows and models if it is open. Nothing needs a restart;
+  `[tune]`, and Settings if it is open. Nothing needs a restart;
   `on_startup` has run already and runs again at the next start.
 - **A change made in the app while an edit was on its way** (in the moment
   before the file was saved, or while it did not read) is kept wherever the
@@ -117,7 +117,7 @@ The welcome has no such link.
   both changed the same setting, the file wins.
 - **Consent in the file.** A read allowed by hand in `[reads]` (`sign_in`,
   `app_sign_in`, `tool_settings`, `last_session`) counts as your choice, as
-  a tick in Rows and models does: the files it names are read from the next
+  a tick in Settings does: the files it names are read from the next
   fetch on, without a question. A provider taken out of `[reads]` by hand
   stops at once. A provider allowed by hand also needs `enabled = true` in
   its `[[providers]]` table: it runs only with both. Deleting the whole
@@ -227,9 +227,8 @@ brightness = 100
 # Monochrome mode (overrides the palette).
 monochrome = false
 # Layout: "vertical" (providers stacked, horizontal bars: the menu's
-# Horizontal) or "horizontal" (providers side by side, vertical bars: the
-# menu's Vertical). The menu names the bars' direction, the file the
-# providers'.
+# Rows) or "horizontal" (providers side by side, vertical bars: the menu's
+# Columns).
 layout = "vertical"
 # Detail level: "compact" / "medium" / "expanded".
 detail = "compact"
@@ -238,13 +237,13 @@ detail = "compact"
 width_scale = "full"
 # Column arrangement for the vertical-bar layout; the rows layout ignores it.
 # "row" (side by side, wide and short) or "column" (stacked, narrow and tall)
-# (menu: Arrangement).
+# (menu: Column layout: Side by side / Stacked).
 column_flow = "row"
-# Burn-rate forecast ("~Xh to limit" when usage is climbing; menu: Forecast).
+# Burn-rate forecast ("~Xh to limit" when usage is climbing; menu: Usage forecast).
 # Never replaces the reset countdown — shown only when no future reset is known.
 show_forecast = false
 
-# Rows (menu: Rows and models...). Written only once chosen; without it
+# Rows (menu: Settings..., Providers). Written only once chosen; without it
 # every provider has one row, as before. A provider's own row is its id, an
 # extra row is provider.part, and only these exist, each where the provider
 # meters it on its own: claude.opus, claude.sonnet, claude.fable (weekly,
@@ -257,8 +256,8 @@ show_forecast = false
 # reports (and those chosen already, to be unticked); before that, all.
 # The widget and the tooltip are chosen separately; the taskbar panel and
 # the tray icon keep one entry per provider. Unknown ids are ignored and
-# kept. Rows chosen that have no data yet leave the widget saying "Nothing
-# to show yet"; a click opens the window.
+# kept. Rows chosen that have no data yet leave the widget saying "No data
+# yet"; a click opens the window.
 # taskbar: the providers the taskbar panel and the tray icon show (the
 # window's Taskbar column), at most two, in the widget's order. Written only
 # once chosen; without it both show the first two running providers (the tray
@@ -270,7 +269,7 @@ widget  = ["claude", "claude.opus", "codex"]
 tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
 taskbar = ["claude", "grok"]
 
-# Model labels (menu: Rows and models...). Parts per surface: "model",
+# Model labels (menu: Settings..., Display, Model). Parts per surface: "model",
 # "version" (only with "model"), "effort" (may go alone). Empty: no label.
 # Showing them reads each running tool's settings file, so the first tick
 # asks first ([reads] tool_settings). The widget draws the label on a line of its
@@ -278,15 +277,17 @@ taskbar = ["claude", "grok"]
 # the meta line in Medium (a line of its own there too when that room is
 # narrower than a name); Compact leaves it to the tooltip. Narrow places
 # drop effort first, then the version, then the model; a word is never cut.
-# source: "configured" (the model set in the tool) or "last_used" (the
-# newest Claude Code or Codex CLI session; asks first, [reads] last_session;
-# other tools keep showing the configured model).
+# source (the window's Model source): "configured" (Tool settings: the
+# model set in the tool) or "last_used" (Last session: the newest Claude
+# Code or Codex CLI session; asks first, [reads] last_session; other tools
+# keep showing the configured model).
 [ui.model]
 widget  = ["model"]
 tooltip = ["model", "version", "effort"]
 source  = "configured"
 
-# Your own names for models, by the id the tool stores. The automatic name
+# Your own names for models (the window's Model aliases), by the id the
+# tool stores. The automatic name
 # comes from one rule with no table (claude-opus-5-5 -> "Opus 5.5"), so a
 # new model needs no update. A model several tools share has one name. A
 # tool's own router has a name per tool, under "provider:id"
@@ -299,8 +300,8 @@ source  = "configured"
 "claude-opus-5-5" = "Opus 5.5"
 "copilot:auto" = "Auto"
 
-# What each widget row shows besides its name (menu: Rows and models...,
-# What shows, Widget column): the percentage, the time left until the
+# What each widget row shows besides its name (menu: Settings...,
+# Display, Widget column): the percentage, the time left until the
 # reset, the progress bar, in any mix; the window keeps one on, and all
 # three false in the file read as the default. Written only once changed;
 # without it, all three: the widget as it always was. Without the bar a
@@ -310,7 +311,7 @@ source  = "configured"
 # never the name. With the bar, Compact shows each row's reset in place of
 # the percentage when that is left out, and keeps the soonest reset on its
 # bottom line while it shows both; Medium without the reset loses its line
-# under the bar. In the Vertical layout (columns) a column without its bar
+# under the bar. In the Columns layout a column without its bar
 # is its texts stacked, the percentage in the bar's colour, the name, the
 # reset time, and the widget is only as tall as they are; with the bar,
 # `percent` and `reset` give their room to the bar.
@@ -320,7 +321,7 @@ reset   = true
 bar     = false
 
 # What each row of the taskbar panel's tooltip shows besides its name
-# (menu: Rows and models..., What shows, Tooltip column): the
+# (menu: Settings..., Display, Tooltip column): the
 # percentage, the time left until the limit the row shows resets
 # ("Claude 25% · 2h 14min"), or one of them alone ("Claude 2h 14min").
 # The window keeps one on; both false in the file leaves each row its name
@@ -332,8 +333,8 @@ bar     = false
 percent = false
 reset   = true
 
-# What each row of the taskbar panel shows (menu: Rows and models...,
-# What shows, Panel column): the percentage with its bar (as in 0.7.0), the
+# What each row of the taskbar panel shows (menu: Settings...,
+# Display, Taskbar column): the percentage with its bar (as in 0.7.0), the
 # time alone before the bar ("2h14 ▬▬"), both with the bar between them
 # ("25% ▬▬ 2h14"; on a side taskbar the time under the percentage), or the
 # bar alone. Compact like the clock: 3d4h, 2h14, 12m, <1m; a dash when the
@@ -354,11 +355,11 @@ percent = true
 reset   = true
 bar     = true
 
-# The tray icon's look (menu: Rows and models..., What shows, Tray icon):
+# The tray icon's look (menu: Settings..., Display, Tray icon style):
 # "rings" (default: two concentric rings, the busier outside), "bars" (two
 # upright bars filling from the bottom, the busier on the left), "number"
-# (the busier's percentage in digits; "!" from 100%) or "sector" (the
-# busier's slice of a disc, from 12 o'clock). Monochrome in the taskbar's
+# (the busier's percentage in digits; "!" from 100%) or "sector" (Pie in the
+# window: the busier's slice of a disc, from 12 o'clock). Monochrome in the taskbar's
 # theme; the other provider of the two is in the tooltip. The legacy
 # indicator = "bars" keeps its horizontal bars. Written only once changed.
 [ui.tray]
@@ -378,8 +379,8 @@ id = "claude"
 # [reads]. Ticking a row of it switches it on; unticking its last row
 # switches it off and removes it from [reads].
 enabled = true
-# Where the sign-in comes from: chosen under the provider's rows in Rows
-# and models (Sign-in). Only this source is used, never another as a
+# Where the sign-in comes from: chosen under the provider's rows in
+# Settings (Sign-in). Only this source is used, never another as a
 # fallback. "subscription" (default): the tool's own sign-in (Claude Code,
 # Codex CLI, GitHub CLI, ...). "usage_token": a usage token you pasted
 # (Claude, Codex). "api_key": a key you pasted (Claude's API key, Copilot's
@@ -420,7 +421,7 @@ auth_method = "subscription"
 alert_threshold = 80
 
 [[providers]]
-# Cursor: only the widget's own session (Rows and models: Cursor, Sign-in,
+# Cursor: only the widget's own session (Settings: Cursor, Sign-in,
 # Sign in to Cursor..., or ailimits-auth login cursor), kept in Credential
 # Manager. Nothing of the Cursor editor is read for it. The row stays
 # hidden until you sign in.
@@ -478,12 +479,12 @@ sign_in       = ["claude", "codex", "grok"]
 app_sign_in   = ["cursor"]
 # The settings files of every running tool, for the model and effort
 # ([ui.model]), however the tool signs in; Cursor's state database is one of
-# them. Unticking the last of Model, Version and Effort on both surfaces sets
-# this and last_session back to false.
+# them. Unticking the last of Model, Version and Reasoning effort on both
+# surfaces sets this and last_session back to false.
 tool_settings = false
 # The end of the newest Claude Code / Codex CLI session file, for the model
-# last used ([ui.model] source = "last_used"). Switching back to "As set in
-# the tool" sets it back to false.
+# last used ([ui.model] source = "last_used"). Switching back to "Tool
+# settings" sets it back to false.
 last_session  = false
 # A one-time window still owed: "welcome" (fresh install), "update_notice"
 # (the first start after updating from 0.7.0 or older), or "none".
@@ -506,16 +507,16 @@ in the Windows Credential Manager under service `ailimits`:
 | `claude_usage_token` | manual Claude subscription usage token |
 | `codex_usage_token` | manual ChatGPT/Codex usage token |
 | `copilot_pat` | GitHub fine-grained token (the "api_key" source, instead of the gh CLI) |
-| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Rows and models, Cursor's Sign-in: *Sign in to Cursor...* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
+| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Settings, Cursor's Sign-in: *Sign in to Cursor...* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
 The installer's uninstaller removes all five (with `ailimits-auth`, locally,
 no network). A Microsoft Store copy has no uninstall step of ours: before
-removing it, use *Sign out* and *Remove* in each provider's Sign-in in Rows
-and models (*Remove* acts on the source chosen, so choose each pasted source
+removing it, use *Sign out* and *Remove* in each provider's Sign-in in
+*Settings* (*Remove* acts on the source chosen, so choose each pasted source
 in turn), or delete the `ailimits` entries under *Windows Credentials* in
 Credential Manager.
 
-A key or usage token is pasted in Rows and models: in the provider's
+A key or usage token is pasted in Settings: in the provider's
 Sign-in, with its source chosen, *Paste token from clipboard* (*Paste key
 from clipboard* for Claude's API key). It is taken only in the shape of what
 was asked for: a Claude API key or usage token starts `sk-ant-`; a Copilot
@@ -544,9 +545,9 @@ install has nothing to settle.
 
 Every read of another tool's file is optional and asked for first:
 
-- **A fresh install reads nothing.** The widget and the tray say "Choose what
-  to show", and the picker opens by itself as a welcome. Its question "Show
-  the tools found on this PC?" has a tick for each tool found, judged only
+- **A fresh install reads nothing.** The widget and the tray say "Setup
+  required", and the picker opens by itself as a welcome. Its question "Show
+  the detected tools?" has a tick for each tool found, judged only
   by whether a folder exists (nothing inside is opened), and names every
   file it would read and every host. Ticked at first are the tools found by
   a folder of their own: `%USERPROFILE%\.claude`; `CODEX_HOME` or
@@ -555,8 +556,8 @@ Every read of another tool's file is optional and asked for first:
   `GROK_HOME` or `%USERPROFILE%\.grok`; `%APPDATA%\Cursor`. A tool found only
   by a related folder (`%APPDATA%\GitHub CLI` for Copilot, `.gemini` for
   Antigravity) is listed unticked, with a note why; when only such tools are
-  found, no question opens and their rows are only marked "found on this
-  PC". Allow starts the ticked tools only, and is inactive with none ticked;
+  found, no question opens and their rows are only marked
+  "detected". Allow starts the ticked tools only, and is inactive with none ticked;
   Cancel reads nothing and leaves the choice to you.
 - **Any other tool's first tick asks once**, naming the file and the host.
   While other tools found on this PC by a folder of their own have not been
@@ -572,7 +573,7 @@ Every read of another tool's file is optional and asked for first:
   the window in front, the next update or the next start of the app. An
   answered question, Esc, the close button, Alt+F4, OK or Review counts as
   seen. Nothing else closes it: a click beside the box and going to
-  another window leave it open, as they leave *Rows and models*.
+  another window leave it open, as they leave *Settings*.
 - **After updating from 0.7.0 or older** nothing stops: the providers that
   were switched on keep reading as before (`sign_in` is filled with them),
   and one window lists every file read and every host contacted, once. A
@@ -597,12 +598,12 @@ Every read of another tool's file is optional and asked for first:
 - **A fresh install switches every provider off** as well as allowing
   nothing, so even an older version started on the same config afterwards
   reads only what was allowed.
-- **To stop reading a tool**, untick all of its rows in Rows and models,
+- **To stop reading a tool**, untick all of its rows in Settings,
   the Taskbar column included. Its cached numbers, last error,
   trend and alert marks are cleared. Unticking the last of Model, Version and
-  Effort on both surfaces takes back the settings and session reads
-  (`tool_settings` and `last_session` become false); switching back to "As
-  set in the tool" takes back the session read. The next tick asks again.
+  Reasoning effort on both surfaces takes back the settings and session reads
+  (`tool_settings` and `last_session` become false); switching back to "Tool
+  settings" takes back the session read. The next tick asks again.
 - **A provider set up with the app's own sign-in** (a pasted key or usage
   token, Cursor's own sign-in) never has the tool's own sign-in read. Its
   settings file is read for the model label when `tool_settings` allows it,
@@ -610,7 +611,7 @@ Every read of another tool's file is optional and asked for first:
   provider.
 - **Only the source chosen is read.** With a pasted key or usage token
   chosen as the source (`auth_method`), the tool's own sign-in is not read
-  even where `[reads] sign_in` allows it; with the tool's sign-in chosen, a
+  even where `[reads] sign_in` allows it; with the tool's account chosen, a
   stored key or token is not sent.
 - **Where the tools keep their files** can be moved by `CODEX_HOME`,
   `GROK_HOME` and `COPILOT_HOME`. Each moves every file of its tool the app

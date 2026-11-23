@@ -456,7 +456,7 @@ struct App {
     /// look items it highlights can be shown while it is open.
     #[cfg(target_os = "windows")]
     menu_request: Option<isize>,
-    /// What Rows and models answered to losing the focus (closing, mostly),
+    /// What Settings answered to losing the focus (closing, mostly),
     /// applied once the messages of that moment are handled
     /// (`apply_deferred_picker_actions`).
     picker_deferred: Vec<crate::ui::picker::PickerAction>,

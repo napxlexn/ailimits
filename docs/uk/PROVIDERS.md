@@ -42,17 +42,18 @@
   провайдера не чіпає інших (і їхніх кешів: токена gh, плану Cursor,
   проєкту Antigravity).
 - **Лише вибране джерело.** Вхід кожного провайдера береться з одного
-  джерела, вибраного під його рядками в Rows and models (Sign-in) і
+  джерела, вибраного під його рядками в Settings (Sign-in) і
   збереженого як `auth_method` (див. CONFIG.md): власний вхід інструмента
   або вставлений вами ключ чи usage-токен. Коли воно не спрацьовує, жодне
   інше джерело його не підміняє, тож відмова показується як відмова, а не
   ховається за числами іншого акаунта.
-  Згорнутий Sign-in пише "Not allowed yet", доки вхід не дозволено
-  (`[reads]`), далі "<source> · none stored" (вибрано ключ чи токен, але
-  його не збережено), "<source> · off" (провайдер вимкнено) або
-  "<source> · " і те, як минула остання відповідь: "works", "no sign-in
-  found", "checking" чи слова помилки рядка. `<source>` — коротка назва
-  джерела ("Claude Code", "Your usage token", "Your API key"). У Cursor він
+  Згорнутий Sign-in пише "Not authorized", доки вхід не дозволено
+  (`[reads]`), далі "<source> · not set" (вибрано ключ чи токен, але
+  його не збережено), "<source> · disabled" (провайдер вимкнено) або
+  "<source> · " і те, як минула остання відповідь: "connected", "not
+  found", "verifying" чи слова помилки рядка ("error", коли їх немає).
+  `<source>` — коротка назва джерела ("Claude Code", "Usage token", "API
+  key", "Fine-grained token"). У Cursor він
   пише "Not signed in", "Waiting for the browser" або "Signed in · " і ті
   самі слова (лише "Signed in", поки Cursor вимкнено).
 
@@ -99,7 +100,7 @@
   інше (інший статус, відсутність відповіді) зберігає його з приміткою, що
   його не перевірено. `ailimits-auth set-usage-token` питає знову через 2 с
   і 4 с, поки відповідь не каже ні того, ні іншого, щонайбільше 3 запити.
-- **Copilot**: коли вибрано вхід GitHub CLI,
+- **Copilot**: коли вибрано GitHub CLI account,
   `gh auth token --hostname github.com` не частіше разу на 15 хвилин,
   разом із невдачами, плюс один запуск одразу, коли сервер
   відхиляє (401/403) токен gh, збережений з попереднього циклу: gh 2.103.0
@@ -148,28 +149,28 @@
 Власні стани провайдера наведено в кожній секції. `AuthError` (лише ключ
 чи токен, який дали ви: API-ключ Claude, токен Copilot, usage-токен Claude
 чи Codex) показує "check the key", а підказка під курсором пише
-"<статус> — paste a new one in Rows and models"; рядок без вашого ключа
+"<статус> — paste a new one in Settings"; рядок без вашого ключа
 ніколи цього не пише.
 
 ## Claude
 
 ### Джерела токена — вибране (`fetch`)
 
-Sign-in у Claude у Rows and models пропонує три джерела; `auth_method`
+Sign-in у Claude у Settings пропонує три джерела; `auth_method`
 зберігає вибране, і використовується лише воно:
 
-1. **Вхід Claude Code** (`"subscription"`, за замовчуванням) —
+1. **Claude Code account** (`"subscription"`, за замовчуванням) —
    `%USERPROFILE%\.claude\.credentials.json` → `claudeAiOauth.accessToken`
    (пропускається, якщо `expiresAt` у минулому), лише коли це дозволяє
    `[reads] sign_in`.
-2. **Вставлений вами usage-токен** (`"usage_token"`) — мітка
-   `claude_usage_token` у Credential Manager (Rows and models: Claude,
+2. **Usage token** (`"usage_token"`) — мітка
+   `claude_usage_token` у Credential Manager (Settings: Claude,
    Sign-in, *Paste token from clipboard*; CLI:
    `ailimits-auth set-usage-token claude`). Відхилений (401/403) →
    `AuthError("usage token rejected")`; потім він не надсилається 30
    хвилин. Вхід Claude Code замість нього не читається. Перед збереженням
    його один раз перевіряють (див. Запити за цикл).
-3. **Вставлений вами API-ключ** (`"api_key"`) — див. API ключ нижче.
+3. **API key** (`"api_key"`) — див. API ключ нижче.
 
 З джерелом 1 чи 2 (`fetch_via_subscription`):
 
@@ -254,12 +255,12 @@ anthropic-beta: oauth-2025-04-20
 
 ### API ключ (опційно)
 
-`auth_method = "api_key"`, мітка `claude_api_key` (Rows and models: Claude,
-Sign-in, *An API key you paste*, *Paste key from clipboard*; CLI:
+`auth_method = "api_key"`, мітка `claude_api_key` (Settings: Claude,
+Sign-in, *API key*, *Paste key from clipboard*; CLI:
 `ailimits-auth set claude`). Ключ читається лише тоді, коли
 `credential_label` дорівнює `claude_api_key` (вставка це задає); будь-яке
-інше значення нічого не читає, і Sign-in тоді показує "Your API key · no
-sign-in found". Один запит за цикл:
+інше значення нічого не читає, і Sign-in тоді показує "API key · not
+found". Один запит за цикл:
 
 ```
 GET https://api.anthropic.com/v1/models
@@ -272,19 +273,19 @@ anthropic-version: 2023-06-01
 `anthropic-ratelimit-tokens-{limit,remaining,reset}` → метрики `Requests`
 і `Tokens` (сесійні вікна), кожна лише тоді, коли є її заголовки; 429 теж
 їх несе й читається. 401 → `AuthError("invalid API key")` (рядок пише
-"check the key"; підказка — "invalid API key — paste a new one in Rows and
-models"); 200 без заголовків →
+"check the key"; підказка — "invalid API key — paste a new one in
+Settings"); 200 без заголовків →
 `NetworkError("no ratelimit headers in response")`; будь-який інший статус
 без них чи відсутність відповіді → спільні слова. Вибрано API-ключ, але
 жодного не збережено → `NotConfigured`: рядок ховається, а Sign-in пише
-"Your API key · none stored". Це моніторинг API rate limits, а не підписки.
+"API key · not set". Це моніторинг API rate limits, а не підписки.
 
 ## OpenAI Codex (тільки підписка)
 
-Джерела токена: Sign-in у Codex у Rows and models пропонує два;
+Джерела токена: Sign-in у Codex у Settings пропонує два;
 `auth_method` зберігає вибране, і використовується лише воно:
 
-1. **Вхід Codex CLI** (`"subscription"`, за замовчуванням) — `auth.json` у
+1. **Codex CLI account** (`"subscription"`, за замовчуванням) — `auth.json` у
    домашній теці CLI: `%CODEX_HOME%\auth.json`, коли `CODEX_HOME` задано
    абсолютним шляхом, інакше `%USERPROFILE%\.codex\auth.json` (відносний
    `CODEX_HOME`: жоден файл не читається взагалі) → `tokens.access_token`;
@@ -292,8 +293,8 @@ models"); 200 без заголовків →
    коли тримає вхід у файлі: з `cli_auth_credentials_store = "keyring"` чи
    `"auto"` у його `config.toml` `auth.json` немає, і вхід прочитати
    неможливо. Постав `"file"` або встав usage-токен.
-2. **Вставлений вами usage-токен** (`"usage_token"`) — мітка
-   `codex_usage_token` (Rows and models: Codex, Sign-in, *Paste token from
+2. **Usage token** (`"usage_token"`) — мітка
+   `codex_usage_token` (Settings: Codex, Sign-in, *Paste token from
    clipboard*; CLI: `ailimits-auth set-usage-token codex`). Відхилений
    (401/403) → `AuthError("usage token rejected")`, рядок лишається (сірий,
    з останніми даними); потім він не надсилається 30 хвилин. `auth.json`
@@ -342,12 +343,12 @@ usage-токена) → `NotConfigured` (рядок ховається).
 
 ## GitHub Copilot (тільки підписка)
 
-Джерела токена: Sign-in у Copilot у Rows and models пропонує два;
+Джерела токена: Sign-in у Copilot у Settings пропонує два;
 `auth_method` зберігає вибране, і використовується лише воно (gh ніколи не
 запускається для вставленого токена, а збережений токен ніколи не
-надсилається, поки вибрано вхід GitHub CLI):
+надсилається, поки вибрано GitHub CLI account):
 
-1. **Вхід GitHub CLI** (`"subscription"`, за замовчуванням) —
+1. **GitHub CLI account** (`"subscription"`, за замовчуванням) —
    `gh auth token --hostname github.com` (ніколи не інший
    хост, тож вхід GitHub Enterprise чи `GH_HOST` не потрапляє на
    github.com), запускається з `CREATE_NO_WINDOW` (його знаходить власний
@@ -364,12 +365,12 @@ usage-токена) → `NotConfigured` (рядок ховається).
    знову дає той самий токен або жодного, більше нічого не надсилається.
    Токен, який сервер відхилив, зокрема й новий, не надсилається 15
    хвилин.
-2. **Вставлений вами fine-grained токен** (`"api_key"`) — мітка
-   `copilot_pat` (Rows and models: Copilot, Sign-in, *Paste token from
+2. **Fine-grained token** (`"api_key"`) — мітка
+   `copilot_pat` (Settings: Copilot, Sign-in, *Paste token from
    clipboard*; CLI: `ailimits-auth set copilot`). Токен читається лише
    тоді, коли `credential_label` дорівнює `copilot_pat` (вставка це
    задає); будь-яке інше значення нічого не читає (Sign-in тоді показує
-   "... · no sign-in found"). За документацією GitHub
+   "... · not found"). За документацією GitHub
    класичні PAT (`ghp_...`) не підтримуються для Copilot CLI; fine-grained
    PAT (`github_pat_...`) не потребує жодних дозволів: перевірено живим
    запитом 2026-11-21, токен з *Plan* і *Copilot Requests* (читання), лише з
@@ -437,8 +438,8 @@ JSON → `NetworkError("unrecognized Copilot schema")`. Відмова чита�
 `"gh token rejected"`, 403 → `"no Copilot access"` (рядок показує слова;
 підказка додає "check gh auth"). Вставлений PAT: 401/403/404 →
 `AuthError("token has no Copilot access")`, що показується як "check the
-key" (підказка: "token has no Copilot access — paste a new one in Rows and
-models"). Будь-який інший статус, відсутність відповіді чи тіло, обірване
+key" (підказка: "token has no Copilot access — paste a new one in
+Settings"). Будь-який інший статус, відсутність відповіді чи тіло, обірване
 посеред передачі, → спільні слова (див. Стани помилок).
 
 ## Час життя токенів і вікно точності
@@ -682,7 +683,7 @@ SuperGrok Limit", що показує сторінка Usage на grok.com. Ти
 після нього щось є (`GrokBuild` → `Build`); інші назви, як-от Chat, лишаються
 як є. Ці частки позначені лише для свого додаткового рядка: ніколи не головне
 число рядка Grok, не його скидання й не його сповіщення. Build має власний
-рядок (`grok.build`), який можна позначити в *Rows and models...*; інші
+рядок (`grok.build`), який можна позначити в *Settings...*; інші
 продукти лишаються в даних.
 
 Тіло — protobuf JSON, який пропускає нульові значення: до будь-якого
@@ -707,7 +708,7 @@ SuperGrok Limit", що показує сторінка Usage на grok.com. Ти
 ## Cursor (тільки підписка)
 
 Джерело токена: **лише власний сеанс віджета** — мітка Credential Manager
-`cursor_session` (Rows and models: Cursor, Sign-in, *Sign in to
+`cursor_session` (Settings: Cursor, Sign-in, *Sign in to
 Cursor...*; CLI: `ailimits-auth login cursor`). Віджет сам входить у
 Cursor на власній сторінці входу Cursor і володіє цим сеансом, тож це
 єдиний токен Cursor,
@@ -854,8 +855,8 @@ usage schema". Поки не показується: розподіл auto / н�
 періодом і `hasAvailableUsage: true`; тіло, де пропущено все (акаунт без
 Grok Bot), не дає метрики. Вона позначена лише для свого додаткового рядка,
 тож ніколи не перехоплює головне число, скидання чи сповіщення. Поки рядок
-не позначено, вікно вибору пише "Its share of the same limit, asked for
-once this row is ticked". На звіреному акаунті Grok, Cursor і Grok Bot
+не позначено, вікно вибору пише "Requested only while selected" під його
+"Share of Cursor–Grok limit". На звіреному акаунті Grok, Cursor і Grok Bot
 ділять ОДИН тижневий пул (те саме скидання, той самий відсоток); як це
 показувати — відкрите рішення, тож `isUnified` переноситься як
 `unified_pool` метрики, щоб пізніше ним скористалося відображення.
@@ -889,7 +890,7 @@ once this row is ticked". На звіреному акаунті Grok, Cursor і
 
 Модель, на яку налаштовано кожен інструмент (або яку він використав
 останньою), і її effort; показуються у власному рядку провайдера, коли
-ввімкнено позначки Model, Version чи Effort (`src/models`). Це лише локальні
+ввімкнено позначки Model, Version чи Reasoning effort (`src/models`). Це лише локальні
 читання: для них не робиться жодного запиту, і ніщо з цих файлів нікуди не
 надсилається. З читача виходять тільки id моделі та effort; жодна інша
 частина файлу не зберігається.
@@ -906,8 +907,8 @@ once this row is ticked". На звіреному акаунті Grok, Cursor і
 хай як він входить: і для налаштованого лише власним входом програми
 (вставлений ключ чи usage-токен, власний вхід у Cursor), чий вхід
 інструмента ніколи не читається. Запитання про налаштування каже про це.
-Якщо зняти останню з Model, Version і Effort на обох поверхнях, обидва
-читання знову стають false; повернення до «As set in the tool» знову
+Якщо зняти останню з Model, Version і Reasoning effort на обох поверхнях,
+обидва читання знову стають false; повернення до «Tool settings» знову
 ставить `last_session` у false. Водночас іде щонайбільше одне читання;
 запит, що надійшов під час іншого, виконує той самий робітник одразу після
 нього, а відкликане читання нічого не читає.
@@ -1006,7 +1007,7 @@ once this row is ticked". На звіреному акаунті Grok, Cursor і
 файл входу, жоден запис бази Cursor, крім наведеного вище, Windows
 Credential Manager.
 
-### Остання використана (`last_session`)
+### Остання сесія (`last_session`)
 
 Лише для двох інструментів, що зберігають сесії; решта показують
 налаштовану модель. Найновіший файл читається від кінця по 64 КБ, доки
@@ -1047,7 +1048,7 @@ Credential Manager.
 - effort псевдоніма — це effort найновішої збереженої моделі його родини,
   тож після виходу нової моделі, доки для неї не задано `/effort`, підпис
   може показувати effort старішої;
-- у Last used інструменти без сесій (і сесії ще без моделі) показують
+- у Last session інструменти без сесій (і сесії ще без моделі) показують
   налаштовану модель, без позначки;
 - без settings.json Claude Code узагалі сам `ANTHROPIC_MODEL` підпису не
   дає.
@@ -1095,7 +1096,7 @@ Credential Manager.
 Які моделі вікно вибору пропонує перейменувати (список, згорнутий, доки
 його не розгорнути, а далі по заголовку на інструмент), — окремий сталий
 перелік для кожного інструмента (`src/models/catalog.rs`) плюс модель, яку
-інструмент використовує зараз: вона завжди перша й позначена "in use".
+інструмент використовує зараз: вона завжди перша й позначена "active".
 Назв він не задає: модель, якої в ньому немає, однаково називається за
 правилом. Джерела, 2026-11-13: Claude Code — id, які несли його відповіді
 в одному живому виклику на модель (`claude-fable-5-2`, `claude-opus-5-5`,
@@ -1107,7 +1108,7 @@ CLI — підписи, які він пише у свій settings.json (5); Co
 Перелік вшитий у збірку, тож його оновлюють із кожним релізом.
 Перелічуються лише інструменти, що працюють. Модель, спільна для кількох
 інструментів, має одну назву, але поле під кожним інструментом із
-позначками "shared with ..." і "in use" там, де вона використовується;
+позначками "shared with ..." і "active" там, де вона використовується;
 набране в одному видно в інших. Власний роутер інструмента (`auto`,
 `default`) має назву для кожного інструмента окремо, під ключем
 `"provider:id"` (`"copilot:auto"`, `"cursor:auto"`); назва, яку старіша
@@ -1143,4 +1144,4 @@ CLI — підписи, які він пише у свій settings.json (5); Co
   власного сеансу віджета. Прибрано ще до виходу 0.7.1: віджет ніколи не
   читає чужий вхід із його файлів, а ключеві, який шукають деякі крадії
   облікових даних, не місце в exe. Використовується лише власний вхід
-  віджета (Rows and models або `ailimits-auth login cursor`).
+  віджета (Settings або `ailimits-auth login cursor`).

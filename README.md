@@ -89,7 +89,7 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   ticked, and one question names every sign-in file it would read: *Allow*
   is enough. After that your normal CLI use keeps their tokens valid, so
   there is nothing else to configure. Only Cursor asks you to sign in once,
-  in *Rows and models*.
+  in *Settings*.
 - **Low load, measured on the running app.** 0.0097% of one CPU core, no GPU
   use (it renders on the CPU), a 54 MB working set, no raised timer
   resolution (measured for 0.7.1 on 2026-11-21), a 4 MB exe. Reproduce it with
@@ -218,7 +218,7 @@ at the top of that file).
 ## Quick start
 
 1. **Run it.** On first launch a welcome window opens (the same one as
-   *Rows and models...* in the menu). Its question lists the tools found on
+   *Settings...* in the menu). Its question lists the tools found on
    this PC (Claude Code, Codex CLI, the Copilot CLI or GitHub CLI,
    Antigravity, the Grok CLI, Cursor), each with a
    tick, and names every file it would read and where each token goes.
@@ -227,7 +227,7 @@ at the top of that file).
    *Allow* starts the ticked ones; *Cancel* reads nothing and lets you tick
    what you want, each tool asking once. The window takes no keyboard focus
    (Enter allows nothing by accident) and waits while a fullscreen app is in
-   front. Like *Rows and models*, it stays open until Esc, its cross or
+   front. Like *Settings*, it stays open until Esc, its cross or
    Alt+F4 closes it, and moves by its title. Cursor needs
    a sign-in of the app's own, once: in the same window, open the *Sign-in*
    line under Cursor and click *Sign in to Cursor...*.
@@ -238,22 +238,22 @@ at the top of that file).
    screen without the taskbar) once it is within 64 px of that edge.
    `Lock position` in the right-click menu pins it.
 3. **Set the look.** Right-click for detail level (Compact, Medium, Expanded),
-   bar layout (vertical or horizontal), palette (monochrome or 8 colors),
+   layout (Rows or Columns), palette (monochrome or 8 colors),
    opacity, brightness and saturation. The animations above show each one.
-   Resting the pointer on one of these items, or on Width, Arrangement or
-   Forecast, shows it on the widget, the panel and the tray icon before you
+   Resting the pointer on one of these items, or on Width, Column layout or
+   Usage forecast, shows it on the widget, the panel and the tray icon before you
    click, and so does moving to it with the keyboard; leaving the menu
    without a click puts it back.
-   *Rows and models...*
+   *Settings...*
    picks the rows the widget and the panel's tooltip show (extra rows such as
    Claude's Opus week included), an optional label with the model in use
-   (model, version, effort) and where each provider's sign-in comes from.
-   *Model shown* picks where the label's model comes from:
-   *As set in the tool*, or *Last used*, the model of the newest Claude Code
+   (model, version, reasoning effort) and where each provider's sign-in
+   comes from. *Model source* picks where the label's model comes from:
+   *Tool settings*, or *Last session*, the model of the newest Claude Code
    or Codex CLI session, read from the end of its file (at most the last
    1 MB); other tools show the model as set.
    The Taskbar column picks the two providers the panel and the tray icon
-   show; at least one stays ticked. Percent and Reset time are ticked
+   show; at least one stays ticked. Percentage and Time to reset are ticked
    separately for the panel's tooltip (Tooltip column) and the panel
    (Taskbar column): the percentage, the time until the limit resets, or
    both; the last one left on cannot be unticked. Progress bar (on by
@@ -272,10 +272,10 @@ at the top of that file).
    [Taskbar indicator](#taskbar-indicator).
 6. **Left-click the tray icon or the panel** to raise the widget or hide it.
    Right-click either one for the same menu.
-7. **A message instead of rows?** *Choose what to show* or
-   *Nothing to show yet*: click the widget to open *Rows and models*.
+7. **A message instead of rows?** *Setup required* or
+   *No data yet*: click the widget to open *Settings*.
    *Right-click → set up providers*: providers are ticked, but none of them
-   is signed in; check each provider's *Sign-in* in *Rows and models*.
+   is signed in; check each provider's *Sign-in* in *Settings*.
 
 ## How authorization works
 
@@ -290,11 +290,12 @@ your machine, strictly read-only and only once you allow each one:
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity` | run `agy`, the Antigravity CLI; its token lasts about an hour and only `agy` renews it (opening the editor does not) |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
-| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor once in *Rows and models* (Cursor's *Sign-in*, *Sign in to Cursor...*) or with `ailimits-auth login cursor`: Cursor's own sign-in page opens in the browser; ~60-day session |
+| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor once in *Settings* (Cursor's *Sign-in*, *Sign in to Cursor...*) or with `ailimits-auth login cursor`: Cursor's own sign-in page opens in the browser; ~60-day session |
 
-Under each provider's rows, *Rows and models* has a *Sign-in* line that
-says where the sign-in comes from and how it went ("Claude Code · works").
-Open it to choose the source: the tool's sign-in above or, for Claude,
+Under each provider's rows on the *Providers* tab, *Settings* has a
+*Sign-in* line that says where the sign-in comes from and how it went
+("Claude Code · connected"). Open it to choose the source: the tool's
+account above (*Claude Code account* and so on) or, for Claude,
 Codex and Copilot, a key or token of your own (see Manual authorization
 below). Only the source chosen is used; no other one stands in when it
 fails.
@@ -357,17 +358,17 @@ depend on CLI activity. What each option actually gives you:
 |---|---|---|---|
 | **Copilot** | A fine-grained Personal Access Token; it needs no permissions at all (leave them empty) | github.com/settings/personal-access-tokens, *Generate new token* | Verified live on 2026-11-21: a token with no permissions reads the same quotas as GitHub CLI's sign-in. It needs no gh, until the expiry you set. |
 | **Claude** | API key | console.anthropic.com, Settings, API Keys, *Create Key* (`sk-ant-…`) | No. It shows your API account rate limits, not your Pro or Max subscription usage. |
-| **Codex** | None | No separate stable token exists. A usage token you paste is the same kind of OAuth token as Codex CLI's. | |
+| **Codex** | None | No separate stable token exists. A pasted *Usage token* is the same kind of OAuth token as Codex CLI's. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
 | **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login only. | |
-| **Cursor** | Its own sign-in, about 60 days | *Rows and models*, Cursor's *Sign-in*, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
+| **Cursor** | Its own sign-in, about 60 days | *Settings*, Cursor's *Sign-in*, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
 
 **Two ways to add a credential:**
 
-1. **In *Rows and models*.** Copy the key or token. Open the provider's
-   *Sign-in* line, choose the source (Claude: *A usage token you paste* or
-   *An API key you paste*; Codex: *A usage token you paste*; Copilot: *A
-   fine-grained token you paste*) and click *Paste token from clipboard*
+1. **In *Settings*.** Copy the key or token. Open the provider's
+   *Sign-in* line, choose the source (Claude: *Usage token* or *API key*;
+   Codex: *Usage token*; Copilot: *Fine-grained token*) and click *Paste
+   token from clipboard*
    (*Paste key from clipboard* for Claude's API key). Only that kind of
    secret is taken (`sk-ant-...`; `ghp_...`, `github_pat_...`, `gho_...`,
    `ghu_...` or a classic 40-character hex token; a ChatGPT token
@@ -378,7 +379,7 @@ depend on CLI activity. What each option actually gives you:
    if the window was closed meanwhile), and the secret goes straight into
    Credential Manager. Only the source chosen is used: the tool's sign-in
    is not read while your token or key is chosen, and a stored token is not
-   sent while the tool's sign-in is chosen.
+   sent while the tool's account is chosen.
 2. **From the terminal.** `ailimits-auth.exe` sits next to the widget in
    `%LOCALAPPDATA%\AiLimits`:
    ```
@@ -402,27 +403,28 @@ depend on CLI activity. What each option actually gives you:
    store the provider's source.
 
 **To go back to the tool's sign-in:** in the provider's *Sign-in*, choose
-the tool's sign-in. Your key or token stays stored but unused; *Remove*,
+the tool's account (*Claude Code account*, *Codex CLI account* or *GitHub
+CLI account*). Your key or token stays stored but unused; *Remove*,
 with its source chosen, deletes it. From the terminal,
 `ailimits-auth remove claude|copilot` deletes the key and switches back;
 `remove-usage-token` deletes the token but leaves the source on it, so the
-row hides until you choose the tool's sign-in in the window.
+row hides until you choose the tool's account in the window.
 
 ## The context menu
 
 Right-click the widget: detail level (Compact / Medium / Expanded), layout
-(Vertical / Horizontal), Width (100 / 75 / 50%, horizontal bars only),
-Arrangement (In a row / In a column, vertical bars only), `Lock position` and
+(Rows / Columns), Width (100 / 75 / 50%, Rows only), Column layout (Side by
+side / Stacked, Columns only), `Lock position` and
 `Always on top` (two independent toggles), Indicator (Tray icon / Taskbar
-panel / Off), Forecast (burn-rate "~time to limit", off by default),
+panel / Off), Usage forecast (burn-rate "~time to limit", off by default),
 `Automatic updates` (silent background self-update of an installer copy, on
 by default; Store, Scoop, portable and self-built copies have no such item),
 Palette (Monochrome + 8 colors), Background opacity, Brightness, Saturation,
-Update interval (1 / 5 / 15 / 30 min), `Rows and models...` (rows, model
-labels, model names, each provider's sign-in), Quit, and the version line,
+Update interval (1 / 5 / 15 / 30 min), `Settings...` (rows, model
+labels, model aliases, each provider's sign-in), Quit, and the version line,
 which opens the project page.
 
-Forecast shows its ~time on Medium and Expanded rows and on Expanded
+Usage forecast shows its ~time on Medium and Expanded rows and on Expanded
 columns, only where no reset time is known, and never for data that has
 stopped updating.
 
@@ -435,14 +437,14 @@ hides with the taskbar and comes back when you leave the app. Right-click →
 
 - **Tray icon** (the default). One 16px icon: two concentric rings for the
   same two providers the panel shows (the first two in the widget, or the
-  two ticked in the Taskbar column of *Rows and models*), the busier
+  two ticked in the Taskbar column of *Settings*), the busier
   outside, both filling clockwise from 12 o'clock. Monochrome, drawn in the
   system taskbar theme.
 - **Taskbar panel.** A transparent overlay next to the clock. There is no window or
   box, only clock-sized digits and bars drawn over the taskbar. It is
   monochrome, follows the system light and dark theme, shows the first two
   providers in the widget's order, or the two ticked in the Taskbar column of
-  *Rows and models*, with their percentage (and its bar, unless Progress
+  *Settings*, with their percentage (and its bar, unless Progress
   bar is unticked there), the time until their limit resets, or both (a
   value that has stopped updating, or an
   `≈` estimate, is drawn dimmer, as the widget greys it), and tracks the
@@ -475,8 +477,8 @@ panel** opens this same menu.
 
 `%APPDATA%\AiLimits\config.toml` is created automatically, and every menu change
 is persisted there. Edits saved in it apply while the app runs, within about
-two seconds, with no restart; *Settings file...* at the end of *Rows and
-models* opens it in Notepad. A line that does not read is left out and
+two seconds, with no restart; *Edit config.toml...* at the end of the
+*Display* tab of *Settings* opens it in Notepad. A line that does not read is left out and
 named, its default used. The file explains itself: a short note before each
 setting says what it does, the values it takes and its default. Format
 reference: [docs/en/CONFIG.md](docs/en/CONFIG.md).

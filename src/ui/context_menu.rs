@@ -2,7 +2,7 @@
 //
 // A NATIVE menu via muda — no custom popup window. The look, the indicator
 // and the window's options; each provider's sign-in is in the picker
-// (Rows and models, its Sign-in).
+// (Settings, its Sign-in).
 
 use crate::config::schema::{
     ColumnFlow, Config, DetailLevel, IndicatorKind, Layout, Palette, PanelDisplay, WidthScale,
@@ -23,7 +23,7 @@ const INTERVAL_STEPS: &[u64] = &[60, 300, 900, 1800];
 /// tray icon look: the item the pointer rests on is shown before a click
 /// (`ContextMenu::look_action`). Their titles name them.
 const WIDTH_TITLE: &str = "Width";
-const FLOW_TITLE: &str = "Arrangement";
+const FLOW_TITLE: &str = "Column layout";
 const PALETTE_TITLE: &str = "Palette";
 const OPACITY_TITLE: &str = "Background opacity";
 const BRIGHTNESS_TITLE: &str = "Brightness";
@@ -63,7 +63,7 @@ pub enum MenuAction {
     SetUpdateInterval(u64),
     /// Open the project's GitHub page in the browser.
     OpenProjectPage,
-    /// Open the "Rows and models" picker.
+    /// Open the Settings window (the picker).
     OpenPicker,
     Quit,
 }
@@ -217,18 +217,14 @@ impl ContextMenu {
         .map(|(label, d)| (CheckMenuItem::new(label, true, ui.detail == d, None), d))
         .collect();
 
-        // Layouts. The label names the PROGRESS-BAR orientation the user sees,
-        // which is the opposite axis of the provider stacking: Layout::Vertical
-        // stacks providers in rows with horizontal bars, while Layout::Horizontal
-        // lays them out in columns with vertical bars. (Enum values are unchanged
-        // so existing configs keep their orientation — only the labels are fixed.)
-        let layout_items: Vec<(CheckMenuItem, Layout)> = [
-            ("Vertical", Layout::Horizontal),
-            ("Horizontal", Layout::Vertical),
-        ]
-        .into_iter()
-        .map(|(label, l)| (CheckMenuItem::new(label, true, ui.layout == l, None), l))
-        .collect();
+        // Layouts, named by what the providers make: rows (Layout::Vertical,
+        // providers stacked, horizontal bars) or columns (Layout::Horizontal,
+        // side by side, vertical bars). The config keeps its values.
+        let layout_items: Vec<(CheckMenuItem, Layout)> =
+            [("Rows", Layout::Vertical), ("Columns", Layout::Horizontal)]
+                .into_iter()
+                .map(|(label, l)| (CheckMenuItem::new(label, true, ui.layout == l, None), l))
+                .collect();
 
         // Width steps. Only the rows layout can be narrowed: the columns
         // layouts size themselves from the provider count.
@@ -255,8 +251,8 @@ impl ContextMenu {
         // orientation rather than its size.
         let flow_submenu = Submenu::new(FLOW_TITLE, true);
         let flow_items: Vec<(CheckMenuItem, ColumnFlow)> = [
-            ("In a row", ColumnFlow::Row),
-            ("In a column", ColumnFlow::Column),
+            ("Side by side", ColumnFlow::Row),
+            ("Stacked", ColumnFlow::Column),
         ]
         .into_iter()
         .map(|(label, f)| {
@@ -332,7 +328,8 @@ impl ContextMenu {
             indicator_submenu.append(&display_submenu)?;
         }
 
-        let forecast_item = CheckMenuItem::new("Forecast", true, config.ui.show_forecast, None);
+        let forecast_item =
+            CheckMenuItem::new("Usage forecast", true, config.ui.show_forecast, None);
         let auto_update_item =
             CheckMenuItem::new("Automatic updates", true, config.general.auto_update, None);
 
@@ -401,7 +398,7 @@ impl ContextMenu {
             interval_items.push((item, secs));
         }
 
-        let picker_item = MenuItem::new("Rows and models...", true, None);
+        let picker_item = MenuItem::new("Settings...", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
         // The version line doubles as the way to the project. The words stay
         // plain, since a native menu paints an item's text itself and dims
@@ -651,10 +648,13 @@ mod tests {
             Some(MenuAction::SetDetail(DetailLevel::Compact))
         );
         assert_eq!(
-            act(None, "Vertical"),
+            act(None, "Columns"),
             Some(MenuAction::SetLayout(Layout::Horizontal))
         );
-        assert_eq!(act(None, "Forecast"), Some(MenuAction::ToggleForecast));
+        assert_eq!(
+            act(None, "Usage forecast"),
+            Some(MenuAction::ToggleForecast)
+        );
         assert_eq!(
             act(Some(WIDTH_TITLE), "50%"),
             Some(MenuAction::SetWidthScale(WidthScale::Half))
@@ -680,7 +680,7 @@ mod tests {
             Some(MenuAction::ToggleMonochrome)
         );
         assert_eq!(
-            act(Some(FLOW_TITLE), "In a column"),
+            act(Some(FLOW_TITLE), "Stacked"),
             Some(MenuAction::SetColumnFlow(ColumnFlow::Column))
         );
         // Not look items: they move, start or read something.

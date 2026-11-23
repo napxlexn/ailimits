@@ -155,7 +155,7 @@ impl CursorProvider {
         // A synchronous read, like the other providers' keyring reads.
         match self.store.load() {
             Ok(Some(own)) => self.fetch_with_own_session(own).await,
-            // Not signed in (Rows and models, Cursor's Sign-in): hidden.
+            // Not signed in (Settings, Cursor's Sign-in): hidden.
             Ok(None) => self.data(ProviderStatus::NotConfigured, vec![]),
             // A record this version cannot read: a new sign-in replaces it.
             Err(StoreError::Corrupt) => {

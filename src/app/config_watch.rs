@@ -6,7 +6,7 @@
 // the app has anyway:
 //   - every 2 seconds while the user is at the PC (input within 5 minutes),
 //     every 30 while away, and every 2 for 30 minutes after the file was
-//     opened from Rows and models: a deadline of the event loop
+//     opened from Settings: a deadline of the event loop
 //     (`ConfigWatch`), never a thread;
 //   - once per polling cycle, off the event loop (`ConfigFile::tell_if_changed`
 //     in the scheduler's cycle hook);
@@ -586,7 +586,7 @@ impl App {
             .collect();
     }
 
-    /// Rows and models' "Settings file...": config.toml in Notepad, and the
+    /// Settings' "Edit config.toml...": config.toml in Notepad, and the
     /// file looked at often while it may be edited there.
     pub(super) fn open_settings_file(&mut self) {
         let path = self.config_watch.file.path().to_path_buf();

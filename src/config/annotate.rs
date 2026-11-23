@@ -119,7 +119,7 @@ const TABLES: &[Table] = &[
         path: "ui",
         about: &[
             "How the widget looks. [ui.rows], [ui.model], [ui.widget], [ui.tooltip],",
-            "[ui.panel] and [ui.tray] appear below once set in Rows and models.",
+            "[ui.panel] and [ui.tray] appear below once set in Settings.",
         ],
         keys: &[
             (
@@ -150,8 +150,8 @@ const TABLES: &[Table] = &[
             (
                 "layout",
                 &[
-                    "\"vertical\" (default): providers stacked, bars lying (menu: Horizontal);",
-                    "\"horizontal\": providers side by side, bars standing (menu: Vertical).",
+                    "\"vertical\" (default): providers stacked, bars lying (menu: Rows);",
+                    "\"horizontal\": providers side by side, bars standing (menu: Columns).",
                 ],
             ),
             (
@@ -164,22 +164,22 @@ const TABLES: &[Table] = &[
             (
                 "width_scale",
                 &[
-                    "Width in the Horizontal layout: \"full\" (default), \"three_quarters\" or",
+                    "Width in the Rows layout: \"full\" (default), \"three_quarters\" or",
                     "\"half\". Menu: Width (100%, 75%, 50%).",
                 ],
             ),
             (
                 "column_flow",
                 &[
-                    "In the Vertical layout: \"row\" (side by side, default) or \"column\"",
-                    "(stacked). Menu: Arrangement (In a row, In a column).",
+                    "In the Columns layout: \"row\" (side by side, default) or \"column\"",
+                    "(stacked). Menu: Column layout (Side by side, Stacked).",
                 ],
             ),
             (
                 "show_forecast",
                 &[
                     "Time to the limit (\"~1h 30min\") while usage climbs and no reset is",
-                    "known: true or false (default). Menu: Forecast.",
+                    "known: true or false (default). Menu: Usage forecast.",
                 ],
             ),
         ],
@@ -188,7 +188,7 @@ const TABLES: &[Table] = &[
         path: "ui.rows",
         about: &[
             "Rows shown, by id: a provider (claude, codex, copilot, antigravity, grok,",
-            "cursor) or an extra row. Window: Rows and models.",
+            "cursor) or an extra row. Window: Settings, Providers.",
         ],
         keys: &[
             (
@@ -215,7 +215,7 @@ const TABLES: &[Table] = &[
         path: "ui.model",
         about: &[
             "Model labels (\"Opus 5.5 xhigh\"), read from the tools' settings files",
-            "([reads] tool_settings). Window: Rows and models.",
+            "([reads] tool_settings). Window: Settings, Display.",
         ],
         keys: &[
             (
@@ -247,7 +247,7 @@ const TABLES: &[Table] = &[
         path: "ui.widget",
         about: &[
             "What each widget row shows besides its name; keep one true. Window:",
-            "Rows and models, What shows, Widget column.",
+            "Settings, Display, Widget column.",
         ],
         keys: &[
             (
@@ -271,7 +271,7 @@ const TABLES: &[Table] = &[
         path: "ui.tooltip",
         about: &[
             "What each tooltip row (panel and tray icon) shows besides its name;",
-            "keep one true. Window: Rows and models, What shows, Tooltip column.",
+            "keep one true. Window: Settings, Display, Tooltip column.",
         ],
         keys: &[
             (
@@ -288,8 +288,8 @@ const TABLES: &[Table] = &[
     Table {
         path: "ui.panel",
         about: &[
-            "What each row of the taskbar panel shows; keep one true. Window: Rows",
-            "and models, What shows, Panel column.",
+            "What each row of the taskbar panel shows; keep one true. Window:",
+            "Settings, Display, Taskbar column.",
         ],
         keys: &[
             (
@@ -308,7 +308,7 @@ const TABLES: &[Table] = &[
     },
     Table {
         path: "ui.tray",
-        about: &["The tray icon's look. Window: Rows and models, What shows, Tray icon."],
+        about: &["The tray icon's look. Window: Settings, Display, Tray icon style."],
         keys: &[(
             "style",
             &[
@@ -328,7 +328,7 @@ const TABLES: &[Table] = &[
             (
                 "enabled",
                 &[
-                    "Switched on: true or false. Ticking a row of it in Rows and models",
+                    "Switched on: true or false. Ticking a row of it in Settings",
                     "switches it on, unticking its last row switches it off.",
                 ],
             ),
@@ -336,7 +336,7 @@ const TABLES: &[Table] = &[
                 "auth_method",
                 &[
                     "Sign-in used: \"subscription\" (the tool's own), \"api_key\" (claude,",
-                    "copilot) or \"usage_token\" (claude, codex). Rows and models: its Sign-in.",
+                    "copilot) or \"usage_token\" (claude, codex). Settings: its Sign-in.",
                 ],
             ),
             (
@@ -403,7 +403,7 @@ const TABLES: &[Table] = &[
         path: "reads",
         about: &[
             "What the app may read of other tools' files. Editing this counts as your",
-            "consent, as a tick in Rows and models does.",
+            "consent, as a tick in Settings does.",
         ],
         keys: &[
             (

@@ -29,7 +29,7 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── app/cache.rs           provider-cache.json: one writer, fewer writes
    ├── app/model_job.rs       what the model labels read; one reader at a time
    ├── app/config_watch.rs    config.toml edited by hand: looked at by its stamp
-   │                          (cycle, actions, 2 s after Settings file...),
+   │                          (cycle, actions, 2 s after Edit config.toml...),
    │                          merged with the app's changes, applied part by part
    ├── app/clipboard.rs       the shape check of a pasted key or usage token
    ├── app/widget.rs, app/indicator.rs  the overlay window; the fallback tray icon
@@ -54,7 +54,7 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    │                          files.rs (capped reads, change stamps), name.rs
    │                          (the generic name rule, no table of names),
    │                          catalog.rs (the models each tool offers)
-   ├── ui/picker/             the "Rows and models" window: mod.rs (Picker, a
+   ├── ui/picker/             the "AI Limits Settings" window: mod.rs (Picker, a
    │                          pure state machine), text.rs, layout.rs, scene.rs,
    │                          input.rs, window.rs (PickerWindow, a thin tao window)
    ├── ui/renderer.rs         tiny-skia drawing of the widget and the picker
@@ -123,7 +123,7 @@ app.
    ├─ serial no longer the provider's? → dropped (not shown, cached or alerted)
    ├─ threshold alert + on_threshold hook (once per limit window, alerts.json)
    ├─ on_reset hook (a drop of over 30 points from at or above the threshold)
-   ├─ burn-rate trend and forecast (shown while Forecast is on)
+   ├─ burn-rate trend and forecast (shown while Usage forecast is on)
    ├─ on_startup hook (once a run, on the first Ok answer)
    ├─ provider-cache merge (unexpired metrics survive restarts)
    ├─ stale-data retention (errors never wipe real data)
@@ -189,8 +189,8 @@ block's actions (choose a source, paste, remove, Cursor's sign-in, cancel,
 sign-out) go to `app/sign_in.rs` instead, which reaches the clipboard,
 Credential Manager and the browser and puts its result in the
 `PickerInput` (`choices::SignInState`). The picker never touches a file.
-It opens from the menu (*Rows and models...*), from a click on the widget's
-"Choose what to show" or "Nothing to show yet", and by itself at start
+It opens from the menu (*Settings...*), from a click on the widget's
+"Setup required" or "No data yet", and by itself at start
 while `[reads] pending` owes the welcome or the update notice. Opened by
 itself it opens quietly
 (`PickerWindow::open_quietly`, no activation), and waits while a fullscreen
@@ -330,7 +330,7 @@ side it grows to only when no other has room.
   target a provider reads to the text.
 - **One resolver for other tools' paths** (`config/paths.rs`, `ToolPaths`).
   The providers, the model labels, the consent texts, the welcome's
-  "found on this PC" and the CLI ask it, so they cannot disagree.
+  "detected" and the CLI ask it, so they cannot disagree.
   `CODEX_HOME`, `GROK_HOME` and `COPILOT_HOME` count only when absolute; a
   relative one makes that tool unknown (nothing read, nothing found), never
   the working directory and never the default folder. `tool_signs` tells a
@@ -369,8 +369,8 @@ side it grows to only when no other has room.
 - **The default look is pinned.** With `[ui.rows]` and `[ui.model]` unset,
   `rows::visible_rows` yields one row per provider carrying its data
   untouched. The panel's tooltip is the one default that changed: with
-  `[ui.tooltip]` unset (Percent and Reset time both on) it gives each
-  provider a line with its reset; Percent alone gives 0.7.0's single line.
+  `[ui.tooltip]` unset (Percentage and Time to reset both on) it gives each
+  provider a line with its reset; Percentage alone gives 0.7.0's single line.
   See "Visual baseline" below.
 - **Model names are held to real widths, not a character count.**
   `rows::NAME_SLOTS` lists the narrowest places the renderer draws a model

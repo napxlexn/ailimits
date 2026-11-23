@@ -327,7 +327,7 @@ impl Picker {
         if welcome {
             f.y += 4.0;
             let mut spans = vec![
-                span("Tick the tools you use.", SIZE_TEXT, Ink::Text, true),
+                span("Select the tools you use.", SIZE_TEXT, Ink::Text, true),
                 span(
                     " AI Limits reads nothing of a tool before you allow it.",
                     SIZE_TEXT,
@@ -337,7 +337,7 @@ impl Picker {
             ];
             if !input.found.is_empty() {
                 spans.push(span(
-                    " Tools found on this PC are marked.",
+                    " Detected tools are marked.",
                     SIZE_TEXT,
                     Ink::Text,
                     false,
@@ -706,7 +706,7 @@ impl Picker {
         }
     }
 
-    /// "Settings file...": a small link at the list's end, its description
+    /// "Edit config.toml...": a small link at the list's end, its description
     /// on hover.
     pub(super) fn flow_settings_file(&self, f: &mut Flow) {
         self.flow_sep(f);
@@ -890,7 +890,7 @@ impl Picker {
             return;
         };
         let open = self.open_sign_in.iter().any(|o| o == p);
-        // A chip as wide as what it says: "Sign-in Claude Code · works ›".
+        // A chip as wide as what it says: "Sign-in Claude Code · connected ›".
         let chip = rect(
             SUB_X,
             f.y + 2.0,
@@ -1099,7 +1099,7 @@ impl Picker {
             }
             if self.input.reads.last_session {
                 if let Some(s) = info.session {
-                    spans.push(span(". Last used: ", SIZE_TEXT, Ink::Text, false));
+                    spans.push(span(". Last session: ", SIZE_TEXT, Ink::Text, false));
                     spans.push(span(s, SIZE_NOTE, Ink::Text, false));
                 }
             }
@@ -1112,7 +1112,7 @@ impl Picker {
         self.flow_para(
             f,
             &[span(
-                "A new tool or option asks once before its first read. Untick a tool in Rows and models to stop reading its file.",
+                "A new tool or option asks once before its first read. Untick a tool in Settings to stop reading its file.",
                 SIZE_TEXT,
                 Ink::Text,
                 false,
@@ -1201,7 +1201,7 @@ impl Picker {
                     );
                 }
                 (
-                    format!("Read {tool}'s sign-in?"),
+                    format!("Allow access to the {tool} sign-in?"),
                     format!("To show your {name} limits, AI Limits reads:"),
                     list,
                     format!(
@@ -1216,16 +1216,16 @@ impl Picker {
                 FOUND_OUTRO.to_string(),
             ),
             Question::Read(ReadKind::ToolSettings) => (
-                "Read the tools' settings files?".to_string(),
+                "Allow reading tool settings files?".to_string(),
                 "To show the model, its version and effort, AI Limits reads these values from each tool's own settings file:".to_string(),
                 files(|i| i.settings),
                 "Only those values are kept, in memory, and nothing is sent anywhere. Every running tool's file is read, also one signed in with a pasted key or token. Untick Model, Version and Effort to stop.".to_string(),
             ),
             Question::Read(ReadKind::LastSession) => (
-                "Read the end of your newest session?".to_string(),
-                "For Last used, AI Limits reads the newest session file back from its end until it finds the model, at most the last 1 MB:".to_string(),
+                "Allow reading the latest session file?".to_string(),
+                "For Last session, AI Limits reads the newest session file back from its end until it finds the model, at most the last 1 MB:".to_string(),
                 files(|i| i.session),
-                "Only the model and its effort are kept, in memory. Your conversations are not stored or sent anywhere. Switch back to As set in the tool to stop.".to_string(),
+                "Only the model and its effort are kept, in memory. Your conversations are not stored or sent anywhere. Switch back to Tool settings to stop.".to_string(),
             ),
         }
     }

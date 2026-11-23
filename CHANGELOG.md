@@ -26,7 +26,7 @@ Notable, user-visible changes. Dates are release dates.
   ever sent to xAI. Asked for in #1 by KritBlade.
 - **Cursor.** The subscription's included usage, labelled with the plan,
   from the dashboard service the editor itself calls. Cursor has a sign-in
-  of the app's own: in *Rows and models*, Cursor's *Sign-in*, *Sign in to
+  of the app's own: in *Settings*, Cursor's *Sign-in*, *Sign in to
   Cursor...* (or `ailimits-auth login cursor`) opens Cursor's own sign-in
   page in the browser. Cursor has no sign-in for other apps, so the app
   signs in as the Cursor editor's client; it keeps that session (about 60
@@ -37,8 +37,8 @@ Notable, user-visible changes. Dates are release dates.
   `ailimits-auth logout cursor` forgets the session; the uninstaller removes
   it too. Grok Bot's share is an extra row, asked for only while that row is
   chosen.
-- **Rows and models, a window of its own.** Right-click, *Rows and
-  models...*: every row there is in one list, with a Widget column and a
+- **Settings, a window of its own.** Right-click, *Settings...*: every
+  row there is in one list, with a Widget column and a
   Tooltip column, so the widget and the panel's tooltip are chosen
   separately, and a Taskbar column for the two providers the taskbar panel
   and the tray icon show (untouched, both show the first two, as the panel
@@ -49,9 +49,9 @@ Notable, user-visible changes. Dates are release dates.
   display), so it sits as far from the top as from the bottom wherever the
   widget and the taskbar are, also when it grows. The window also
   opens by itself on a first start, and from a click on the widget while
-  nothing is chosen yet ("Choose what to show"), or while the rows chosen
-  have no data yet ("Nothing to show yet"). Resting the pointer on a model
-  part, the source of the model, an extra row or a "found on this PC" mark,
+  nothing is chosen yet ("Setup required"), or while the rows chosen
+  have no data yet ("No data yet"). Resting the pointer on a model
+  part, the source of the model, an extra row or a "detected" mark,
   or moving to it with the keyboard, shows what it means. It scrolls with
   the wheel, PageUp/PageDown and the arrow keys, follows the apps' light or
   dark mode, high contrast and Windows' text size, and puts the IME
@@ -75,11 +75,11 @@ Notable, user-visible changes. Dates are release dates.
   Claude adds later with a week of its own gets a row of its own the same
   way, as soon as Claude reports it, without an update of the app
   (`claude.haiku` in the config file, "Claude · Haiku" in the window).
-- **Model labels.** Three separate ticks - Model, Version, Effort - add the
-  model a tool is using to its provider's row ("Opus 5.5 · xhigh"), again
-  chosen separately for the widget and the tooltip. The model comes either
-  from the tool's settings file ("As set in the tool") or, for Claude Code
-  and Codex CLI, from the end of the newest session ("Last used", read
+- **Model labels.** Three separate ticks - Model, Version, Reasoning
+  effort - add the model a tool is using to its provider's row ("Opus 5.5 ·
+  xhigh"), again chosen separately for the widget and the tooltip. The model comes either
+  from the tool's settings file ("Tool settings") or, for Claude Code
+  and Codex CLI, from the end of the newest session ("Last session", read
   back from the end until the model turns up, at most 1 MB); the other
   tools keep showing the configured model. A Claude Code model chosen by
   its short name (`/model opus`) shows the effort saved for that model;
@@ -102,10 +102,10 @@ Notable, user-visible changes. Dates are release dates.
 - **Model names you choose.** The automatic name is made from the id the
   tool stores by one rule, with no table of names, so a new model needs no
   update (`claude-opus-5-5` reads "Opus 5.5"). Any model can be renamed in
-  the window, also before Model is ticked (the list then says where the
+  the window (*Model aliases*), also before Model is ticked (the list then says where the
   names show), from a list closed until opened: one heading per running
   tool, with the models it is known to offer and the one in use first and
-  marked. A model several tools share has one name and a field under each
+  marked "active". A model several tools share has one name and a field under each
   of them ("shared with ..."); a tool's own router (`auto`) is named per
   tool. Typing stops where the name would no longer fit the narrowest place
   the widget draws it, so a renamed model shows in full at every size.
@@ -123,9 +123,9 @@ Notable, user-visible changes. Dates are release dates.
   (PAC) is not followed, and a network that inspects TLS with its own root
   certificate is not trusted: its rows say so ("untrusted certificate,
   retrying").
-- **The taskbar panel can show when a limit resets.** Percent and Reset
-  time ticks of its own, in the Panel column of *Rows and models*, *What
-  shows* (`[ui.panel]`; the tooltip has a pair of its own in the Tooltip
+- **The taskbar panel can show when a limit resets.** Percentage and Time
+  to reset ticks of its own, in the Taskbar column of *Settings*, *Display*
+  (`[ui.panel]`; the tooltip has a pair of its own in the Tooltip
   column, `[ui.tooltip]`), decide what each of the panel's two rows shows: the
   percentage with its bar, as before and by default; the time alone before
   the bar ("2h14 ▬▬"); or both, with the bar between them ("25% ▬▬ 2h14";
@@ -135,43 +135,43 @@ Notable, user-visible changes. Dates are release dates.
   **Progress bar** tick (on by default) leaves the bar out for a narrower
   panel ("25%", "2h14", "25%  2h14"); the panel is as long as what it
   shows. Asked for in #2 by JCauz.
-- **The widget chooses what its rows show, the bar too.** *Rows and models*
-  has two tabs: *Rows*, which rows show where, and *What shows*, with a
-  Widget, a Tooltip and a Panel column for Percent, Reset time and Progress
-  bar (`[ui.widget]`, `[ui.tooltip]`, `[ui.panel]`) and the model label's
-  Model, Version and Effort. One of the three always stays on wherever it
+- **The widget chooses what its rows show, the bar too.** *Settings*
+  has two tabs: *Providers*, which rows show where, and *Display*, with a
+  Widget, a Tooltip and a Taskbar column for Percentage, Time to reset and
+  Progress bar (`[ui.widget]`, `[ui.tooltip]`, `[ui.panel]`) and the model
+  label's Model, Version and Reasoning effort. One of the three always stays on wherever it
   shows, so nothing is ever empty: the last tick on there cannot be taken off
   and says why. Without its bar a Compact or Medium widget row is one line
   ("Claude   2h 14min  25%") and the widget is only as wide as its texts; an
   Expanded row keeps the line of its weekly limit; a narrower width step
   drops the reset before the name. Without their bars the columns (the
-  Vertical layout) are their texts stacked, the percentage in the bar's
+  menu's Columns) are their texts stacked, the percentage in the bar's
   colour, the name and the reset time, and the widget is that much lower.
   The panel can show its bar alone.
-  Untouched, the widget looks as it always did. On *Rows*, each provider
+  Untouched, the widget looks as it always did. On *Providers*, each provider
   has a dot for how it runs (green: it brings numbers; yellow: it runs
   without them, loading, retrying or not signed in; hollow: off), a hairline
-  sets the providers apart, an extra row is one line ("+ Opus  weekly",
-  the rest on hover), and the sign-in is a chip under its rows ("Sign-in
-  Claude Code · works").
-- **The tray icon has other looks.** *What shows*, *Tray icon* (`[ui.tray]
-  style`): the two rings, as before and by default; two upright bars, like a
+  sets the providers apart, an extra row is one line ("+ Opus  Weekly
+  limit", the rest on hover), and the sign-in is a chip under its rows
+  ("Sign-in Claude Code · connected").
+- **The tray icon has other looks.** *Display*, *Tray icon style*
+  (`[ui.tray] style`): the two rings, as before and by default; two upright bars, like a
   level meter; the busier provider's percentage in digits; or its slice of a
   disc, like a clock face. Each is monochrome in the taskbar's theme, and the
   tooltip names both providers.
-- ***Rows and models* is a window like any program's.** It stays open until
+- ***Settings* is a window like any program's.** It stays open until
   Esc, its cross or Alt+F4 closes it: a click beside it and another window
   taking the focus no longer close it. It moves by its title and opens
   where it was left the next time (until the app restarts), is in the
   taskbar and Alt+Tab so it can be found behind other windows, and stays on
   top only while it is the window in use. The same goes for the welcome
   and the update notice.
-- ***Rows and models* opens out of the widget's way.** It opens on the side
+- ***Settings* opens out of the widget's way.** It opens on the side
   away from the nearer edge of the screen, and never where the widget
   grows as rows are ticked (to the right for columns, downwards for rows,
   the other way near the screen's edge), so a row ticked comes into sight
   at once instead of under the window.
-- **Descriptions in *Rows and models* wait for the pointer.** One shows after
+- **Descriptions in *Settings* wait for the pointer.** One shows after
   the pointer has rested 0.6 s on what it describes, as Windows' tooltips do,
   and the next one straight after follows sooner; on keyboard focus it shows
   at once. Nothing runs while none is due.
@@ -184,17 +184,17 @@ Notable, user-visible changes. Dates are release dates.
   read: a weekly pool stays the long window, a five-hour one would be a
   session window of its own.
 - **The tooltip's percentage and reset time, chosen.** Two ticks in the
-  Tooltip column of *Rows and models*, *What shows*, Percent and Reset time
+  Tooltip column of *Settings*, *Display*, Percentage and Time to reset
   (`[ui.tooltip]`), decide what each row of the taskbar panel's tooltip
   shows: the percentage, the time left until the limit it shows resets
   ("Claude 25% · 2h 14min"), or either alone ("Claude 2h 14min"). By
   default both: the tooltip gives each provider a line of its own with when
-  it resets, where 0.7.0 had one line of percentages (untick Reset time to
+  it resets, where 0.7.0 had one line of percentages (untick Time to reset to
   get that line back). The time no longer depends on a model label or an
   extra row being shown.
 - **The context menu shows a look before you click it.** Resting the
   pointer (or the keyboard) on a detail level, a layout, a width, the
-  arrangement, Forecast, a palette, Monochrome, an opacity, a brightness or
+  column layout, Usage forecast, a palette, Monochrome, an opacity, a brightness or
   a saturation shows it at once on the widget, the taskbar panel and the
   tray icon; a click keeps it, and closing the menu without one puts back
   what was there. Nothing is saved until the click. The menu stays Windows'
@@ -210,7 +210,7 @@ Notable, user-visible changes. Dates are release dates.
   every 2 seconds while you are at the PC (every 30 while you are away), one
   metadata call each time, and redoes only what changed. A change made in the
   app meanwhile is kept, and the app's own saves are never taken for edits.
-  *Settings file...* at the end of *Rows and models* opens the file in
+  *Edit config.toml...* at the end of *Settings* opens the file in
   Notepad, in a Microsoft Store copy too, whose own settings folder Windows
   keeps with the package. A line that does not read (a value of the wrong
   kind, a typo, a missing value) is left out and its default used: one
@@ -230,7 +230,7 @@ Notable, user-visible changes. Dates are release dates.
   ink on a dark and on a light taskbar, its tooltip's size), `[tune.tray]`
   (the tray rings' width and gap) and `[tune.format]` (the usage at which the
   middle and high colours start, and how the widget writes a time left:
-  "2d 5h", "2d5h" or "2d 5h 12min"). *Settings file...* opens the file, and
+  "2d 5h", "2d5h" or "2d 5h 12min"). *Edit config.toml...* opens the file, and
   a saved edit applies within about two seconds (the entry above). Every
   key is optional and defaults to today's look; a value out of range is
   held to its range, and a mistyped one costs only that key. The guide,
@@ -250,14 +250,14 @@ Notable, user-visible changes. Dates are release dates.
 - **The tray icon shows the same two providers as the taskbar panel.**
   Untouched, both show the first two in the widget, the busier on the outer
   ring; 0.7.0's rings took the two busiest of all. The Taskbar column of
-  *Rows and models* chooses for both, as before. Its tooltip now says what
+  *Settings* chooses for both, as before. Its tooltip now says what
   the panel's does: the rows ticked in the Tooltip column, with the
   percentage and the reset time as chosen there.
 - **Nothing that belongs to another tool is read before you allow it.**
   Each tool's sign-in, the settings files and the session files are asked
   about once, before their first read, and the question names the files
   and where a token is sent. A fresh install reads nothing: the widget and
-  the tray say "Choose what to show", and the window opens as a welcome
+  the tray say "Setup required", and the window opens as a welcome
   whose question has a tick for each tool found on this PC - found by
   whether its folder exists, with nothing inside opened - and names each
   file it would read and where each token goes. Tools found by a folder of
@@ -279,24 +279,24 @@ Notable, user-visible changes. Dates are release dates.
   earlier version did not have starts switched off and asks when ticked.
 - **Unticking stops reading.** Untick every row of a provider and nothing of
   it is read any more until it is ticked and allowed again; its cached
-  numbers are cleared too. Unticking Model, Version and Effort takes back
-  the settings and session reads, and switching back to "As set in the
-  tool" takes back the session read; the next tick asks again. A key or
+  numbers are cleared too. Unticking Model, Version and Reasoning effort takes
+  back the settings and session reads, and switching back to "Tool
+  settings" takes back the session read; the next tick asks again. A key or
   usage token you paste, or Cursor's sign-in, allows that alone: such a
   provider never falls back to the tool's own sign-in.
-- **Sign-in moves into *Rows and models*; the source you choose is the only
+- **Sign-in moves into *Settings*; the source you choose is the only
   one.** The context menu's Providers submenu is gone. Each provider has a
   *Sign-in* line under its rows that says where its sign-in comes from and
-  how it went ("Claude Code · works"), and opens to choose: Claude Code's
-  sign-in, a usage token or an API key you paste (Claude); Codex CLI's
-  sign-in or a usage token (Codex); GitHub CLI's sign-in or a fine-grained
-  token you paste, which needs no permissions (Copilot); the CLI's own
-  sign-in (Antigravity, Grok); *Sign in to Cursor...*, with a wait that
+  how it went ("Claude Code · connected"), and opens to choose: *Claude
+  Code account*, *Usage token* or *API key* (Claude); *Codex CLI account*
+  or *Usage token* (Codex); *GitHub CLI account* or *Fine-grained token*,
+  which needs no permissions (Copilot); the CLI's own account (*Antigravity
+  CLI account*, *Grok CLI account*); *Sign in to Cursor...*, with a wait that
   *Cancel* ends, then *Sign out* (Cursor). Only the source chosen is read or
   sent; none stands in for another when it fails, so a refused pasted usage
   token says so ("usage token rejected", for Claude and Codex) and the hover
-  on a key or token of your own says to paste a new one in *Rows and
-  models*. A usage token is checked with the provider before it is stored
+  on a key or token of your own says to paste a new one in
+  *Settings*. A usage token is checked with the provider before it is stored
   (Claude, Codex); a key is stored, and the row says whether it works.
   *Remove* is offered only while something is stored. What an action came to
   is said in the window, and as a toast only while the window is closed. A
@@ -369,7 +369,7 @@ Notable, user-visible changes. Dates are release dates.
   by itself, and the next start says so once. Store, Scoop, portable and
   self-built copies have no *Automatic updates* item, as something else
   updates them.
-- **Pasting a key or usage token checks it first.** In *Rows and models*,
+- **Pasting a key or usage token checks it first.** In *Settings*,
   only a secret of the kind asked for is taken (`sk-ant-...`; `ghp_...`,
   `github_pat_...`, `gho_...`, `ghu_...` or a classic GitHub token; a
   ChatGPT token `eyJ...`, now also when it is longer than 500 characters);
@@ -392,8 +392,8 @@ Notable, user-visible changes. Dates are release dates.
 - **No raw keyboard and mouse input.** The app uses none, but the window
   library registered every keyboard and mouse for it: a wake-up per mouse
   move while a window of AI Limits was in front, and a pattern that
-  behaviour-watching antivirus links to key loggers. Typing into Rows and
-  models works as before.
+  behaviour-watching antivirus links to key loggers. Typing into Settings
+  works as before.
 - **The exes and the installer describe themselves in full**: product name
   AI Limits, publisher, copyright and version in their file properties
   (Task Manager now names the process "AI Limits").

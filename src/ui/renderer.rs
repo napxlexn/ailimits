@@ -115,13 +115,13 @@ const WIDEST_PROVIDER_NAME: &str = "Antigravity";
 /// Size of a model label on Expanded's line of its own.
 const MODEL_EXPANDED_SIZE: f32 = 11.0;
 /// The first-install lines (rows.js `widgetPixmap`).
-const CHOOSE_TITLE: &str = "Choose what to show";
-const CHOOSE_LINE: &str = "Click here. Nothing is read until you choose.";
+const CHOOSE_TITLE: &str = "Setup required";
+const CHOOSE_LINE: &str = "Click to set up. Nothing is read until then.";
 /// Rows are chosen, but none of them has anything to show now
 /// (`BodyLayout::Unshown`): an extra row the plan does not have, a row of a
 /// provider that is not connected. A click opens the picker.
-const UNSHOWN_TITLE: &str = "Nothing to show yet";
-const UNSHOWN_LINE: &str = "The rows chosen have no data. Click to choose.";
+const UNSHOWN_TITLE: &str = "No data yet";
+const UNSHOWN_LINE: &str = "Selected rows have no data. Click to change.";
 
 /// Bar and text colors, accounting for staleness and estimation —
 /// both render grey. Stale data greys even while a reset is still ahead: the
@@ -2015,7 +2015,7 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
     // A key or token the user pasted: running the tool would not mend it.
     let own = ["usage token", "API key", "has no Copilot access"];
     if own.iter().any(|w| cause.contains(w)) {
-        return Some(format!("{cause} — paste a new one in Rows and models"));
+        return Some(format!("{cause} — paste a new one in Settings"));
     }
     let action = match data.id {
         ProviderId::Claude => "run Claude Code",
@@ -2025,7 +2025,7 @@ pub fn hover_reason(data: &ProviderData, errors: &HashMap<ProviderId, String>) -
         // its own.
         ProviderId::Antigravity => "run agy",
         ProviderId::Grok => "run Grok CLI",
-        // Its Sign-in in Rows and models mends every Cursor session.
+        // Its Sign-in in Settings mends every Cursor session.
         ProviderId::Cursor => "sign in to Cursor",
     };
     Some(format!("{cause} — {action}"))
@@ -4244,7 +4244,7 @@ mod tests {
 
 // ─── Picker ──────────────────────────────────────────────────────
 //
-// The "Rows and models" window (ui/picker.rs) lays itself out as shapes in
+// The Settings window (ui/picker.rs) lays itself out as shapes in
 // logical pixels; this paints them at the window's scale factor in the
 // colours of `PickerTheme`. The text is the widget's own font: bold and
 // italic are made from it (a slight spread to the right, a shear), so no

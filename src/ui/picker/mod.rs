@@ -1,4 +1,4 @@
-// ui/picker/mod.rs — the "Rows and models" window: the app's own window,
+// ui/picker/mod.rs — the "AI Limits Settings" window: the app's own window,
 // drawn by the renderer, that chooses rows, model labels and model names, and
 // asks before each read of another tool's files.
 //
@@ -103,7 +103,7 @@ pub enum PickerAction {
     /// The user allowed a read in the picker's question. Sent before the tick
     /// that needed it.
     Allow(ReadKind),
-    /// Allow all: the sign-in of another tool found on this PC may be read
+    /// Allow all: the sign-in of another detected tool may be read
     /// from now on, so its first tick asks nothing. It is not switched on
     /// and none of its rows is ticked: it runs once a row of it is.
     Consent(String),
@@ -602,13 +602,13 @@ fn canonical(id: &str) -> &str {
 
 // ─── UI text ─────────────────────────────────────────────────────
 
-const TITLE_ROWS: &str = "Rows and models";
-const TAB_ROWS: &str = "Rows";
-const TAB_SHOWS: &str = "What shows";
-const SECT_NUMBERS: &str = "ON EVERY ROW";
-const SECT_MODEL: &str = "MODEL LABEL";
-const SECT_TRAY: &str = "TRAY ICON";
-const PANEL: &str = "Panel";
+const TITLE_ROWS: &str = "AI Limits Settings";
+const TAB_ROWS: &str = "Providers";
+const TAB_SHOWS: &str = "Display";
+const SECT_NUMBERS: &str = "VALUES";
+const SECT_MODEL: &str = "MODEL";
+const SECT_TRAY: &str = "TRAY ICON STYLE";
+const PANEL: &str = "Taskbar";
 const DASH: &str = "\u{2013}";
 const TRAY_NOTE: &str = "The icon shows with Indicator set to Tray icon in the menu, and stands in for the panel while the Start menu covers it.";
 
@@ -631,7 +631,7 @@ const TRAY_STYLES: [(TrayStyle, &str, &str); 4] = [
     ),
     (
         TrayStyle::Sector,
-        "Sector",
+        "Pie",
         "The busier provider's share as a slice of a disc, like a clock face. The other is in the tooltip.",
     ),
 ];
@@ -639,29 +639,25 @@ const TRAY_STYLES: [(TrayStyle, &str, &str); 4] = [
 /// Why the last tick on there cannot be taken off.
 fn lock_hint(place: NumbersOn) -> &'static str {
     match place {
-        NumbersOn::Widget => {
-            "One of Percent, Reset time and Progress bar stays on, so the widget is never empty."
-        }
-        NumbersOn::Tooltip => {
-            "One of Percent and Reset time stays on, so the tooltip is never empty."
-        }
+        NumbersOn::Widget => "At least one value stays enabled, so the widget is never empty.",
+        NumbersOn::Tooltip => "At least one value stays enabled, so the tooltip is never empty.",
         NumbersOn::Panel => {
-            "One of Percent, Reset time and Progress bar stays on, so the panel is never empty."
+            "At least one value stays enabled, so the taskbar panel is never empty."
         }
     }
 }
 const TITLE_WELCOME: &str = "Welcome to AI Limits";
-const TITLE_NOTICE: &str = "What AI Limits reads";
-const FOUND: &str = "found on this PC";
-const ONE_LIMIT: &str = "One limit for every model";
-const OFF_IN_MENU: &str = "Switched off: tick a row to switch it on";
-const NOT_REPORTED: &str = "Not reported right now; shows once it is";
+const TITLE_NOTICE: &str = "Data access";
+const FOUND: &str = "detected";
+const ONE_LIMIT: &str = "Single limit for all models";
+const OFF_IN_MENU: &str = "Disabled. Select a row to enable";
+const NOT_REPORTED: &str = "Not reported by the provider yet";
 const READ_NOTE: &str =
     "Read from each running tool's own settings file; asked before the first read.";
-const MODEL_SHOWN: &str = "Model shown";
-const SOURCE_SET: &str = "As set in the tool";
-const SOURCE_LAST: &str = "Last used";
-const NAMES: &str = "Model names";
+const MODEL_SHOWN: &str = "Model source";
+const SOURCE_SET: &str = "Tool settings";
+const SOURCE_LAST: &str = "Last session";
+const NAMES: &str = "Model aliases";
 const SIGN_IN: &str = "Sign-in";
 const SIGN_IN_HINT: &str = "Where AI Limits gets this provider's sign-in from, and how it went. Open it to choose, to paste a key or token of your own, or to remove one.";
 const REMOVE: &str = "Remove";
@@ -677,18 +673,18 @@ const NAMES_ON: &str =
 /// given already, and this says where it will show.
 const NAMES_WHERE: &str =
     "Your names show where Model is ticked: tick Model above, in the Widget or Tooltip column, to see them.";
-const NAMES_HINT: &str = "Your own name for a model, shown everywhere instead of the automatic one. Listed are the models each running tool is known to offer and the one it uses now, marked in use.";
-const IN_USE: &str = "in use";
+const NAMES_HINT: &str = "Your own name for a model, shown everywhere instead of the automatic one. Listed are the models each running tool is known to offer and the one it uses now, marked active.";
+const IN_USE: &str = "active";
 const SOURCE_SET_HINT: &str =
     "The model chosen in each tool's settings, whatever a session is using.";
 const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI session, read from the end of its file. The other tools show the model as set.";
 /// The link at the list's end, and what it says on hover.
-const SETTINGS_FILE: &str = "Settings file...";
+const SETTINGS_FILE: &str = "Edit config.toml...";
 const SETTINGS_FILE_HINT: &str = "Fine-tuning that has no place in this window: sizes, colours, thresholds. Opens config.toml in Notepad; changes apply when you save.";
 const ALLOW_ALL: &str = "Allow all";
 const ALLOW_ALL_LEAD: &str =
-    "Allow all also allows the other tools found on this PC, so ticking them later asks nothing. Their rows stay unticked:";
-const FOUND_TITLE: &str = "Show the tools found on this PC?";
+    "Allow all also allows the other detected tools, so ticking them later asks nothing. Their rows stay unticked:";
+const FOUND_TITLE: &str = "Show the detected tools?";
 const FOUND_LEAD: &str = "Tick the tools to show. For each one ticked, AI Limits reads:";
 const FOUND_OUTRO: &str = "Each sign-in stays on this PC and goes only to the service named with it, to ask for your usage. A tool's own token is never changed or refreshed. Cancel to tick the tools yourself; untick a tool's rows to stop.";
 /// Ordinary text for the "room left" estimate: what typing would add.
@@ -709,20 +705,20 @@ fn count_of(n: usize, one: &str) -> String {
 const TIP_PARTS: [(TipPart, &str, &str, &str); 3] = [
     (
         TipPart::Percent,
-        "Percent",
+        "Percentage",
         "25% · 48%",
         "How much of the limit is used, as a number.",
     ),
     (
         TipPart::Reset,
-        "Reset time",
+        "Time to reset",
         "2h 14min · 4d 3h",
         "How long until the limit the row shows resets. On the panel it follows the bar, or stands in the percentage's place when that is left out.",
     ),
     (
         TipPart::Bar,
         "Progress bar",
-        "the bar under or beside it",
+        "under or beside the values",
         "The bar of each row in the widget and on the taskbar panel; the tooltip has none. Without it each widget row is one line and the panel takes less of the taskbar. The Vertical layout is made of its bars and keeps them.",
     ),
 ];
@@ -747,7 +743,7 @@ const PARTS: [(ModelPart, &str, &str); 3] = [
     (ModelPart::Version, "Version", "5.5 · 6.1 Sol · 4.7"),
     (
         ModelPart::Effort,
-        "Effort",
+        "Reasoning effort",
         "low · medium · high · xhigh · max",
     ),
 ];
@@ -860,7 +856,7 @@ enum Target {
     CursorSignIn,
     CursorCancel,
     CursorSignOut,
-    /// The "Settings file..." link.
+    /// The "Edit config.toml..." link.
     SettingsFile,
 }
 
@@ -1586,7 +1582,7 @@ impl Picker {
     }
 
     /// What the window is called (screen readers say it): the welcome, the
-    /// notice or "Rows and models", as it opened.
+    /// notice or "AI Limits Settings", as it opened.
     pub fn title(&self) -> &'static str {
         match self.view() {
             View::Rows { welcome: true } => TITLE_WELCOME,

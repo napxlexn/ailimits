@@ -417,7 +417,7 @@ impl Dimensions {
 
 // ─── Picker ──────────────────────────────────────────────────────
 
-/// Colours of the "Rows and models" window (ui/picker.rs). It follows
+/// Colours of the Settings window (ui/picker.rs). It follows
 /// Windows' apps mode, light or dark, like the app's other windows, and High
 /// contrast's own colours when that is on; the light and dark values are the
 /// workshop mock's (design/workshop/countdown/page.html, `.rpk`). Separate

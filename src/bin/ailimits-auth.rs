@@ -95,7 +95,7 @@ fn print_usage() {
     println!("By default everything works through subscriptions, no keys needed:");
     println!("  Claude — Claude Code token, Codex — Codex CLI token, Copilot — gh CLI token,");
     println!("  Antigravity — Antigravity CLI token, Grok — Grok CLI login,");
-    println!("  Cursor — its own session: sign in once (login cursor, or in Rows and models).");
+    println!("  Cursor — its own session: sign in once (login cursor, or in Settings).");
 }
 
 /// Key label for a provider.
@@ -616,9 +616,7 @@ fn logout(provider: Option<&str>) -> Result<()> {
 fn own_cursor_session() -> String {
     let now = utc::now();
     match session::load() {
-        Ok(None) => {
-            "— (sign in with ailimits-auth login cursor, or in Rows and models)".to_string()
-        }
+        Ok(None) => "— (sign in with ailimits-auth login cursor, or in Settings)".to_string(),
         Ok(Some(s)) if s.ended => "ended by Cursor — sign in again".to_string(),
         Ok(Some(s)) => match s.expires_at {
             Some(exp) if s.is_expired(now) => {

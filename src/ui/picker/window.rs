@@ -245,7 +245,7 @@ impl PickerWindow {
     /// Open as `open` does, but leave the keyboard focus with the window in
     /// use: for the welcome or the update notice opening by itself (at
     /// start-up, after an update), so it never takes a keystroke meant for
-    /// another window. A click on it, or "Rows and models..." from the menu
+    /// another window. A click on it, or "Settings..." from the menu
     /// (`focus`), gives it the focus.
     pub fn open_quietly<T: 'static>(
         target: &EventLoopWindowTarget<T>,

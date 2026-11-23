@@ -131,7 +131,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "Cursor",
         tool_sign_in: false,
         sign_in: &[
-            "no file of Cursor's: you sign in from Rows and models (Cursor, Sign-in, Sign in to Cursor...) on Cursor's own sign-in page, cursor.com",
+            "no file of Cursor's: you sign in from Settings (Cursor, Sign-in, Sign in to Cursor...) on Cursor's own sign-in page, cursor.com",
             "the app signs in as the Cursor editor's client and keeps that session in Windows Credential Manager (ailimits/cursor_session)",
         ],
         hosts: &["api2.cursor.sh"],
@@ -177,7 +177,7 @@ pub fn found_surely(id: &str) -> bool {
     })
 }
 
-/// What the "found on this PC" mark says on hover.
+/// What the "detected" mark says on hover.
 pub fn found_hint(id: &str, sure: bool) -> &'static str {
     match (id, sure) {
         ("copilot", false) => {

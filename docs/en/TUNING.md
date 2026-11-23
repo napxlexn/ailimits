@@ -1,6 +1,6 @@
 # TUNING.md — fine-tuning in config.toml
 
-The context menu and *Rows and models* cover what most people change. For
+The context menu and *Settings* cover what most people change. For
 finer control over the widget, the taskbar panel and the tray icon (sizes,
 spacing, colours, the usage at which a colour changes, how times read) the
 config file has four tables of its own: `[tune.widget]`, `[tune.panel]`,
@@ -18,8 +18,8 @@ costs only that key, never the rest of the file (see [Notes](#notes)).
 
 ### Opening it
 
-Right-click the widget, the tray icon or the taskbar panel, choose *Rows and
-models...*, and click *Settings file...* at the end of the list. The file
+Right-click the widget, the tray icon or the taskbar panel, choose *Settings...*,
+and click *Edit config.toml...* at the end of its *Display* tab. The file
 opens in Notepad (`%SystemRoot%\System32\notepad.exe`). Any other editor
 works too.
 
@@ -52,10 +52,10 @@ the file's size and time (nothing is read until they change):
 - every 2 seconds while you are at the PC (any input in the last 5
   minutes), so a saved edit shows within about 2 seconds;
 - every 30 seconds while you are away, except for 30 minutes after
-  *Settings file...* opened it: then every 2 seconds, away or not (click
+  *Edit config.toml...* opened it: then every 2 seconds, away or not (click
   the link again for another 30 minutes);
 - besides, once per update cycle, right before it carries out a click in
-  the context menu or in *Rows and models*, and when it quits.
+  the context menu or in *Settings*, and when it quits.
 
 Only what changed is redone: a `[tune]` edit redraws the widget, the panel
 and the tray icon, and nothing is fetched again.
@@ -145,8 +145,8 @@ place of it.
 | `high` | The colour of a high usage (from `high_at`), and of the forecast ("~1h 30min"). | `"#rrggbb"` | the palette's | any colour |
 | `provider_colors` | A colour for the names of a provider's rows, by provider id: `claude`, `codex`, `copilot`, `antigravity`, `grok`, `cursor`. | table of `"#rrggbb"` | none: every name grey | any colour |
 
-The rows layout is the menu's *Horizontal* (bars lying down), the columns
-layout its *Vertical*. Under a `padding_scale` of about 0.5 the round
+The rows layout is the menu's *Rows* (bars lying down), the columns
+layout its *Columns*. Under a `padding_scale` of about 0.5 the round
 corners clip the text in them; `corners = "square"` does not.
 
 About the colours:
@@ -312,8 +312,8 @@ tray_gap = 4
 
 A key left out of `[ui.panel]` keeps the panel's default (the percentage,
 with its bar), so `bar = false` alone gives the percentage without its bar.
-*Rows and models* sets the same three keys (Percent, Reset time and Progress
-bar in the Taskbar column) and writes `[ui.panel]` once you change them
+*Settings* sets the same three keys (Percentage, Time to reset and Progress
+bar in the Taskbar column of its *Display* tab) and writes `[ui.panel]` once you change them
 there; if your file has the table already, change the keys in it.
 
 To keep the bar, but shorter and thinner:
@@ -403,7 +403,7 @@ the file than the menu offers. They are described in the
 | Setting | What it does |
 |---|---|
 | `[general] panel_offset_x`, `panel_offset_y` | Nudge the panel after it is placed, by -200 to 200 pixels, in either direction and across the taskbar too. Unlike `[tune.panel] tray_gap`, they do not change the room the panel asks of the taskbar: a repair for shells and layouts where the placement misses. |
-| `[ui.panel] percent`, `reset`, `bar` | What each row of the panel shows; also in *Rows and models*, Taskbar column. `[tune.panel]` sizes what they show. |
+| `[ui.panel] percent`, `reset`, `bar` | What each row of the panel shows; also in *Settings*, *Display*, Taskbar column. `[tune.panel]` sizes what they show. |
 | `alert_threshold` in each `[[providers]]` | The usage, in percent, at which that provider's notification comes. `[tune.format] mid_at` and `high_at` never change it. |
 | `[notifications] cooldown_minutes` | The shortest time between two notifications of one provider. |
 | `[general] update_interval_secs` | Seconds between updates: any value from 60 (a smaller one reads as 60), where the menu offers 1, 5, 15 and 30 minutes. |

@@ -926,7 +926,7 @@ fn the_welcome_ticks_the_tools_found_and_asks_once_for_all() {
     let mut p = picker(welcome(vec!["claude", "codex", "grok"]));
     let text = texts(&p);
     assert!(text.starts_with(TITLE_WELCOME));
-    assert!(text.contains("Show the tools found on this PC?"));
+    assert!(text.contains("Show the detected tools?"));
     for id in ["claude", "codex", "grok"] {
         let info = crate::consent::read_info(id).unwrap();
         let flat = text.replace('\n', " ");
@@ -1092,7 +1092,7 @@ fn the_welcome_starts_with_nothing_ticked_and_marks_found_tools() {
     assert_eq!(click(&mut p, &Target::Cancel), [PickerAction::NoticeDone]);
     let text = texts(&p);
     assert!(text.starts_with(TITLE_WELCOME));
-    assert!(text.contains("Tick the tools you use."));
+    assert!(text.contains("Select the tools you use."));
     assert_eq!(text.lines().filter(|l| *l == FOUND).count(), 3);
     assert!(ticked_targets(&p).is_empty());
     // No tool found: no question at all.
@@ -1701,7 +1701,9 @@ fn the_widget_the_tooltip_and_the_panel_choose_what_rows_show() {
     on_tab(&mut p, Tab::Shows);
     let text = texts(&p);
     assert!(
-        text.contains("Percent") && text.contains("Reset time") && text.contains("Progress bar"),
+        text.contains("Percentage")
+            && text.contains("Time to reset")
+            && text.contains("Progress bar"),
         "{text}"
     );
     for part in [TipPart::Percent, TipPart::Reset, TipPart::Bar] {

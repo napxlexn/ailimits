@@ -41,16 +41,17 @@ Ground rules that apply to every provider:
   provider leaves the other providers alone (and their caches: gh's token,
   Cursor's plan, Antigravity's project).
 - **Only the source chosen.** Each provider's sign-in comes from the one
-  source chosen under its rows in Rows and models (Sign-in), saved as
+  source chosen under its rows in Settings (Sign-in), saved as
   `auth_method` (see CONFIG.md): the tool's own sign-in, or a key or usage
   token you pasted. No other source stands in when that one fails, so a
   refusal is shown as one, never hidden behind another account's numbers.
-  The closed Sign-in reads "Not allowed yet" until its sign-in is allowed
-  (`[reads]`), then "<source> · none stored" (a key or token chosen but not
-  stored), "<source> · off" (the provider is off), or "<source> · " and how
-  the last answer went: "works", "no sign-in found", "checking" or the
-  row's error words. `<source>` is the source's short name ("Claude Code",
-  "Your usage token", "Your API key"). Cursor's reads "Not signed in",
+  The closed Sign-in reads "Not authorized" until its sign-in is allowed
+  (`[reads]`), then "<source> · not set" (a key or token chosen but not
+  stored), "<source> · disabled" (the provider is off), or "<source> · " and
+  how the last answer went: "connected", "not found", "verifying" or the
+  row's error words ("error" when it has none). `<source>` is the source's
+  short name ("Claude Code", "Usage token", "API key", "Fine-grained
+  token"). Cursor's reads "Not signed in",
   "Waiting for the browser" or "Signed in · " and the same words (only
   "Signed in" while Cursor is off).
 
@@ -97,7 +98,7 @@ requests, exactly:
   else (another status, no answer) stores it with a note that it was not
   checked. `ailimits-auth set-usage-token` asks again after 2 s and 4 s
   while the answer is neither, at most 3 requests.
-- **Copilot**: with GitHub CLI's sign-in chosen,
+- **Copilot**: with GitHub CLI account chosen,
   `gh auth token --hostname github.com` at most once every 15 minutes, its
   failures included, plus one run right away when the server
   refuses (401/403) a gh token kept from an earlier cycle: gh 2.103.0 and
@@ -145,27 +146,27 @@ Every error keeps the last real data, greyed with its age.
 The provider's own states are listed in each section. An `AuthError` (only
 a key or token you gave: a Claude API key, a Copilot token, a Claude or
 Codex usage token) shows "check the key", and its hover reads "<status> —
-paste a new one in Rows and models"; a row without a key of yours never
+paste a new one in Settings"; a row without a key of yours never
 does.
 
 ## Claude
 
 ### Token sources — the one chosen (`fetch`)
 
-Claude's Sign-in in Rows and models offers three sources; `auth_method`
+Claude's Sign-in in Settings offers three sources; `auth_method`
 keeps the one chosen, and only that one is used:
 
-1. **Claude Code's sign-in** (`"subscription"`, the default) —
+1. **Claude Code account** (`"subscription"`, the default) —
    `%USERPROFILE%\.claude\.credentials.json` → `claudeAiOauth.accessToken`
    (skipped when `expiresAt` is in the past), only when `[reads] sign_in`
    allows it.
-2. **A usage token you paste** (`"usage_token"`) — Credential Manager label
-   `claude_usage_token` (Rows and models: Claude, Sign-in, *Paste token from
+2. **Usage token** (`"usage_token"`) — Credential Manager label
+   `claude_usage_token` (Settings: Claude, Sign-in, *Paste token from
    clipboard*; CLI: `ailimits-auth set-usage-token claude`). Refused
    (401/403) → `AuthError("usage token rejected")`; it is then not sent again
    for 30 minutes. Claude Code's sign-in is not read in its place. Before
    it is stored, it is checked once (see Requests per cycle).
-3. **An API key you paste** (`"api_key"`) — see API key below.
+3. **API key** (`"api_key"`) — see API key below.
 
 With source 1 or 2 (`fetch_via_subscription`):
 
@@ -249,11 +250,11 @@ minutes — a server-side ceiling.
 
 ### API key (optional)
 
-`auth_method = "api_key"`, label `claude_api_key` (Rows and models: Claude,
-Sign-in, *An API key you paste*, *Paste key from clipboard*; CLI:
+`auth_method = "api_key"`, label `claude_api_key` (Settings: Claude,
+Sign-in, *API key*, *Paste key from clipboard*; CLI:
 `ailimits-auth set claude`). The key is read only while `credential_label`
 is `claude_api_key` (pasting sets it); any other value reads nothing, and
-the Sign-in then reads "Your API key · no sign-in found". One request per
+the Sign-in then reads "API key · not found". One request per
 cycle:
 
 ```
@@ -268,18 +269,18 @@ Limits come from the response headers
 and `Tokens` (session windows), each only when its headers are there; a 429
 still carries them and is read. 401 → `AuthError("invalid API key")` (the
 row says "check the key"; the hover "invalid API key — paste a new one in
-Rows and models"); a 200 without the headers →
+Settings"); a 200 without the headers →
 `NetworkError("no ratelimit headers in response")`; any other status without
 them, or no answer → the shared words. The API key chosen and none stored →
-`NotConfigured`: the row is hidden, and the Sign-in reads "Your API key ·
-none stored". This monitors API rate limits, not the subscription.
+`NotConfigured`: the row is hidden, and the Sign-in reads "API key ·
+not set". This monitors API rate limits, not the subscription.
 
 ## OpenAI Codex (subscription only)
 
-Token sources: Codex's Sign-in in Rows and models offers two;
+Token sources: Codex's Sign-in in Settings offers two;
 `auth_method` keeps the one chosen, and only that one is used:
 
-1. **Codex CLI's sign-in** (`"subscription"`, the default) — `auth.json` in
+1. **Codex CLI account** (`"subscription"`, the default) — `auth.json` in
    the CLI's home: `%CODEX_HOME%\auth.json` when `CODEX_HOME` is set to an
    absolute path, otherwise `%USERPROFILE%\.codex\auth.json` (a relative
    `CODEX_HOME`: no file is read at all) → `tokens.access_token`; only when
@@ -287,8 +288,8 @@ Token sources: Codex's Sign-in in Rows and models offers two;
    keeps its sign-in in a file: with `cli_auth_credentials_store =
    "keyring"` or `"auto"` in its `config.toml` there is no `auth.json`, and
    the sign-in cannot be read. Set it to `"file"`, or paste a usage token.
-2. **A usage token you paste** (`"usage_token"`) — label `codex_usage_token`
-   (Rows and models: Codex, Sign-in, *Paste token from clipboard*; CLI:
+2. **Usage token** (`"usage_token"`) — label `codex_usage_token`
+   (Settings: Codex, Sign-in, *Paste token from clipboard*; CLI:
    `ailimits-auth set-usage-token codex`). Refused (401/403) →
    `AuthError("usage token rejected")`, the row kept (greyed, last data
    kept); it is then not sent again for 30 minutes. Codex CLI's `auth.json`
@@ -335,12 +336,12 @@ there (no auth.json or no leave to read it, or an auth.json without
 
 ## GitHub Copilot (subscription only)
 
-Token sources: Copilot's Sign-in in Rows and models offers two;
+Token sources: Copilot's Sign-in in Settings offers two;
 `auth_method` keeps the one chosen, and only that one is used (gh is never
 run for a pasted token, and a stored token is never sent while GitHub
-CLI's sign-in is chosen):
+CLI account is chosen):
 
-1. **GitHub CLI's sign-in** (`"subscription"`, the default) —
+1. **GitHub CLI account** (`"subscription"`, the default) —
    `gh auth token --hostname github.com` (never another host,
    so a GitHub Enterprise sign-in or `GH_HOST` is not sent to github.com),
    spawned with `CREATE_NO_WINDOW` (found by Rust's own lookup: the app's
@@ -357,11 +358,11 @@ CLI's sign-in is chosen):
    the new token; gh giving the same token again, or none, sends nothing
    more. A token the server refused, the new one included, is not sent
    again for 15 minutes.
-2. **A fine-grained token you paste** (`"api_key"`) — label `copilot_pat`
-   (Rows and models: Copilot, Sign-in, *Paste token from clipboard*; CLI:
+2. **Fine-grained token** (`"api_key"`) — label `copilot_pat`
+   (Settings: Copilot, Sign-in, *Paste token from clipboard*; CLI:
    `ailimits-auth set copilot`). The token is read only while
    `credential_label` is `copilot_pat` (pasting sets it); any other value
-   reads nothing (the Sign-in then reads "... · no sign-in found"). GitHub
+   reads nothing (the Sign-in then reads "... · not found"). GitHub
    documents classic PATs (`ghp_...`) as not supported for Copilot CLI. A
    fine-grained PAT (`github_pat_...`) needs no permissions at all: verified
    live on 2026-11-21, a token with *Plan* and *Copilot Requests* (read),
@@ -429,7 +430,7 @@ by where the token came from. gh's token: 404 → `"no Copilot on this
 account"`, 401 → `"gh token rejected"`, 403 → `"no Copilot access"` (the row
 shows the words; the hover adds "check gh auth"). A pasted PAT: 401/403/404
 → `AuthError("token has no Copilot access")`, shown as "check the key" (the
-hover: "token has no Copilot access — paste a new one in Rows and models"). Any
+hover: "token has no Copilot access — paste a new one in Settings"). Any
 other status, no answer or a body cut off mid-transfer → the shared words
 (see Error states).
 
@@ -666,7 +667,7 @@ share of the same limit, its name cleaned (no control characters, at most
 it (`GrokBuild` → `Build`); other names, such as Chat, pass through. These
 shares are marked for their extra row only: never the Grok row's headline,
 its reset or its alerts. Build has a row of its own (`grok.build`) that can
-be ticked in *Rows and models...*; the other products stay in the data.
+be ticked in *Settings...*; the other products stay in the data.
 
 The body is protobuf JSON, which leaves zero values out: before any use the
 same call answered with no `creditUsagePercent` and no `productUsage` at all.
@@ -690,7 +691,7 @@ Not to be confused with:
 ## Cursor (subscription only)
 
 Token source: **only the widget's own session** — Credential Manager label
-`cursor_session` (Rows and models: Cursor, Sign-in, *Sign in to
+`cursor_session` (Settings: Cursor, Sign-in, *Sign in to
 Cursor...*; CLI: `ailimits-auth login cursor`). The widget signs in to
 Cursor by itself, on Cursor's own sign-in page, and owns this session, so
 it is the one Cursor
@@ -838,8 +839,8 @@ over, so it asks for the plan again:
 and `hasAvailableUsage: true`; a body with everything left out (an account
 without Grok Bot) gives no metric. It is marked for its extra row only, so
 it never takes over the headline, the reset or the alerts. Until the row is
-ticked, the picker says "Its share of the same limit, asked for once this
-row is ticked". On the verified account Grok, Cursor and Grok Bot share ONE
+ticked, the picker notes "Requested only while selected" under its
+"Share of Cursor–Grok limit". On the verified account Grok, Cursor and Grok Bot share ONE
 weekly pool (the same reset, the same percentage); how to show that is an
 open decision, so `isUnified` is carried as the metric's `unified_pool` for
 a later display to use. Any failure of this call only leaves the metric
@@ -870,7 +871,7 @@ Requests per cycle at the top.
 ## Model labels
 
 The model each tool is set to (or last used) and its effort, shown on a
-provider's own row when the Model, Version or Effort tick is on
+provider's own row when the Model, Version or Reasoning effort tick is on
 (`src/models`). These are local reads only: no request is made for them and
 nothing from these files is sent anywhere. Only the model id and the effort
 leave a reader; no other part of any file is kept.
@@ -886,8 +887,8 @@ They are read for every provider that runs (`Config::provider_active`),
 however it signs in: also for one set up only with the app's own sign-in (a
 pasted key or usage token, Cursor's sign-in of its own), whose tool's sign-in
 is never read. The settings question says so. Unticking the last of Model,
-Version and Effort on both surfaces sets both reads back to false;
-switching back to "As set in the tool" sets `last_session` back to false.
+Version and Reasoning effort on both surfaces sets both reads back to false;
+switching back to "Tool settings" sets `last_session` back to false.
 At most one read runs at a time; one asked for while another runs is done
 by the same worker right after it, and a read that was taken back reads
 nothing.
@@ -984,7 +985,7 @@ Never read for labels: `%USERPROFILE%\.claude.json`,
 sign-in file, any entry of Cursor's database but the one above, the Windows
 Credential Manager.
 
-### Last used (`last_session`)
+### Last session (`last_session`)
 
 Only for the two tools that keep sessions; the others show their configured
 model. The newest file is read back from its end 64 KB at a time until a
@@ -1024,7 +1025,7 @@ What a label cannot know:
 - an alias's effort is that of the newest saved model of its family, so
   after a new model ships, until `/effort` is set for it, the label can show
   the older model's effort;
-- in Last used, tools without sessions (and sessions without a model yet)
+- in Last session, tools without sessions (and sessions without a model yet)
   show the configured model, unmarked;
 - with no Claude Code settings.json at all, `ANTHROPIC_MODEL` alone gives no
   label.
@@ -1069,7 +1070,7 @@ before the first version word (`Opus`, `GPT`), the version adds the rest
 Which models the picker offers to rename (a list closed until opened, then
 one heading per tool) is a separate, fixed list per tool
 (`src/models/catalog.rs`), plus the model the tool uses now, always first
-and marked "in use". It names nothing: a model missing from it is named by
+and marked "active". It names nothing: a model missing from it is named by
 the rule all the same. Sources, 2026-11-13: Claude Code, the ids its
 answers carried in one live call per model (`claude-fable-5-2`,
 `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`); Codex CLI,
@@ -1080,7 +1081,7 @@ Cursor, Auto only (the editor's list is not in a file read here, and
 `cursor-agent models` needs the CLI signed in). The list is fixed in the
 build, so it is brought up to date with every release. Only the tools that
 run are listed. A model several tools share has one name, but a field under
-each tool, marked "shared with ..." and "in use" where it is used; typing in
+each tool, marked "shared with ..." and "active" where it is used; typing in
 one shows in the others. A tool's own router (`auto`, `default`) has a name
 per tool, kept under `"provider:id"` (`"copilot:auto"`, `"cursor:auto"`);
 a name an older build kept under the bare `"auto"` serves both until one is
@@ -1114,4 +1115,4 @@ picker and the widget agree.
   the widget's own session. Removed before 0.7.1 shipped: the widget never
   reads another app's sign-in from its files, and a key some credential
   stealers look for has no place in the exe. Only the widget's own sign-in
-  (Rows and models, or `ailimits-auth login cursor`) is used.
+  (Settings, or `ailimits-auth login cursor`) is used.
