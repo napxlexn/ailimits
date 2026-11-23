@@ -37,7 +37,7 @@ Notable, user-visible changes. Dates are release dates.
   `ailimits-auth logout cursor` forgets the session; the uninstaller removes
   it too. Grok Bot's share is an extra row, asked for only while that row is
   chosen.
-- **Settings, a window of its own.** Right-click, *Settings...*: every
+- **Settings, a window of its own.** Right-click, *Settings…*: every
   row there is in one list, with a Widget column and a
   Tooltip column, so the widget and the panel's tooltip are chosen
   separately, and a Taskbar column for the two providers the taskbar panel
@@ -159,6 +159,21 @@ Notable, user-visible changes. Dates are release dates.
   level meter; the busier provider's percentage in digits; or its slice of a
   disc, like a clock face. Each is monochrome in the taskbar's theme, and the
   tooltip names both providers.
+- **A shorter right-click menu, in plain names.** *Settings…* comes
+  first; Detail, Layout (Rows / Columns, with Width and Column layout,
+  each greyed while it does not apply), Appearance (Palette, Monochrome,
+  Background opacity, Brightness, Saturation) and Taskbar (Tray icon /
+  Taskbar panel / None, and Panel display) are submenus; Always on top,
+  Lock position and Usage forecast follow, then Refresh interval (was
+  Update interval, so it is not taken for the app's updates) beside
+  Automatic updates, and last *AI Limits 0.7.1 on GitHub* and Quit. Resting
+  the pointer on a look item still shows it before a click, in the
+  submenus too. The layouts are named Rows and Columns (they were
+  Horizontal and Vertical, after the bars' direction), Arrangement is
+  Column layout (Side by side / Stacked), Indicator is Taskbar.
+- **Plain status words.** A refused key reads "key rejected" (was "check
+  the key"), and a network error too long for the row reads "offline",
+  without the ⚠ sign.
 - ***Settings* is a window like any program's.** It stays open until
   Esc, its cross or Alt+F4 closes it: a click beside it and another window
   taking the focus no longer close it. It moves by its title and opens
@@ -210,7 +225,7 @@ Notable, user-visible changes. Dates are release dates.
   every 2 seconds while you are at the PC (every 30 while you are away), one
   metadata call each time, and redoes only what changed. A change made in the
   app meanwhile is kept, and the app's own saves are never taken for edits.
-  *Edit config.toml...* at the end of *Settings* opens the file in
+  *Edit config.toml…* at the end of *Settings* opens the file in
   Notepad, in a Microsoft Store copy too, whose own settings folder Windows
   keeps with the package. A line that does not read (a value of the wrong
   kind, a typo, a missing value) is left out and its default used: one
@@ -230,7 +245,7 @@ Notable, user-visible changes. Dates are release dates.
   ink on a dark and on a light taskbar, its tooltip's size), `[tune.tray]`
   (the tray rings' width and gap) and `[tune.format]` (the usage at which the
   middle and high colours start, and how the widget writes a time left:
-  "2d 5h", "2d5h" or "2d 5h 12min"). *Edit config.toml...* opens the file, and
+  "2d 5h", "2d5h" or "2d 5h 12min"). *Edit config.toml…* opens the file, and
   a saved edit applies within about two seconds (the entry above). Every
   key is optional and defaults to today's look; a value out of range is
   held to its range, and a mistyped one costs only that key. The guide,
@@ -291,7 +306,7 @@ Notable, user-visible changes. Dates are release dates.
   Code account*, *Usage token* or *API key* (Claude); *Codex CLI account*
   or *Usage token* (Codex); *GitHub CLI account* or *Fine-grained token*,
   which needs no permissions (Copilot); the CLI's own account (*Antigravity
-  CLI account*, *Grok CLI account*); *Sign in to Cursor...*, with a wait that
+  CLI account*, *Grok CLI account*); *Sign in to Cursor…*, with a wait that
   *Cancel* ends, then *Sign out* (Cursor). Only the source chosen is read or
   sent; none stands in for another when it fails, so a refused pasted usage
   token says so ("usage token rejected", for Claude and Codex) and the hover

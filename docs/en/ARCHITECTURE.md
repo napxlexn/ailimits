@@ -29,7 +29,7 @@ app.rs ─── App: owns everything (config, display data, window, menu, picke
    ├── app/cache.rs           provider-cache.json: one writer, fewer writes
    ├── app/model_job.rs       what the model labels read; one reader at a time
    ├── app/config_watch.rs    config.toml edited by hand: looked at by its stamp
-   │                          (cycle, actions, 2 s after Edit config.toml...),
+   │                          (cycle, actions, 2 s after Edit config.toml…),
    │                          merged with the app's changes, applied part by part
    ├── app/clipboard.rs       the shape check of a pasted key or usage token
    ├── app/widget.rs, app/indicator.rs  the overlay window; the fallback tray icon
@@ -189,7 +189,7 @@ block's actions (choose a source, paste, remove, Cursor's sign-in, cancel,
 sign-out) go to `app/sign_in.rs` instead, which reaches the clipboard,
 Credential Manager and the browser and puts its result in the
 `PickerInput` (`choices::SignInState`). The picker never touches a file.
-It opens from the menu (*Settings...*), from a click on the widget's
+It opens from the menu (*Settings…*), from a click on the widget's
 "Setup required" or "No data yet", and by itself at start
 while `[reads] pending` owes the welcome or the update notice. Opened by
 itself it opens quietly
@@ -544,11 +544,15 @@ compares a hash of each pixmap with `tests/visual/<group>.txt`.
   plus a minute has passed (9eada81); a provably passed reset reads as
   about 0 at once (387fc59); the hover over a stale row whose error passes
   by itself shows just that, where 0.7.0 added the provider's action
-  ("offline, retrying — check gh auth"), advice that did not help (3d6093c).
+  ("offline, retrying — check gh auth"), advice that did not help (3d6093c);
+  since 2026-11-23 a refused key reads "key rejected" and a network error
+  too long for the row "offline", where 0.7.0 had "check the key" and
+  "⚠ offline" (re-recorded on the owner's word).
   Rendered against the 0.7.0 tag with the same fixtures cut down to what
   0.7.0 can draw, 83 of 116 widget, 30 of 36 panel and all 84 tray entries
   were byte-identical; the rest differ only by ac17bd2, a755fe3 and 3d6093c
-  (9eada81 and 387fc59 change rules, not drawing). They change only on the
+  (9eada81 and 387fc59 change rules, not drawing), and since 2026-11-23 the
+  entries with those two status words. They change only on the
   owner's decision (`UPDATE_PINNED_BASELINE=1`); never re-record them to
   make a test pass.
 - **Other groups** (`picker`, `widget-rows`, `tooltip-rows`,

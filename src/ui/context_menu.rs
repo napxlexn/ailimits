@@ -28,6 +28,16 @@ const PALETTE_TITLE: &str = "Palette";
 const OPACITY_TITLE: &str = "Background opacity";
 const BRIGHTNESS_TITLE: &str = "Brightness";
 const SATURATION_TITLE: &str = "Saturation";
+/// The submenus that group the rest: the detail level, the layout (with
+/// Width and Column layout inside), the look (Palette, Monochrome and the
+/// three steps), and what the taskbar shows. Detail, Layout and Appearance
+/// hold look items of their own.
+const DETAIL_TITLE: &str = "Detail";
+const LAYOUT_TITLE: &str = "Layout";
+const APPEARANCE_TITLE: &str = "Appearance";
+const TASKBAR_TITLE: &str = "Taskbar";
+const PANEL_DISPLAY_TITLE: &str = "Panel display";
+const INTERVAL_TITLE: &str = "Refresh interval";
 
 /// Menu actions.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +192,9 @@ pub struct ContextMenu {
     layout_items: Vec<(CheckMenuItem, Layout)>,
     width_items: Vec<(CheckMenuItem, WidthScale)>,
     flow_items: Vec<(CheckMenuItem, ColumnFlow)>,
+    /// Width and Column layout, greyed while the other layout is chosen.
+    width_submenu: Submenu,
+    flow_submenu: Submenu,
     lock_item: CheckMenuItem,
     pin_item: CheckMenuItem,
     indicator_items: Vec<(CheckMenuItem, IndicatorKind)>,
@@ -228,7 +241,10 @@ impl ContextMenu {
 
         // Width steps. Only the rows layout can be narrowed: the columns
         // layouts size themselves from the provider count.
-        let width_submenu = Submenu::new(WIDTH_TITLE, true);
+        // Width and Column layout apply to one layout each: the other one's
+        // is greyed (`sync` keeps it so).
+        let rows_layout = matches!(ui.layout, Layout::Vertical | Layout::Grid);
+        let width_submenu = Submenu::new(WIDTH_TITLE, rows_layout);
         let width_items: Vec<(CheckMenuItem, WidthScale)> = [
             ("100%", WidthScale::Full),
             ("75%", WidthScale::ThreeQuarters),
@@ -249,7 +265,7 @@ impl ContextMenu {
         // Column arrangement. The mirror image of Width: it only means
         // something when the bars are vertical, and it flips the widget's own
         // orientation rather than its size.
-        let flow_submenu = Submenu::new(FLOW_TITLE, true);
+        let flow_submenu = Submenu::new(FLOW_TITLE, !rows_layout);
         let flow_items: Vec<(CheckMenuItem, ColumnFlow)> = [
             ("Side by side", ColumnFlow::Row),
             ("Stacked", ColumnFlow::Column),
@@ -269,15 +285,15 @@ impl ContextMenu {
         // Two INDEPENDENT options: position lock and always-on-top.
         let lock_item = CheckMenuItem::new("Lock position", true, config.window.locked, None);
         let pin_item = CheckMenuItem::new("Always on top", true, pinned, None);
-        // "Indicator" submenu — radio-style choice of the secondary indicator.
-        let indicator_submenu = Submenu::new("Indicator", true);
+        // "Taskbar" submenu — radio-style choice of what the taskbar shows.
+        let indicator_submenu = Submenu::new(TASKBAR_TITLE, true);
         // The legacy 16px "bars" tray icon stays config-only (too small to
         // read). A single "Taskbar panel" entry: the grid layout was
         // superseded by the top-2 design.
         let indicator_items: Vec<(CheckMenuItem, IndicatorKind)> = [
             ("Tray icon", IndicatorKind::Tray),
             ("Taskbar panel", IndicatorKind::PanelRows),
-            ("Off", IndicatorKind::Off),
+            ("None", IndicatorKind::Off),
         ]
         .into_iter()
         .map(|(label, k)| {
@@ -312,8 +328,8 @@ impl ContextMenu {
             if bars.is_empty() { "OMITTED" } else { "shown" }
         );
         if !bars.is_empty() {
-            let display_submenu = Submenu::new("Display", true);
-            let mut entries = vec![("Primary".to_string(), PanelDisplay::Primary)];
+            let display_submenu = Submenu::new(PANEL_DISPLAY_TITLE, true);
+            let mut entries = vec![("Main display".to_string(), PanelDisplay::Primary)];
             for i in 0..bars.len() {
                 entries.push((
                     format!("Display {}", i + 2),
@@ -325,6 +341,7 @@ impl ContextMenu {
                 display_submenu.append(&item)?;
                 display_items.push((item, target));
             }
+            indicator_submenu.append(&PredefinedMenuItem::separator())?;
             indicator_submenu.append(&display_submenu)?;
         }
 
@@ -336,8 +353,6 @@ impl ContextMenu {
         // "Palette" submenu: monochrome + 8 colored palettes.
         let palette_submenu = Submenu::new(PALETTE_TITLE, true);
         let monochrome_item = CheckMenuItem::new("Monochrome", true, ui.monochrome, None);
-        palette_submenu.append(&monochrome_item)?;
-        palette_submenu.append(&PredefinedMenuItem::separator())?;
         let palette_items: Vec<(CheckMenuItem, Palette)> = [
             ("Default", Palette::Default),
             ("Ocean", Palette::Ocean),
@@ -384,7 +399,7 @@ impl ContextMenu {
             step_submenu(SATURATION_TITLE, SATURATION_STEPS, ui.saturation)?;
 
         // Update interval submenu: 1 / 5 / 15 / 30 min.
-        let interval_submenu = Submenu::new("Update interval", true);
+        let interval_submenu = Submenu::new(INTERVAL_TITLE, true);
         let interval_marked = closest_interval(config.general.update_interval_secs);
         let mut interval_items = Vec::new();
         for &secs in INTERVAL_STEPS {
@@ -398,45 +413,56 @@ impl ContextMenu {
             interval_items.push((item, secs));
         }
 
-        let picker_item = MenuItem::new("Settings...", true, None);
+        let picker_item = MenuItem::new("Settings\u{2026}", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
         // The version line doubles as the way to the project. The words stay
         // plain, since a native menu paints an item's text itself and dims
         // only what it disables.
         let version_item = IconMenuItem::new(
-            format!("AI Limits v{}", env!("CARGO_PKG_VERSION")),
+            format!("AI Limits {} on GitHub", env!("CARGO_PKG_VERSION")),
             true,
             github_mark(),
             None,
         );
 
-        // Order: detail / layout / behavior / appearance / providers / actions.
+        // Order: the window; what the widget is (detail, layout, look,
+        // taskbar); how it behaves; the data and the app's own updates; the
+        // project and Quit, last as in Windows.
+        let detail_submenu = Submenu::new(DETAIL_TITLE, true);
         for (item, _) in &detail_items {
-            menu.append(item)?;
+            detail_submenu.append(item)?;
         }
-        menu.append(&PredefinedMenuItem::separator())?;
+        let layout_submenu = Submenu::new(LAYOUT_TITLE, true);
         for (item, _) in &layout_items {
-            menu.append(item)?;
+            layout_submenu.append(item)?;
         }
-        menu.append(&width_submenu)?;
-        menu.append(&flow_submenu)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&lock_item)?;
-        menu.append(&pin_item)?;
-        menu.append(&indicator_submenu)?;
-        menu.append(&forecast_item)?;
-        menu.append(&auto_update_item)?;
-        menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&palette_submenu)?;
-        menu.append(&opacity_submenu)?;
-        menu.append(&brightness_submenu)?;
-        menu.append(&saturation_submenu)?;
-        menu.append(&interval_submenu)?;
-        menu.append(&PredefinedMenuItem::separator())?;
+        layout_submenu.append(&PredefinedMenuItem::separator())?;
+        layout_submenu.append(&width_submenu)?;
+        layout_submenu.append(&flow_submenu)?;
+        let appearance_submenu = Submenu::new(APPEARANCE_TITLE, true);
+        appearance_submenu.append(&palette_submenu)?;
+        appearance_submenu.append(&monochrome_item)?;
+        appearance_submenu.append(&PredefinedMenuItem::separator())?;
+        appearance_submenu.append(&opacity_submenu)?;
+        appearance_submenu.append(&brightness_submenu)?;
+        appearance_submenu.append(&saturation_submenu)?;
+
         menu.append(&picker_item)?;
         menu.append(&PredefinedMenuItem::separator())?;
-        menu.append(&quit_item)?;
+        menu.append(&detail_submenu)?;
+        menu.append(&layout_submenu)?;
+        menu.append(&appearance_submenu)?;
+        menu.append(&indicator_submenu)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&pin_item)?;
+        menu.append(&lock_item)?;
+        menu.append(&forecast_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
+        menu.append(&interval_submenu)?;
+        menu.append(&auto_update_item)?;
+        menu.append(&PredefinedMenuItem::separator())?;
         menu.append(&version_item)?;
+        menu.append(&quit_item)?;
 
         Ok(Self {
             menu,
@@ -444,6 +470,8 @@ impl ContextMenu {
             layout_items,
             width_items,
             flow_items,
+            width_submenu,
+            flow_submenu,
             lock_item,
             pin_item,
             indicator_items,
@@ -478,14 +506,13 @@ impl ContextMenu {
     pub fn look_action(&self, group: Option<&str>, text: &str) -> Option<MenuAction> {
         let toggle = |item: &CheckMenuItem| (item.text() == text).then(|| item.id().clone());
         let id = match group {
-            None => labelled(&self.detail_items, text)
-                .or_else(|| labelled(&self.layout_items, text))
-                .or_else(|| toggle(&self.forecast_item)),
+            None => toggle(&self.forecast_item),
+            Some(DETAIL_TITLE) => labelled(&self.detail_items, text),
+            Some(LAYOUT_TITLE) => labelled(&self.layout_items, text),
+            Some(APPEARANCE_TITLE) => toggle(&self.monochrome_item),
             Some(WIDTH_TITLE) => labelled(&self.width_items, text),
             Some(FLOW_TITLE) => labelled(&self.flow_items, text),
-            Some(PALETTE_TITLE) => {
-                toggle(&self.monochrome_item).or_else(|| labelled(&self.palette_items, text))
-            }
+            Some(PALETTE_TITLE) => labelled(&self.palette_items, text),
             Some(OPACITY_TITLE) => labelled(&self.opacity_items, text),
             Some(BRIGHTNESS_TITLE) => labelled(&self.brightness_items, text),
             Some(SATURATION_TITLE) => labelled(&self.saturation_items, text),
@@ -585,7 +612,7 @@ impl ContextMenu {
         for (item, l) in &self.layout_items {
             item.set_checked(ui.layout == *l);
         }
-        // Width and Arrangement are the same choice on opposite axes, so
+        // Width and Column layout are the same choice on opposite axes, so
         // exactly one of them applies at a time. The inapplicable one is
         // greyed rather than hidden - a menu that changes shape reads as a bug.
         let rows_layout = matches!(ui.layout, Layout::Vertical | Layout::Grid);
@@ -597,6 +624,8 @@ impl ContextMenu {
             item.set_checked(ui.column_flow == *f);
             item.set_enabled(!rows_layout);
         }
+        self.width_submenu.set_enabled(rows_layout);
+        self.flow_submenu.set_enabled(!rows_layout);
         self.monochrome_item.set_checked(ui.monochrome);
         for (item, p) in &self.palette_items {
             item.set_checked(!ui.monochrome && ui.palette == *p);
@@ -644,11 +673,11 @@ mod tests {
         let menu = ContextMenu::new(&Config::default(), false).unwrap();
         let act = |group: Option<&str>, text: &str| menu.look_action(group, text);
         assert_eq!(
-            act(None, "Compact"),
+            act(Some(DETAIL_TITLE), "Compact"),
             Some(MenuAction::SetDetail(DetailLevel::Compact))
         );
         assert_eq!(
-            act(None, "Columns"),
+            act(Some(LAYOUT_TITLE), "Columns"),
             Some(MenuAction::SetLayout(Layout::Horizontal))
         );
         assert_eq!(
@@ -676,7 +705,7 @@ mod tests {
             Some(MenuAction::SetPalette(Palette::Ocean))
         );
         assert_eq!(
-            act(Some(PALETTE_TITLE), "Monochrome"),
+            act(Some(APPEARANCE_TITLE), "Monochrome"),
             Some(MenuAction::ToggleMonochrome)
         );
         assert_eq!(
@@ -687,8 +716,8 @@ mod tests {
         assert_eq!(act(None, "Lock position"), None);
         assert_eq!(act(None, "Always on top"), None);
         assert_eq!(act(None, "Automatic updates"), None);
-        assert_eq!(act(Some("Indicator"), "Tray icon"), None);
-        assert_eq!(act(Some("Update interval"), "5 min"), None);
+        assert_eq!(act(Some(TASKBAR_TITLE), "Tray icon"), None);
+        assert_eq!(act(Some(INTERVAL_TITLE), "5 min"), None);
         // A label of one submenu under another's title.
         assert_eq!(act(Some(OPACITY_TITLE), "Ocean"), None);
         assert_eq!(act(None, "50%"), None);

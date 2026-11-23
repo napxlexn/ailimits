@@ -135,7 +135,7 @@ scenario-mix-medium 278x186 29867bd51f1ea839
 scenario-small-compact 236x75 51ec81df25e4cf77
 scenario-small-expanded 322x152 5bf02167ef475820
 scenario-small-medium 278x97 fef1aaaafb16b628
-states-labels-expanded 322x367 74fe9ce6884a1b7a
-states-labels-medium 278x230 342e61a3d61bca54
+states-labels-expanded 322x367 fcd51770f43d881d
+states-labels-medium 278x230 3c8da07a9ddb5e0f
 unshown-columns 278x53 f7e9f4ed80c02348
 unshown-rows 278x53 f7e9f4ed80c02348

@@ -145,7 +145,7 @@ impl CursorProvider {
 
     /// The own session is over: only a new sign-in mends it. The last data
     /// stays on screen, greyed, and the row says what to do — in its own
-    /// words, not "check the key": no key was given.
+    /// words, not "key rejected": no key was given.
     fn sign_in_again(&self) -> ProviderData {
         self.error(SIGN_IN_AGAIN)
     }

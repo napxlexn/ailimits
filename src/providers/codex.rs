@@ -137,7 +137,7 @@ impl CodexProvider {
         match self.fetch_usage(&token).await {
             Usage::Answer(data) => data,
             // Codex CLI refreshes its token when it runs; the hover adds
-            // "run Codex CLI". Not "check the key": no key was given.
+            // "run Codex CLI". Not "key rejected": no key was given.
             Usage::Refused => self.data(
                 ProviderStatus::NetworkError("token expired".to_string()),
                 vec![],

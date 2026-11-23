@@ -46,14 +46,14 @@ const TABLES: &[Table] = &[
                 "update_interval_secs",
                 &[
                     "Seconds between updates: 60 or more (less reads as 60); default 60.",
-                    "Menu: Update interval (1, 5, 15, 30 min); other values work here too.",
+                    "Menu: Refresh interval (1, 5, 15, 30 min); other values work here too.",
                 ],
             ),
             (
                 "indicator",
                 &[
                     "On the taskbar: \"tray\" (rings icon, default), \"panel_rows\" (panel),",
-                    "\"off\", \"bars\" (older icon), \"panel_grid\" (as panel_rows). Menu: Indicator.",
+                    "\"off\", \"bars\" (older icon), \"panel_grid\" (as panel_rows). Menu: Taskbar.",
                 ],
             ),
             (
@@ -78,7 +78,7 @@ const TABLES: &[Table] = &[
                 "panel_display",
                 &[
                     "Taskbar of the panel: \"primary\" (default) or { secondary = N }:",
-                    "N = 0 is Display 2, 1 is Display 3... Menu: Indicator > Display.",
+                    "N = 0 is Display 2, 1 is Display 3... Menu: Taskbar > Panel display.",
                 ],
             ),
         ],

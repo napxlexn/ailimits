@@ -610,7 +610,7 @@ const SECT_MODEL: &str = "MODEL";
 const SECT_TRAY: &str = "TRAY ICON STYLE";
 const PANEL: &str = "Taskbar";
 const DASH: &str = "\u{2013}";
-const TRAY_NOTE: &str = "The icon shows with Indicator set to Tray icon in the menu, and stands in for the panel while the Start menu covers it.";
+const TRAY_NOTE: &str = "The icon shows with Taskbar set to Tray icon in the menu, and stands in for the panel while the Start menu covers it.";
 
 /// The tray icon's looks: the tile's label and what it says on hover.
 const TRAY_STYLES: [(TrayStyle, &str, &str); 4] = [
@@ -661,7 +661,7 @@ const NAMES: &str = "Model aliases";
 const SIGN_IN: &str = "Sign-in";
 const SIGN_IN_HINT: &str = "Where AI Limits gets this provider's sign-in from, and how it went. Open it to choose, to paste a key or token of your own, or to remove one.";
 const REMOVE: &str = "Remove";
-const CURSOR_SIGN_IN: &str = "Sign in to Cursor...";
+const CURSOR_SIGN_IN: &str = "Sign in to Cursor…";
 const CURSOR_CANCEL: &str = "Cancel";
 const CURSOR_SIGN_OUT: &str = "Sign out";
 const CURSOR_WAITING: &str =
@@ -679,7 +679,7 @@ const SOURCE_SET_HINT: &str =
     "The model chosen in each tool's settings, whatever a session is using.";
 const SOURCE_LAST_HINT: &str = "The model of the newest Claude Code or Codex CLI session, read from the end of its file. The other tools show the model as set.";
 /// The link at the list's end, and what it says on hover.
-const SETTINGS_FILE: &str = "Edit config.toml...";
+const SETTINGS_FILE: &str = "Edit config.toml…";
 const SETTINGS_FILE_HINT: &str = "Fine-tuning that has no place in this window: sizes, colours, thresholds. Opens config.toml in Notepad; changes apply when you save.";
 const ALLOW_ALL: &str = "Allow all";
 const ALLOW_ALL_LEAD: &str =
@@ -758,7 +758,7 @@ const SURFACES: [(Surface, f32); 2] = [
 const TASKBAR: &str = "Taskbar";
 const TASKBAR_HINT: &str = "Show on the taskbar panel and the tray icon. They have room for two; untouched, the first two shown in the widget.";
 const TASKBAR_FULL: &str = "The taskbar panel has room for two: untick one first.";
-const TASKBAR_LAST: &str = "At least one shows on the taskbar. To hide the panel or the icon, choose Off under Indicator in the menu.";
+const TASKBAR_LAST: &str = "At least one shows on the taskbar. To hide the panel or the icon, choose None under Taskbar in the menu.";
 
 /// What the hint under a name field says: the room left for ordinary text.
 fn room_text(chars_left: usize, empty: bool) -> String {
@@ -856,7 +856,7 @@ enum Target {
     CursorSignIn,
     CursorCancel,
     CursorSignOut,
-    /// The "Edit config.toml..." link.
+    /// The "Edit config.toml…" link.
     SettingsFile,
 }
 

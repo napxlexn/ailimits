@@ -706,7 +706,7 @@ impl Picker {
         }
     }
 
-    /// "Edit config.toml...": a small link at the list's end, its description
+    /// "Edit config.toml…": a small link at the list's end, its description
     /// on hover.
     pub(super) fn flow_settings_file(&self, f: &mut Flow) {
         self.flow_sep(f);

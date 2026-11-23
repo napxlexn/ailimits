@@ -586,7 +586,7 @@ impl App {
             .collect();
     }
 
-    /// Settings' "Edit config.toml...": config.toml in Notepad, and the
+    /// Settings' "Edit config.toml…": config.toml in Notepad, and the
     /// file looked at often while it may be edited there.
     pub(super) fn open_settings_file(&mut self) {
         let path = self.config_watch.file.path().to_path_buf();

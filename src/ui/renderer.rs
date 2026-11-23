@@ -1839,10 +1839,10 @@ fn column_name_size(detail: &DetailLevel) -> f32 {
 /// picker says the same of the provider's row.
 pub fn error_words(status: &ProviderStatus) -> Option<std::borrow::Cow<'static, str>> {
     match status {
-        ProviderStatus::AuthError(_) => Some("check the key".into()),
+        ProviderStatus::AuthError(_) => Some("key rejected".into()),
         // A short provider message beats a generic "offline".
         ProviderStatus::NetworkError(msg) if msg.chars().count() <= 32 => Some(msg.clone().into()),
-        ProviderStatus::NetworkError(_) => Some("⚠ offline".into()),
+        ProviderStatus::NetworkError(_) => Some("offline".into()),
         _ => None,
     }
 }

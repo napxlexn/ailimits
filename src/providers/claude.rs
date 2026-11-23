@@ -583,7 +583,7 @@ impl Provider for ClaudeProvider {
             AuthMethod::ApiKey => match self.get_api_key() {
                 Some(key) => self.fetch_via_api_key(&key).await?,
                 // The API key chosen and none stored: nothing to read, and
-                // no "check the key" for a key never given. The Sign-in
+                // no "key rejected" for a key never given. The Sign-in
                 // block says none is stored.
                 None => self.data(ProviderStatus::NotConfigured, vec![]),
             },

@@ -18,8 +18,8 @@ costs only that key, never the rest of the file (see [Notes](#notes)).
 
 ### Opening it
 
-Right-click the widget, the tray icon or the taskbar panel, choose *Settings...*,
-and click *Edit config.toml...* at the end of its *Display* tab. The file
+Right-click the widget, the tray icon or the taskbar panel, choose *Settings…*,
+and click *Edit config.toml…* at the end of its *Display* tab. The file
 opens in Notepad (`%SystemRoot%\System32\notepad.exe`). Any other editor
 works too.
 
@@ -52,7 +52,7 @@ the file's size and time (nothing is read until they change):
 - every 2 seconds while you are at the PC (any input in the last 5
   minutes), so a saved edit shows within about 2 seconds;
 - every 30 seconds while you are away, except for 30 minutes after
-  *Edit config.toml...* opened it: then every 2 seconds, away or not (click
+  *Edit config.toml…* opened it: then every 2 seconds, away or not (click
   the link again for another 30 minutes);
 - besides, once per update cycle, right before it carries out a click in
   the context menu or in *Settings*, and when it quits.

@@ -218,7 +218,7 @@ at the top of that file).
 ## Quick start
 
 1. **Run it.** On first launch a welcome window opens (the same one as
-   *Settings...* in the menu). Its question lists the tools found on
+   *Settings…* in the menu). Its question lists the tools found on
    this PC (Claude Code, Codex CLI, the Copilot CLI or GitHub CLI,
    Antigravity, the Grok CLI, Cursor), each with a
    tick, and names every file it would read and where each token goes.
@@ -230,7 +230,7 @@ at the top of that file).
    front. Like *Settings*, it stays open until Esc, its cross or
    Alt+F4 closes it, and moves by its title. Cursor needs
    a sign-in of the app's own, once: in the same window, open the *Sign-in*
-   line under Cursor and click *Sign in to Cursor...*.
+   line under Cursor and click *Sign in to Cursor…*.
    Updating from 0.7.0 needs nothing: the providers you had keep working,
    and one window lists what is read.
 2. **Place it.** Drag with the left button. Hold **Shift** while dragging to
@@ -244,7 +244,7 @@ at the top of that file).
    Usage forecast, shows it on the widget, the panel and the tray icon before you
    click, and so does moving to it with the keyboard; leaving the menu
    without a click puts it back.
-   *Settings...*
+   *Settings…*
    picks the rows the widget and the panel's tooltip show (extra rows such as
    Claude's Opus week included), an optional label with the model in use
    (model, version, reasoning effort) and where each provider's sign-in
@@ -265,7 +265,7 @@ at the top of that file).
    Expanded rows and in Compact's bottom line (at the 100% and 75% widths),
    cut to fit under an Expanded column; Compact and Medium columns, and
    Compact at 50%, show none.
-5. **Widget in the way?** Right-click, **Indicator**, then *Taskbar panel*
+5. **Widget in the way?** Right-click, **Taskbar**, then *Taskbar panel*
    or *Tray icon*. With the widget hidden or covered by other windows, usage
    stays on the taskbar; while a fullscreen app has the screen, it hides with
    the taskbar and comes back when you leave the app. See
@@ -290,7 +290,7 @@ your machine, strictly read-only and only once you allow each one:
 | Copilot | `gh auth token --hostname github.com` (GitHub CLI) | `gh auth login` once |
 | Antigravity | Windows Credential Manager target `gemini:antigravity` | run `agy`, the Antigravity CLI; its token lasts about an hour and only `agy` renews it (opening the editor does not) |
 | Grok | `%USERPROFILE%\.grok\auth.json` (Grok CLI login; in `GROK_HOME` when it is set) | run `grok` and sign in once (a SuperGrok subscription) |
-| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor once in *Settings* (Cursor's *Sign-in*, *Sign in to Cursor...*) or with `ailimits-auth login cursor`: Cursor's own sign-in page opens in the browser; ~60-day session |
+| Cursor | the widget's own session, in Windows Credential Manager (`cursor_session`); nothing of the Cursor editor is read for it | Sign in to Cursor once in *Settings* (Cursor's *Sign-in*, *Sign in to Cursor…*) or with `ailimits-auth login cursor`: Cursor's own sign-in page opens in the browser; ~60-day session |
 
 Under each provider's rows on the *Providers* tab, *Settings* has a
 *Sign-in* line that says where the sign-in comes from and how it went
@@ -361,7 +361,7 @@ depend on CLI activity. What each option actually gives you:
 | **Codex** | None | No separate stable token exists. A pasted *Usage token* is the same kind of OAuth token as Codex CLI's. | |
 | **Antigravity** | None | The quota is tied to the OAuth token that Antigravity CLI refreshes, and no separate key reports the same numbers. | |
 | **Grok** | None | The weekly SuperGrok limit is read with the Grok CLI's own login only. | |
-| **Cursor** | Its own sign-in, about 60 days | *Settings*, Cursor's *Sign-in*, *Sign in to Cursor...*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
+| **Cursor** | Its own sign-in, about 60 days | *Settings*, Cursor's *Sign-in*, *Sign in to Cursor…*, or `ailimits-auth login cursor` | Yes. It is the subscription's own usage. |
 
 **Two ways to add a credential:**
 
@@ -412,17 +412,22 @@ row hides until you choose the tool's account in the window.
 
 ## The context menu
 
-Right-click the widget: detail level (Compact / Medium / Expanded), layout
-(Rows / Columns), Width (100 / 75 / 50%, Rows only), Column layout (Side by
-side / Stacked, Columns only), `Lock position` and
-`Always on top` (two independent toggles), Indicator (Tray icon / Taskbar
-panel / Off), Usage forecast (burn-rate "~time to limit", off by default),
-`Automatic updates` (silent background self-update of an installer copy, on
-by default; Store, Scoop, portable and self-built copies have no such item),
-Palette (Monochrome + 8 colors), Background opacity, Brightness, Saturation,
-Update interval (1 / 5 / 15 / 30 min), `Settings...` (rows, model
-labels, model aliases, each provider's sign-in), Quit, and the version line,
-which opens the project page.
+Right-click the widget:
+
+- `Settings…`: rows, model labels, model aliases, each provider's sign-in.
+- **Detail**: Compact / Medium / Expanded.
+- **Layout**: Rows / Columns, then Width (100 / 75 / 50%, greyed unless
+  Rows) and Column layout (Side by side / Stacked, greyed unless Columns).
+- **Appearance**: Palette (8 colors), Monochrome, Background opacity,
+  Brightness, Saturation.
+- **Taskbar**: Tray icon / Taskbar panel / None, and Panel display when
+  there is more than one taskbar.
+- `Always on top` and `Lock position` (two independent toggles), Usage
+  forecast (burn-rate "~time to limit", off by default).
+- Refresh interval (1 / 5 / 15 / 30 min) and `Automatic updates` (silent
+  background self-update of an installer copy, on by default; Store, Scoop,
+  portable and self-built copies have no such item).
+- *AI Limits 0.7.1 on GitHub* (opens the project page) and Quit.
 
 Usage forecast shows its ~time on Medium and Expanded rows and on Expanded
 columns, only where no reset time is known, and never for data that has
@@ -433,7 +438,7 @@ stopped updating.
 With the overlay hidden or covered by other windows, a compact usage
 readout stays on the taskbar; while a fullscreen app has the screen, it
 hides with the taskbar and comes back when you leave the app. Right-click →
-**Indicator**:
+**Taskbar**:
 
 - **Tray icon** (the default). One 16px icon: two concentric rings for the
   same two providers the panel shows (the first two in the widget, or the
@@ -459,9 +464,9 @@ hides with the taskbar and comes back when you leave the app. Right-click →
   providers stack, percent over bar, above the tray. A bar with no free
   stretch between its last app button and the tray gets no panel; the tray
   rings stand in until room appears, so the panel never sits on the buttons.
-- **Off.** No indicator.
+- **None.** No indicator.
 
-If Windows shows the taskbar on more than one display, **Indicator → Display**
+If Windows shows the taskbar on more than one display, **Taskbar → Panel display**
 picks which taskbar the panel attaches to. The submenu only appears when a
 second taskbar exists; if the chosen display is later disconnected, the panel
 falls back to the primary taskbar. The menu is built when the app starts, so
@@ -477,7 +482,7 @@ panel** opens this same menu.
 
 `%APPDATA%\AiLimits\config.toml` is created automatically, and every menu change
 is persisted there. Edits saved in it apply while the app runs, within about
-two seconds, with no restart; *Edit config.toml...* at the end of the
+two seconds, with no restart; *Edit config.toml…* at the end of the
 *Display* tab of *Settings* opens it in Notepad. A line that does not read is left out and
 named, its default used. The file explains itself: a short note before each
 setting says what it does, the values it takes and its default. Format

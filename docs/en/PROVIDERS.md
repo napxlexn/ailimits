@@ -145,7 +145,7 @@ Every error keeps the last real data, greyed with its age.
 
 The provider's own states are listed in each section. An `AuthError` (only
 a key or token you gave: a Claude API key, a Copilot token, a Claude or
-Codex usage token) shows "check the key", and its hover reads "<status> —
+Codex usage token) shows "key rejected", and its hover reads "<status> —
 paste a new one in Settings"; a row without a key of yours never
 does.
 
@@ -268,7 +268,7 @@ Limits come from the response headers
 `anthropic-ratelimit-tokens-{limit,remaining,reset}` → metrics `Requests`
 and `Tokens` (session windows), each only when its headers are there; a 429
 still carries them and is read. 401 → `AuthError("invalid API key")` (the
-row says "check the key"; the hover "invalid API key — paste a new one in
+row says "key rejected"; the hover "invalid API key — paste a new one in
 Settings"); a 200 without the headers →
 `NetworkError("no ratelimit headers in response")`; any other status without
 them, or no answer → the shared words. The API key chosen and none stored →
@@ -326,7 +326,7 @@ between, zero or less, not a whole number, or none goes by the key:
 `primary_window` = the 5-hour session → `Session` and `secondary_window` =
 the week → `Weekly`. The session row comes first. `reset_at` is unix epoch
 seconds. 401/403 on the CLI token → `NetworkError("token expired")` (the
-hover adds "run Codex CLI"; not "check the key": no key was given). A body
+hover adds "run Codex CLI"; not "key rejected": no key was given). A body
 that is not the known JSON → `"unrecognized wham/usage schema"`; other
 statuses and no answer → the shared words (see Error states). An unreadable
 auth.json → `NetworkError("auth.json unreadable")`. The source chosen is not
@@ -429,7 +429,7 @@ is not JSON → `NetworkError("unrecognized Copilot schema")`. A refusal reads
 by where the token came from. gh's token: 404 → `"no Copilot on this
 account"`, 401 → `"gh token rejected"`, 403 → `"no Copilot access"` (the row
 shows the words; the hover adds "check gh auth"). A pasted PAT: 401/403/404
-→ `AuthError("token has no Copilot access")`, shown as "check the key" (the
+→ `AuthError("token has no Copilot access")`, shown as "key rejected" (the
 hover: "token has no Copilot access — paste a new one in Settings"). Any
 other status, no answer or a body cut off mid-transfer → the shared words
 (see Error states).
@@ -667,7 +667,7 @@ share of the same limit, its name cleaned (no control characters, at most
 it (`GrokBuild` → `Build`); other names, such as Chat, pass through. These
 shares are marked for their extra row only: never the Grok row's headline,
 its reset or its alerts. Build has a row of its own (`grok.build`) that can
-be ticked in *Settings...*; the other products stay in the data.
+be ticked in *Settings…*; the other products stay in the data.
 
 The body is protobuf JSON, which leaves zero values out: before any use the
 same call answered with no `creditUsagePercent` and no `productUsage` at all.
@@ -864,7 +864,7 @@ States (every error keeps the last data greyed with its age):
   the shared words (see Error states).
 
 The hover adds "sign in to Cursor" to a status that neither ends in
-", retrying" nor says it already; the row never says "check the key", as no
+", retrying" nor says it already; the row never says "key rejected", as no
 key was given. For the requests per cycle, see
 Requests per cycle at the top.
 

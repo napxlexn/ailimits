@@ -148,7 +148,7 @@
 
 Власні стани провайдера наведено в кожній секції. `AuthError` (лише ключ
 чи токен, який дали ви: API-ключ Claude, токен Copilot, usage-токен Claude
-чи Codex) показує "check the key", а підказка під курсором пише
+чи Codex) показує "key rejected", а підказка під курсором пише
 "<статус> — paste a new one in Settings"; рядок без вашого ключа
 ніколи цього не пише.
 
@@ -273,7 +273,7 @@ anthropic-version: 2023-06-01
 `anthropic-ratelimit-tokens-{limit,remaining,reset}` → метрики `Requests`
 і `Tokens` (сесійні вікна), кожна лише тоді, коли є її заголовки; 429 теж
 їх несе й читається. 401 → `AuthError("invalid API key")` (рядок пише
-"check the key"; підказка — "invalid API key — paste a new one in
+"key rejected"; підказка — "invalid API key — paste a new one in
 Settings"); 200 без заголовків →
 `NetworkError("no ratelimit headers in response")`; будь-який інший статус
 без них чи відсутність відповіді → спільні слова. Вибрано API-ключ, але
@@ -333,7 +333,7 @@ User-Agent: ailimits-widget
 `secondary_window` = тиждень → `Weekly`. Рядок сесії йде першим.
 `reset_at` — unix epoch секунди. 401/403 на токені CLI
 → `NetworkError("token expired")` (підказка додає "run Codex CLI"; не
-"check the key": ключа ніхто не давав). Тіло, що не є відомим JSON, →
+"key rejected": ключа ніхто не давав). Тіло, що не є відомим JSON, →
 `"unrecognized wham/usage schema"`; інші статуси й відсутність відповіді →
 спільні слова (див. Стани помилок). Нечитабельний auth.json →
 `NetworkError("auth.json unreadable")`. Вибраного джерела немає (немає
@@ -683,7 +683,7 @@ SuperGrok Limit", що показує сторінка Usage на grok.com. Ти
 після нього щось є (`GrokBuild` → `Build`); інші назви, як-от Chat, лишаються
 як є. Ці частки позначені лише для свого додаткового рядка: ніколи не головне
 число рядка Grok, не його скидання й не його сповіщення. Build має власний
-рядок (`grok.build`), який можна позначити в *Settings...*; інші
+рядок (`grok.build`), який можна позначити в *Settings…*; інші
 продукти лишаються в даних.
 
 Тіло — protobuf JSON, який пропускає нульові значення: до будь-якого
@@ -883,7 +883,7 @@ Grok Bot), не дає метрики. Вона позначена лише дл
 
 Підказка під курсором додає "sign in to Cursor" до статусу, що не
 закінчується на ", retrying" і ще цього не каже; рядок ніколи не пише
-"check the key", бо ключа ніхто не давав. Про запити за цикл див. Запити за
+"key rejected", бо ключа ніхто не давав. Про запити за цикл див. Запити за
 цикл угорі.
 
 ## Підписи моделей

@@ -131,7 +131,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         tool: "Cursor",
         tool_sign_in: false,
         sign_in: &[
-            "no file of Cursor's: you sign in from Settings (Cursor, Sign-in, Sign in to Cursor...) on Cursor's own sign-in page, cursor.com",
+            "no file of Cursor's: you sign in from Settings (Cursor, Sign-in, Sign in to Cursor…) on Cursor's own sign-in page, cursor.com",
             "the app signs in as the Cursor editor's client and keeps that session in Windows Credential Manager (ailimits/cursor_session)",
         ],
         hosts: &["api2.cursor.sh"],
@@ -585,7 +585,7 @@ mod tests {
         let text = c.sign_in.join(" ");
         for word in [
             "no file of Cursor's",
-            "Sign in to Cursor...",
+            "Sign in to Cursor…",
             "cursor.com",
             "editor's client",
             "ailimits/cursor_session",

@@ -32,7 +32,7 @@ pub enum MenuHover {
     /// the top level) and its label.
     Item { group: Option<String>, text: String },
     /// Nothing that could be shown is highlighted: a submenu's title, a
-    /// disabled item, an item of a deeper submenu.
+    /// disabled item, an item of a menu that is not this one's.
     Nothing,
     /// The menu closed; `chosen` when an item was clicked (its MenuEvent is
     /// on its way, or was sent already).
@@ -181,12 +181,23 @@ fn describe(wparam: usize, lparam: isize) -> Option<MenuHover> {
     })
 }
 
-/// Which part of the menu `hmenu` is: the top level (Some(None)), or one
-/// of its submenus, by its title. None for a deeper submenu.
+/// Which part of the menu `hmenu` is: the top level (Some(None)), or a
+/// submenu at any depth (Layout, then its Width), by the title of the item
+/// that opens it. None for a menu that is not this one's.
 fn group_of(root: isize, hmenu: isize) -> Option<Option<String>> {
     if hmenu == root {
         return Some(None);
     }
+    title_in(root, hmenu, MENU_DEPTH).map(Some)
+}
+
+/// How deep the context menu's submenus go: Layout, then Width.
+const MENU_DEPTH: u32 = 3;
+
+/// The title of the item of `menu` that opens `hmenu`, looked for in
+/// `menu` and in its submenus `depth` levels down.
+fn title_in(menu: isize, hmenu: isize, depth: u32) -> Option<String> {
+    let mut deeper = Vec::new();
     // Positions run until the menu has no more.
     for pos in 0..256u32 {
         let mut buf = [0u16; 128];
@@ -197,13 +208,22 @@ fn group_of(root: isize, hmenu: isize) -> Option<Option<String>> {
             cch: buf.len() as u32 - 1,
             ..Default::default()
         };
-        if unsafe { GetMenuItemInfoW(HMENU(root as _), pos, true, &mut mii) }.is_err() {
-            return None;
+        if unsafe { GetMenuItemInfoW(HMENU(menu as _), pos, true, &mut mii) }.is_err() {
+            break;
         }
-        if mii.hSubMenu.0 as isize == hmenu {
+        let sub = mii.hSubMenu.0 as isize;
+        if sub == hmenu {
             let n = (mii.cch as usize).min(buf.len() - 1);
-            return Some(Some(String::from_utf16_lossy(&buf[..n])));
+            return Some(String::from_utf16_lossy(&buf[..n]));
         }
+        if sub != 0 {
+            deeper.push(sub);
+        }
+    }
+    if depth > 1 {
+        return deeper
+            .into_iter()
+            .find_map(|sub| title_in(sub, hmenu, depth - 1));
     }
     None
 }
@@ -238,7 +258,9 @@ mod tests {
         let root = menu.menu.hpopupmenu();
         set_handler(root, |_| true);
         let mut out = Vec::new();
-        let mut walk = |hmenu: isize| {
+        // Every menu, the submenus' submenus too.
+        let mut menus = vec![root];
+        while let Some(hmenu) = menus.pop() {
             for pos in 0..256u32 {
                 let mut mii = MENUITEMINFOW {
                     cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
@@ -248,23 +270,11 @@ mod tests {
                 if unsafe { GetMenuItemInfoW(HMENU(hmenu as _), pos, true, &mut mii) }.is_err() {
                     break;
                 }
-                if mii.hSubMenu.0.is_null() && mii.wID != 0 {
+                if !mii.hSubMenu.0.is_null() {
+                    menus.push(mii.hSubMenu.0 as isize);
+                } else if mii.wID != 0 {
                     out.extend(describe(mii.wID as usize, hmenu));
                 }
-            }
-        };
-        walk(root);
-        for pos in 0..256u32 {
-            let mut mii = MENUITEMINFOW {
-                cbSize: std::mem::size_of::<MENUITEMINFOW>() as u32,
-                fMask: MIIM_SUBMENU,
-                ..Default::default()
-            };
-            if unsafe { GetMenuItemInfoW(HMENU(root as _), pos, true, &mut mii) }.is_err() {
-                break;
-            }
-            if !mii.hSubMenu.0.is_null() {
-                walk(mii.hSubMenu.0 as isize);
             }
         }
         out

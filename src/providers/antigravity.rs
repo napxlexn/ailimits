@@ -262,7 +262,7 @@ impl AntigravityProvider {
     /// The single message produced when Antigravity rejects the token — used
     /// at every request site so the wording never drifts. A short message
     /// the row shows as it is; the hover adds "run agy", which renews the
-    /// token. Not "check the key": no key was given.
+    /// token. Not "key rejected": no key was given.
     ///
     /// Also forgets the cached project id: after a switch to another Google
     /// account the old account's project is what gets refused, and only a
@@ -771,7 +771,7 @@ mod tests {
         *provider.project.lock().unwrap() = Some("old-account-project".to_string());
 
         let data = provider.token_rejected();
-        // The row's own words, not "check the key": no key was given.
+        // The row's own words, not "key rejected": no key was given.
         assert!(matches!(&data.status, ProviderStatus::NetworkError(m) if m == "token rejected"));
         assert_eq!(
             *provider.project.lock().unwrap(),

@@ -8,7 +8,7 @@ folder, and only the installer's uninstaller removes it. A Microsoft Store
 copy that finds no such folder makes its own, which Windows keeps with the
 package:
 `%LOCALAPPDATA%\Packages\napxlexn.AILimits_<publisher id>\LocalCache\Roaming\AiLimits`.
-The app still sees it at the usual path, *Edit config.toml...* opens it where
+The app still sees it at the usual path, *Edit config.toml…* opens it where
 it is, and removing the Store copy removes it; other programs (an
 `ailimits-auth` from another copy among them) do not see it at
 `%APPDATA%\AiLimits`. A folder another copy left there is shared with the
@@ -86,7 +86,7 @@ The welcome has no such link.
   used: the app compares the file's size and last write time (one metadata
   call, about 20 µs, nothing read) every 2 seconds while you are at the PC
   (any input in the last 5 minutes), every 30 seconds while you are away,
-  and every 2 seconds for 30 minutes after *Edit config.toml...* opened the
+  and every 2 seconds for 30 minutes after *Edit config.toml…* opened the
   file, away or not: an edit applies within about two seconds of its save.
   It also looks once per update cycle, right before it applies a
   context-menu or Settings action, before each save of its own (the
@@ -155,14 +155,14 @@ The notes the app writes in the file are shorter; this example says more.
 
 ```toml
 [general]
-# Update interval in seconds (menu: 60 / 300 / 900 / 1800; hard minimum 60).
+# Refresh interval in seconds (menu: 60 / 300 / 900 / 1800; hard minimum 60).
 # Polling pauses while idle/locked and backs off when a whole cycle fails
 # (120, 240, then 300 s at a 60 s interval); after a sleep or an idle pause
 # whose first cycle got no answer at all, one retry comes after 20 s.
 # Claude's endpoint is also rate-limited server-side, so its refresh can
 # occasionally take 2–3 minutes regardless of this setting.
 update_interval_secs = 60
-# Taskbar indicator (menu: Indicator): "tray" — a 16px tray icon carrying
+# Taskbar indicator (menu: Taskbar): "tray" — a 16px tray icon carrying
 # the two providers the panel would show, by default two concentric rings
 # (the busier outside; other looks: [ui.tray]), monochrome in the system
 # taskbar theme; "panel_rows" /
@@ -195,7 +195,7 @@ auto_update = true
 # layouts. Deliberately config-only, no menu entry.
 panel_offset_x = 0
 panel_offset_y = 0
-# Which taskbar the mini panel attaches to (menu: Indicator -> Display;
+# Which taskbar the mini panel attaches to (menu: Taskbar -> Panel display;
 # that submenu only appears when a secondary taskbar exists, and it's built
 # at startup, so plugging in a monitor later needs a restart before the
 # entry shows up). "primary" (default), or { secondary = N } where N counts
@@ -243,7 +243,7 @@ column_flow = "row"
 # Never replaces the reset countdown — shown only when no future reset is known.
 show_forecast = false
 
-# Rows (menu: Settings..., Providers). Written only once chosen; without it
+# Rows (menu: Settings…, Providers). Written only once chosen; without it
 # every provider has one row, as before. A provider's own row is its id, an
 # extra row is provider.part, and only these exist, each where the provider
 # meters it on its own: claude.opus, claude.sonnet, claude.fable (weekly,
@@ -269,7 +269,7 @@ widget  = ["claude", "claude.opus", "codex"]
 tooltip = ["claude", "claude.opus", "claude.sonnet", "codex", "grok"]
 taskbar = ["claude", "grok"]
 
-# Model labels (menu: Settings..., Display, Model). Parts per surface: "model",
+# Model labels (menu: Settings…, Display, Model). Parts per surface: "model",
 # "version" (only with "model"), "effort" (may go alone). Empty: no label.
 # Showing them reads each running tool's settings file, so the first tick
 # asks first ([reads] tool_settings). The widget draws the label on a line of its
@@ -300,7 +300,7 @@ source  = "configured"
 "claude-opus-5-5" = "Opus 5.5"
 "copilot:auto" = "Auto"
 
-# What each widget row shows besides its name (menu: Settings...,
+# What each widget row shows besides its name (menu: Settings…,
 # Display, Widget column): the percentage, the time left until the
 # reset, the progress bar, in any mix; the window keeps one on, and all
 # three false in the file read as the default. Written only once changed;
@@ -321,7 +321,7 @@ reset   = true
 bar     = false
 
 # What each row of the taskbar panel's tooltip shows besides its name
-# (menu: Settings..., Display, Tooltip column): the
+# (menu: Settings…, Display, Tooltip column): the
 # percentage, the time left until the limit the row shows resets
 # ("Claude 25% · 2h 14min"), or one of them alone ("Claude 2h 14min").
 # The window keeps one on; both false in the file leaves each row its name
@@ -333,7 +333,7 @@ bar     = false
 percent = false
 reset   = true
 
-# What each row of the taskbar panel shows (menu: Settings...,
+# What each row of the taskbar panel shows (menu: Settings…,
 # Display, Taskbar column): the percentage with its bar (as in 0.7.0), the
 # time alone before the bar ("2h14 ▬▬"), both with the bar between them
 # ("25% ▬▬ 2h14"; on a side taskbar the time under the percentage), or the
@@ -355,7 +355,7 @@ percent = true
 reset   = true
 bar     = true
 
-# The tray icon's look (menu: Settings..., Display, Tray icon style):
+# The tray icon's look (menu: Settings…, Display, Tray icon style):
 # "rings" (default: two concentric rings, the busier outside), "bars" (two
 # upright bars filling from the bottom, the busier on the left), "number"
 # (the busier's percentage in digits; "!" from 100%) or "sector" (Pie in the
@@ -422,7 +422,7 @@ alert_threshold = 80
 
 [[providers]]
 # Cursor: only the widget's own session (Settings: Cursor, Sign-in,
-# Sign in to Cursor..., or ailimits-auth login cursor), kept in Credential
+# Sign in to Cursor…, or ailimits-auth login cursor), kept in Credential
 # Manager. Nothing of the Cursor editor is read for it. The row stays
 # hidden until you sign in.
 id = "cursor"
@@ -507,7 +507,7 @@ in the Windows Credential Manager under service `ailimits`:
 | `claude_usage_token` | manual Claude subscription usage token |
 | `codex_usage_token` | manual ChatGPT/Codex usage token |
 | `copilot_pat` | GitHub fine-grained token (the "api_key" source, instead of the gh CLI) |
-| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Settings, Cursor's Sign-in: *Sign in to Cursor...* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
+| `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Settings, Cursor's Sign-in: *Sign in to Cursor…* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
 The installer's uninstaller removes all five (with `ailimits-auth`, locally,
 no network). A Microsoft Store copy has no uninstall step of ours: before
