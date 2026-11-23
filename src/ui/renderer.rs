@@ -36,7 +36,7 @@ pub(crate) const FONT_CANDIDATES: &[&str] = &[
 
 /// Load the first usable UI font from the candidate list. None only when
 /// not one of them can be read and parsed.
-pub(crate) fn load_ui_font() -> Option<Font> {
+fn load_ui_font() -> Option<Font> {
     for path in FONT_CANDIDATES {
         if let Ok(data) = std::fs::read(path) {
             if let Ok(font) = Font::from_bytes(data, fontdue::FontSettings::default()) {
@@ -45,6 +45,16 @@ pub(crate) fn load_ui_font() -> Option<Font> {
         }
     }
     None
+}
+
+/// The UI font, read and parsed once for the whole app: the widget, the
+/// picker, the tray icon, its tooltip and the taskbar panel all draw and
+/// measure with this one. fontdue parses every glyph up front, about 20 MB
+/// for Segoe UI, so a second copy (the tray module had one of its own, first
+/// loaded by the tray tooltip's wrapping) doubled the app's private memory.
+pub(crate) fn ui_font() -> Option<&'static Font> {
+    static FONT: std::sync::OnceLock<Option<Font>> = std::sync::OnceLock::new();
+    FONT.get_or_init(load_ui_font).as_ref()
 }
 
 /// Name column width in vertical compact. Wide enough for the longest
@@ -164,7 +174,7 @@ pub enum Align {
 }
 
 pub struct Renderer {
-    font: Font,
+    font: &'static Font,
 }
 
 /// How a row is drawn besides its rectangle: what it shows and the slots
@@ -181,7 +191,7 @@ struct Line<'a> {
 
 impl Renderer {
     pub fn new() -> Result<Self> {
-        let font = load_ui_font().with_context(|| {
+        let font = ui_font().with_context(|| {
             format!(
                 "no usable system font found (tried {})",
                 FONT_CANDIDATES.join(", ")
@@ -1706,7 +1716,7 @@ impl Renderer {
         max_width: f32,
     ) {
         let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
-        tl.append(&[&self.font], &TextStyle::new(text, size, 0));
+        tl.append(&[self.font], &TextStyle::new(text, size, 0));
 
         // Text width for alignment.
         let text_w = laid_out_width(&tl);
@@ -1745,7 +1755,7 @@ impl Renderer {
     /// exactly as wide when drawn.
     pub fn text_width(&self, text: &str, size: f32) -> f32 {
         let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
-        tl.append(&[&self.font], &TextStyle::new(text, size, 0));
+        tl.append(&[self.font], &TextStyle::new(text, size, 0));
         laid_out_width(&tl)
     }
 
@@ -4542,7 +4552,7 @@ impl Renderer {
         style: (bool, bool),
     ) {
         let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
-        tl.append(&[&self.font], &TextStyle::new(text, size, 0));
+        tl.append(&[self.font], &TextStyle::new(text, size, 0));
         let baseline = tl
             .lines()
             .and_then(|l| l.first().map(|l| l.baseline_y))

@@ -445,6 +445,10 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **About 20 MB less memory.** The tray icon, its tooltip and the taskbar
+  panel use the widget's copy of the font instead of one of their own; a
+  copy costs about 20 MB, and the tray tooltip loaded its own at the first
+  reading.
 - **Starting, AI Limits no longer takes the focus from the app in front.** At
   sign-in, or when an update starts it again while you are away and a film
   plays full screen, what you were using keeps the focus, and the update

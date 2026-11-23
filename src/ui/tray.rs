@@ -982,12 +982,11 @@ fn draw_stacked_icon(
     to_icon(&pm)
 }
 
-/// The shared UI font, loaded once (same candidate chain renderer.rs uses, so
-/// the tray/panel survive a missing Segoe UI exactly like the main widget).
+/// The app's one UI font (`renderer::ui_font`): the tray icon, its tooltip
+/// and the panel share the widget's copy, so a missing Segoe UI is survived
+/// exactly as there, and the font is parsed once.
 fn font() -> Option<&'static fontdue::Font> {
-    use std::sync::OnceLock;
-    static FONT: OnceLock<Option<fontdue::Font>> = OnceLock::new();
-    FONT.get_or_init(crate::ui::renderer::load_ui_font).as_ref()
+    crate::ui::renderer::ui_font()
 }
 
 /// Measure the rendered ink bounds of `text` at `size`.
