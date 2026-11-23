@@ -2945,3 +2945,138 @@ fn a_focused_tick_shows_its_own_description_only() {
         .hint;
     assert_eq!(shown(&p).as_deref(), Some(fable_hint));
 }
+
+/// Frames for the README's Settings GIFs, drawn by the app itself: the
+/// window and, beside it, the widget its ticks make. One folder a scene
+/// under `GIF_FRAMES`, a picker and a widget PNG a step, and `steps.json`
+/// with where the pointer goes (window pixels) and whether it clicks.
+/// design/gifgen/settings_gif.py lays them out and encodes. Run on demand:
+/// `GIF_FRAMES=<dir> cargo test --lib gif_frames_settings -- --ignored`.
+#[test]
+#[ignore = "writes GIF frames on demand"]
+fn gif_frames_settings() {
+    use crate::ui::renderer::tests::{rows_fixture, rows_widget, widget_rows};
+    let Ok(dir) = std::env::var("GIF_FRAMES") else {
+        return;
+    };
+    let renderer = Rc::new(Renderer::new().expect("a system font"));
+    let fixture = rows_fixture();
+    let make = |input: PickerInput| {
+        let r = renderer.clone();
+        Picker::new(input, move |t, s| r.text_width(t, s))
+    };
+    let draw = |p: &Picker| {
+        let (w, h) = p.window_size();
+        let mut pm =
+            tiny_skia::Pixmap::new((w * 2.0).ceil() as u32, (h * 2.0).ceil() as u32).unwrap();
+        renderer.draw_picker(
+            &mut pm,
+            &p.scene(),
+            &PickerTheme::for_system(false),
+            2.0,
+            &mut PickerGlyphs::default(),
+        );
+        pm
+    };
+    let widget = |ids: &[String], numbers: UiNumbers| {
+        let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let rows = widget_rows(&fixture, Some(&ids), None);
+        let ui = crate::config::schema::UIConfig {
+            widget: numbers,
+            ..Default::default()
+        };
+        rows_widget(&renderer, &rows, &ui, false, None)
+    };
+    struct Scene {
+        name: &'static str,
+        steps: Vec<String>,
+        n: usize,
+    }
+    let save =
+        |sc: &mut Scene, p: &Picker, w: &tiny_skia::Pixmap, at: (f32, f32), clicked: bool| {
+            let d = std::path::Path::new(&dir).join(sc.name);
+            std::fs::create_dir_all(&d).unwrap();
+            draw(p)
+                .save_png(d.join(format!("{:02}-picker.png", sc.n)))
+                .unwrap();
+            w.save_png(d.join(format!("{:02}-widget.png", sc.n)))
+                .unwrap();
+            sc.steps.push(format!(
+                "{{\"i\": {}, \"x\": {}, \"y\": {}, \"click\": {}}}",
+                sc.n, at.0, at.1, clicked
+            ));
+            sc.n += 1;
+        };
+    let finish = |sc: Scene| {
+        let d = std::path::Path::new(&dir).join(sc.name);
+        std::fs::write(d.join("steps.json"), format!("[{}]", sc.steps.join(","))).unwrap();
+    };
+
+    // Providers: a row ticked shows at once; a provider's Sign-in opens.
+    let mut sc = Scene {
+        name: "settings-providers",
+        steps: Vec::new(),
+        n: 0,
+    };
+    let mut i = input();
+    i.sign_in = sign_ins();
+    let mut ids: Vec<String> = vec!["claude".into(), "codex".into()];
+    i.widget_rows = ids.clone();
+    let mut p = make(i.clone());
+    let numbers = UiNumbers::default();
+    save(&mut sc, &p, &widget(&ids, numbers), (300.0, 520.0), false);
+    let t = row("claude.opus", Surface::Widget);
+    let at = spot(&mut p, &t);
+    save(&mut sc, &p, &widget(&ids, numbers), at, false);
+    click(&mut p, &t);
+    p.handle(PickerEvent::PointerLeave);
+    ids = vec!["claude".into(), "claude.opus".into(), "codex".into()];
+    i.widget_rows = ids.clone();
+    p.set_input(i.clone());
+    save(&mut sc, &p, &widget(&ids, numbers), at, true);
+    let t = Target::SignIn("claude".into());
+    let at = spot(&mut p, &t);
+    save(&mut sc, &p, &widget(&ids, numbers), at, false);
+    click(&mut p, &t);
+    p.handle(PickerEvent::PointerLeave);
+    save(&mut sc, &p, &widget(&ids, numbers), at, true);
+    // The pointer goes back to the widget: the description goes.
+    p.handle(PickerEvent::PointerLeave);
+    save(&mut sc, &p, &widget(&ids, numbers), (-70.0, 150.0), false);
+    finish(sc);
+
+    // Display: what each row shows; without the bar the widget is smaller.
+    let mut sc = Scene {
+        name: "settings-display",
+        steps: Vec::new(),
+        n: 0,
+    };
+    let mut i = input();
+    let ids: Vec<String> = vec!["claude".into(), "codex".into(), "grok".into()];
+    i.widget_rows = ids.clone();
+    let mut numbers = UiNumbers::default();
+    let mut p = make(i.clone());
+    on_tab(&mut p, Tab::Shows);
+    save(&mut sc, &p, &widget(&ids, numbers), (300.0, 520.0), false);
+    for (part, on) in [
+        (TipPart::Bar, false),
+        (TipPart::Reset, false),
+        (TipPart::Reset, true),
+        (TipPart::Bar, true),
+    ] {
+        let t = Target::Tip(part, NumbersOn::Widget);
+        let at = spot(&mut p, &t);
+        save(&mut sc, &p, &widget(&ids, numbers), at, false);
+        click(&mut p, &t);
+        p.handle(PickerEvent::PointerLeave);
+        match part {
+            TipPart::Bar => numbers.bar = on,
+            TipPart::Reset => numbers.reset = on,
+            TipPart::Percent => numbers.percent = on,
+        }
+        i.widget = numbers;
+        p.set_input(i.clone());
+        save(&mut sc, &p, &widget(&ids, numbers), at, true);
+    }
+    finish(sc);
+}

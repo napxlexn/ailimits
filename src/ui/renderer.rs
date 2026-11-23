@@ -2148,7 +2148,7 @@ pub fn format_countdown(secs: i64, style: Countdown) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::providers::MetricWindow;
     use crate::utc::SignedDuration;
@@ -2826,7 +2826,7 @@ mod tests {
     }
 
     /// Every provider with every metric an extra row can show.
-    fn rows_fixture() -> Vec<ProviderData> {
+    pub(crate) fn rows_fixture() -> Vec<ProviderData> {
         use MetricWindow::{Long, Session};
         const H: i64 = 3600;
         const D: i64 = 86_400;
@@ -2906,7 +2906,7 @@ mod tests {
 
     /// The parts of a model label switched on.
     #[derive(Clone, Copy)]
-    enum Parts {
+    pub(crate) enum Parts {
         Full,
         NoEffort,
         NoVersion,
@@ -2943,7 +2943,7 @@ mod tests {
 
     /// The widget's rows for `ids` (None: the default rows), each provider's
     /// own row labelled with `parts` (None: no labels).
-    fn widget_rows(
+    pub(crate) fn widget_rows(
         providers: &[ProviderData],
         ids: Option<&[&str]>,
         parts: Option<Parts>,
@@ -2963,7 +2963,7 @@ mod tests {
     }
 
     /// Draw a widget of `rows` the way app.rs does: shape, layout, draw.
-    fn rows_widget(
+    pub(crate) fn rows_widget(
         renderer: &Renderer,
         rows: &[RowView],
         ui: &crate::config::schema::UIConfig,
