@@ -57,15 +57,21 @@
   on this PC, each with a tick; it finds them only by whether their folder
   exists, without opening anything inside. <em>Cancel</em> reads nothing. If
   you update from 0.7.0, the providers you already had keep working, and one
-  window lists every file read and every server contacted. To stop reading a
-  tool, untick its rows in <em>Rows and models</em>; unticking Model, Version
-  and Effort takes back the reads for model labels.</p>
+  window lists every file read and every server contacted. Each permission is
+  asked for once. Clearing a tool's rows in <em>Settings</em> pauses it: nothing
+  of it is read or sent until you select a row again, which asks nothing.
+  <em>Forget permission</em>, under the tool's <em>Sign-in</em>, takes the
+  permission back and clears its rows; the next row you select asks again. The
+  reads for model labels work the same way, with <em>Forget permission</em>
+  under Model, Version and Reasoning effort. If a later version reads another
+  file for a tool or sends its token elsewhere, it asks again before it
+  does.</p>
 
   <h2>What it reads, once allowed</h2>
   <p>To show a limit, the widget asks the provider the same way its own
   command-line tool does. So it reads the sign-in those tools already keep on
   your machine, <strong>read-only</strong>, unless you choose another source
-  under the provider's <em>Sign-in</em> in <em>Rows and models</em>: a usage
+  under the provider's <em>Sign-in</em> in <em>Settings</em>: a usage
   token, or a key or token you paste. Only the source chosen is used.</p>
   <ul>
     <li><strong>Claude</strong> — the Claude Code sign-in in <code>%USERPROFILE%\.claude\.credentials.json</code>.</li>
@@ -73,14 +79,14 @@
     <li><strong>GitHub Copilot</strong> — a token you paste, or the token the GitHub CLI keeps for github.com (<code>gh auth token --hostname github.com</code>, asked at most every 15 minutes, and once more at once when GitHub refuses a token gh gave earlier).</li>
     <li><strong>Google Antigravity</strong> — the Antigravity CLI's sign-in in Windows Credential Manager (<code>gemini:antigravity</code>). It is renewed only when you run the CLI, <code>agy</code>; opening the Antigravity editor does not renew it, and the editor's own sign-in is never read. Until you run <code>agy</code> again, the row reads "token expired". Google has suspended some accounts for using Antigravity's sign-in outside Antigravity; AI Limits only reads the quota, once per update, but the risk is yours, and its question says so before anything is read. The older Gemini CLI sign-in, <code>%USERPROFILE%\.gemini\oauth_creds.json</code>, is no longer read.</li>
     <li><strong>xAI Grok</strong> — the Grok CLI sign-in in <code>%USERPROFILE%\.grok\auth.json</code> (in <code>GROK_HOME</code> when that is set).</li>
-    <li><strong>Cursor</strong> — no file of Cursor's. You sign in once from <em>Rows and models</em>, Cursor's <em>Sign-in</em>, <em>Sign in to Cursor...</em>, on Cursor's own sign-in page at cursor.com, in your browser. Cursor has no sign-in for other apps, so the widget signs in as the Cursor editor's client, and keeps that session (about 60 days) in Windows Credential Manager. It tries to renew that session in its last week, at most once a day; when the session ends, you sign in again. The editor's own sign-in is never read or touched.</li>
+    <li><strong>Cursor</strong> — no file of Cursor's. You sign in once from <em>Settings</em>, Cursor's <em>Sign-in</em>, <em>Sign in to Cursor…</em>, on Cursor's own sign-in page at cursor.com, in your browser. Cursor has no sign-in for other apps, so the widget signs in as the Cursor editor's client, and keeps that session (about 60 days) in Windows Credential Manager. It tries to renew that session in its last week, at most once a day; when the session ends, you sign in again. The editor's own sign-in is never read or touched.</li>
   </ul>
   <p>Model labels are optional and allowed separately. With them, the widget
   reads each running tool's own settings file (for example
   <code>%USERPROFILE%\.claude\settings.json</code>, <code>config.toml</code> of
   Codex or Grok, <code>settings.json</code> of the Copilot or Antigravity CLI,
   and from Cursor's <code>state.vscdb</code> only the model chosen for its
-  Agent), and, if you choose "Last used", the end of the newest Claude Code or
+  Agent), and, if you choose "Last session", the end of the newest Claude Code or
   Codex CLI session file (at most its last 1 MB). Only the model's name and its
   effort are kept, in memory, and nothing from these files is sent anywhere.
   Nothing is ever written to or created in another program's folder, Cursor's
@@ -147,7 +153,7 @@
   works offline.</p>
   <p>The Microsoft Store cannot run a step of ours at uninstall. Before
   removing the Store version, use each provider's <em>Sign-in</em> in
-  <em>Rows and models</em> to sign out of Cursor and remove a key or token
+  <em>Settings</em> to sign out of Cursor and remove a key or token
   you pasted, or delete the
   <code>ailimits</code> entries under Windows Credentials in Credential
   Manager afterwards. The CLI sign-ins the widget only read are not ours and

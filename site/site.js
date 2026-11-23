@@ -1214,9 +1214,9 @@ if (!reduced) setInterval(() => { honI = (honI + 1) % HON_STATES.length; honRend
 
 /* ════ playground ════
    The controls are the app's own: the context menu's items with its steps
-   (context_menu.rs: Vertical/Horizontal bars, Width, Arrangement, Monochrome
+   (context_menu.rs: Rows/Columns, Width, Column layout, Monochrome
    beside eight palettes, opacity 15-85, brightness 40-100, saturation 0-100)
-   and the Widget column of Rows and models, with the model label's three
+   and the Widget column of Settings, with the model label's three
    parts. The rows, the extra rows and the labels are the ones the app's own
    tests draw (renderer.rs label_for, rows.rs SUB_ROWS); the extra rows'
    buttons are named as the picker names them under their provider, "+ Fable". */
@@ -1280,7 +1280,7 @@ function pgRender() {
      nothing to scroll leaves the wheel to the page as everywhere else */
   const rail = $(".pg-rail");
   if (rail) rail.toggleAttribute("data-lenis-prevent", rail.scrollHeight > rail.clientHeight + 1);
-  /* Width means something only with horizontal bars, Arrangement only with
+  /* Width means something only with horizontal bars, Column layout only with
      vertical ones: the menu greys the other, and so does this */
   $$(".pg [data-only]").forEach((g) => g.toggleAttribute("data-hidden", g.getAttribute("data-only") !== pg.bars));
 }
