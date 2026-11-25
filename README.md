@@ -68,6 +68,16 @@ Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPW
   <br><sub>With vertical bars, providers sit side by side or stack into a column.</sub>
 </td>
 </tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <img src="docs/images/settings-providers.gif" width="400" alt="The Settings window beside the widget: ticking the Opus weekly limit in the Widget column adds its row to the widget at once, then Claude's Sign-in opens on where its sign-in comes from, what is read and Forget permission">
+  <br><sub><em>Settings</em>, Providers: a row ticked shows on the widget at once; each provider's Sign-in says what is read and where its token goes.</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <img src="docs/images/settings-display.gif" width="400" alt="The Settings window's Display tab: unticking Progress bar turns the widget's rows into single lines and makes it lower, Time to reset goes and comes back, and the bar comes back">
+  <br><sub><em>Settings</em>, Display: what each row shows; without the bar the widget gets smaller. Drawn by the app itself.</sub>
+</td>
+</tr>
 </table>
 
 ## What it does

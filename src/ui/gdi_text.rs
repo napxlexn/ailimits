@@ -64,10 +64,10 @@ impl GdiText {
                     lfHeight: -px.max(1),
                     lfWeight: if bold { 600 } else { 400 },
                     lfItalic: italic as u8,
-                    lfQuality: windows::Win32::Graphics::Gdi::FONT_QUALITY(match smoothing {
-                        Smoothing::Gray => 4,      // ANTIALIASED_QUALITY
-                        Smoothing::ClearType => 5, // CLEARTYPE_QUALITY
-                    }),
+                    // CLEARTYPE_QUALITY for both: grayscale is ClearType's
+                    // coverage averaged (`mask`), as Windows' own grayscale
+                    // (ANTIALIASED_QUALITY) draws regular text too heavy.
+                    lfQuality: windows::Win32::Graphics::Gdi::FONT_QUALITY(5),
                     ..Default::default()
                 };
                 for (i, c) in "Segoe UI".encode_utf16().enumerate() {
@@ -161,7 +161,13 @@ impl GdiText {
             let mut rgb = Vec::with_capacity(w * h * 3);
             for p in px_bytes.as_chunks::<4>().0 {
                 // BGRA in the DIB.
-                rgb.extend_from_slice(&[p[2], p[1], p[0]]);
+                match smoothing {
+                    Smoothing::ClearType => rgb.extend_from_slice(&[p[2], p[1], p[0]]),
+                    Smoothing::Gray => {
+                        let g = ((p[0] as u32 + p[1] as u32 + p[2] as u32) / 3) as u8;
+                        rgb.extend_from_slice(&[g, g, g]);
+                    }
+                }
             }
             SelectObject(self.dc, old_font);
             SelectObject(self.dc, old_bmp);

@@ -2991,20 +2991,25 @@ fn gif_frames_settings() {
         return;
     };
     let renderer = Rc::new(Renderer::new().expect("a system font"));
+    // As the window draws its text, grayscale: ClearType is tuned to one
+    // screen's subpixels and fringes in a picture seen on another.
+    renderer.set_picker_text(crate::ui::renderer::PickerText::Gdi(
+        crate::ui::gdi_text::Smoothing::Gray,
+    ));
     let fixture = rows_fixture();
     let make = |input: PickerInput| {
-        let r = renderer.clone();
-        Picker::new(input, move |t, s| r.text_width(t, s))
+        let (r, b) = (renderer.clone(), renderer.clone());
+        Picker::new(input, move |t, s| r.picker_width(t, s, false, 1.0))
+            .with_bold_measure(move |t, s| b.picker_width(t, s, true, 1.0))
     };
     let draw = |p: &Picker| {
         let (w, h) = p.window_size();
-        let mut pm =
-            tiny_skia::Pixmap::new((w * 2.0).ceil() as u32, (h * 2.0).ceil() as u32).unwrap();
+        let mut pm = tiny_skia::Pixmap::new(w.ceil() as u32, h.ceil() as u32).unwrap();
         renderer.draw_picker(
             &mut pm,
             &p.scene(),
             &PickerTheme::for_system(false),
-            2.0,
+            1.0,
             &mut PickerGlyphs::default(),
         );
         pm

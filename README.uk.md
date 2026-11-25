@@ -68,6 +68,16 @@
   <br><sub>З вертикальними смужками провайдери стоять поруч або складаються в колонку.</sub>
 </td>
 </tr>
+<tr>
+<td width="50%" align="center" valign="top">
+  <img src="docs/images/settings-providers.gif" width="400" alt="Вікно Settings поруч із віджетом: галочка тижневого ліміту Opus у колонці Widget одразу додає його рядок у віджет, далі відкривається Sign-in Claude: звідки вхід, що читається і Forget permission">
+  <br><sub><em>Settings</em>, Providers: рядок із галочкою одразу з'являється у віджеті; Sign-in кожного провайдера каже, що читається і куди йде токен.</sub>
+</td>
+<td width="50%" align="center" valign="top">
+  <img src="docs/images/settings-display.gif" width="400" alt="Вкладка Display вікна Settings: без Progress bar рядки віджета стають однорядковими і він нижчає, Time to reset зникає й повертається, смужка повертається">
+  <br><sub><em>Settings</em>, Display: що показує кожен рядок; без смужки віджет менший. Малює сам застосунок.</sub>
+</td>
+</tr>
 </table>
 
 ## Що він робить
