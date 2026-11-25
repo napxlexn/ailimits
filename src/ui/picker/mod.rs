@@ -1363,6 +1363,9 @@ type Measure = Box<dyn Fn(&str, f32) -> f32>;
 pub struct Picker {
     input: PickerInput,
     measure: Measure,
+    /// Semibold widths, where they are measured apart (`with_bold_measure`);
+    /// otherwise a bold text counts a pixel wider.
+    measure_bold: Option<Measure>,
     /// `measure` is a full text layout; the same strings come back often.
     widths: RefCell<HashMap<(String, u32), f32>>,
     max_box_h: f32,
@@ -1455,6 +1458,7 @@ impl Picker {
         let mut p = Self {
             input,
             measure: Box::new(measure),
+            measure_bold: None,
             widths: RefCell::new(HashMap::new()),
             max_box_h: MAX_BOX_H,
             scroll: 0.0,
@@ -1572,6 +1576,21 @@ impl Picker {
 
     /// A new snapshot, after the app applied an action. Focus, hover, scroll,
     /// an open question and an edit in progress stay.
+    /// Measure semibold text with `measure` (the window's own text
+    /// drawing has a real semibold, wider than a regular run).
+    pub fn with_bold_measure(mut self, measure: impl Fn(&str, f32) -> f32 + 'static) -> Self {
+        self.measure_bold = Some(Box::new(measure));
+        self
+    }
+
+    /// The widths anew (the window's scale changed, and the text drawing's
+    /// hinting with it): the layout follows.
+    pub fn remeasure(&mut self) {
+        self.widths.borrow_mut().clear();
+        self.input_gen += 1;
+        self.dirty = true;
+    }
+
     pub fn set_input(&mut self, input: PickerInput) {
         self.input = input;
         self.input_gen += 1;
@@ -1998,7 +2017,7 @@ mod scene;
 mod text;
 mod window;
 
-pub use window::{place, Anchor, PickerWindow, ScreenRect, Side};
+pub use window::{place, place_off_bar, Anchor, PickerWindow, ScreenRect, Side};
 
 #[cfg(test)]
 mod tests;

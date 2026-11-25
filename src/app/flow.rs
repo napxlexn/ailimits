@@ -197,6 +197,52 @@ impl App {
         target: &EventLoopWindowTarget<UserEvent>,
         activate: bool,
     ) {
+        self.open_picker_beside(target, activate, None);
+    }
+
+    /// Open the picker from the context menu: beside the surface whose menu
+    /// it was (the widget, the taskbar panel, the tray icon).
+    pub(super) fn open_picker_from_menu(&mut self, target: &EventLoopWindowTarget<UserEvent>) {
+        let from = std::mem::replace(&mut self.menu_from, crate::app::MenuFrom::Widget);
+        let rect = match from {
+            crate::app::MenuFrom::Widget => None,
+            #[cfg(target_os = "windows")]
+            crate::app::MenuFrom::Panel => {
+                self.panel
+                    .screen_rect()
+                    .map(|(l, t, r, b)| crate::ui::picker::ScreenRect {
+                        x: l,
+                        y: t,
+                        w: r - l,
+                        h: b - t,
+                    })
+            }
+            #[cfg(not(target_os = "windows"))]
+            crate::app::MenuFrom::Panel => None,
+            crate::app::MenuFrom::Tray(rect) => Some(rect),
+        };
+        // On a taskbar: off the bar, lined up with it (`place_off_bar`).
+        let anchor = rect.map(|rect| {
+            let c = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+            match crate::platform::safe_area_at(c.0, c.1) {
+                Some(a) => crate::ui::picker::Anchor::on_bar(
+                    rect,
+                    crate::ui::picker::Anchor::bar_edge(rect, a.monitor),
+                ),
+                None => crate::ui::picker::Anchor::fixed(rect),
+            }
+        });
+        self.open_picker_beside(target, true, anchor);
+    }
+
+    /// Open the picker beside `anchor`, or beside the widget (the cursor
+    /// while the widget is hidden) when there is none.
+    fn open_picker_beside(
+        &mut self,
+        target: &EventLoopWindowTarget<UserEvent>,
+        activate: bool,
+        anchor: Option<crate::ui::picker::Anchor>,
+    ) {
         // Opened now, by whatever path: an owed window that waited has had
         // its turn.
         self.auto_open_waiting = false;
@@ -204,16 +250,17 @@ impl App {
             self.picker_mode = picker_mode_for(&self.config);
             self.found_tools = crate::consent::found_tools();
             let input = self.picker_input();
-            let anchor =
-                picker_anchor(&self.window, self.window_visible, self.widget_grown(&input));
-            self.picker = open_picker_window(
-                target,
-                &self.renderer,
-                input,
-                anchor,
-                self.picker_at,
-                activate,
-            );
+            let anchor = anchor.unwrap_or_else(|| {
+                picker_anchor(&self.window, self.window_visible, self.widget_grown(&input))
+            });
+            // Opened from the panel or the tray icon it goes by the bar;
+            // where the user left it holds for the widget's way in.
+            let at = if anchor.bar.is_some() {
+                None
+            } else {
+                self.picker_at
+            };
+            self.picker = open_picker_window(target, &self.renderer, input, anchor, at, activate);
         } else if let Some(p) = self.picker.as_ref().filter(|_| activate) {
             p.focus();
         }

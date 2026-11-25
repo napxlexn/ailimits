@@ -1416,6 +1416,37 @@ fn the_box_keeps_off_the_side_the_widget_grows_to() {
     );
 }
 
+/// From the taskbar panel or the tray icon the box opens off the bar, as
+/// Windows' flyouts do: above a bottom bar and lined up with the anchor's
+/// end nearer the corner; beside a side bar; below a top one.
+#[test]
+fn the_box_opens_off_the_taskbar() {
+    let size = (404, 584);
+    let monitor = (0, 0, 1920, 1080);
+    // The tray icon at the bottom right: above it, its right edge with the
+    // icon's, held in the work area.
+    let icon = at(1840, 1040, 24, 40);
+    assert_eq!(Anchor::bar_edge(icon, monitor), Side::Below);
+    let (x, y) = place_off_bar(icon, Side::Below, size, 12, 8, WORK);
+    assert_eq!((x + 12 + 380, y + 12 + 560), (1864, 1040 - 8));
+    // The panel at the bottom left: above it, its left edge with the panel's.
+    let panel = at(300, 1036, 120, 44);
+    let (x, y) = place_off_bar(panel, Side::Below, size, 12, 8, WORK);
+    assert_eq!((x + 12, y + 12 + 560), (300, 1036 - 8));
+    // A bar on the left: to the right of the icon, its bottom with the icon's.
+    let left = (60, 0, 1920, 1080);
+    let icon = at(10, 1000, 40, 24);
+    assert_eq!(Anchor::bar_edge(icon, monitor), Side::Left);
+    let (x, y) = place_off_bar(icon, Side::Left, size, 12, 8, left);
+    assert_eq!((x + 12, y + 12 + 560), (60, 1024));
+    // A bar on top: below the icon, held in on the right.
+    let top = (0, 48, 1920, 1080);
+    let icon = at(1880, 4, 24, 40);
+    assert_eq!(Anchor::bar_edge(icon, monitor), Side::Above);
+    let (x, y) = place_off_bar(icon, Side::Above, size, 12, 8, top);
+    assert_eq!((x + 12 + 380, y + 12), (1904, 52));
+}
+
 /// Opened from the tray icon in the corner, or from a widget against the
 /// screen's edge, the box keeps 16 px (at 100%; 24 at 150%) from the work
 /// area's edges, the taskbar's among them.
@@ -3079,4 +3110,63 @@ fn gif_frames_settings() {
         save(&mut sc, &p, &widget(&ids, numbers), at, true);
     }
     finish(sc);
+}
+
+/// The window drawn three ways for the owner to compare: fontdue as now,
+/// Windows grayscale and Windows ClearType (`gdi_text`), at 100% and 150%.
+/// Run on demand: `TEXT_FRAMES=<dir> cargo test --lib picker_text_engines -- --ignored`.
+#[test]
+#[ignore = "writes comparison renders on demand"]
+fn picker_text_engines() {
+    use crate::ui::gdi_text::Smoothing;
+    use crate::ui::renderer::PickerText;
+    let Ok(dir) = std::env::var("TEXT_FRAMES") else {
+        return;
+    };
+    let renderer = Rc::new(Renderer::new().expect("a system font"));
+    let make = |input: PickerInput| {
+        let r = renderer.clone();
+        Picker::new(input, move |t, s| r.text_width(t, s))
+    };
+    let mut normal = make(input());
+    let mut i = input();
+    i.sign_in = sign_ins();
+    let mut signin = make(i);
+    signin.open_sign_in = vec!["claude".into()];
+    let mut shows = make(with_model());
+    on_tab(&mut shows, Tab::Shows);
+    let _ = (&mut normal, &mut signin);
+    for (how, name) in [
+        (PickerText::Fontdue, "now"),
+        (PickerText::Gdi(Smoothing::Gray), "gray"),
+        (PickerText::Gdi(Smoothing::ClearType), "cleartype"),
+    ] {
+        renderer.set_picker_text(how);
+        for (p, state) in [
+            (&normal, "providers"),
+            (&signin, "signin"),
+            (&shows, "display"),
+        ] {
+            for (scale, light) in [(1.0f32, false), (1.5, false), (1.0, true)] {
+                let (w, h) = p.window_size();
+                let mut pm =
+                    tiny_skia::Pixmap::new((w * scale).ceil() as u32, (h * scale).ceil() as u32)
+                        .unwrap();
+                renderer.draw_picker(
+                    &mut pm,
+                    &p.scene(),
+                    &PickerTheme::for_system(light),
+                    scale,
+                    &mut PickerGlyphs::default(),
+                );
+                let theme = if light { "-light" } else { "" };
+                let path = std::path::Path::new(&dir).join(format!(
+                    "{state}-{}{theme}-{name}.png",
+                    (scale * 100.0) as u32
+                ));
+                pm.save_png(path).unwrap();
+            }
+        }
+    }
+    renderer.set_picker_text(PickerText::Fontdue);
 }

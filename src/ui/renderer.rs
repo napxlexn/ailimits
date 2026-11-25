@@ -175,6 +175,20 @@ pub enum Align {
 
 pub struct Renderer {
     font: &'static Font,
+    /// How the Settings window draws its text (`PickerText`).
+    picker_text: std::cell::Cell<PickerText>,
+    /// Windows' own text drawing, for `PickerText::Gdi`.
+    #[cfg(target_os = "windows")]
+    gdi: Option<super::gdi_text::GdiText>,
+}
+
+/// How the Settings window draws its text: with the widget's fontdue
+/// glyphs, or as Windows draws it (`gdi_text`), hinted and smoothed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerText {
+    Fontdue,
+    #[cfg(target_os = "windows")]
+    Gdi(super::gdi_text::Smoothing),
 }
 
 /// How a row is drawn besides its rectangle: what it shows and the slots
@@ -197,7 +211,45 @@ impl Renderer {
                 FONT_CANDIDATES.join(", ")
             )
         })?;
-        Ok(Self { font })
+        Ok(Self {
+            font,
+            picker_text: std::cell::Cell::new(PickerText::Fontdue),
+            #[cfg(target_os = "windows")]
+            gdi: super::gdi_text::GdiText::new(),
+        })
+    }
+
+    /// Choose how the Settings window draws its text.
+    pub fn set_picker_text(&self, how: PickerText) {
+        self.picker_text.set(how);
+    }
+
+    /// How the Settings window draws its text on this system: as Windows
+    /// does, ClearType or grayscale as Windows smooths its fonts; fontdue
+    /// only where Windows' text drawing could not be set up.
+    pub fn system_picker_text(&self) -> PickerText {
+        #[cfg(target_os = "windows")]
+        if self.gdi.is_some() {
+            return PickerText::Gdi(if crate::platform::font_smoothing_cleartype() {
+                super::gdi_text::Smoothing::ClearType
+            } else {
+                super::gdi_text::Smoothing::Gray
+            });
+        }
+        PickerText::Fontdue
+    }
+
+    /// The Settings window's text widths, regular and semibold, in its own
+    /// (logical) pixels, for the way it draws text now; `scale` is the
+    /// window's, as Windows' hinting depends on the size in pixels.
+    pub fn picker_width(&self, text: &str, size: f32, bold: bool, scale: f32) -> f32 {
+        #[cfg(target_os = "windows")]
+        if let (PickerText::Gdi(_), Some(gdi)) = (self.picker_text.get(), self.gdi.as_ref()) {
+            let s = scale.max(0.5);
+            return gdi.width(text, size * s, bold) / s;
+        }
+        // The faux bold the fontdue path draws is about a pixel wider.
+        self.text_width(text, size) + if bold { 1.0 } else { 0.0 }
     }
 
     /// Draw the whole UI into the pixmap.
@@ -1941,6 +1993,53 @@ fn blend_pixel(pixmap: &mut Pixmap, x: u32, y: u32, color: Color, alpha: u8) {
     data[idx + 1] = ((color.g as u32 * a + data[idx + 1] as u32 * inv) / 255) as u8;
     data[idx + 2] = ((color.b as u32 * a + data[idx + 2] as u32 * inv) / 255) as u8;
     data[idx + 3] = (a + data[idx + 3] as u32 * inv / 255).min(255) as u8;
+}
+
+/// Blend `color` through a run's coverage (`gdi_text::Mask`), its top-left
+/// at `at`. Grayscale blends as `blend_pixel`; ClearType blends each
+/// channel by its own coverage where the pixel under it is opaque (the
+/// Settings box), and by their mean elsewhere.
+#[cfg(target_os = "windows")]
+fn blend_mask(
+    pm: &mut Pixmap,
+    mask: &super::gdi_text::Mask,
+    at: (i32, i32),
+    color: Color,
+    smoothing: super::gdi_text::Smoothing,
+) {
+    let (pw, ph) = (pm.width() as i32, pm.height() as i32);
+    let ca = color.a as u32;
+    for y in 0..mask.h {
+        let py = at.1 + y as i32;
+        if py < 0 || py >= ph {
+            continue;
+        }
+        for x in 0..mask.w {
+            let px = at.0 + x as i32;
+            if px < 0 || px >= pw {
+                continue;
+            }
+            let m = &mask.rgb[(y * mask.w + x) * 3..(y * mask.w + x) * 3 + 3];
+            if m[0] == 0 && m[1] == 0 && m[2] == 0 {
+                continue;
+            }
+            let idx = ((py * pw + px) * 4) as usize;
+            let data = pm.data_mut();
+            let opaque = data[idx + 3] == 255;
+            if smoothing == super::gdi_text::Smoothing::Gray || !opaque {
+                let cov = (m[0] as u32 + m[1] as u32 + m[2] as u32) / 3;
+                let a = (cov * ca / 255) as u8;
+                if a > 0 {
+                    blend_pixel(pm, px as u32, py as u32, color, a);
+                }
+                continue;
+            }
+            for (c, fg) in [color.r, color.g, color.b].into_iter().enumerate() {
+                let a = m[c] as u32 * ca / 255;
+                data[idx + c] = ((fg as u32 * a + data[idx + c] as u32 * (255 - a)) / 255) as u8;
+            }
+        }
+    }
 }
 
 /// Active metric for the percent/bar. Hovering a row temporarily reveals the
@@ -4270,7 +4369,12 @@ use super::theme::PickerTheme;
 /// owns it, so it goes when the window does; a repaint (a hover moving to
 /// another row) then costs the blending, not the rasterizing.
 #[derive(Default)]
-pub struct PickerGlyphs(HashMap<fontdue::layout::GlyphRasterConfig, (fontdue::Metrics, Vec<u8>)>);
+pub struct PickerGlyphs(
+    HashMap<fontdue::layout::GlyphRasterConfig, (fontdue::Metrics, Vec<u8>)>,
+    /// Runs Windows drew (`PickerText::Gdi`): text, size, bold, italic, smoothing.
+    #[cfg(target_os = "windows")]
+    HashMap<(String, u32, bool, bool, super::gdi_text::Smoothing), Option<super::gdi_text::Mask>>,
+);
 
 #[allow(clippy::items_after_test_module)]
 impl Renderer {
@@ -4551,6 +4655,31 @@ impl Renderer {
         color: Color,
         style: (bool, bool),
     ) {
+        #[cfg(target_os = "windows")]
+        if let (PickerText::Gdi(smoothing), Some(gdi)) = (self.picker_text.get(), self.gdi.as_ref())
+        {
+            let key = (
+                text.to_string(),
+                (size * 64.0) as u32,
+                style.0,
+                style.1,
+                smoothing,
+            );
+            let mask = glyphs
+                .1
+                .entry(key)
+                .or_insert_with(|| gdi.mask(text, size, style.0, style.1, smoothing));
+            if let Some(mask) = mask {
+                blend_mask(
+                    pm,
+                    mask,
+                    (at.0.round() as i32, at.1.round() as i32),
+                    color,
+                    smoothing,
+                );
+            }
+            return;
+        }
         let mut tl = TextLayout::new(CoordinateSystem::PositiveYDown);
         tl.append(&[self.font], &TextStyle::new(text, size, 0));
         let baseline = tl

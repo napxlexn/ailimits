@@ -155,6 +155,17 @@ pub enum UserEvent {
 pub enum TrayKind {
     /// Left-click → toggle the overlay window's visibility.
     LeftClick,
+    /// Right-click: its menu opens; the icon's rect (physical pixels) is
+    /// where Settings opens from it.
+    RightClick(ScreenRect),
+}
+
+/// Which surface's context menu was opened last: Settings opens beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MenuFrom {
+    Widget,
+    Panel,
+    Tray(ScreenRect),
 }
 
 /// Loading placeholder before the first fetch.
@@ -456,6 +467,8 @@ struct App {
     /// look items it highlights can be shown while it is open.
     #[cfg(target_os = "windows")]
     menu_request: Option<isize>,
+    /// Whose menu was opened last (`MenuFrom`): Settings opens beside it.
+    menu_from: MenuFrom,
     /// What Settings answered to losing the focus (closing, mostly),
     /// applied once the messages of that moment are handled
     /// (`apply_deferred_picker_actions`).
@@ -636,6 +649,9 @@ pub fn run() -> Result<()> {
     // first. No model is read yet: the readers arrive with their consent.
     // Shared with the picker window, which draws with the same font.
     let renderer = Rc::new(Renderer::new()?);
+    // The Settings window draws its text as Windows does (ClearType or
+    // grayscale, as Windows smooths its fonts); the widget keeps fontdue.
+    renderer.set_picker_text(renderer.system_picker_text());
     let models = Models::new();
     let shape = widget_shape(&config, &display, &models, &renderer);
     let win_layout = layout::compute_tuned(
@@ -739,6 +755,7 @@ pub fn run() -> Result<()> {
             if let tray_icon::TrayIconEvent::Click {
                 button,
                 button_state,
+                rect,
                 ..
             } = e
             {
@@ -746,6 +763,16 @@ pub fn run() -> Result<()> {
                     && button_state == tray_icon::MouseButtonState::Up
                 {
                     let _ = proxy.send_event(UserEvent::Tray(TrayKind::LeftClick));
+                } else if button == tray_icon::MouseButton::Right
+                    && button_state == tray_icon::MouseButtonState::Down
+                {
+                    let rect = ScreenRect {
+                        x: rect.position.x as i32,
+                        y: rect.position.y as i32,
+                        w: rect.size.width as i32,
+                        h: rect.size.height as i32,
+                    };
+                    let _ = proxy.send_event(UserEvent::Tray(TrayKind::RightClick(rect)));
                 }
             }
         }));
@@ -844,6 +871,7 @@ pub fn run() -> Result<()> {
         indicator,
         #[cfg(target_os = "windows")]
         menu_request: None,
+        menu_from: MenuFrom::Widget,
         picker_deferred: Vec::new(),
         #[cfg(target_os = "windows")]
         menu_preview: None,

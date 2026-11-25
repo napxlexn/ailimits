@@ -565,6 +565,37 @@ pub fn describe_window(hwnd: isize) -> String {
     }
 }
 
+/// Whether Windows smooths screen fonts with ClearType (the "Smooth edges of
+/// screen fonts" setting and its ClearType choice): the Settings window
+/// draws its text the same way (`gdi_text::Smoothing`).
+pub fn font_smoothing_cleartype() -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETFONTSMOOTHING, SPI_GETFONTSMOOTHINGTYPE,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+    unsafe {
+        let mut on: i32 = 0;
+        let mut kind: u32 = 0;
+        let ok_on = SystemParametersInfoW(
+            SPI_GETFONTSMOOTHING,
+            0,
+            Some(&mut on as *mut i32 as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok();
+        let ok_kind = SystemParametersInfoW(
+            SPI_GETFONTSMOOTHINGTYPE,
+            0,
+            Some(&mut kind as *mut u32 as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok();
+        // FE_FONTSMOOTHINGCLEARTYPE is 2; unknown reads as ClearType, the
+        // Windows default.
+        !(ok_on && on == 0) && (!ok_kind || kind == 2)
+    }
+}
+
 /// The system mouse-hover time in ms — how long Windows waits before showing a
 /// tray-icon tooltip on hover (SPI_GETMOUSEHOVERTIME). Defaults to 400 ms.
 pub fn mouse_hover_time_ms() -> u64 {

@@ -45,6 +45,10 @@ pub struct Anchor {
     pub reach: ScreenRect,
     /// The side the widget grows to as rows are ticked.
     pub grows: Option<Side>,
+    /// The anchor is on a taskbar (the panel, the tray icon) at this edge of
+    /// its monitor: the window opens off the bar, as Windows' own flyouts do
+    /// (`place_off_bar`).
+    pub bar: Option<Side>,
 }
 
 impl Anchor {
@@ -55,7 +59,33 @@ impl Anchor {
             rect,
             reach: rect,
             grows: None,
+            bar: None,
         }
+    }
+
+    /// The taskbar panel or the tray icon at `rect`, on the bar at `edge`
+    /// of its monitor.
+    pub fn on_bar(rect: ScreenRect, edge: Side) -> Self {
+        Self {
+            bar: Some(edge),
+            ..Self::fixed(rect)
+        }
+    }
+
+    /// The edge of `monitor` (left, top, right, bottom) nearest the middle
+    /// of `rect`: the taskbar it sits on.
+    pub fn bar_edge(rect: ScreenRect, monitor: (i32, i32, i32, i32)) -> Side {
+        let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+        let (l, t, r, b) = monitor;
+        [
+            (b - cy, Side::Below),
+            (cy - t, Side::Above),
+            (r - cx, Side::Right),
+            (cx - l, Side::Left),
+        ]
+        .into_iter()
+        .min_by_key(|(d, _)| *d)
+        .map_or(Side::Below, |(_, s)| s)
     }
 
     /// The widget at `rect`; `grown` its size once every row the window
@@ -94,8 +124,47 @@ impl Anchor {
                 h: y1 - y0,
             },
             grows: Some(grows),
+            bar: None,
         }
     }
+}
+
+/// Where the window goes from the taskbar panel or the tray icon on the bar
+/// at `edge`: off the bar (above a bottom bar, beside a side one), lined up
+/// with the anchor's end nearer the screen's corner, as Windows' own
+/// flyouts are, then held inside the work area. Physical pixels; returns
+/// the window's top-left corner.
+pub fn place_off_bar(
+    anchor: ScreenRect,
+    edge: Side,
+    size: (i32, i32),
+    margin: i32,
+    gap: i32,
+    work: (i32, i32, i32, i32),
+) -> (i32, i32) {
+    let (l, t, r, b) = work;
+    let (bw, bh) = (size.0 - 2 * margin, size.1 - 2 * margin);
+    let (cx, cy) = (anchor.x + anchor.w / 2, anchor.y + anchor.h / 2);
+    // Along the bar: from the anchor's end that faces the nearer corner.
+    let along_x = if cx > (l + r) / 2 {
+        anchor.x + anchor.w - bw
+    } else {
+        anchor.x
+    };
+    let along_y = if cy > (t + b) / 2 {
+        anchor.y + anchor.h - bh
+    } else {
+        anchor.y
+    };
+    let (x, y) = match edge {
+        Side::Below => (along_x, anchor.y - gap - bh),
+        Side::Above => (along_x, anchor.y + anchor.h + gap),
+        Side::Right => (anchor.x - gap - bw, along_y),
+        Side::Left => (anchor.x + anchor.w + gap, along_y),
+    };
+    let x = x.min(r - bw).max(l);
+    let y = y.min(b - bh).max(t);
+    (x - margin, y - margin)
 }
 
 /// Where the window goes, all in physical pixels: its box beside `anchor`
@@ -202,6 +271,9 @@ pub struct PickerWindow {
     /// Windows' Text size (1 to 2.25): the picker is drawn that much larger,
     /// its layout the same.
     zoom: f64,
+    /// The scale the window's text widths are measured at (`scale` times
+    /// `zoom`), shared with the picker's measurers.
+    text_scale: Rc<std::cell::Cell<f32>>,
     theme: PickerTheme,
     work: Option<(i32, i32, i32, i32)>,
     pos: (i32, i32),
@@ -285,7 +357,14 @@ impl PickerWindow {
         // in over whatever sits there.
         let work = crate::platform::safe_area_at(cx, cy).map(|a| even_area(a.monitor, a.safe));
         let measure = renderer.clone();
-        let mut picker = Picker::new(input, move |t, s| measure.text_width(t, s));
+        // Widths at the window's scale, as its text is hinted at that size;
+        // a move to a monitor of another scale re-measures (`remeasure`).
+        let text_scale = Rc::new(std::cell::Cell::new((scale * zoom) as f32));
+        let (m2, s1, s2) = (measure.clone(), text_scale.clone(), text_scale.clone());
+        let mut picker = Picker::new(input, move |t, s| {
+            measure.picker_width(t, s, false, s1.get())
+        })
+        .with_bold_measure(move |t, s| m2.picker_width(t, s, true, s2.get()));
         if let Some(w) = work {
             picker.set_max_height(max_box_height(w, scale * zoom));
         }
@@ -357,6 +436,7 @@ impl PickerWindow {
             glyphs: PickerGlyphs::default(),
             scale,
             zoom,
+            text_scale,
             theme,
             work,
             pos,
@@ -474,8 +554,10 @@ impl PickerWindow {
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 // The size follows in the next redraw, for the monitor it
-                // is on now; glyphs come anew.
+                // is on now; glyphs and widths come anew.
                 self.scale = *scale_factor;
+                self.text_scale.set((self.scale * self.zoom) as f32);
+                self.picker.remeasure();
                 self.glyphs = PickerGlyphs::default();
                 self.moved = true;
                 self.window.request_redraw();
@@ -938,12 +1020,9 @@ pub(super) fn place_window(
         Some((l, t, r, b)) => (l + edge, t + edge, r - edge, b - edge),
         None => (i32::MIN / 4, i32::MIN / 4, i32::MAX / 4, i32::MAX / 4),
     };
-    place(
-        anchor.reach,
-        anchor.grows,
-        (size.0 as i32, size.1 as i32),
-        margin,
-        gap,
-        work,
-    )
+    let size = (size.0 as i32, size.1 as i32);
+    match anchor.bar {
+        Some(edge) => place_off_bar(anchor.rect, edge, size, margin, gap, work),
+        None => place(anchor.reach, anchor.grows, size, margin, gap, work),
+    }
 }

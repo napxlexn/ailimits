@@ -238,6 +238,7 @@ impl App {
                 #[cfg(target_os = "windows")]
                 {
                     self.menu_request = Some(self.panel.hwnd());
+                    self.menu_from = crate::app::MenuFrom::Panel;
                 }
             }
             // Our own hover tooltip: arm the system hover delay on
@@ -378,6 +379,7 @@ impl App {
                     {
                         use tao::platform::windows::WindowExtWindows;
                         self.menu_request = Some(self.window.hwnd() as _);
+                        self.menu_from = crate::app::MenuFrom::Widget;
                     }
                 }
                 _ => {}
@@ -493,6 +495,10 @@ impl App {
             #[cfg(target_os = "windows")]
             UserEvent::PanelRecheck => {
                 self.indicator.recheck_at = Some(std::time::Instant::now() + SETTLE);
+            }
+
+            UserEvent::Tray(TrayKind::RightClick(rect)) => {
+                self.menu_from = crate::app::MenuFrom::Tray(rect);
             }
 
             UserEvent::Tray(TrayKind::LeftClick) => {

@@ -159,6 +159,13 @@ Notable, user-visible changes. Dates are release dates.
   level meter; the busier provider's percentage in digits; or its slice of a
   disc, like a clock face. Each is monochrome in the taskbar's theme, and the
   tooltip names both providers.
+- **Crisp text in *Settings*.** The window draws its text as Windows draws
+  text: hinted to the pixel grid and smoothed with ClearType, or grayscale
+  when Windows smooths fonts that way, with Segoe UI Semibold for bold text.
+  It read soft before, most at 100% scaling. The widget's look is unchanged.
+- ***Settings* opens beside the panel or the tray icon** when it is chosen
+  from their menu: off the taskbar, lined up with them, as Windows' own
+  flyouts open; from the widget's menu it opens beside the widget, as before.
 - **A shorter right-click menu, in plain names.** *Settings…* comes
   first; Detail, Layout (Rows / Columns, with Width and Column layout,
   each greyed while it does not apply), Appearance (Palette, Monochrome,

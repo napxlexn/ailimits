@@ -29,9 +29,24 @@ impl Picker {
         (self.w(&format!("{text}|"), size) - self.w("|", size)).max(0.0)
     }
 
-    /// The faux bold the renderer draws is about a pixel wider.
+    /// A bold run's advance: measured apart where the window's text has a
+    /// real semibold (`with_bold_measure`); the fontdue faux bold is about a
+    /// pixel wider.
     pub(super) fn adv_styled(&self, text: &str, size: f32, bold: bool) -> f32 {
-        self.adv(text, size) + if bold { 1.0 } else { 0.0 }
+        if !bold || text.is_empty() {
+            return self.adv(text, size);
+        }
+        let Some(measure) = self.measure_bold.as_ref() else {
+            return self.adv(text, size) + 1.0;
+        };
+        // Cached beside the regular widths, the size's sign bit marking bold.
+        let key = (text.to_string(), (-size).to_bits());
+        if let Some(w) = self.widths.borrow().get(&key) {
+            return *w;
+        }
+        let w = (measure(&format!("{text}|"), size) - measure("|", size)).max(0.0);
+        self.widths.borrow_mut().insert(key, w);
+        w
     }
 
     /// Whether a model name fits every place the widget draws one.
