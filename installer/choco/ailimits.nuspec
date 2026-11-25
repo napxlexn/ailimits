@@ -26,10 +26,10 @@ GitHub Copilot, Google Antigravity, xAI Grok, Cursor. It reads the tokens
 the official CLI tools already store on the machine, read-only and only
 after you allow each one (the first start asks, naming every file and
 host), and never refreshes them. Cursor uses a sign-in of the app's own,
-made once from the Rows and models window. It sends no telemetry and
+made once from the Settings window. It sends no telemetry and
 renders on the CPU, with a measured idle load of 0.014% of one core (0.7.1).
 
-The Rows and models window chooses the rows the widget and the taskbar
+The Settings window chooses the rows the widget and the taskbar
 tooltip show, each provider's sign-in, extra rows where a provider meters a part on its own, and an
 optional label with the model in use. The taskbar panel shows the two
 providers you choose, with a percentage, the time until the limit resets,

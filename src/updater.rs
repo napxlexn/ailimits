@@ -410,6 +410,10 @@ async fn check_and_install(
     if let Err(e) = launch_installer_and_exit(&installer) {
         warn!("update handoff failed, staying on the current version: {e:#}");
         remove_installer(&installer.path);
+        // The installer never started (an antivirus lock on the file, say):
+        // nothing was attempted, so the version is not given up on; the
+        // next check tries it again.
+        let _ = std::fs::remove_file(state.join(ATTEMPT_FILE));
     }
     Ok(())
 }

@@ -25,6 +25,11 @@ DefaultDirName={localappdata}\AiLimits
 DefaultGroupName={#AppName}
 ; Per-user install, no admin rights.
 PrivilegesRequired=lowest
+; Windows 11 x64 only, as winget and the Store package say; the name in
+; Settings > Apps is the app's, not a localized "name, version" line.
+MinVersion=10.0.22000
+ArchitecturesAllowed=x64compatible
+UninstallDisplayName={#AppName}
 OutputDir=..\target\installer
 OutputBaseFilename=AiLimits-Setup-{#AppVersion}
 SetupIconFile=..\assets\icon.ico
@@ -84,7 +89,7 @@ Filename: "{app}\{#AppExe}"; Flags: nowait; Check: RelaunchAfterUpdate
 
 [UninstallRun]
 ; Stop the widget before uninstalling.
-Filename: "taskkill"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "KillWidget"
+Filename: "{sys}\taskkill.exe"; Parameters: "/im {#AppExe} /f"; Flags: runhidden; RunOnceId: "KillWidget"
 ; Remove the app-created secrets from Credential Manager (API keys, PATs,
 ; usage tokens, the app's own Cursor session) — without this they would
 ; outlive the uninstall. A missing entry is a no-op (exit 0); nothing here
