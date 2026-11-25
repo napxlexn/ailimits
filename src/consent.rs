@@ -94,7 +94,7 @@ pub const READ_INFO: &[ReadInfo] = &[
         hosts: &["chatgpt.com"],
         pages: &[],
         settings: Some(
-            r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort, profile, [profiles.<name>] (in CODEX_HOME when it is set)",
+            r"%USERPROFILE%\.codex\config.toml: model, model_reasoning_effort (in CODEX_HOME when it is set)",
         ),
         session: Some(
             r"%USERPROFILE%\.codex\sessions\...\*.jsonl (the end of the newest; in CODEX_HOME when it is set)",
@@ -273,7 +273,7 @@ mod tests {
             ("grok", 1, 4_705_202_258_529_479_122),
             ("cursor", 1, 1_854_238_065_954_613_056),
         ];
-        const MODEL_PIN: (u32, u64) = (1, 5040231675459605952);
+        const MODEL_PIN: (u32, u64) = (1, 3457065556030329308);
         let mut wrong = Vec::new();
         for r in READ_INFO {
             let mut parts: Vec<&str> = vec![r.id, if r.tool_sign_in { "tool" } else { "own" }];
@@ -493,10 +493,7 @@ mod tests {
                 "claude",
                 &["model", "ANTHROPIC_MODEL", "effortLevel", "modelSettings"][..],
             ),
-            (
-                "codex",
-                &["model", "model_reasoning_effort", "profile", "[profiles."][..],
-            ),
+            ("codex", &["model", "model_reasoning_effort"][..]),
             ("copilot", &["model", "effortLevel"][..]),
             (
                 "grok",

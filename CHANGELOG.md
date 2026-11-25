@@ -452,6 +452,14 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **Antigravity: no made-up numbers from new quota groups.** A group of one
+  Gemini model keeps its own name instead of taking the Gemini pool's row,
+  and a bucket counted in units rather than as a fraction is skipped
+  instead of read as used up.
+- **Codex: the model label follows what Codex reads.** Since Codex 0.134.0
+  a `profile` line and `[profiles.*]` tables in config.toml are no longer
+  read by Codex, so AI Limits no longer follows them either; a leftover one
+  named a model Codex was not using.
 - **About 20 MB less memory.** The tray icon, its tooltip and the taskbar
   panel use the widget's copy of the font instead of one of their own; a
   copy costs about 20 MB, and the tray tooltip loaded its own at the first

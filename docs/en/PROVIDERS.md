@@ -108,7 +108,9 @@ requests, exactly:
   `gh auth token --hostname github.com` at most once every 15 minutes, its
   failures included, plus one run right away when the server
   refuses (401/403) a gh token kept from an earlier cycle: gh 2.103.0 and
-  newer give expiring tokens that `gh auth token` renews by itself. The
+  newer can sign in with expiring tokens, which `gh auth token` renews by
+  itself (opt-in so far: `gh auth login --expiring` or `gh config set
+  expiring_credentials enabled`; GitHub plans it as the default later). The
   request is then sent once more, with the new token (not when gh gives the
   same one again). A token gh gave in the same cycle is not asked again. A
   gh token the server refused (401, 403, 404), the new one included, is not
@@ -359,8 +361,9 @@ CLI account is chosen):
    the row is hidden (`NotConfigured`) and gh is asked again in 15 minutes;
    gh timing out → `"gh timed out, retrying"`. One exception: when the
    server refuses (401/403) a token kept from an earlier cycle, gh is asked
-   once more right away (gh 2.103.0 and newer give expiring tokens and
-   renew them in `gh auth token`), and the request is sent once more with
+   once more right away (gh 2.103.0 and newer, signed in with expiring
+   tokens, opt-in so far, renew them in `gh auth token`), and the request
+   is sent once more with
    the new token; gh giving the same token again, or none, sends nothing
    more. A token the server refused, the new one included, is not sent
    again for 15 minutes.
@@ -451,7 +454,7 @@ client's refresh invalidated the others). Consequences:
 |---|---|---|
 | Claude | ~8h access token (verified), refreshed by Claude Code on use | ~8h after the last Claude Code session, then grey |
 | Codex | not measured yet, refreshed by Codex CLI when it runs | while Codex CLI is in use; how long after is not verified |
-| Copilot | gh manages its own token; since gh 2.103.0 (2026-10-21) an expiring OAuth token that `gh auth token` renews by itself | indefinite while logged into gh |
+| Copilot | gh manages its own token; since gh 2.103.0 (2026-10-21) it can be an expiring OAuth token (opt-in: `gh auth login --expiring`) that `gh auth token` renews by itself | indefinite while logged into gh |
 | Antigravity | the Antigravity CLI's keyring token, about an hour, renewed only when `agy` runs | about an hour after `agy` last ran, then grey with "token expired"; no other source |
 | Grok | ~6h access token (verified), refreshed by the Grok CLI on use | up to ~6h after the last Grok CLI session, then grey; no other source |
 | Cursor | the widget's own session: a ~60-day JWT, refreshed by the widget in its last week (whether that extends it is not verified yet) | until the session ends, then grey with "sign in to Cursor again" |
@@ -459,7 +462,8 @@ client's refresh invalidated the others). Consequences:
 There is no `gh auth token`-style "print/refresh the token" command for the
 Codex or Claude CLIs (verified against the OpenAI Codex auth docs). The only
 CLI-driven refresh path is Copilot's `gh auth token`: since gh 2.103.0
-(2026-10-21) gh signs in with expiring OAuth tokens and renews one in
+(2026-10-21) gh can sign in with expiring OAuth tokens (opt-in so far,
+`gh auth login --expiring`; GitHub plans it as the default) and renews one in
 `gh auth token` itself, keeping it in its own store, so gh stays signed in.
 A token the widget kept can therefore lapse within its 15 minutes; a refusal
 of it asks gh once more (see Requests per cycle). For a credential that
@@ -548,7 +552,14 @@ Quota is a chain of sources (all verified live 2026-08-01):
    ```
 
    A spent pool may report `remainingFraction: 0` or omit the field and keep
-   only `resetTime` — both mean zero remaining. A single `All Models` group is
+   only `resetTime` — both mean zero remaining. A bucket counted in units
+   instead (`remainingAmount`, which Antigravity's status-line docs list
+   beside the fraction; not seen live) gives no total: `0` is spent, more is
+   skipped rather than shown as a made-up percentage. Two groups that would
+   get the same short label (the Gemini pool and a group of one Gemini
+   model, such as the "Gemini 4 Argon Weekly Limit" Google added on Pro in
+   October) do not share a row: the later keeps the server's name.
+   A single `All Models` group is
    the project-less default view and is refused. These pools are Antigravity's
    general limits, so they are recorded as long-window metrics. The
    Claude/GPT pool (see the labels below) also has an extra row of its own,
@@ -909,7 +920,7 @@ nothing.
 | Tool | File | Keys |
 |---|---|---|
 | Claude Code | `%USERPROFILE%\.claude\settings.json` | `ANTHROPIC_MODEL` (the file's `env` table, else the environment the app sees), else `model`; effort `modelSettings.<model>.effortLevel`, else that of the newest model of an alias's family, else the top-level `effortLevel` |
-| Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort`; with a top-level `profile = "x"`, those of `[profiles.x]` first |
+| Codex CLI | `%CODEX_HOME%\config.toml`, else `%USERPROFILE%\.codex\config.toml` | top-level `model`, `model_reasoning_effort` |
 | Grok CLI | `%GROK_HOME%\config.toml`, else `%USERPROFILE%\.grok\config.toml` | `[models] default`, `[models] default_reasoning_effort` |
 | Copilot CLI | `%COPILOT_HOME%\settings.json`, else `%USERPROFILE%\.copilot\settings.json` | `model`, `effortLevel` (JSON with comments: comments and trailing commas are allowed) |
 | Antigravity CLI | `%USERPROFILE%\.gemini\antigravity-cli\settings.json` | `model` (a display label: `Claude Sonnet 4.6 (Thinking)`; no separate effort) |
@@ -938,11 +949,12 @@ Shapes verified 2026-11-11 on the owner's PC, key names only:
   the app sees. This follows Claude Code's documented order (`/model`, then
   `--model`, then `ANTHROPIC_MODEL`, then the settings file); it was not
   verified live.
-- Codex CLI: `model` and `model_reasoning_effort` at the top level. A
-  top-level `profile = "x"` is followed: the keys of `[profiles.x]` override
-  the top-level ones, a key the profile does not set keeps its top-level
-  value, and a profile that is named but missing adds nothing. A model set
-  only in a `[profiles.*]` table no profile chooses is not read.
+- Codex CLI: `model` and `model_reasoning_effort` at the top level only.
+  Since Codex 0.134.0 a top-level `profile = "x"` and `[profiles.x]` are not
+  read by Codex any more (a profile is a file of its own,
+  `<name>.config.toml`, chosen per run with `--profile`), so the app follows
+  neither: a leftover one would name a model Codex does not use. Verified
+  against learn.chatgpt.com/docs/config-file/config-advanced on 2026-11-26.
 - Grok CLI: `[models] default_reasoning_effort` present; `[models] default`
   is from the CLI's own docs (`user-guide/05-configuration.md`) and was not
   set there (the CLI's built-in default: the label is the effort alone).

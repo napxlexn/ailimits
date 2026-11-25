@@ -3,7 +3,7 @@
 ask-allow-all-dark 458x584 e37337f635122219
 ask-risk-dark 458x584 afc67772258fb70d
 ask-session-dark 458x584 60cc7f85eb9ca65a
-ask-settings-light 458x584 18ddd4e0956aec73
+ask-settings-light 458x584 3667d5ca36ac0ede
 ask-sign-in-dark 458x584 dc434ccd32c53c57
 focus-hint-dark 458x584 f2153c8aab12e33f
 hint-dark 458x584 dfccc1e7647739c3

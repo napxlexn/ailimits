@@ -11,8 +11,10 @@
 //   Claude Code takes `ANTHROPIC_MODEL` over that `model` (its documented
 //   order: a session's /model, --model, ANTHROPIC_MODEL, then the settings
 //   file); the variable may also sit in the file's own `env` table.
-// - Codex CLI config.toml: top-level `model`, `model_reasoning_effort`; a
-//   top-level `profile = "x"` makes `[profiles.x]` override them.
+// - Codex CLI config.toml: top-level `model`, `model_reasoning_effort`.
+//   Since Codex 0.134.0 a top-level `profile = "x"` and `[profiles.x]` are
+//   no longer read (a profile is a file of its own, chosen per run with
+//   --profile), so neither is followed here.
 // - Grok CLI config.toml: `[models] default_reasoning_effort` (`default`,
 //   the model, from the CLI's own docs: user-guide/05-configuration.md).
 // - Copilot CLI settings.json: top-level `model` ("auto"); `effortLevel`
@@ -130,21 +132,15 @@ pub(super) fn claude_model_id(id: &str) -> Option<String> {
 }
 
 /// Codex CLI `config.toml`: top-level `model`, `model_reasoning_effort`.
-/// A top-level `profile = "x"` picks `[profiles.x]`, whose keys override the
-/// top-level ones (Codex CLI's own rule); a key the profile does not set
-/// keeps its top-level value. A profile that is named but missing adds
-/// nothing.
+/// A `profile` selector and `[profiles.*]` tables are not followed: Codex
+/// 0.134.0 and later no longer read them, and a leftover one would name a
+/// model Codex does not use.
 pub(super) fn codex(bytes: &[u8]) -> Option<ModelInfo> {
     let root = toml_table(bytes)?;
-    let profile = root
-        .get("profile")
-        .and_then(toml::Value::as_str)
-        .and_then(|name| root.get("profiles")?.as_table()?.get(name)?.as_table());
-    let key = |k: &str| match profile.and_then(|p| p.get(k)) {
-        Some(set) => clean_toml(Some(set)),
-        None => clean_toml(root.get(k)),
-    };
-    found(key("model"), key("model_reasoning_effort"))
+    found(
+        clean_toml(root.get("model")),
+        clean_toml(root.get("model_reasoning_effort")),
+    )
 }
 
 /// Grok CLI `config.toml`: `[models] default`, `[models]
@@ -336,25 +332,17 @@ mod tests {
         assert_eq!(super::claude(b"{", Some("claude-opus-5-5")), None);
     }
 
+    /// The top-level keys only: a leftover `profile` selector and its
+    /// `[profiles.*]` table, which Codex 0.134.0 and later no longer read,
+    /// change nothing.
     #[test]
-    fn codex_follows_the_chosen_profile() {
+    fn codex_reads_the_top_level_only() {
         let file = b"model = \"gpt-6.1-sol\"\nmodel_reasoning_effort = \"high\"\nprofile = \"fast\"\n\n[profiles.fast]\nmodel = \"gpt-6-luna\"\nmodel_reasoning_effort = \"low\"\n\n[profiles.deep]\nmodel = \"gpt-6.1-terra\"\n";
-        assert_eq!(codex(file), info("gpt-6-luna", Some("low")));
-        // A profile that sets the model only keeps the top-level effort.
-        let deep =
-            String::from_utf8_lossy(file).replace("profile = \"fast\"", "profile = \"deep\"");
-        assert_eq!(codex(deep.as_bytes()), info("gpt-6.1-terra", Some("high")));
-        // A profile named but missing adds nothing.
-        let missing =
-            String::from_utf8_lossy(file).replace("profile = \"fast\"", "profile = \"none\"");
-        assert_eq!(codex(missing.as_bytes()), info("gpt-6.1-sol", Some("high")));
-        // A profile's own odd value is no value, not the top-level one.
-        let odd = b"model = \"gpt-6.1-sol\"\nprofile = \"p\"\n[profiles.p]\nmodel = 5\n";
-        assert_eq!(codex(odd), None);
-        // A profile chosen with only an effort in it.
+        assert_eq!(codex(file), info("gpt-6.1-sol", Some("high")));
+        // Only a profile table: nothing at the top level, no model.
         let effort = b"profile = \"p\"\n[profiles.p]\nmodel_reasoning_effort = \"xhigh\"\n";
-        assert_eq!(codex(effort), info("", Some("xhigh")));
-        // `profile` of the wrong type is ignored.
+        assert_eq!(codex(effort), None);
+        // `profile` of any type changes nothing.
         let wrong = b"model = \"o3\"\nprofile = 1\n[profiles.p]\nmodel = \"o4\"\n";
         assert_eq!(codex(wrong), info("o3", None));
     }

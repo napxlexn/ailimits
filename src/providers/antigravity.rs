@@ -554,11 +554,22 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
                 .and_then(utc::parse_rfc3339)
                 .filter(|dt| utc::unix_secs(*dt) > 0);
             // A spent pool drops remainingFraction and keeps only the reset —
-            // that is zero remaining, not an unknown quota.
+            // that is zero remaining, not an unknown quota. A bucket counted
+            // in units instead (`remainingAmount`, which Antigravity's own
+            // status line documents beside the fraction) says no total: none
+            // left is spent, some left is not a percentage to invent.
+            let amount = bucket.get("remainingAmount").and_then(|v| {
+                v.as_f64()
+                    .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+            });
             let frac = match bucket.get("remainingFraction").and_then(|v| v.as_f64()) {
                 Some(f) => f,
-                None if reset_at.is_some() => 0.0,
-                None => continue,
+                None => match amount {
+                    Some(a) if a <= 0.0 => 0.0,
+                    Some(_) => continue,
+                    None if reset_at.is_some() => 0.0,
+                    None => continue,
+                },
             };
             // The bucket says its window since 2026-11 ("window": "weekly",
             // verified live 2026-11-21). Google's /usage docs also describe a
@@ -574,6 +585,15 @@ pub fn parse_quota_summary(body: &str) -> Result<Vec<Metric>> {
             let mut label = short_pool_label(name);
             if short {
                 label.push_str(" 5h");
+            }
+            // Two groups one short name would give (the Gemini pool and a
+            // group of one Gemini model, say): the later one keeps the
+            // server's own name, so neither takes the other's row.
+            if metrics.iter().any(|m: &Metric| m.label == label) {
+                label = clean_label(name).unwrap_or_else(|| format!("{label} 2"));
+                if short {
+                    label.push_str(" 5h");
+                }
             }
             metrics.push(Metric {
                 label,
@@ -806,6 +826,28 @@ mod tests {
         assert!(matches!(m[0].window, MetricWindow::Session));
         assert_eq!(m[1].label, "Gemini");
         assert!(matches!(m[1].window, MetricWindow::Long));
+    }
+
+    /// A group of one Gemini model beside the Gemini pool keeps its own
+    /// name (one "Gemini" only); a bucket counted in units shows no invented
+    /// percentage: none left is spent, some left is skipped.
+    #[test]
+    fn a_model_group_and_a_counted_bucket_say_only_what_they_know() {
+        let two = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingFraction": 0.8, "resetTime": "2099-01-07T00:00:00Z", "window": "weekly"}]}, {"displayName": "Gemini 4 Argon Weekly Limit", "buckets": [{"remainingFraction": 0.4, "resetTime": "2099-01-07T00:00:00Z", "window": "weekly"}]}]}"#;
+        let m = parse_quota_summary(two).unwrap();
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].label, "Gemini");
+        assert_eq!(m[0].used, 20);
+        assert_eq!(m[1].label, "Gemini 4 Argon Weekly Limit");
+        assert_eq!(m[1].used, 60);
+        let counted = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingAmount": "120", "resetTime": "2099-01-07T00:00:00Z", "window": "weekly"}]}]}"#;
+        assert!(parse_quota_summary(counted).unwrap().is_empty());
+        let spent = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingAmount": 0, "resetTime": "2099-01-07T00:00:00Z", "window": "weekly"}]}]}"#;
+        let m = parse_quota_summary(spent).unwrap();
+        assert_eq!((m.len(), m[0].used), (1, 100));
+        // Neither field, a reset only: spent, as Antigravity has answered.
+        let bare = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"resetTime": "2099-01-07T00:00:00Z"}]}]}"#;
+        assert_eq!(parse_quota_summary(bare).unwrap()[0].used, 100);
     }
 
     const SUMMARY_BODY: &str = r#"{"groups": [{"displayName": "Gemini Models", "buckets": [{"remainingFraction": 0.7, "resetTime": "2099-01-01T00:00:00Z"}]}]}"#;
