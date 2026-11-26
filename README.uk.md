@@ -19,7 +19,7 @@
 
 <p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Відкрити сайт" src="https://img.shields.io/badge/ВІДКРИТИ%20САЙТ-0078d4?style=for-the-badge"></a></p>
 
-<p align="center"><a href="README.md">English version / Англійська версія</a></p>
+<p align="center" class="languages"><a href="README.md">English</a> · <b>Українська</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português (Brasil)</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.pl.md">Polski</a> · <a href="README.it.md">Italiano</a> · <a href="README.nl.md">Nederlands</a> · <a href="README.cs.md">Čeština</a></p>
 
 Є в [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH) (підписаний і оновлюваний магазином) і в каталозі [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — якщо застосунок корисний, вподобання там допомагає іншим його знайти.
 

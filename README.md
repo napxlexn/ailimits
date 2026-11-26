@@ -19,7 +19,7 @@ limits right on the desktop: **Claude**, **OpenAI Codex**, **GitHub Copilot**,
 
 <p align="center"><a href="https://napxlexn.github.io/ailimits/"><img alt="Open the website" src="https://img.shields.io/badge/OPEN%20THE%20WEBSITE-0078d4?style=for-the-badge"></a></p>
 
-<p align="center"><a href="README.uk.md">Українська версія / Ukrainian version</a></p>
+<p align="center" class="languages"><b>English</b> · <a href="README.uk.md">Українська</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português (Brasil)</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.pl.md">Polski</a> · <a href="README.it.md">Italiano</a> · <a href="README.nl.md">Nederlands</a> · <a href="README.cs.md">Čeština</a></p>
 
 Available on the [Microsoft Store](https://apps.microsoft.com/detail/9P2B0J1VWPWH), signed and updated by the Store, and listed on [AlternativeTo](https://alternativeto.net/software/ai-limits/about/) — if it helps you, a like there helps others find it.
 
