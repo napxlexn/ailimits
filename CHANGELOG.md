@@ -2,7 +2,7 @@
 
 Notable, user-visible changes. Dates are release dates.
 
-## 0.7.1 - Unreleased
+## 0.7.1 - 2026-11-26
 
 > **Updating from 0.7.0 (or 0.6.x), and your user profile or TEMP folder
 > path has letters outside English (Cyrillic, for example), `&` or `%` in
