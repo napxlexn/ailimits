@@ -3117,6 +3117,61 @@ fn gif_frames_settings() {
     finish(sc);
 }
 
+/// The note after a paste, as it reads now and with the clipboard hint, for
+/// the owner to compare. Run on demand:
+/// `MOCK_FRAMES=<dir> cargo test --lib clipboard_hint_mockup -- --ignored`.
+#[test]
+#[ignore = "writes mockups on demand"]
+fn clipboard_hint_mockup() {
+    use crate::ui::gdi_text::Smoothing;
+    use crate::ui::renderer::PickerText;
+    let Ok(dir) = std::env::var("MOCK_FRAMES") else {
+        return;
+    };
+    let renderer = Rc::new(Renderer::new().expect("a system font"));
+    renderer.set_picker_text(PickerText::Gdi(Smoothing::Gray));
+    const HINT: &str = " It is still on the clipboard: copy something else, and if clipboard history is on, remove it there (Win+V).";
+    let notes = [
+        (
+            "key",
+            "Stored in Windows Credential Manager. The row says whether it works.",
+        ),
+        ("token", "Verified and saved to Windows Credential Manager."),
+    ];
+    for (kind, now) in notes {
+        for (name, text) in [("now", now.to_string()), ("hint", format!("{now}{HINT}"))] {
+            let mut i = input();
+            i.sign_in = sign_ins();
+            for s in i.sign_in.iter_mut() {
+                if s.provider == "copilot" {
+                    s.note = Some(text.clone());
+                }
+            }
+            let (r, b) = (renderer.clone(), renderer.clone());
+            let mut p = Picker::new(i, move |t, s| r.picker_width(t, s, false, 1.0))
+                .with_bold_measure(move |t, s| b.picker_width(t, s, true, 1.0));
+            p.open_sign_in = vec!["copilot".into()];
+            p.settle();
+            p.scroll = p.frame().max_scroll();
+            p.settle();
+            for light in [false, true] {
+                let (w, h) = p.window_size();
+                let mut pm = tiny_skia::Pixmap::new(w.ceil() as u32, h.ceil() as u32).unwrap();
+                renderer.draw_picker(
+                    &mut pm,
+                    &p.scene(),
+                    &PickerTheme::for_system(light),
+                    1.0,
+                    &mut PickerGlyphs::default(),
+                );
+                let theme = if light { "light" } else { "dark" };
+                pm.save_png(std::path::Path::new(&dir).join(format!("{kind}-{name}-{theme}.png")))
+                    .unwrap();
+            }
+        }
+    }
+}
+
 /// The window drawn three ways for the owner to compare: fontdue as now,
 /// Windows grayscale and Windows ClearType (`gdi_text`), at 100% and 150%.
 /// Run on demand: `TEXT_FRAMES=<dir> cargo test --lib picker_text_engines -- --ignored`.
