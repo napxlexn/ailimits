@@ -550,8 +550,7 @@ cargo test --locked
 ISCC.exe installer\ailimits.iss              # the installer, in target/installer/
 ```
 
-Developer docs: [docs/en/](docs/en/) (English),
-[docs/uk/](docs/uk/) (Ukrainian).
+Developer docs: [docs/en/](docs/en/).
 
 ## License
 

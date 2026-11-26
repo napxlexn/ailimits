@@ -6,7 +6,7 @@
 // app has without it (the pinned visual baselines hold that), and a table
 // equal to its default is never written. Values out of range are clamped
 // where they are read, never rejected: a typo cannot break the config.
-// The user's guide is docs/en/TUNING.md (and docs/uk/TUNING.md).
+// The user's guide is docs/en/TUNING.md.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

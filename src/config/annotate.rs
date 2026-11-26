@@ -18,7 +18,7 @@ const HEADER: &[&str] = &[
     "names the line, and the rest still applies. So trying things is safe.",
     "A number out of its range is held to the nearest end of it.",
     "To undo a change, delete the line: its default comes back.",
-    "Guide: docs/en/TUNING.md and docs/en/CONFIG.md (in Ukrainian: docs/uk/)",
+    "Guide: docs/en/TUNING.md and docs/en/CONFIG.md",
     "at https://github.com/napxlexn/ailimits",
     "Comments you add are not kept: the app writes its own when it saves.",
 ];
