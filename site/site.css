@@ -455,7 +455,10 @@ html[data-jump] .tb-stage { visibility: hidden; }
 .pg { margin-top: 54px; display: grid; grid-template-columns: 300px 1fr; gap: 28px; align-items: stretch;   /* the desk runs the full height of the rail */
   -webkit-user-select: none; user-select: none; }
 .pg-rail { --op: 0.58; display: grid; gap: 20px; padding: 22px;
-  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.4); }
+  box-shadow: 0 30px 70px rgba(0, 0, 0, 0.4);
+  /* the rail's one column never grows past the rail: a long label shrinks
+     or wraps inside its group instead of pushing everything out of view */
+  grid-template-columns: minmax(0, 1fr); }
 .pg-group[data-hidden] { opacity: 0.35; pointer-events: none; }
 .pg-group .hud { margin-bottom: 9px; display: flex; justify-content: space-between; }
 /* Every choice inside one option reads as one control, so the buttons in it are
@@ -465,6 +468,10 @@ html[data-jump] .tb-stage { visibility: hidden; }
    keeps a long row inside the rail, where the tracks simply shrink together. */
 .seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 6px;
   width: max-content; max-width: 100%; }
+/* the model label's three parts: Model and Version side by side, Reasoning
+   effort (the app's own name, the longest) under them across the row */
+.seg-model { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+.seg-model [data-v="effort"] { grid-column: 1 / -1; }
 /* the palette is nine chips, Mono and the eight palettes, so it runs three by three */
 .seg-wrap { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 /* The six providers, three to a line, exactly the rail's width. */
