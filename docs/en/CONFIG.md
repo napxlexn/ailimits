@@ -563,7 +563,10 @@ with one request to the same host the provider sends it to: refused (401/403)
 it is not stored; with no answer that says either way it is stored with the
 note "Stored, but not checked: ...". A key is stored without a check, and
 the row says whether it works. What came of it is said in the window, and
-as a toast only while the window is closed. A second paste or a removal
+as a toast only while the window is closed. The app never clears the
+clipboard (`EmptyClipboard` would be a new import): a key or token stored
+is followed by "It is still on the clipboard: copy something else, and if
+clipboard history is on, remove it there (Win+V)." A second paste or a removal
 while one is checked replaces it. A key or token stored sets the provider
 to that source and switches it on.
 

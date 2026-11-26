@@ -24,6 +24,11 @@ use crate::{
 };
 use tracing::warn;
 
+/// Said after a pasted key or token is stored: the app reads the clipboard
+/// but never clears it (EmptyClipboard would be a new import), so the user
+/// is told where the secret still is.
+const STILL_ON_CLIPBOARD: &str = " It is still on the clipboard: copy something else, and if clipboard history is on, remove it there (Win+V).";
+
 /// The one task of a kind whose answer the event loop still waits for: the
 /// check of a pasted usage token, or Cursor's sign-in. Each task is started
 /// under a ticket of its own and sends it back with its answer. A task
@@ -367,7 +372,9 @@ impl App {
                 self.set_up_with_app_sign_in(pid);
                 self.tell(
                     pid,
-                    "Stored in Windows Credential Manager. The row says whether it works.",
+                    format!(
+                        "Stored in Windows Credential Manager. The row says whether it works.{STILL_ON_CLIPBOARD}"
+                    ),
                 );
             }
             Err(e) => {
@@ -472,7 +479,9 @@ impl App {
                     TokenOutcome::StoredUnchecked(why) => format!(
                         "Stored, but not checked: {why}. If the row shows an error, paste it again."
                     ),
-                    _ => "Verified and saved to Windows Credential Manager.".to_string(),
+                    _ => format!(
+                        "Verified and saved to Windows Credential Manager.{STILL_ON_CLIPBOARD}"
+                    ),
                 };
                 self.tell(id, text);
             }

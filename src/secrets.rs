@@ -187,20 +187,63 @@ mod tests {
         assert_eq!(b, [0; 4]);
     }
 
+    /// How the credential under `label` is kept (CRED_PERSIST_*), or None.
+    #[cfg(windows)]
+    fn persist_of(label: &str) -> Option<u32> {
+        use windows_sys::Win32::Security::Credentials::{
+            CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
+        };
+        let target = wide(&format!("{label}.{SERVICE}"));
+        let mut cred: *mut CREDENTIALW = std::ptr::null_mut();
+        // SAFETY: as in `read_secret`.
+        unsafe {
+            if CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
+                return None;
+            }
+            let persist = (*cred).Persist;
+            CredFree(cred.cast());
+            Some(persist)
+        }
+    }
+
     /// Written here and read by keyring, and the other way round, under a
-    /// throwaway label: touches the real Credential Manager, so ignored.
+    /// throwaway label: kept on this PC only, and one keyring kept roaming
+    /// is moved on its first read. Touches the real Credential Manager, so
+    /// ignored; the throwaway entry goes whatever happens.
+    #[cfg(windows)]
     #[test]
     #[ignore]
     fn keyring_and_this_store_read_each_other() {
-        let label = "ailimits_selftest";
-        write_password(label, "one").unwrap();
-        let entry = keyring::Entry::new(SERVICE, label).unwrap();
+        use windows_sys::Win32::Security::Credentials::{
+            CRED_PERSIST_ENTERPRISE, CRED_PERSIST_LOCAL_MACHINE,
+        };
+        const LABEL: &str = "ailimits_selftest";
+        struct Gone;
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                if let Ok(e) = keyring::Entry::new(SERVICE, LABEL) {
+                    let _ = e.delete_credential();
+                }
+            }
+        }
+        let _gone = Gone;
+        write_password(LABEL, "one").unwrap();
+        assert_eq!(persist_of(LABEL), Some(CRED_PERSIST_LOCAL_MACHINE));
+        let entry = keyring::Entry::new(SERVICE, LABEL).unwrap();
         assert_eq!(entry.get_password().unwrap(), "one");
-        entry.set_password("two").unwrap();
+        entry.set_password("two-ä€").unwrap();
+        assert_eq!(persist_of(LABEL), Some(CRED_PERSIST_ENTERPRISE));
         // Kept the roaming way by keyring: read, and written again locally.
-        assert_eq!(read_password(label).unwrap(), "two");
-        assert_eq!(read_password(label).unwrap(), "two");
+        assert_eq!(read_password(LABEL).unwrap(), "two-ä€");
+        assert_eq!(persist_of(LABEL), Some(CRED_PERSIST_LOCAL_MACHINE));
+        assert_eq!(read_password(LABEL).unwrap(), "two-ä€");
+        assert_eq!(entry.get_password().unwrap(), "two-ä€");
+        // A secret of bytes (the Cursor session) round-trips as it is.
+        write_secret(LABEL, b"{\"t\":1}").unwrap();
+        assert_eq!(entry.get_secret().unwrap(), b"{\"t\":1}");
+        assert_eq!(read_secret(LABEL).unwrap(), b"{\"t\":1}");
         entry.delete_credential().unwrap();
-        assert!(matches!(read_password(label), Err(keyring::Error::NoEntry)));
+        assert!(matches!(read_password(LABEL), Err(keyring::Error::NoEntry)));
+        assert_eq!(persist_of(LABEL), None);
     }
 }

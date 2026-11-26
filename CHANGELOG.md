@@ -282,6 +282,9 @@ Notable, user-visible changes. Dates are release dates.
   `THIRD-PARTY-NOTICES.txt` (in the installer, the portable zip and the
   Store package) holds the license and notice files of every crate built
   into the two exes.
+- **A pasted key or token: a reminder that it is still on the clipboard.**
+  After it is stored, Settings says how to clear it (copy something else,
+  and remove it from clipboard history, Win+V, if that is on).
 - **The tray icon shows the same two providers as the taskbar panel.**
   Untouched, both show the first two in the widget, the busier on the outer
   ring; 0.7.0's rings took the two busiest of all. The Taskbar column of
@@ -590,8 +593,7 @@ Notable, user-visible changes. Dates are release dates.
 - **Libraries brought up to date** (the menu, tray, drawing, settings-file
   and Windows-binding crates among them; the installer is built with Inno
   Setup 6.7.4). No new DLLs come with them, and the look is unchanged. The
-  `cargo audit` ignore list is trimmed to what still applies. Reported in #4
-  by zyl71.
+  `cargo audit` ignore list is trimmed to what still applies.
 
 ### Going back to 0.7.0
 
