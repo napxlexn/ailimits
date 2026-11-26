@@ -49,7 +49,7 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path (Join-Path $stage 'Assets') -Force | Out-Null
 Copy-Item (Join-Path $bin 'ailimits.exe') $stage
 Copy-Item (Join-Path $bin 'ailimits-auth.exe') $stage
-foreach ($doc in 'README.md', 'LICENSE', 'TRADEMARKS.md') { Copy-Item (Join-Path $root $doc) $stage }
+foreach ($doc in 'README.md', 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'TRADEMARKS.md') { Copy-Item (Join-Path $root $doc) $stage }
 Copy-Item (Join-Path $here 'Assets\*.png') (Join-Path $stage 'Assets')
 
 $manifest = Get-Content (Join-Path $here 'AppxManifest.xml') -Raw

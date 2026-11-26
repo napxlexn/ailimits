@@ -278,6 +278,10 @@ Notable, user-visible changes. Dates are release dates.
   Manager is now stored for this PC only; before, a roaming domain profile
   copied it to every PC you sign in to. An entry kept the old way is moved
   the first time it is read.
+- **The licences of the libraries inside come with the app.**
+  `THIRD-PARTY-NOTICES.txt` (in the installer, the portable zip and the
+  Store package) holds the license and notice files of every crate built
+  into the two exes.
 - **The tray icon shows the same two providers as the taskbar panel.**
   Untouched, both show the first two in the widget, the busier on the outer
   ring; 0.7.0's rings took the two busiest of all. The Taskbar column of

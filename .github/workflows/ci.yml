@@ -98,6 +98,10 @@ jobs:
       - name: Build (release-min)
         run: cargo build --profile release-min --locked
 
+      # The licence notices shipped with the exes name every crate in them.
+      - name: Third-party notices current
+        run: python tools/third_party_notices.py --check
+
   # The release signer (its own crate, sharing src/updater/signature.rs with
   # the app): a change that breaks it would otherwise surface on the tag.
   release-signer:

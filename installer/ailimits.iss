@@ -61,6 +61,7 @@ Source: "..\target\release-min\ailimits-auth.exe"; DestDir: "{app}"; Flags: igno
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\TRADEMARKS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; The AppUserModelID is what toasts are attributed to; the app registers the

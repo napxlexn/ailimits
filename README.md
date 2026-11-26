@@ -564,4 +564,5 @@ preserve the copyright and license notices, and clearly mark your changes.
 The GPL license for the software does not grant rights to present modified
 builds as official AI Limits releases. See [TRADEMARKS.md](TRADEMARKS.md)
 for the rules governing the project name and logo. Third-party components
-remain subject to their respective licenses.
+remain subject to their respective licenses; their notices ship with every
+copy in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
