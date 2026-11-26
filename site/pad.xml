@@ -34,7 +34,7 @@
   </Company_Info>
   <Program_Info>
     <Program_Name>AI Limits</Program_Name>
-    <Program_Version>0.7.0</Program_Version>
+    <Program_Version>0.7.1</Program_Version>
     <Program_Release_Month>09</Program_Release_Month>
     <Program_Release_Day>23</Program_Release_Day>
     <Program_Release_Year>2026</Program_Release_Year>
@@ -46,7 +46,7 @@
     <Program_Install_Support>No Install Support</Program_Install_Support>
     <Program_OS_Support>Windows 11</Program_OS_Support>
     <Program_Language>English</Program_Language>
-    <Program_Change_Info>The compact widget's name column fits every provider name.</Program_Change_Info>
+    <Program_Change_Info>Grok and Cursor; a Settings window for the rows, each provider's sign-in and model labels; each permission asked once; a notification with Install now when a new version is out.</Program_Change_Info>
     <Program_Specific_Category>Desktop</Program_Specific_Category>
     <Program_Category_Class>Desktop::Other</Program_Category_Class>
     <Program_System_Requirements>Windows 11 (build 22000 or later), x64. No runtime, no admin rights. At least one signed-in AI tool: Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI (agy) or the Grok CLI, or a Cursor subscription signed in from the app's Settings window.</Program_System_Requirements>
@@ -92,8 +92,8 @@ Three detail levels, several layouts, nine palettes; opacity, brightness and sat
       <Application_XML_File_URL>https://napxlexn.github.io/ailimits/pad.xml</Application_XML_File_URL>
     </Application_URLs>
     <Download_URLs>
-      <Primary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Portable-0.7.0.zip</Primary_Download_URL>
-      <Secondary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.0/AiLimits-Setup-0.7.0.exe</Secondary_Download_URL>
+      <Primary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.1/AiLimits-Portable-0.7.1.zip</Primary_Download_URL>
+      <Secondary_Download_URL>https://github.com/napxlexn/ailimits/releases/download/v0.7.1/AiLimits-Setup-0.7.1.exe</Secondary_Download_URL>
       <Additional_Download_URL_1></Additional_Download_URL_1>
       <Additional_Download_URL_2></Additional_Download_URL_2>
     </Download_URLs>

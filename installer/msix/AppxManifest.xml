@@ -14,8 +14,8 @@
      The Store runs no uninstall step of ours, so the Credential Manager
      entries the app made (ailimits/cursor_session and any pasted key) stay
      until the user signs out of Cursor or removes them under the
-     provider's Sign-in in Rows and models, or deletes them in Credential
-     Manager. -->
+     provider's Sign-in in the Settings window, or deletes them in
+     Credential Manager. -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
