@@ -3,6 +3,12 @@
 #   pwsh installer/msix/pack.ps1                      # version from Cargo.toml
 #   pwsh installer/msix/pack.ps1 -Sign                # plus a self-signed test signature
 #   pwsh installer/msix/pack.ps1 -IdentityName napxlexn.AILimits -Publisher "CN=..." -PublisherDisplayName napxlexn
+#   pwsh installer/msix/pack.ps1 -Bin <folder>        # the exes from the release's zip
+#
+# For the Store, pack the RELEASED exes (-Bin: the GitHub release's portable
+# zip, unpacked): a local release-min build carries this PC's paths, the CI
+# build does not, and the Store copy should be the very build everyone else
+# runs.
 #
 # The package for the Store is uploaded UNSIGNED: Partner Center signs it,
 # and the identity name and publisher must be the ones Partner Center shows
@@ -10,11 +16,13 @@
 # -Sign is for a local sideload only: it makes a self-signed certificate
 # with the manifest's publisher name, signs with it, and prints the two
 # commands that install the certificate and the package for testing.
+[CmdletBinding()]
 param(
     [string]$Version,
     [string]$IdentityName = 'napxlexn.AILimits',
     [string]$Publisher = 'CN=napxlexn',
     [string]$PublisherDisplayName = 'napxlexn',
+    [string]$Bin,
     [switch]$Sign
 )
 $ErrorActionPreference = 'Stop'
@@ -27,7 +35,7 @@ if (-not $Version) {
 # MSIX wants four parts; the Store reserves the fourth and requires it to be 0.
 $version4 = "$Version.0"
 
-$bin = Join-Path $root 'target\release-min'
+$bin = if ($Bin) { (Resolve-Path $Bin).Path } else { Join-Path $root 'target\release-min' }
 foreach ($exe in 'ailimits.exe', 'ailimits-auth.exe') {
     if (-not (Test-Path (Join-Path $bin $exe))) {
         throw "missing $bin\$exe - run: cargo build --profile release-min"
