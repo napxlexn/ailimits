@@ -469,6 +469,10 @@ struct App {
     menu_request: Option<isize>,
     /// Whose menu was opened last (`MenuFrom`): Settings opens beside it.
     menu_from: MenuFrom,
+    /// The hooks in force. A hook added or changed in config.toml runs from
+    /// the next start, after a notification says so (`hooks::after_edit`,
+    /// `hooks::unseen`); one cleared stops at once.
+    hooks: crate::config::schema::HooksConfig,
     /// What Settings answered to losing the focus (closing, mostly),
     /// applied once the messages of that moment are handled
     /// (`apply_deferred_picker_actions`).
@@ -528,6 +532,22 @@ pub fn run() -> Result<()> {
     if let Some(problem) = &loaded.problem {
         feedback("AI Limits", &problem.message());
     }
+    // Hooks the user was not told of (set while the app was not running):
+    // said now, and run from the next start, so no command runs unseen.
+    let hooks_seen = crate::hooks::seen_path();
+    let start_hooks = if crate::hooks::unseen(&config.hooks, &hooks_seen) {
+        feedback(
+            "AI Limits",
+            &format!(
+                "config.toml has new hooks that run commands: {}. They run from the next start; remove them there if you did not add them.",
+                crate::hooks::named(&config.hooks)
+            ),
+        );
+        crate::config::schema::HooksConfig::default()
+    } else {
+        config.hooks.clone()
+    };
+    crate::hooks::note_seen(&config.hooks, &hooks_seen);
     // What a newer version reads differently is asked for again.
     if !asked_again.is_empty() {
         feedback(
@@ -872,6 +892,7 @@ pub fn run() -> Result<()> {
         #[cfg(target_os = "windows")]
         menu_request: None,
         menu_from: MenuFrom::Widget,
+        hooks: start_hooks,
         picker_deferred: Vec::new(),
         #[cfg(target_os = "windows")]
         menu_preview: None,

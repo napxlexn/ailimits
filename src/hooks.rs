@@ -30,6 +30,89 @@ pub(crate) fn system_cmd_exe() -> std::path::PathBuf {
     std::path::PathBuf::from("cmd")
 }
 
+use crate::config::schema::HooksConfig;
+
+/// The hooks set in `hooks`, by name, for a notification: "on_threshold,
+/// on_startup". Empty when none is set.
+pub fn named(hooks: &HooksConfig) -> String {
+    [
+        ("on_threshold", &hooks.on_threshold),
+        ("on_reset", &hooks.on_reset),
+        ("on_startup", &hooks.on_startup),
+    ]
+    .into_iter()
+    .filter(|(_, c)| !c.trim().is_empty())
+    .map(|(n, _)| n)
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
+/// The file beside config.toml that holds the digest of the hooks the user
+/// has been told of (`note_seen`).
+pub fn seen_path() -> std::path::PathBuf {
+    crate::config::storage::config_path().with_file_name("hooks-seen.txt")
+}
+
+/// A digest of the three commands (FNV-1a, each ended by a zero byte), or
+/// None when no hook is set.
+fn digest(hooks: &HooksConfig) -> Option<String> {
+    if named(hooks).is_empty() {
+        return None;
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for c in [&hooks.on_threshold, &hooks.on_reset, &hooks.on_startup] {
+        for b in c.trim().bytes().chain([0]) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    Some(format!("{h:016x}"))
+}
+
+/// Whether `hooks` sets a command the user has not been told of: set, and
+/// not what `seen` holds. A hook another program slipped into config.toml
+/// while the app was not running is then said at the start, and waits for
+/// the next one (`app.rs`).
+pub fn unseen(hooks: &HooksConfig, seen: &std::path::Path) -> bool {
+    digest(hooks).is_some_and(|d| std::fs::read_to_string(seen).unwrap_or_default().trim() != d)
+}
+
+/// Writes down that the user has been told of `hooks` (none set: the file
+/// goes).
+pub fn note_seen(hooks: &HooksConfig, seen: &std::path::Path) {
+    match digest(hooks) {
+        Some(d) => {
+            let _ = std::fs::write(seen, d);
+        }
+        None => {
+            let _ = std::fs::remove_file(seen);
+        }
+    }
+}
+
+/// The hooks to run after a live edit: a hook cleared stops at once, a hook
+/// added or changed waits for the next start. With the names of the ones
+/// that wait.
+pub fn after_edit(running: &HooksConfig, edited: &HooksConfig) -> (HooksConfig, Vec<&'static str>) {
+    let mut waiting = Vec::new();
+    let mut keep = |name: &'static str, run: &String, new: &String| {
+        if new.trim().is_empty() {
+            String::new()
+        } else {
+            if new.trim() != run.trim() {
+                waiting.push(name);
+            }
+            run.clone()
+        }
+    };
+    let next = HooksConfig {
+        on_threshold: keep("on_threshold", &running.on_threshold, &edited.on_threshold),
+        on_reset: keep("on_reset", &running.on_reset, &edited.on_reset),
+        on_startup: keep("on_startup", &running.on_startup, &edited.on_startup),
+    };
+    (next, waiting)
+}
+
 /// How long a hook may run before it is stopped.
 const HOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -170,6 +253,55 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hooks(threshold: &str, reset: &str, startup: &str) -> HooksConfig {
+        HooksConfig {
+            on_threshold: threshold.into(),
+            on_reset: reset.into(),
+            on_startup: startup.into(),
+        }
+    }
+
+    /// A hook the user was not told of is unseen until noted; none set is
+    /// never unseen and takes the note away; a changed command is unseen
+    /// again.
+    #[test]
+    fn a_hook_is_said_once() {
+        let dir = std::env::temp_dir().join(format!("ailimits-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let seen = dir.join("hooks-seen.txt");
+        let _ = std::fs::remove_file(&seen);
+        let set = hooks("echo hi", "", "");
+        assert!(unseen(&set, &seen));
+        note_seen(&set, &seen);
+        assert!(!unseen(&set, &seen));
+        // Spaces around a command change nothing.
+        assert!(!unseen(&hooks("  echo hi ", "", ""), &seen));
+        // The same command under another event is another hook.
+        assert!(unseen(&hooks("", "echo hi", ""), &seen));
+        assert!(unseen(&hooks("echo hi2", "", ""), &seen));
+        let none = HooksConfig::default();
+        assert!(!unseen(&none, &seen));
+        note_seen(&none, &seen);
+        assert!(!seen.exists());
+        assert!(unseen(&set, &seen));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(named(&hooks("a", "", "b")), "on_threshold, on_startup");
+        assert_eq!(named(&none), "");
+    }
+
+    /// After a live edit: a cleared hook stops at once, an added or changed
+    /// one keeps what ran before and is named as waiting.
+    #[test]
+    fn an_edited_hook_waits_for_the_next_start() {
+        let running = hooks("old", "keep", "");
+        let (next, waiting) = after_edit(&running, &hooks("", "keep", "new"));
+        assert_eq!(next, hooks("", "keep", ""));
+        assert_eq!(waiting, ["on_startup"]);
+        let (next, waiting) = after_edit(&running, &hooks("changed", " keep ", ""));
+        assert_eq!(next, hooks("old", "keep", ""));
+        assert_eq!(waiting, ["on_threshold"]);
+    }
 
     #[test]
     fn the_command_reaches_cmd_as_written() {

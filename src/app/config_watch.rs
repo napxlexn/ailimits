@@ -475,6 +475,22 @@ impl App {
             return;
         }
         info!("config.toml edited: {parts:?} applied");
+        // A hook added or changed is said and runs from the next start; one
+        // cleared stops now.
+        if parts.contains(&Part::Hooks) {
+            let (running, waiting) = crate::hooks::after_edit(&self.hooks, &self.config.hooks);
+            self.hooks = running;
+            crate::hooks::note_seen(&self.config.hooks, &crate::hooks::seen_path());
+            if !waiting.is_empty() {
+                feedback(
+                    "AI Limits",
+                    &format!(
+                        "A hook in config.toml changed: {}. It runs from the next start of AI Limits.",
+                        waiting.join(", ")
+                    ),
+                );
+            }
+        }
         let e = Effects::of(&parts);
         if e.interval {
             // As from the menu: the scheduler takes it after its wait.

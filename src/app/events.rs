@@ -670,7 +670,7 @@ impl App {
                 }
                 hooks::run(
                     &self.runtime,
-                    &self.config.hooks.on_threshold,
+                    &self.hooks.on_threshold,
                     hooks::HookEvent::Threshold,
                     data.id.clone(),
                     Some(pct),
@@ -686,7 +686,7 @@ impl App {
                 if prev >= threshold && pct + 30.0 < prev {
                     hooks::run(
                         &self.runtime,
-                        &self.config.hooks.on_reset,
+                        &self.hooks.on_reset,
                         hooks::HookEvent::Reset,
                         data.id.clone(),
                         Some(pct),
@@ -716,7 +716,7 @@ impl App {
             self.startup_fired = true;
             hooks::run(
                 &self.runtime,
-                &self.config.hooks.on_startup,
+                &self.hooks.on_startup,
                 hooks::HookEvent::Startup,
                 data.id.clone(),
                 data.primary_percentage(),

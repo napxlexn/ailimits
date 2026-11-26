@@ -375,8 +375,8 @@ const TABLES: &[Table] = &[
     Table {
         path: "hooks",
         about: &[
-            "Commands run on usage events through cmd.exe, hidden, stopped after 30 s;",
-            "\"\" (default) runs nothing. Never put a password or a key in one.",
+            "Commands run hidden via cmd.exe (30 s at most); \"\" runs nothing. No keys.",
+            "A new or changed one is announced, then runs from the next start.",
         ],
         keys: &[
             (

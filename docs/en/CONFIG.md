@@ -66,6 +66,7 @@ uninstaller together with the folder):
 |---|---|
 | `provider-cache.json` | the last known metrics with a future reset, so they survive restarts. Written when the values, limits or resets change (to the minute), otherwise at most every 10 minutes to refresh the fetch times, and at exit. After a crash a cached row can read at most 10 minutes older than it is, never younger. |
 | `alerts.json` | which threshold alerts were given, per provider (the windows alerted and the last alert), so a restart does not repeat them. Entries older than a day are dropped. |
+| `hooks-seen.txt` | a digest (FNV-1a) of the `[hooks]` commands the app has announced, never the commands. Only while a hook is set. |
 | `update-attempt.json` | the last self-update attempt: the version and the downloaded installer's path, and whether an unfinished attempt was told. Installer copies only. |
 | `icon.png` | the app's icon for its notifications. Every copy not from the Microsoft Store writes it here, and writes it again when its size differs from the icon the app carries. |
 | `crash.log` | one line per crash: UTC time, version, thread, source file:line:column. The panic's text is never written. Rotates at 64 KB into `crash.log.1`. A start that failed writes `could not start: <error>` (which may name a local path, such as config.toml's). |
@@ -108,9 +109,11 @@ The welcome has no such link.
   model labels, the widget's layout, colours, position and opacity, Always
   on top, Lock position, the menu's ticks, the tray icon, the taskbar panel
   (mode, display, offset, what it shows), the update interval (after the
-  current wait, as from the menu), automatic updates, notifications, hooks,
-  `[tune]`, and Settings if it is open. Nothing needs a restart;
-  `on_startup` has run already and runs again at the next start.
+  current wait, as from the menu), automatic updates, notifications,
+  `[tune]`, and Settings if it is open. Nothing needs a restart but a hook
+  added or changed: a notification names it, and it runs from the next
+  start (a hook cleared stops at once); `on_startup` has run already and
+  runs again at the next start.
 - **A change made in the app while an edit was on its way** (in the moment
   before the file was saved, or while it did not read) is kept wherever the
   edit left that setting as it was, and saved together with the edit; where
@@ -456,7 +459,12 @@ cooldown_minutes = 15
 # name: Claude, Codex...), AILIMITS_PERCENT, AILIMITS_RESET_AT (RFC3339,
 # when known).
 # SECURITY: these are deliberately config-file-only — there is no menu or
-# clipboard path, so nothing can auto-populate a command to run.
+# clipboard path, so nothing can auto-populate a command to run. A command
+# added or changed never runs unannounced: edited while the app runs, a
+# notification names it and it runs from the next start; found at a start
+# (set while the app was not running), a notification names it and it runs
+# from the start after. hooks-seen.txt keeps a digest of what was announced.
+# A hook cleared stops at once.
 # Fires with the threshold alert, once per limit window (even with toasts off):
 on_threshold = ""
 # Fires when a provider that was at or above its threshold drops by more

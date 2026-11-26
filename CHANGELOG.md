@@ -269,6 +269,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Changed
 
+- **A hook never runs unannounced.** A command added or changed in
+  `[hooks]` is named in a notification and runs from the next start; one
+  found at a start (set while AI Limits was not running) waits for the
+  start after. A hook cleared stops at once. Only a digest of what was
+  announced is kept (`hooks-seen.txt`), never the commands.
 - **The tray icon shows the same two providers as the taskbar panel.**
   Untouched, both show the first two in the widget, the busier on the outer
   ring; 0.7.0's rings took the two busiest of all. The Taskbar column of
