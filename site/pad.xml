@@ -35,8 +35,8 @@
   <Program_Info>
     <Program_Name>AI Limits</Program_Name>
     <Program_Version>0.7.1</Program_Version>
-    <Program_Release_Month>09</Program_Release_Month>
-    <Program_Release_Day>23</Program_Release_Day>
+    <Program_Release_Month>11</Program_Release_Month>
+    <Program_Release_Day>26</Program_Release_Day>
     <Program_Release_Year>2026</Program_Release_Year>
     <Program_Cost_Dollars>0</Program_Cost_Dollars>
     <Program_Cost_Other_Code></Program_Cost_Other_Code>
@@ -51,9 +51,9 @@
     <Program_Category_Class>Desktop::Other</Program_Category_Class>
     <Program_System_Requirements>Windows 11 (build 22000 or later), x64. No runtime, no admin rights. At least one signed-in AI tool: Claude Code, Codex CLI, the GitHub CLI, the Antigravity CLI (agy) or the Grok CLI, or a Cursor subscription signed in from the app's Settings window.</Program_System_Requirements>
     <File_Info>
-      <File_Size_Bytes>3184235</File_Size_Bytes>
-      <File_Size_K>3110</File_Size_K>
-      <File_Size_MB>3.04</File_Size_MB>
+      <File_Size_Bytes>3757083</File_Size_Bytes>
+      <File_Size_K>3669</File_Size_K>
+      <File_Size_MB>3.58</File_Size_MB>
     </File_Info>
     <Expire_Info>
       <Has_Expire_Info>N</Has_Expire_Info>
