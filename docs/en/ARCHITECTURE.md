@@ -423,6 +423,11 @@ side it grows to only when no other has room.
   10 s later (`AutoUpdate`, `SWITCHED_ON_DELAY`; a tick undone meanwhile
   asks nothing), unless a check ran within the hour. The updater
   takes only an `AiLimits-Setup-<v>.exe` asset with its `.sig`. A newer one
+  is told once (`announce`, `update-announced.txt`): a toast "AI Limits <v>
+  is available" with *Install now* (`AutoUpdate::ask_install_now`: the wait
+  below ends at once, every check after it stays) and *What's new* (the
+  release's page). The buttons reach the app while it runs; a click after
+  a restart, from the notification centre, does nothing. Untouched, it
   waits until the user has been away for 5 minutes (no input, or the
   session locked, `platform::user_idle_secs`), checked every minute
   (switching *Automatic updates* off meanwhile cancels it; no daily check

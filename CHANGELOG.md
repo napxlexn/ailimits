@@ -18,6 +18,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Added
 
+- **A new version says so.** When an installer copy finds a newer
+  release, a notification tells it once ("AI Limits <version> is available"),
+  with *Install now* (it installs at once, through the same SHA-256 and
+  signature checks) and *What's new* (the release page). Left alone, it
+  still installs itself the next time you step away for five minutes.
 - **Grok (xAI SuperGrok).** The weekly SuperGrok limit, the one grok.com's
   Usage page shows, read with the Grok CLI's own login
   (`%USERPROFILE%\.grok\auth.json`, or in `GROK_HOME`) and never refreshed:

@@ -67,6 +67,7 @@ uninstaller together with the folder):
 | `provider-cache.json` | the last known metrics with a future reset, so they survive restarts. Written when the values, limits or resets change (to the minute), otherwise at most every 10 minutes to refresh the fetch times, and at exit. After a crash a cached row can read at most 10 minutes older than it is, never younger. |
 | `alerts.json` | which threshold alerts were given, per provider (the windows alerted and the last alert), so a restart does not repeat them. Entries older than a day are dropped. |
 | `hooks-seen.txt` | a digest (FNV-1a) of the `[hooks]` commands the app has announced, never the commands. Only while a hook is set. |
+| `update-announced.txt` | the newest version a toast was shown for ("AI Limits <v> is available"), so each is told once. Installer copies only. |
 | `update-attempt.json` | the last self-update attempt: the version and the downloaded installer's path, and whether an unfinished attempt was told. Installer copies only. |
 | `icon.png` | the app's icon for its notifications. Every copy not from the Microsoft Store writes it here, and writes it again when its size differs from the icon the app carries. |
 | `crash.log` | one line per crash: UTC time, version, thread, source file:line:column. The panic's text is never written. Rotates at 64 KB into `crash.log.1`. A start that failed writes `could not start: <error>` (which may name a local path, such as config.toml's). |

@@ -448,7 +448,9 @@ Right-click the widget:
   forecast (burn-rate "~time to limit", off by default).
 - Refresh interval (1 / 5 / 15 / 30 min) and `Automatic updates` (silent
   background self-update of an installer copy, on by default; Store, Scoop,
-  portable and self-built copies have no such item).
+  portable and self-built copies have no such item). A new version is told
+  once, in a notification with *Install now* and *What's new*; left alone,
+  it installs itself the next time you step away for five minutes.
 - *AI Limits 0.7.1*, with the GitHub mark (opens the project page), and Quit.
 
 Usage forecast shows its ~time on Medium and Expanded rows and on Expanded

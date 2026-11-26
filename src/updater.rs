@@ -33,6 +33,11 @@
 // An update that did not finish is told to the user once, at the next start
 // (`unfinished_update_note`).
 //
+// A newer version found is told once (`announce`, `ANNOUNCED_FILE`): a
+// toast "AI Limits <v> is available" with Install now (it installs at once,
+// through the very same checks, instead of waiting for the user to be
+// away) and What's new (the release's page on GitHub).
+//
 // The whole feature is gated behind the `auto_update` config flag (a menu
 // toggle), passed in as a shared `AutoUpdate` so the loop honours live
 // changes: switched on, it checks within seconds (`SWITCHED_ON_DELAY`)
@@ -85,6 +90,10 @@ const SWITCHED_ON_MIN_GAP: Duration = Duration::from_secs(60 * 60);
 pub struct AutoUpdate {
     on: AtomicBool,
     switched_on: tokio::sync::Notify,
+    /// Install now, from the toast: the update found does not wait for the
+    /// user to be away.
+    install_now: AtomicBool,
+    asked: tokio::sync::Notify,
 }
 
 impl AutoUpdate {
@@ -92,7 +101,19 @@ impl AutoUpdate {
         Self {
             on: AtomicBool::new(on),
             switched_on: tokio::sync::Notify::new(),
+            install_now: AtomicBool::new(false),
+            asked: tokio::sync::Notify::new(),
         }
+    }
+
+    /// The toast's Install now: the waiting update goes ahead at once.
+    pub fn ask_install_now(&self) {
+        self.install_now.store(true, Ordering::Relaxed);
+        self.asked.notify_one();
+    }
+
+    fn install_now_asked(&self) -> bool {
+        self.install_now.load(Ordering::Relaxed)
     }
 
     pub fn is_on(&self) -> bool {
@@ -152,6 +173,9 @@ const INSTALLER_SWITCHES: &[&str] = &[
 
 /// The record of the last update attempt, beside the config.
 const ATTEMPT_FILE: &str = "update-attempt.json";
+/// The newest version a toast was shown for (beside the config): each
+/// version is told once, not at every daily check or start.
+const ANNOUNCED_FILE: &str = "update-announced.txt";
 
 /// The handoff script 0.6.0 to 0.7.0 wrote to %TEMP%. Where it failed (a
 /// Cyrillic or `&` path) it stayed behind, beside the installer it fetched.
@@ -229,6 +253,22 @@ struct Update {
 /// newer release it installs and exits the process, so a successful upgrade
 /// never returns here.
 pub async fn run(auto: Arc<AutoUpdate>) {
+    // Debug builds only: a pretend update for the E2E harness, to see the
+    // toast and its buttons. Nothing is asked of the network, nothing is
+    // downloaded or installed.
+    #[cfg(debug_assertions)]
+    if let Some(v) = std::env::var_os("AILIMITS_E2E_FAKE_UPDATE") {
+        let v = v.to_string_lossy().into_owned();
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        announce(&state_dir(), &v, &auto);
+        if wait_until_away(&auto).await {
+            info!(
+                "E2E: v{v} would install now (Install now asked: {})",
+                auto.install_now_asked()
+            );
+        }
+        return;
+    }
     // Before anything else: a copy something else updates never asks the
     // network anything, whatever the Auto-update setting says.
     match channel() {
@@ -272,7 +312,7 @@ pub async fn run(auto: Arc<AutoUpdate>) {
     loop {
         if due && auto.is_on() {
             last_check = Some(tokio::time::Instant::now());
-            if let Err(e) = check_and_install(&client, &state, current, &auto.on).await {
+            if let Err(e) = check_and_install(&client, &state, current, &auto).await {
                 // A failed check is non-fatal: log and try again next cycle.
                 debug!("auto-update check skipped: {e:#}");
             }
@@ -356,7 +396,7 @@ async fn check_and_install(
     client: &reqwest::Client,
     state: &Path,
     current: Version,
-    enabled: &AtomicBool,
+    auto: &Arc<AutoUpdate>,
 ) -> Result<()> {
     let Some(update) = fetch_latest(client, current).await? else {
         return Ok(());
@@ -374,12 +414,14 @@ async fn check_and_install(
         );
         return Ok(());
     }
+    announce(state, &update.version, auto);
 
-    // Only while the user is away: the installer closes the widget for a
-    // few seconds. Downloaded once that moment has come, and run only if the
-    // user is still away when the download is through.
+    // Only while the user is away (or asked from the toast): the installer
+    // closes the widget for a few seconds. Downloaded once that moment has
+    // come, and run only if the user is still away when the download is
+    // through, or asked for it.
     let installer = loop {
-        if !wait_until_away(enabled).await {
+        if !wait_until_away(auto).await {
             info!(
                 "auto-update was switched off while v{} waited",
                 update.version
@@ -387,7 +429,7 @@ async fn check_and_install(
             return Ok(());
         }
         let installer = download_and_verify(client, &update).await?;
-        if away(crate::platform::user_idle_secs()) {
+        if away(crate::platform::user_idle_secs()) || auto.install_now_asked() {
             break installer;
         }
         remove_installer(&installer.path);
@@ -425,15 +467,16 @@ fn away(idle_secs: u64) -> bool {
     idle_secs >= IDLE_BEFORE_INSTALL_SECS
 }
 
-/// Wait until the user is away (`away`). False when auto-update was
+/// Wait until the user is away (`away`), or asks for the update from its
+/// toast (`AutoUpdate::ask_install_now`). False when auto-update was
 /// switched off meanwhile: nothing is installed then.
-async fn wait_until_away(enabled: &AtomicBool) -> bool {
+async fn wait_until_away(auto: &AutoUpdate) -> bool {
     let mut said = false;
     loop {
-        if !enabled.load(Ordering::Relaxed) {
+        if !auto.is_on() {
             return false;
         }
-        if away(crate::platform::user_idle_secs()) {
+        if auto.install_now_asked() || away(crate::platform::user_idle_secs()) {
             return true;
         }
         if !said {
@@ -443,7 +486,52 @@ async fn wait_until_away(enabled: &AtomicBool) -> bool {
             );
             said = true;
         }
-        tokio::time::sleep(IDLE_RECHECK).await;
+        tokio::select! {
+            _ = tokio::time::sleep(IDLE_RECHECK) => {}
+            _ = auto.asked.notified() => {}
+        }
+    }
+}
+
+/// Whether `version` is to be told now: not told before (`ANNOUNCED_FILE`).
+/// Writes it down. Pure on the folder for testing.
+fn first_announcement(state: &Path, version: &str) -> bool {
+    let told = std::fs::read_to_string(state.join(ANNOUNCED_FILE)).unwrap_or_default();
+    if told.trim() == version {
+        return false;
+    }
+    if let Err(e) = std::fs::write(state.join(ANNOUNCED_FILE), version) {
+        warn!("auto-update: could not note the version told: {e}");
+    }
+    true
+}
+
+/// Tell the user once that `version` is there: a toast with Install now
+/// (it goes ahead at once) and What's new (the release's page).
+fn announce(state: &Path, version: &str, auto: &Arc<AutoUpdate>) {
+    if !first_announcement(state, version) {
+        return;
+    }
+    let auto = auto.clone();
+    let page = format!("https://github.com/{REPO}/releases/tag/v{version}");
+    let shown = crate::notifications::toast::ToastNotifier::show_with_buttons(
+        &format!("AI Limits {version} is available"),
+        "It installs by itself the next time you step away for five minutes.",
+        &[("Install now", "install"), ("What's new", "whats-new")],
+        move |action| match action {
+            "install" => {
+                info!("auto-update: Install now, from the toast");
+                auto.ask_install_now();
+            }
+            "whats-new" => {
+                let page = page.clone();
+                std::thread::spawn(move || crate::platform::open_url(&page));
+            }
+            _ => {}
+        },
+    );
+    if let Err(e) = shown {
+        warn!("auto-update: the toast for v{version} failed: {e:#}");
     }
 }
 
@@ -1476,6 +1564,47 @@ mod tests {
         .unwrap();
         assert_eq!(untold_failure(&state, (0, 7, 2)), None);
         std::fs::remove_dir_all(&state).unwrap();
+    }
+
+    /// A version is told once: a second check, or a start, tells nothing;
+    /// a newer one is told again.
+    #[test]
+    fn a_version_is_told_once() {
+        let dir = std::env::temp_dir().join(format!("ailimits-announce-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let _ = std::fs::remove_file(dir.join(ANNOUNCED_FILE));
+        assert!(first_announcement(&dir, "0.7.2"));
+        assert!(!first_announcement(&dir, "0.7.2"));
+        assert!(first_announcement(&dir, "0.7.3"));
+        assert!(!first_announcement(&dir, "0.7.3"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Install now, from the toast, ends the wait at once, whether or not
+    /// the user is away; switched off, nothing goes ahead.
+    #[test]
+    fn install_now_ends_the_wait() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let auto = Arc::new(AutoUpdate::new(true));
+            let waiting = tokio::spawn({
+                let auto = auto.clone();
+                async move { wait_until_away(&auto).await }
+            });
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            auto.ask_install_now();
+            let went = tokio::time::timeout(Duration::from_secs(2), waiting)
+                .await
+                .expect("the wait ends at once")
+                .unwrap();
+            assert!(went);
+            let off = AutoUpdate::new(false);
+            off.ask_install_now();
+            assert!(!wait_until_away(&off).await);
+        });
     }
 
     /// An update installs only once the user has been away five minutes.
