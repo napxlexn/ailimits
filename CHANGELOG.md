@@ -173,9 +173,9 @@ Notable, user-visible changes. Dates are release dates.
   Taskbar panel / None, and Panel display) are submenus; Always on top,
   Lock position and Usage forecast follow, then Refresh interval (was
   Update interval, so it is not taken for the app's updates) beside
-  Automatic updates, and last *AI Limits 0.7.1 on GitHub* and Quit. Resting
-  the pointer on a look item still shows it before a click, in the
-  submenus too. The layouts are named Rows and Columns (they were
+  Automatic updates, and last *AI Limits 0.7.1* (with the GitHub mark)
+  and Quit. Resting the pointer on a look item still shows it before a
+  click, in the submenus too. The layouts are named Rows and Columns (they were
   Horizontal and Vertical, after the bars' direction), Arrangement is
   Column layout (Side by side / Stacked), Indicator is Taskbar.
 - **Plain status words.** A refused key reads "key rejected" (was "check

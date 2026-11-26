@@ -415,11 +415,10 @@ impl ContextMenu {
 
         let picker_item = MenuItem::new("Settings\u{2026}", true, None);
         let quit_item = MenuItem::new("Quit", true, None);
-        // The version line doubles as the way to the project. The words stay
-        // plain, since a native menu paints an item's text itself and dims
-        // only what it disables.
+        // The version line doubles as the way to the project: its GitHub
+        // mark says where it leads, so the words are the version alone.
         let version_item = IconMenuItem::new(
-            format!("AI Limits {} on GitHub", env!("CARGO_PKG_VERSION")),
+            format!("AI Limits {}", env!("CARGO_PKG_VERSION")),
             true,
             github_mark(),
             None,

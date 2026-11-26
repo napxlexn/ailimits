@@ -449,7 +449,7 @@ Right-click the widget:
 - Refresh interval (1 / 5 / 15 / 30 min) and `Automatic updates` (silent
   background self-update of an installer copy, on by default; Store, Scoop,
   portable and self-built copies have no such item).
-- *AI Limits 0.7.1 on GitHub* (opens the project page) and Quit.
+- *AI Limits 0.7.1*, with the GitHub mark (opens the project page), and Quit.
 
 Usage forecast shows its ~time on Medium and Expanded rows and on Expanded
 columns, only where no reset time is known, and never for data that has
