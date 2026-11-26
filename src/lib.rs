@@ -15,6 +15,7 @@ pub mod notifications;
 pub mod platform;
 pub mod providers;
 pub mod rows;
+pub mod secrets;
 pub mod ui;
 pub mod updater;
 pub mod utc;

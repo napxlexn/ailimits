@@ -560,6 +560,13 @@ model_terms   = 1
 | `copilot_pat` | fine-grained токен GitHub (джерело "api_key", замість gh CLI) |
 | `cursor_session` | власний сеанс Cursor віджета, як UTF-8 JSON: токен, його строк дії, остання спроба оновлення, чи завершив його Cursor (Settings, Sign-in у Cursor: *Sign in to Cursor…* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
+Кожен — це generic-запис із ціллю `<мітка>.ailimits`, що зберігається
+лише на цьому ПК (`CRED_PERSIST_LOCAL_MACHINE`, `src/secrets.rs`): роумінговий
+доменний профіль не копіює його на інші ПК. Бібліотека keyring, якою
+програма писала раніше, ставила `CRED_PERSIST_ENTERPRISE`, а такий запис
+роумінгує; запис, ще збережений так, програма переписує лише для цього ПК,
+коли вперше його читає.
+
 Деінсталятор інсталятора прибирає всі п'ять (через `ailimits-auth`,
 локально, без мережі). Копія з Microsoft Store не має нашого кроку
 деінсталяції: перед її видаленням скористайтеся *Sign out* і *Remove* у

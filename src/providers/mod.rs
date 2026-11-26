@@ -396,8 +396,7 @@ pub(crate) type SecretSource = Box<dyn Fn() -> Option<String> + Send + Sync>;
 /// The app's own secret under `label`, trimmed; None when there is none.
 pub(crate) fn keyring_secret(label: &'static str) -> SecretSource {
     Box::new(move || {
-        keyring::Entry::new("ailimits", label)
-            .and_then(|e| e.get_password())
+        crate::secrets::read_password(label)
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -430,9 +429,7 @@ pub(crate) type SecretReader = fn(&'static str) -> Option<String>;
 
 /// The password kept under `label` (service `ailimits`), as it is stored.
 pub(crate) fn keyring_password(label: &'static str) -> Option<String> {
-    keyring::Entry::new("ailimits", label)
-        .and_then(|e| e.get_password())
-        .ok()
+    crate::secrets::read_password(label).ok()
 }
 
 /// A provider's pasted key, read with `read` each time it is asked for, and

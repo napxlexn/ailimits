@@ -538,6 +538,12 @@ in the Windows Credential Manager under service `ailimits`:
 | `copilot_pat` | GitHub fine-grained token (the "api_key" source, instead of the gh CLI) |
 | `cursor_session` | the widget's own Cursor session, as UTF-8 JSON: the token, its expiry, the last refresh attempt, whether Cursor ended it (Settings, Cursor's Sign-in: *Sign in to Cursor…* / *Sign out*; CLI: `ailimits-auth login cursor` / `logout cursor`) |
 
+Each is a generic credential with the target `<label>.ailimits`, kept on
+this PC only (`CRED_PERSIST_LOCAL_MACHINE`, `src/secrets.rs`): a roaming
+domain profile does not copy it to other PCs. The keyring library the app
+used before wrote `CRED_PERSIST_ENTERPRISE`, which roams; an entry still kept
+that way is written again for this PC only the first time the app reads it.
+
 The installer's uninstaller removes all five (with `ailimits-auth`, locally,
 no network). A Microsoft Store copy has no uninstall step of ours: before
 removing it, use *Sign out* and *Remove* in each provider's Sign-in in

@@ -166,11 +166,7 @@ impl TokenOutcome {
 fn stored_secrets() -> Vec<&'static str> {
     SECRET_LABELS
         .into_iter()
-        .filter(|label| {
-            keyring::Entry::new("ailimits", label)
-                .and_then(|e| e.get_password())
-                .is_ok()
-        })
+        .filter(|label| crate::secrets::read_password(label).is_ok())
         .collect()
 }
 
@@ -356,7 +352,7 @@ impl App {
             Ok(pasted) => pasted,
             Err(e) => return self.tell(pid, format!("Not stored: {e}.")),
         };
-        match keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&key)) {
+        match crate::secrets::write_password(label, &key) {
             Ok(()) => {
                 if let Some(pc) = self.config.providers.iter_mut().find(|p| p.id == pid) {
                     pc.enabled = true;
@@ -457,8 +453,7 @@ impl App {
         let Some(label) = usage_token_label_for(id) else {
             return;
         };
-        let store =
-            || keyring::Entry::new("ailimits", label).and_then(|e| e.set_password(&token.0));
+        let store = || crate::secrets::write_password(label, &token.0);
         let Some(outcome) = settle_token(&mut self.usage_token_check, ticket, check, store) else {
             return;
         };

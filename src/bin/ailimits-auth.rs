@@ -402,9 +402,7 @@ fn set(provider: Option<&str>) -> Result<()> {
         bail!("empty key — nothing stored");
     }
 
-    keyring::Entry::new(KEYRING_SERVICE, label)
-        .context("keyring unavailable")?
-        .set_password(key)
+    ailimits::secrets::write_password(label, key)
         .context("failed to store the key in Credential Manager")?;
 
     // The key stored is the source chosen (Claude's API key, Copilot's
@@ -443,9 +441,7 @@ fn set_usage_token(provider: Option<&str>) -> Result<()> {
     }
     let unchecked = check_usage_token(provider, token)?;
 
-    keyring::Entry::new(KEYRING_SERVICE, label)
-        .context("keyring unavailable")?
-        .set_password(token)
+    ailimits::secrets::write_password(label, token)
         .context("failed to store the usage token in Credential Manager")?;
 
     // The token is the app's own source and the one chosen now: storing it

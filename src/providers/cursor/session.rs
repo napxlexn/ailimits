@@ -524,7 +524,7 @@ fn entry(label: &str) -> Result<keyring::Entry, StoreError> {
 }
 
 fn load_at(label: &str) -> Result<Option<OwnSession>, StoreError> {
-    match entry(label)?.get_secret() {
+    match crate::secrets::read_secret(label) {
         Ok(bytes) => String::from_utf8(bytes)
             .ok()
             .and_then(|text| OwnSession::decode(&text))
@@ -536,8 +536,7 @@ fn load_at(label: &str) -> Result<Option<OwnSession>, StoreError> {
 }
 
 fn store_at(label: &str, session: &OwnSession) -> Result<(), StoreError> {
-    entry(label)?
-        .set_secret(session.encode().as_bytes())
+    crate::secrets::write_secret(label, session.encode().as_bytes())
         .map_err(|e| StoreError::Unavailable(e.to_string()))
 }
 
