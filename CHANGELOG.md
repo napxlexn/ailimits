@@ -468,6 +468,11 @@ Notable, user-visible changes. Dates are release dates.
 
 ### Fixed
 
+- **Settings goes behind the window you click, not over it.** When
+  another program's window took the focus, Settings let go of being on
+  top but stayed in front of that very window; it now goes right under
+  it.
+
 - **Antigravity: no made-up numbers from new quota groups.** A group of one
   Gemini model keeps its own name instead of taking the Gemini pool's row,
   and a bucket counted in units rather than as a fraction is skipped

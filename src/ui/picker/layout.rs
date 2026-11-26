@@ -33,6 +33,36 @@ impl Picker {
         }
     }
 
+    /// Debug builds only, for the E2E harness: the viewport, then every
+    /// control's layer, target and rect (window coordinates, logical
+    /// pixels, scrolled), one per line, tab-separated.
+    #[cfg(debug_assertions)]
+    pub(super) fn debug_layout(&self) -> String {
+        let f = self.frame();
+        let v = f.viewport;
+        let mut out = format!("Viewport\t-\t{}\t{}\t{}\t{}\n", v.x, v.y, v.w, v.h);
+        for (layer, el) in &f.els {
+            let (t, r) = match el {
+                El::Tick { target, cell, .. } => (target.clone(), *cell),
+                El::Radio { target, rect, .. }
+                | El::Pick { target, rect, .. }
+                | El::Field { target, rect, .. }
+                | El::Button { target, rect, .. }
+                | El::Toggle { target, rect, .. }
+                | El::Tab { target, rect, .. }
+                | El::Tile { target, rect, .. }
+                | El::Link { target, rect, .. } => (target.clone(), *rect),
+                El::Close { rect, .. } => (Target::Close, *rect),
+                _ => continue,
+            };
+            out.push_str(&format!(
+                "{layer:?}\t{t:?}\t{}\t{}\t{}\t{}\n",
+                r.x, r.y, r.w, r.h
+            ));
+        }
+        out
+    }
+
     /// The whole window laid out for the current state; the last layout
     /// when nothing it depends on changed.
     pub(super) fn frame(&self) -> Rc<Frame> {

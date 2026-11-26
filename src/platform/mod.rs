@@ -20,7 +20,8 @@ pub use win::{
     fullscreen_hold_remaining, hide_window, install_taskbar_watch, mouse_hover_time_ms,
     place_below, point_owner, popup_menu_over, present_layered, process_cpu_time,
     raise_panel_topmost, register_fullscreen_watch, secondary_taskbars, taskbar_drawn_at,
-    taskbar_slot, wake_in, watch_taskbar, window_is_popup_menu, TaskbarSlot,
+    taskbar_slot, wake_in, watch_taskbar, window_in_use_other_than, window_is_popup_menu,
+    TaskbarSlot,
 };
 
 /// Whether this copy runs inside an MSIX package — the Microsoft Store

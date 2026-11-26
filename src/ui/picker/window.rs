@@ -612,10 +612,16 @@ impl PickerWindow {
             /// SetWindowPos's HWND_TOPMOST and HWND_NOTOPMOST.
             const TOPMOST: isize = -1;
             const NOT_TOPMOST: isize = -2;
-            crate::platform::place_below(
-                self.window.hwnd(),
-                if on { TOPMOST } else { NOT_TOPMOST },
-            );
+            let hwnd = self.window.hwnd();
+            crate::platform::place_below(hwnd, if on { TOPMOST } else { NOT_TOPMOST });
+            // HWND_NOTOPMOST leaves it at the top of the windows not on top,
+            // over the very window just taken into use: it goes right under
+            // that one instead, as a program's window does.
+            if !on {
+                if let Some(in_use) = crate::platform::window_in_use_other_than(hwnd) {
+                    crate::platform::place_below(hwnd, in_use);
+                }
+            }
         }
         #[cfg(not(target_os = "windows"))]
         let _ = on;
@@ -644,6 +650,14 @@ impl PickerWindow {
             self.resize(want);
         }
         let scene = self.picker.scene();
+        // Debug builds: where every control is, for the E2E harness.
+        #[cfg(debug_assertions)]
+        if let Some(path) = std::env::var_os("AILIMITS_E2E_LAYOUT") {
+            let _ = std::fs::write(
+                path,
+                format!("Scale\t-\t{scale}\t0\t0\t0\n{}", self.picker.debug_layout()),
+            );
+        }
         self.renderer.draw_picker(
             &mut self.pixmap,
             &scene,

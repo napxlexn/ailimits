@@ -1583,6 +1583,28 @@ pub fn popup_menu_over(rect: (i32, i32, i32, i32)) -> Option<isize> {
 
 /// Put a window directly below another in z-order, without moving, resizing
 /// or activating it.
+/// The window in use now, when it is another top-level window than `hwnd`
+/// and not one held on top itself: the one `hwnd` should go just under when
+/// it lets go of being on top. None otherwise (nothing to go under).
+pub fn window_in_use_other_than(hwnd: isize) -> Option<isize> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetForegroundWindow, GetWindowLongW, GA_ROOT, GWL_EXSTYLE, WS_EX_TOPMOST,
+    };
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return None;
+        }
+        let fg = GetAncestor(fg, GA_ROOT);
+        if fg.0.is_null() || fg == HWND(hwnd as _) {
+            return None;
+        }
+        let ex = GetWindowLongW(fg, GWL_EXSTYLE) as u32;
+        (ex & WS_EX_TOPMOST.0 == 0).then_some(fg.0 as isize)
+    }
+}
+
 pub fn place_below(hwnd: isize, other: isize) {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
